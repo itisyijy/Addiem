@@ -8,3 +8,4 @@ Neo-Anki는 시험 목표와 카드 품질을 함께 관리해, 사용자가 제
 
 - [Anki 장기 사용자 인터뷰](docs/user-research/anki-power-user-interview.md)
 - [Neo-Anki 제품 방향](docs/product/product-direction.md)
+- [Neo-Anki MVP 범위](docs/product/mvp-scope.md)
