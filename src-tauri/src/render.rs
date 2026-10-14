@@ -1,6 +1,6 @@
 //! Anki 템플릿 -> HTML. MVP 6.4.2 의 지원 범위만 다룬다:
 //! {{필드}}, {{FrontSide}}, {{#필드}}..{{/필드}}, {{^필드}}..{{/필드}}, {{cloze:필드}}, {{필터:필드}}.
-//! 스파이크 1: 실측 컬렉션의 템플릿은 전부 이 범위 안이었다.
+//! 스파이크 1: 실측 컬렉션의 템플릿은 전부 이 범위 안이었다. 그림 가리기(Anki IO) 칸은 occlusion.rs 가 그린다.
 //!
 //! 결과 HTML 은 신뢰하지 않는다. 화면에서 반드시 살균한 뒤 넣는다 (ADR 0001 2장).
 
@@ -14,6 +14,9 @@ pub struct Rendered {
 pub fn render_card(qfmt: &str, afmt: &str, fields: &HashMap<String, String>, ord: u32) -> Rendered {
     let front = strip_sound(&render(qfmt, fields, ord, false, ""));
     let back = strip_sound(&render(afmt, fields, ord, true, &front));
+    if crate::occlusion::is_template(qfmt) {
+        return crate::occlusion::finish(front, back, qfmt, fields, ord);
+    }
     Rendered { front, back }
 }
 
@@ -116,7 +119,9 @@ pub fn cloze(text: &str, n: u32, is_back: bool) -> String {
     let mut rest = text;
     while let Some((start, num, answer, hint, end)) = next_cloze(rest) {
         out.push_str(&rest[..start]);
-        if num == n {
+        if let Some(body) = answer.strip_prefix("image-occlusion:") {
+            out.push_str(&crate::occlusion::layer(num, body, num == n, is_back));
+        } else if num == n {
             if is_back {
                 out.push_str(&format!("<span class=\"cloze\">{answer}</span>"));
             } else {
@@ -133,11 +138,14 @@ pub fn cloze(text: &str, n: u32, is_back: bool) -> String {
     out
 }
 
+/// 카드를 만드는 빈칸 번호. c0 은 카드가 없다 (Anki IO 의 글자 칸). 번호 - 1 이 template_ord 라 0 이 들어가면 넘친다
 pub fn cloze_numbers(text: &str) -> BTreeSet<u32> {
     let mut nums = BTreeSet::new();
     let mut rest = text;
     while let Some((_, num, _, _, end)) = next_cloze(rest) {
-        nums.insert(num);
+        if num > 0 {
+            nums.insert(num);
+        }
         rest = &rest[end..];
     }
     nums
@@ -154,7 +162,8 @@ fn next_cloze(s: &str) -> Option<(usize, u32, &str, Option<&str>, usize)> {
             let body_start = start + 3 + digits.len() + 2;
             if let Some(len) = s[body_start..].find("}}") {
                 let body = &s[body_start..body_start + len];
-                let (answer, hint) = match body.split_once("::") {
+                // IO 칸의 값에는 \: 로 이스케이프한 :: 가 들어갈 수 있다. Anki 도 힌트를 나누지 않는다
+                let (answer, hint) = match body.split_once("::").filter(|_| !body.starts_with("image-occlusion:")) {
                     Some((a, h)) => (a, Some(h)),
                     None => (body, None),
                 };

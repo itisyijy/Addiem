@@ -208,7 +208,8 @@ pub(crate) fn seed_note_types(con: &Connection) -> rusqlite::Result<()> {
             )?;
         }
     }
-    Ok(())
+    // M 그림 가리기: Anki 의 Image Occlusion 과 같은 유형 (템플릿이 길어 occlusion.rs 에 둔다)
+    crate::occlusion::seed(con)
 }
 
 pub fn now_ms() -> i64 {
@@ -306,12 +307,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let con = open(&dir.join("t.sqlite")).unwrap();
         let n: i64 = con.query_row("SELECT count(*) FROM note_type", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 4, "Basic · Cloze · Basic (and reversed card) · 서술형");
+        assert_eq!(n, 5, "Basic · Cloze · Basic (and reversed card) · 서술형 · Image Occlusion");
         drop(con);
         // 두 번 열어도 다시 시드하지 않는다
         let con = open(&dir.join("t.sqlite")).unwrap();
         let n: i64 = con.query_row("SELECT count(*) FROM note_type", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 4);
+        assert_eq!(n, 5);
     }
 
     #[test]
