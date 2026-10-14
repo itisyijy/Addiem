@@ -2991,6 +2991,7 @@ dependencies = [
  "getrandom 0.4.3",
  "keyring",
  "quick-xml",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

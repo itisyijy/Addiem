@@ -1212,7 +1212,7 @@ pub async fn sync_open_folder(state: State<'_, SyncState>) -> Res<()> {
 }
 
 /// 시스템 기본 브라우저 (또는 탐색기)로 연다. 앱 안 웹뷰로 로그인하지 않는다 (Google 정책)
-fn open_url(url: &str) {
+pub(crate) fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
     let r = if url.starts_with("http") {
         std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn()

@@ -19,7 +19,9 @@ export type IconName =
   | "folder" | "calendar" | "file" | "arrow-right" | "layers" | "list" | "more" | "grip"
   | "rotate" | "trash" | "target" | "clock" | "check-circle"
   // K Google Drive (Figma Row K)
-  | "cloud" | "cloud-check" | "cloud-off" | "lock" | "laptop" | "merge" | "external" | "link-off";
+  | "cloud" | "cloud-check" | "cloud-off" | "lock" | "laptop" | "merge" | "external" | "link-off"
+  // G2 성격별로 묶기 · ChatGPT (Figma Row L)
+  | "sparkles" | "gauge" | "wifi-off" | "send";
 
 /**
  * Figma 는 작은 크기에서도 선 두께를 2px 로 유지한다. 그래서 크기별 원본(plus-16.svg)이

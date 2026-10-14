@@ -122,8 +122,8 @@ function line(s: SyncStatus): { title: string; icon: IconName; tone: "ok" | "pla
 
 // ---------------------------------------------------------------- 창 틀
 
-/** 머리 없는 창 (K2 · K6-f · K8 · K9 · K10). 초점을 가두고 Esc 로 닫는다 */
-function Sheet({ label, onClose, className = "", children }: { label: string; onClose: () => void; className?: string; children: ReactNode }) {
+/** 머리 없는 창 (K2 · K6-f · K8 · K9 · K10 · ai.tsx 의 L2 · L3). 초점을 가두고 Esc 로 닫는다 */
+export function Sheet({ label, onClose, className = "", children }: { label: string; onClose: () => void; className?: string; children: ReactNode }) {
   useModalScope();
   useKey("Escape", onClose, true, { modal: true });
   const box = useRef<HTMLDivElement>(null);
@@ -137,7 +137,7 @@ function Sheet({ label, onClose, className = "", children }: { label: string; on
   );
 }
 
-function Head({ title, sub, onClose }: { title: string; sub?: ReactNode; onClose?: () => void }) {
+export function Head({ title, sub, onClose }: { title: string; sub?: ReactNode; onClose?: () => void }) {
   return (
     <header className="sync-head">
       <span className="sync-head__text">

@@ -427,8 +427,8 @@ export type SplitProposal = {
   parts: SplitPart[];
   per_card: number;
   flags: QualityFlag[];
-  /** questions 면 한 장 항목 수를 바꿔도 같은 제안이다 */
-  kind: "items" | "lines" | "questions";
+  /** questions 면 한 장 항목 수를 바꿔도 같은 제안이다. nature = ChatGPT 성격별로 묶기 (aiApi.regroup) */
+  kind: "items" | "lines" | "questions" | "nature";
 };
 export type CardChange = { id: number; summary: string; card_id: number | null; created_at: number; undone: boolean };
 
@@ -442,6 +442,42 @@ export const qualityApi = {
   undo: (changeId: number) => invoke<void>("undo_change", { changeId }),
   recent: (deckId: number) => invoke<CardChange[]>("recent_changes", { deckId }),
 };
+
+// ---------------------------------------------------------------- G2 성격별로 묶기 · ChatGPT 요금제 (ai.rs)
+
+export type AiStatus = {
+  connected: boolean;
+  email: string | null;
+  model: string | null;
+  /** 이번 달 보낸 카드와 마지막으로 보낸 시각. 이 기기에서 센 수 (사용량 추정 아님) */
+  sent_month: number;
+  sent_at: number | null;
+};
+/** 로그인 결과 ("ai-auth" 이벤트). first: 이 설치에서 처음 연결 (L3 환영을 한 번만) */
+export type AiAuthEvent = {
+  ok: boolean;
+  reason: "timeout" | "cancelled" | "denied" | "scope" | "not_eligible" | "offline" | "error" | null;
+  message: string | null;
+  email: string | null;
+  first: boolean;
+};
+export type AiErrorKind = "not_connected" | "expired" | "scope" | "not_eligible" | "unavailable" | "limit" | "offline" | "bad_output" | "cancelled" | "error";
+export type AiError = { kind: AiErrorKind; message: string };
+export const aiApi = {
+  status: () => invoke<AiStatus>("ai_status"),
+  /** 브라우저를 열고 로그인 주소를 돌려준다 ([링크 복사]). 결과는 "ai-auth". reconsent: 사용량 권한을 다시 묻는다, newAccount: 다른 계정으로 */
+  connect: (reconsent = false, newAccount = false) => invoke<string>("ai_connect", { reconsent, newAccount }),
+  cancelConnect: () => invoke<void>("ai_connect_cancel"),
+  /** 폐기를 확인하지 못했으면 false (ChatGPT 설정에서 끊을 수 있다) */
+  disconnect: () => invoke<boolean>("ai_disconnect"),
+  openUsage: () => invoke<void>("ai_open_usage"),
+  /** 카드 한 장을 보내 같은 모양의 제안을 받는다. 아무것도 바꾸지 않는다 (승인은 qualityApi.apply). 오류는 AiError */
+  regroup: (cardId: number) => invoke<SplitProposal>("ai_regroup", { cardId }),
+  cancelRegroup: () => invoke<void>("ai_regroup_cancel"),
+};
+/** ai_regroup 오류는 { kind, message }. 다른 오류(글자)도 받는다 */
+export const aiError = (e: unknown): AiError =>
+  e && typeof e === "object" && "kind" in e ? (e as AiError) : { kind: "error", message: errorText(e) };
 
 // ---------------------------------------------------------------- H 학습 계획 · 목표일 충돌 (plan.rs). 예상 점수 · 합격 가능성은 없다
 

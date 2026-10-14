@@ -66,7 +66,7 @@ pub fn auth_url(client_id: &str, redirect: &str, p: &Pkce) -> String {
     .unwrap_or_default()
 }
 
-fn form(uri: &str, fields: &[(&str, &str)]) -> Req {
+pub(crate) fn form(uri: &str, fields: &[(&str, &str)]) -> Req {
     let body = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(fields).finish();
     Request::builder().method(Method::POST).uri(uri).header("Content-Type", "application/x-www-form-urlencoded").body(body.into_bytes()).unwrap()
 }
@@ -92,21 +92,25 @@ pub fn granted_all(scope: &str) -> bool {
     SCOPES.iter().all(|s| got.contains(s))
 }
 
+/// 루프백으로 온 쿼리 (code · state · scope, ChatGPT 는 처음 등록 때 client_id 도)
+pub type Query = std::collections::HashMap<String, String>;
+
 #[derive(Debug, PartialEq)]
 pub enum Callback {
-    Code(String),
+    Code(Query),
     /// 사용자가 동의 화면에서 취소했다
     Denied,
     /// 다른 요청 (favicon 등). 계속 기다린다
     Ignore,
 }
 
-/// 브라우저가 루프백으로 보낸 요청 줄: "GET /?state=..&code=..&scope=.. HTTP/1.1"
-pub fn parse_callback(request_line: &str, state: &str) -> Result<Callback, String> {
+/// 브라우저가 루프백으로 보낸 요청 줄: "GET /?state=..&code=..&scope=.. HTTP/1.1".
+/// path 는 리디렉트 주소의 경로 (Google "/" · ChatGPT "/auth/callback"). 다른 경로는 무시한다
+pub fn parse_callback(request_line: &str, path: &str, state: &str) -> Result<Callback, String> {
     let target = request_line.split_whitespace().nth(1).unwrap_or("");
     let Ok(url) = url::Url::parse(&format!("http://127.0.0.1{target}")) else { return Ok(Callback::Ignore) };
-    let q: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
-    if q.is_empty() {
+    let q: Query = url.query_pairs().into_owned().collect();
+    if q.is_empty() || url.path() != path {
         return Ok(Callback::Ignore);
     }
     if q.get("state").map(String::as_str) != Some(state) {
@@ -115,15 +119,16 @@ pub fn parse_callback(request_line: &str, state: &str) -> Result<Callback, Strin
     if q.contains_key("error") {
         return Ok(Callback::Denied);
     }
-    match q.get("code") {
-        Some(c) => Ok(Callback::Code(c.clone())),
-        None => Ok(Callback::Ignore),
-    }
+    if q.contains_key("code") { Ok(Callback::Code(q)) } else { Ok(Callback::Ignore) }
 }
 
-const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Neo-Anki</title>\
+fn done_page(title: &str) -> String {
+    format!(
+        "<!doctype html><meta charset=utf-8><title>Neo-Anki</title>\
 <body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;height:90vh;color:#16161d\">\
-<div style=text-align:center><h2>Google 로그인을 마쳤어요</h2><p>이 탭을 닫고 Neo-Anki 로 돌아가세요.</p></div>";
+<div style=text-align:center><h2>{title}</h2><p>이 탭을 닫고 Neo-Anki 로 돌아가세요.</p></div>"
+    )
+}
 
 #[derive(Debug, PartialEq)]
 pub enum WaitError {
@@ -133,8 +138,13 @@ pub enum WaitError {
     Other(String),
 }
 
-/// 루프백 서버: 코드가 올 때까지 (최대 5분, 취소하면 바로) 기다린다
+/// 루프백 서버: 코드가 올 때까지 (최대 5분, 취소하면 바로) 기다린다 (Google)
 pub fn wait_code(listener: TcpListener, state: &str, cancel: &AtomicBool) -> Result<String, WaitError> {
+    wait_callback(listener, "/", state, "Google 로그인을 마쳤어요", cancel).map(|mut q| q.remove("code").unwrap_or_default())
+}
+
+/// wait_code 의 일반형: path 로 온 쿼리 전부를 돌려준다. done: 브라우저 탭에 보일 제목 (ai.rs 도 쓴다)
+pub fn wait_callback(listener: TcpListener, path: &str, state: &str, done: &str, cancel: &AtomicBool) -> Result<Query, WaitError> {
     listener.set_nonblocking(true).map_err(|e| WaitError::Other(e.to_string()))?;
     let until = Instant::now() + WAIT;
     loop {
@@ -152,10 +162,10 @@ pub fn wait_code(listener: TcpListener, state: &str, cancel: &AtomicBool) -> Res
                 let n = s.read(&mut buf).unwrap_or(0);
                 let text = String::from_utf8_lossy(&buf[..n]);
                 let line = text.lines().next().unwrap_or("");
-                let res = parse_callback(line, state);
+                let res = parse_callback(line, path, state);
                 let page = match &res {
-                    Ok(Callback::Code(_)) => DONE_PAGE.to_string(),
-                    Ok(Callback::Denied) => DONE_PAGE.replace("Google 로그인을 마쳤어요", "로그인을 취소했어요"),
+                    Ok(Callback::Code(_)) => done_page(done),
+                    Ok(Callback::Denied) => done_page("로그인을 취소했어요"),
                     _ => String::new(),
                 };
                 let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len());
@@ -217,16 +227,29 @@ pub fn revoke(agent: &ureq::Agent, token: &str) {
 
 // ---------------------------------------------------------------- OS 키체인
 
+/// 검증용 데이터 폴더(NEOANKI_DATA_DIR)로 띄운 앱은 폴더마다 다른 항목 이름을 쓴다.
+/// 실제 앱의 로그인 토큰을 읽거나 덮거나 지우지 않게 하려는 것
+fn secret_name(name: &str) -> String {
+    use sha2::Digest;
+    match std::env::var_os("NEOANKI_DATA_DIR").filter(|v| !v.is_empty()) {
+        Some(dir) => {
+            let h = sha2::Sha256::digest(dir.to_string_lossy().as_bytes());
+            format!("{name}@{}", h[..4].iter().map(|b| format!("{b:02x}")).collect::<String>())
+        }
+        None => name.to_string(),
+    }
+}
+
 pub fn save_secret(name: &str, value: &str) -> Result<(), String> {
-    keyring::Entry::new(SERVICE, name).and_then(|e| e.set_password(value)).map_err(|e| format!("키체인에 저장하지 못했어요: {e}"))
+    keyring::Entry::new(SERVICE, &secret_name(name)).and_then(|e| e.set_password(value)).map_err(|e| format!("키체인에 저장하지 못했어요: {e}"))
 }
 
 pub fn load_secret(name: &str) -> Option<String> {
-    keyring::Entry::new(SERVICE, name).and_then(|e| e.get_password()).ok()
+    keyring::Entry::new(SERVICE, &secret_name(name)).and_then(|e| e.get_password()).ok()
 }
 
 pub fn delete_secret(name: &str) {
-    if let Ok(e) = keyring::Entry::new(SERVICE, name) {
+    if let Ok(e) = keyring::Entry::new(SERVICE, &secret_name(name)) {
         let _ = e.delete_credential();
     }
 }
@@ -268,10 +291,10 @@ mod tests {
     #[test]
     fn callback_parsing_and_scopes() {
         let line = "GET /?state=abc&code=4%2F0Ab&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file HTTP/1.1";
-        assert_eq!(parse_callback(line, "abc"), Ok(Callback::Code("4/0Ab".into())));
-        assert!(parse_callback(line, "zzz").is_err(), "state 가 다르면 받지 않는다 (CSRF)");
-        assert_eq!(parse_callback("GET /?state=abc&error=access_denied HTTP/1.1", "abc"), Ok(Callback::Denied));
-        assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1", "abc"), Ok(Callback::Ignore));
+        assert!(matches!(parse_callback(line, "/", "abc"), Ok(Callback::Code(q)) if q["code"] == "4/0Ab"));
+        assert!(parse_callback(line, "/", "zzz").is_err(), "state 가 다르면 받지 않는다 (CSRF)");
+        assert_eq!(parse_callback("GET /?state=abc&error=access_denied HTTP/1.1", "/", "abc"), Ok(Callback::Denied));
+        assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1", "/", "abc"), Ok(Callback::Ignore));
         assert!(granted_all("https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file"));
         assert!(!granted_all("https://www.googleapis.com/auth/drive.file"), "하나만 허용하면 다시 연결");
     }

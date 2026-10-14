@@ -1,3 +1,4 @@
+mod ai;
 mod commands;
 mod cram;
 mod written;
@@ -43,6 +44,8 @@ pub fn run() {
             });
             // K Google Drive 동기화: 상태 · 백그라운드 작업 (연결하지 않았으면 네트워크를 쓰지 않는다)
             sync::setup(app.handle());
+            // G2 성격별로 묶기 · ChatGPT 요금제 (연결하지 않았으면 네트워크를 쓰지 않는다)
+            app.manage(ai::AiState::new());
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
@@ -118,6 +121,7 @@ pub fn run() {
             quality::hide_quality,
             quality::split_suggest,
             quality::split_apply,
+            ai::ai_status, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_regroup_cancel,
             quality::undo_change,
             quality::recent_changes,
             plan::study_plan,

@@ -14,6 +14,7 @@ import { SKIP_SUMMARY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
 import { ModelRow } from "./Sources";
 import { DriveSection } from "../sync";
+import { AiSection } from "../ai";
 
 const HOURS = [0, 1, 2, 3, 4, 5, 6];
 const THEMES: [ThemePref, string][] = [
@@ -78,6 +79,8 @@ export function Settings({ focus }: { focus?: "archived" }) {
 
       {/* K1 · K4 Google Drive (맨 위). 기존 "백업"은 "이 기기 백업"으로 그 아래 */}
       <DriveSection />
+      {/* L1 · L1-c ChatGPT 요금제 (G2 성격별로 묶기) */}
+      <AiSection />
 
       <section className="prefs__section">
         <p className="prefs__label t-label-s c-tertiary">이 기기 백업</p>

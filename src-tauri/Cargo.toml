@@ -45,6 +45,8 @@ url = "=2.5.8"
 getrandom = "=0.4.3"
 argon2 = { version = "=0.6.0", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+# G2 ChatGPT 로그인의 ID 토큰 서명(RS256) 확인. rustls 가 이미 쓰는 같은 버전이라 새로 받는 크레이트는 없다
+ring = "=0.17.14"
 
 
 # 임베딩 행렬곱은 디버그 빌드에서 수십 배 느리다. 개발 중에도 이 크레이트들만 최적화한다

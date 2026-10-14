@@ -324,8 +324,8 @@ pub fn hide_quality(state: State<AppState>, card_id: i64, hide: bool) -> Res<()>
 /// 제안 카드 한 장. 글자 그대로 (답은 줄바꿈으로 항목을 나눈다). 만들 때 HTML 로 바꾼다
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SplitPart {
-    front: String,
-    back: String,
+    pub(crate) front: String,
+    pub(crate) back: String,
 }
 
 /// 글자를 카드 필드 HTML 로 (줄바꿈 → <br>)
@@ -333,20 +333,21 @@ fn to_html(text: &str) -> String {
     text.trim().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
 
+/// 필드는 ai.rs(성격별로 묶기)가 같은 모양의 제안을 만들 때 쓴다
 #[derive(Serialize)]
 pub struct SplitProposal {
-    card_id: i64,
-    question: String,
+    pub(crate) card_id: i64,
+    pub(crate) question: String,
     /// 지금 카드의 답 줄 (왼쪽 열)
-    answer: Vec<String>,
+    pub(crate) answer: Vec<String>,
     /// "왜?" 한 줄
-    why: String,
-    parts: Vec<SplitPart>,
+    pub(crate) why: String,
+    pub(crate) parts: Vec<SplitPart>,
     /// 한 장에 담은 항목 수 (다른 제안 받기가 바꾼다)
-    per_card: i64,
-    flags: Vec<Flag>,
-    /// items | lines | questions. questions 면 한 장 항목 수를 바꿔도 같은 제안이다
-    kind: &'static str,
+    pub(crate) per_card: i64,
+    pub(crate) flags: Vec<Flag>,
+    /// items | lines | questions | nature(ChatGPT 성격별로 묶기). questions 면 한 장 항목 수를 바꿔도 같은 제안이다
+    pub(crate) kind: &'static str,
 }
 
 /// 받침이 있는가 (조사 고르기)
@@ -373,7 +374,7 @@ fn question_base(question: &str) -> (String, bool) {
 }
 
 /// 항목 앞 표시(①, 1. 등)를 뗀 글자
-fn strip_marker(item: &str) -> String {
+pub(crate) fn strip_marker(item: &str) -> String {
     match item_marker(item) {
         Some(n) => item[n..].trim().to_string(),
         None => item.trim().to_string(),
@@ -440,22 +441,19 @@ fn default_per_card(n: usize) -> i64 {
 
 #[tauri::command]
 pub fn split_suggest(state: State<AppState>, card_id: i64, per_card: Option<i64>) -> Res<SplitProposal> {
-    let con = state.db.lock().map_err(err)?;
-    let (_, t) = card_texts(&con, "c.id = ?1", &[&card_id])?.into_iter().next().ok_or("카드를 찾을 수 없어요.")?;
-    let flags = card_flags(&con, card_id)?;
+    suggest(&*state.db.lock().map_err(err)?, card_id, per_card)
+}
+
+/// 규칙 제안. 질문 · 답은 화면에 보이는 글자다 (HTML · 그림 · [sound:] 를 뺐다). ai.rs 는 이 글자만 보낸다
+pub(crate) fn suggest(con: &Connection, card_id: i64, per_card: Option<i64>) -> Res<SplitProposal> {
+    let (_, t) = card_texts(con, "c.id = ?1", &[&card_id])?.into_iter().next().ok_or("카드를 찾을 수 없어요.")?;
+    let flags = card_flags(con, card_id)?;
     let items = answer_items(&t.answer);
     let n = if items.len() >= 2 { items.len() } else { t.answer.len() };
     let per = per_card.unwrap_or_else(|| default_per_card(n));
     let parts = split_text(&t.question, &t.answer, per);
-    let again = flags.iter().find(|f| f.kind == "again").map(|f| format!(" (Again {}번)", f.n)).unwrap_or_default();
     let by_questions = items.len() < 2 && question_count(&t.question) >= MANY_QUESTIONS;
     let kind = if by_questions { "questions" } else if items.len() >= 2 { "items" } else { "lines" };
-    // 왜? = 걸린 규칙 (G1 배지와 같은 말) + 어떻게 나눴는지
-    let reason = flags.iter().find(|f| f.kind != "again").map(|f| match f.kind {
-        "items" => format!("답에 항목이 {}개라 한 번에 떠올리기 어려워요", f.n),
-        "lines" => format!("답이 {}줄이라 한 번에 떠올리기 어려워요", f.n),
-        _ => format!("질문 하나에 물음이 {}개라 한 번에 답하기 어려워요", f.n),
-    });
     // "번호 순서대로 3–4개씩" (Figma). 앞 카드들은 같은 수, 나머지는 마지막 카드에 붙는다
     let sizes: Vec<usize> = parts.iter().map(|p| p.back.lines().count()).collect();
     let (lo, hi) = (sizes.iter().min().copied().unwrap_or(0), sizes.iter().max().copied().unwrap_or(0));
@@ -465,8 +463,19 @@ pub fn split_suggest(state: State<AppState>, card_id: i64, per_card: Option<i64>
         "items" => format!("번호 순서대로 {each}개씩 나눴어요."),
         _ => format!("순서대로 {each}줄씩 나눴어요."),
     };
-    let why = format!("{}{again}. {how}", reason.unwrap_or_else(|| "한 장에 담긴 것이 많아요".into()));
+    let why = format!("{}. {how}", reason_of(&flags));
     Ok(SplitProposal { card_id, question: t.question, answer: t.answer, why, parts, per_card: per, flags, kind })
+}
+
+/// "왜?"의 앞부분 = 걸린 규칙 (G1 배지와 같은 말) + Again. 뒤에 어떻게 나눴는지를 붙인다 (ai.rs 도 쓴다)
+pub(crate) fn reason_of(flags: &[Flag]) -> String {
+    let again = flags.iter().find(|f| f.kind == "again").map(|f| format!(" (Again {}번)", f.n)).unwrap_or_default();
+    let reason = flags.iter().find(|f| f.kind != "again").map(|f| match f.kind {
+        "items" => format!("답에 항목이 {}개라 한 번에 떠올리기 어려워요", f.n),
+        "lines" => format!("답이 {}줄이라 한 번에 떠올리기 어려워요", f.n),
+        _ => format!("질문 하나에 물음이 {}개라 한 번에 답하기 어려워요", f.n),
+    });
+    format!("{}{again}", reason.unwrap_or_else(|| "한 장에 담긴 것이 많아요".into()))
 }
 
 #[derive(Deserialize, Serialize)]
