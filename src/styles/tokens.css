@@ -201,6 +201,8 @@ body {
 }
 
 p, h1, h2, h3 { margin: 0; }
+/* 마지막 줄에 한 어절만 남는 줄바꿈을 줄인다 (Chromium 117+, WebView2) */
+p { text-wrap: pretty; }
 
 button {
   font: inherit;
