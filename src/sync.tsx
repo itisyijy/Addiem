@@ -744,8 +744,15 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
       ? `${dev}에서 데이터를 ${header?.reason?.backup_at ? md(new Date(header.reason.backup_at)) : "예전"} 백업으로 되돌렸어요`
       : kind === "lock"
         ? "다른 기기에서 Drive 데이터를 암호로 잠갔어요"
-        : `${dev}에서 Drive 데이터를 새로 시작했어요`;
-  const sub = !choice ? `Drive에는 ${dev}에서 맞춘 데이터가 있어요. 어떻게 할까요?` : "이 기기에는 되돌리기 전 데이터가 있어요. 어떻게 할까요?";
+        : kind === "unlock"
+          ? "다른 기기에서 Drive 데이터의 암호 잠금을 풀었어요"
+          : `${dev}에서 Drive 데이터를 새로 시작했어요`;
+  const named = header?.reason?.device_name ?? header?.device_name;
+  const sub = !choice
+    ? `Drive에는 ${dev}에서 맞춘 데이터가 있어요. 어떻게 할까요?`
+    : kind === "unlock"
+      ? `${named ? `${named}에서` : "다른 기기에서"} 잠금을 풀고 Drive에 다시 올렸어요. 이 기기에 저장된 암호는 더 이상 쓰지 않아요. 어떻게 할까요?`
+      : `이 기기에는 ${kind === "restore" ? "되돌리기" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
   const locked = (choice?.locked || remote?.locked) && mode !== "fresh";
   const others_ = others(s ?? null).filter((n) => n !== probe?.device_name);
   const who = others_.length ? others_.join(", ") : dev;

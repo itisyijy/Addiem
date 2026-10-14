@@ -781,7 +781,12 @@ fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
             }
             sh.with_db(|c| engine::set_local(c, "lock", "1"))?;
         }
+        // 잠기지 않은 Drive 에 합류한다 (다른 기기가 잠금을 풀었을 수도 있다): 남은 잠금 키는 지운다
         _ => {
+            auth::delete_secret(auth::KEY);
+            if let Ok(mut k) = sh.key.lock() {
+                *k = None;
+            }
             sh.with_db(|c| engine::set_local(c, "lock", "0"))?;
         }
     }
