@@ -1,6 +1,6 @@
 // C2 카드 목록 / C2-m 중요도 메뉴 / C2-d 카드 삭제 확인 / C2-r 행 ⋯ 메뉴 / C2-b 일괄 선택
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
-import { api, errorText, qualityApi, type CardList, type CardRow, type DeckDetail, type Level } from "../api";
+import { api, errorText, qualityApi, type CardList, type CardRow, type DeckDetail, type ExamState, type Level } from "../api";
 import { Badge, Button, Icon, Importance, Kbd, LEVEL_LABEL, type BadgeTone } from "../ui";
 import { n, useKey, useNav, ro, useOverlayScope } from "../nav";
 import { actionKey } from "../keys";
@@ -9,6 +9,8 @@ import { Modal, NewDeckModal } from "./NewDeck";
 import { EditNote } from "./Study";
 import { menuKeys } from "./Deck";
 import { DeckMenu, loadDeckChoices, type DeckChoice } from "./DeckPicker";
+import { ExamDialog } from "./Exam";
+import { exam as examApi } from "../written";
 
 const PAGE = 100;
 /** C2-m 메뉴 순서. 숫자키 1/2/3 이 이 순서다 */
@@ -57,6 +59,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
   const [editing, setEditing] = useState<CardRow | null>(null);
   const [deleting, setDeleting] = useState<CardRow | null>(null);
   const [bulkDelete, setBulkDelete] = useState(false);
+  const [examFor, setExamFor] = useState<CardRow[] | null>(null); // N2 기출 표시 창
   const [newSub, setNewSub] = useState(false);
   const [error, setError] = useState<string>();
   const foot = useRef<HTMLDivElement>(null);
@@ -109,7 +112,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
     clearSelection();
     if (selecting) setTimeout(() => headCheck.current?.focus());
   };
-  const dialog = editing !== null || !!deleting || bulkDelete || newSub;
+  const dialog = editing !== null || !!deleting || bulkDelete || newSub || !!examFor;
 
   // 선택 바가 토스트 자리를 쓰는 동안 토스트를 바 위로 올린다 (toast.css 의 --toast-lift)
   useEffect(() => {
@@ -227,6 +230,14 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
       () => Promise.all([...from].map(([id, ids]) => api.moveCards(ids, id))),
     );
   };
+
+  /** N2 기출 표시 (노트마다 한 번). 되돌리기는 표시한 노트를 원래 값으로 */
+  const markExam = (name: string, todo: ExamState[]) => {
+    setExamFor(null);
+    undoable({ title: `노트 ${n(todo.length)}개에 "${name}" 기출을 표시했어요` }, examApi.mark("note", todo.map((s) => s.id), name), () => examApi.set("note", todo));
+  };
+  const clearExam = (c: CardRow) =>
+    undoable({ title: "기출 표시를 뺐어요" }, examApi.set("note", [{ id: c.note_id, hits: null, names: [] }]), () => examApi.set("note", [c.exam]));
 
   const remove = (c: CardRow) => {
     setDeleting(null);
@@ -461,6 +472,10 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
               )}
             </span>
           )}
+          <button className="cards__bar-btn t-label-m" onClick={() => (closeMenus(), setExamFor(picked))}>
+            <Icon name="target" size={16} />
+            기출 표시
+          </button>
           <button className="cards__bar-btn t-label-m" onClick={() => bury(picked)}>
             <Icon name="archive" size={16} />
             접어두기
@@ -642,6 +657,15 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                           </span>
                         </button>
                       )}
+                      {c.exam.hits !== null && (
+                        <button role="menuitem" className="menu__item menu__item--top" onMouseEnter={() => setRowMove(false)} onClick={() => clearExam(c)}>
+                          <Icon name="target" size={16} scaled />
+                          <span className="menu__text">
+                            <span className="t-body-m">기출 표시 빼기</span>
+                            <span className="t-caption c-tertiary">{c.exam.names.length ? c.exam.names.join(" · ") : `기출 ${n(c.exam.hits)}회`}</span>
+                          </span>
+                        </button>
+                      )}
                       <div className="menu__sep" role="separator" />
                       <button
                         role="menuitem"
@@ -710,6 +734,15 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
             <Button variant="danger" size="M" icon="trash" label="삭제" shortcut="Enter" autoFocus onClick={() => remove(deleting)} />
           </div>
         </Modal>
+      )}
+      {examFor && (
+        <ExamDialog
+          deckId={deckId}
+          cards={examFor.length}
+          notes={[...new Map(examFor.map((c) => [c.note_id, c.exam])).values()]}
+          onClose={() => setExamFor(null)}
+          onConfirm={markExam}
+        />
       )}
       {bulkDelete && (
         <Modal title={`${n(picked.length)}장을 지울까요?`} onClose={() => setBulkDelete(false)} variant="confirm" icon="trash" className="cards__delete">

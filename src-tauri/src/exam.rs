@@ -35,6 +35,13 @@ pub struct ExamState {
     pub names: Vec<String>,
 }
 
+impl ExamState {
+    /// 읽은 열 그대로 (0 · NULL 은 표시 없음)
+    pub fn of(id: i64, hits: Option<i64>, names: Option<String>) -> ExamState {
+        ExamState { id, hits: hits.filter(|h| *h > 0), names: names_of(names) }
+    }
+}
+
 fn table(target: &str) -> Res<&'static str> {
     match target {
         "note" => Ok("note"),
@@ -112,6 +119,84 @@ pub fn set_exam(state: State<AppState>, target: String, states: Vec<ExamState>) 
     tx.commit().map_err(err)
 }
 
+// ------------------------------------------------------------------ 덱의 기출 (N1 · N2 시험 목록, N4 한 줄)
+
+/// 글자 속 연도 (없으면 0). 시험 목록은 연도 최근 순 (N1)
+fn year(name: &str) -> i64 {
+    name.as_bytes().windows(4).find(|w| w.iter().all(u8::is_ascii_digit)).and_then(|w| std::str::from_utf8(w).ok()?.parse().ok()).unwrap_or(0)
+}
+
+/// (카드, 횟수, 이름들, 신규인가)
+type ExamRow = (i64, i64, Vec<String>, bool);
+
+/// 덱(하위 덱 포함, None 이면 모든 덱) 카드의 노트 기출
+fn deck_exam(con: &Connection, deck_id: Option<i64>) -> Res<Vec<ExamRow>> {
+    let decks = crate::commands::load_decks(con)?;
+    let ids = match deck_id {
+        Some(id) => crate::commands::descendants(id, &decks),
+        None => decks.iter().map(|d| d.id).collect(),
+    };
+    let ids = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = con
+        .prepare(&format!(
+            "SELECT c.id, n.exam_hits, n.exam_names, c.state = 'new' FROM card c JOIN note n ON n.id = c.note_id
+             WHERE c.deck_id IN ({ids}) AND n.exam_hits > 0 ORDER BY c.id"
+        ))
+        .map_err(err)?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, names_of(r.get(2)?), r.get(3)?))).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
+#[derive(Serialize)]
+pub struct ExamName {
+    name: String,
+    /// 이 덱에서 이 시험이 표시된 카드 수
+    cards: usize,
+}
+
+/// N1 · N2 이 덱에서 쓴 시험 (연도 최근 순)
+#[tauri::command]
+pub fn exam_list(state: State<AppState>, deck_id: Option<i64>) -> Res<Vec<ExamName>> {
+    let con = state.db.lock().map_err(err)?;
+    let mut by: std::collections::HashMap<String, usize> = Default::default();
+    for (_, _, names, _) in deck_exam(&con, deck_id)? {
+        for n in names {
+            *by.entry(n).or_default() += 1;
+        }
+    }
+    let mut out: Vec<ExamName> = by.into_iter().map(|(name, cards)| ExamName { name, cards }).collect();
+    out.sort_by(|a, b| year(&b.name).cmp(&year(&a.name)).then(a.name.cmp(&b.name)));
+    Ok(out)
+}
+
+#[derive(Serialize)]
+pub struct ExamSummary {
+    cards: usize,
+    /// 2회 이상
+    twice: usize,
+    /// 시험 수 (이름 있는 것)
+    exams: usize,
+    /// 아직 안 본 (신규) 기출 카드
+    unseen: usize,
+    /// [기출 카드만 보기] (C2 cardIds)
+    card_ids: Vec<i64>,
+}
+
+/// N4 덱 상세 한 줄. 표시가 없으면 cards = 0 (화면이 줄을 숨긴다)
+#[tauri::command]
+pub fn exam_summary(state: State<AppState>, deck_id: i64) -> Res<ExamSummary> {
+    let con = state.db.lock().map_err(err)?;
+    let rows = deck_exam(&con, Some(deck_id))?;
+    let exams: std::collections::HashSet<&String> = rows.iter().flat_map(|r| &r.2).collect();
+    Ok(ExamSummary {
+        cards: rows.len(),
+        twice: rows.iter().filter(|r| r.1 >= 2).count(),
+        exams: exams.len(),
+        unseen: rows.iter().filter(|r| r.3).count(),
+        card_ids: rows.iter().map(|r| r.0).collect(),
+    })
+}
+
 // ------------------------------------------------------------------ 가져오기의 기출 태그
 
 /// 태그 하나가 기출이면 시험 이름 (없으면 빈 문자열). 태그 경로(::)에 '기출' 단계가 있으면 기출이고 그 뒤 단계가 이름이다.
@@ -159,6 +244,11 @@ pub fn fill_from_tags(con: &Connection) -> rusqlite::Result<usize> {
 mod tests {
     use super::*;
     use crate::db;
+
+    #[test]
+    fn year_sort_key() {
+        assert_eq!((year("2023년 필기 1회"), year("실기 2022"), year("중간고사")), (2023, 2022, 0));
+    }
 
     #[test]
     fn tags_to_exam() {

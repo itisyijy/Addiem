@@ -10,6 +10,7 @@ import { Deck } from "./screens/Deck";
 import { AddCard } from "./screens/AddCard";
 import { Study, Summary } from "./screens/Study";
 import { Done } from "./screens/Done";
+import { MixDone, PreExam } from "./screens/PreExam";
 import { Cards } from "./screens/Cards";
 import { DeckSettings } from "./screens/DeckSettings";
 import { Import, ImportResultScreen } from "./screens/Import";
@@ -120,11 +121,13 @@ function Screen({ route }: { route: Route }) {
     case "planConflict":
       return <PlanConflictScreen back={route.back} />;
     case "summary":
-      return <Summary key={route.cram ? "cram" : "d1"} deckIds={route.deckIds} cram={route.cram} />;
+      return route.cram ? <PreExam key="cram" deckIds={route.deckIds} /> : <Summary key="d1" deckIds={route.deckIds} />;
     case "study":
       return <Study key={route.sessionId ?? "new"} {...route} />;
     case "done":
       return <Done {...route} />;
+    case "mixDone":
+      return <MixDone {...route} />;
     default:
       return <Home />;
   }

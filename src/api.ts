@@ -112,7 +112,11 @@ export type CardRow = {
   due_at: number | null;
   lapses: number;
   buried: boolean;
+  /** 8.4 노트의 기출. id 는 노트 id */
+  exam: ExamState;
 };
+/** 8.4 기출 (exam.rs). hits null 이면 표시 없음 */
+export type ExamState = { id: number; hits: number | null; names: string[] };
 export type CardList = { rows: CardRow[]; total: number };
 
 export type DeckConfig = {

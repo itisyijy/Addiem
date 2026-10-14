@@ -336,6 +336,15 @@ pub fn mix_start(state: State<AppState>, deck_id: i64, every: usize, size: usize
     Ok(MixStart { session_id, cards, due_today })
 }
 
+/// P1 미리 보기: 지금 시작하면 돌 순서. 세션을 열지 않는다
+#[tauri::command]
+pub fn mix_cards(state: State<AppState>, deck_id: i64, every: usize, size: usize) -> Res<Vec<MixCard>> {
+    let con = state.db.lock().map_err(err)?;
+    let decks = commands::load_decks(&con)?;
+    let t = decks.iter().find(|d| d.id == deck_id).ok_or("덱을 찾을 수 없어요.")?;
+    Ok(build_mix(&con, t, &decks, every.clamp(1, 4), size.clamp(1, 500), now_ms())?.0)
+}
+
 /// [처음부터 다시] (P4). 이번 회독 진행을 비운다. 기록과 일정은 그대로
 #[tauri::command]
 pub fn mix_restart(state: State<AppState>, deck_id: i64) -> Res<()> {

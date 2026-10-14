@@ -1025,6 +1025,8 @@ pub struct CardRow {
     due_at: Option<i64>,
     lapses: i64,
     buried: bool,
+    /// 8.4 노트의 기출 (N2 같은 시험 건너뛰기 · 되돌리기)
+    exam: crate::exam::ExamState,
 }
 
 #[derive(Serialize)]
@@ -1085,7 +1087,7 @@ pub fn list_cards(
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
-                    c.buried_until IS NOT NULL, c.template_ord, nt.name, t.qfmt, t.afmt
+                    c.buried_until IS NOT NULL, c.template_ord, nt.name, t.qfmt, t.afmt, n.exam_hits, n.exam_names
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
@@ -1113,6 +1115,7 @@ pub fn list_cards(
                 due_at: r.get(7)?,
                 lapses: r.get(8)?,
                 buried: r.get(9)?,
+                exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
             })
         })
         .map_err(err)?

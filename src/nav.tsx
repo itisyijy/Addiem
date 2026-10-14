@@ -1,6 +1,7 @@
 // 화면 전환과 단축키. 데스크톱 앱이라 URL 라우팅을 쓰지 않는다
 import { createContext, useContext, useEffect } from "react";
 import type { ImportResult, SessionSummary } from "./api";
+import type { MixRun, MixStats } from "./written";
 import { matchAction, type ActionId } from "./keys";
 
 export type Route =
@@ -18,9 +19,10 @@ export type Route =
   | { name: "quality"; deckId: number } // G1 카드 점검 (G2 나누기 제안은 그 위 모달)
   | { name: "plan"; deckId: number | null } // H1 학습 계획. null 이면 모든 덱
   | { name: "planConflict"; back?: Route } // H2 목표일 충돌
-  | { name: "summary"; deckIds: number[] | null; cram?: boolean } // D1. cram: H3 압축 회독 화면으로
-  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이)
+  | { name: "summary"; deckIds: number[] | null; cram?: boolean } // D1. cram: P1 시험 전 회독 화면으로
+  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이), mix: P2 혼합 회독
   | { name: "done"; sessionId: number; summary: SessionSummary; completed: boolean; deckIds: number[] | null; scale: number } // D5
+  | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats } // P3 혼합 회독 끝난 뒤
   | { name: "settings"; focus?: "archived" }; // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
 
 export const NavContext = createContext<(r: Route) => void>(() => {});

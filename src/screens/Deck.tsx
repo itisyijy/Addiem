@@ -9,6 +9,8 @@ import { useToast, type ToastInput } from "../toast";
 import { Modal, NewDeckModal } from "./NewDeck";
 import { ExportDeckDialog } from "./ExportDeck";
 import { SourcesButton } from "./Sources";
+import { ExamLine } from "./Exam";
+import { CramHint } from "./StudyParts";
 
 const WEEKDAY = "일월화수목금토";
 export function dateWithDay(iso: string) {
@@ -344,6 +346,9 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
               <Progress label="핵심 카드 학습률" value={d.core_seen} total={d.core_total} pct={d.core_learned_pct} color="core" />
               {/* H1. 날짜별 분량과 쓸 수 있는 시간 */}
               <Button variant="ghost" size="M" icon="calendar" label="계획 보기" className="deck__plan" onClick={() => nav({ name: "plan", deckId: d.id })} />
+              {/* P0 시험 전 회독 입구 (목표일 14일 전부터) · N4 기출 한 줄 */}
+              <CramHint deckIds={[d.id]} />
+              <ExamLine deckId={d.id} />
             </section>
           ) : (
             showSuggestion && (

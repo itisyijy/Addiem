@@ -9,7 +9,7 @@ import { useToast } from "../toast";
 import { plainText, renderCardHtml, toStoredHtml } from "../cardHtml";
 import { findMath, withMath } from "../math";
 import {
-  cram as cramApi, splitLater, takeSignal, written as writtenApi, type Compare, type CramPlan, type Keyword, type WrittenCard, type WrittenNote,
+  cram as cramApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
 } from "../written";
 import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
@@ -59,8 +59,9 @@ const SCALES = [
 const newOf = (q: QueueSummary) => q.new_core + q.new_normal + q.new_supp;
 
 /** D1. cram 이면 H3 압축 회독 화면 (홈 · D1 의 [압축 회독]) */
-export function Summary({ deckIds, cram }: { deckIds: number[] | null; cram?: boolean }) {
-  return cram ? <Cram deckIds={deckIds} /> : <Plan deckIds={deckIds} />;
+/** D1. 시험 전 회독(P1)은 PreExam.tsx */
+export function Summary({ deckIds }: { deckIds: number[] | null }) {
+  return <Plan deckIds={deckIds} />;
 }
 
 function Plan({ deckIds }: { deckIds: number[] | null }) {
@@ -215,126 +216,6 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
 }
 
 // ---------------------------------------------------------------- H3 압축 회독
-
-const CRAM_SCOPES = ["핵심만", "핵심 + 약한 챕터", "불안한 카드 전부"];
-
-function Cram({ deckIds }: { deckIds: number[] | null }) {
-  const nav = useNav();
-  const [plan, setPlan] = useState<CramPlan | null>();
-  const [scope, setScope] = useState(2);
-  const [error, setError] = useState<string>();
-  useEffect(() => {
-    cramApi.plan(deckIds).then(setPlan, (e) => setError(errorText(e)));
-  }, [deckIds]);
-  const count = plan?.scopes[scope] ?? 0;
-  const back = useCallback(
-    () => nav(deckIds?.length === 1 ? { name: "deck", deckId: deckIds[0] } : { name: "home" }),
-    [nav, deckIds],
-  );
-  const start = useCallback(async () => {
-    if (!plan || count === 0) return;
-    try {
-      const ids = await cramApi.cards(plan.deck_id, scope);
-      nav({ name: "study", deckIds, scale: 1, cardIds: ids, cram: true });
-    } catch (e) {
-      setError(errorText(e));
-    }
-  }, [plan, count, scope, nav, deckIds]);
-  useKey("Enter", start, count > 0);
-  useKey("Escape", back);
-  if (plan === undefined) return error ? <p className="load-error t-body-m c-danger">{error}</p> : null;
-
-  const minutes = Math.max(1, Math.ceil((count * (plan?.sec_per_card ?? 10)) / 60));
-  const weak = plan?.weak_names ?? [];
-  const rows = plan && [
-    { key: "core", dot: "core", title: "아직 불안한 핵심 카드", desc: `핵심 ${n(plan.core_total)}장 중 기억 안정도 7일 미만`, count: plan.core },
-    {
-      key: "weak",
-      dot: "danger",
-      title: "약한 챕터",
-      desc: weak.length === 0 ? "약한 챕터로 정한 곳이 없어요" : weak.length === 1 ? weak[0] : `${weak[0]} 외 ${n(weak.length - 1)}개`,
-      count: plan.weak,
-    },
-    { key: "again", dot: "accent", title: "최근 2주에 틀린 카드", desc: "Again 1번 이상", count: plan.again },
-  ];
-
-  return (
-    <main className="summary cram" onMouseDown={(e) => (e.target as HTMLElement).closest(".segment__item") && e.preventDefault()}>
-      <section className="summary__left">
-        <button className="backlink t-label-m c-secondary" onClick={back}>
-          <Icon name="chevron-left" size={18} />
-          {deckIds?.length === 1 ? "덱" : "홈"}
-        </button>
-        <div className="cram__gap" />
-        {plan && <Badge tone="danger">{plan.name} {plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`}</Badge>}
-        <h1 className="cram__title">압축 회독</h1>
-        {plan ? (
-          <>
-            <p className="cram__lead t-body-m c-secondary">범위 전체를 한 번 훑되, 이미 잘 외운 카드는 빼고 불안한 카드만 모았어요.</p>
-            <p className="summary__count">
-              <span className="cram__num">{n(count)}</span>
-              <span className="t-title-m c-secondary">장 · 약 {n(minutes)}분</span>
-            </p>
-            <p className="cram__note t-caption c-secondary">
-              <Icon name="info" size={14} />
-              압축 회독은 복습 일정에 반영하지 않아요. 평가는 기록만 하고, 오늘의 학습은 그대로 남아요.
-            </p>
-            <div className="cram__cta">
-              <Button icon="arrow-right" label="압축 회독 시작" onClick={start} disabled={count === 0} />
-              <Button variant="ghost" label="평소 학습" onClick={() => nav({ name: "summary", deckIds })} />
-            </div>
-          </>
-        ) : (
-          <p className="cram__lead t-body-m c-secondary">목표일 3일 전부터 할 수 있어요. 덱 설정에서 목표일을 정하면 열려요.</p>
-        )}
-        {error && <p className="t-body-s c-danger">{error}</p>}
-      </section>
-
-      {plan && rows && (
-        <section className="summary__order cram__parts">
-          <header className="summary__order-head">
-            <h2 className="t-title-s">무엇을 모았나요</h2>
-            <p className="t-caption c-tertiary">겹치는 카드는 한 번만 세요</p>
-          </header>
-          {rows.map((r) => (
-            <div key={r.key} className="summary__row">
-              <span className={`dot dot--${r.dot}`} />
-              <span className="summary__row-text">
-                <span className="t-body-m-strong">{r.title}</span>
-                <span className="t-caption c-tertiary">{r.desc}</span>
-              </span>
-              <span className="t-title-m">{n(r.count)}</span>
-            </div>
-          ))}
-          <div className="summary__row cram__out">
-            <span className="dot dot--strong" />
-            <span className="summary__row-text c-tertiary">
-              <span className="t-body-m-strong">잘 외운 카드는 뺐어요</span>
-              <span className="t-caption">안정도 30일 이상 · {n(plan.stable)}장</span>
-            </span>
-            <span className="t-title-m c-tertiary">−</span>
-          </div>
-          <div className="cram__scope">
-            <span className="t-body-m-strong">범위</span>
-            <div className="segment segment--boxed" role="radiogroup" aria-label="범위">
-              {CRAM_SCOPES.map((label, i) => (
-                <button
-                  key={label}
-                  role="radio"
-                  aria-checked={scope === i}
-                  className={`segment__item t-label-m ${scope === i ? "is-selected" : ""}`}
-                  onClick={() => setScope(i)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-    </main>
-  );
-}
 
 // ---------------------------------------------------------------- D2 ~ D4
 
@@ -558,14 +439,19 @@ function ago(at: number) {
   return m < 1 ? "방금" : m < 60 ? `${m}분 전` : `${Math.floor(m / 60)}시간 전`;
 }
 
-export function Study(props: { deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean }) {
-  const { deckIds, scale } = props;
+export function Study(props: { deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun }) {
+  const { deckIds, scale, mix } = props;
   const cram = !!props.cram;
   const nav = useNav();
   const notify = useToast();
   const session = useRef<number | null>(null);
   const cramAgain = useRef(new Map<number, number>()); // H3: 이 화면 안의 Again 횟수 (두 번째 Again 에 접는다)
   const cramDone = useRef(new Set<number>()); // H3: 평가한 카드 (마칠 때 "N장을 훑었어요")
+  // P2 혼합 회독: 카드마다 남은 자리 (null 전체, 문자열 취약 이유). 평가할 때 앞 자리부터 센다
+  const mixRoles = useRef(new Map<number, (string | null)[]>());
+  const mixStats = useRef<MixStats>({ full: [0, 0], weak: [0, 0], again: [0, 0], due: 0 });
+  const mixReplayed = useRef(false); // 접어둔 카드는 회독 끝에 한 번 더
+  const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
   const [compare, setCompare] = useState<Compare | null>(null); // J2
   const [srcOpen, setSrcOpen] = useState(false); // I2 세션 동안 열림 상태를 기억한다
@@ -605,9 +491,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       if (session.current === null) return nav({ name: "home" });
       setPref(HINTS_SEEN, true); // "다음 학습부터는 숨겨요"
       const summary = await api.finishSession(session.current, completed, deckIds, scale);
+      if (mix) return nav({ name: "mixDone", sessionId: session.current, run: mix, stats: mixStats.current });
       nav({ name: "done", sessionId: session.current, summary, completed, deckIds, scale });
     },
-    [nav, deckIds, scale, cram, notify],
+    [nav, deckIds, scale, cram, notify, mix],
   );
 
   const show = useCallback(async (id: number, at: "q" | "a" = "q") => {
@@ -634,6 +521,16 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       const now = Date.now();
       const l = later.current.sort((a, b) => a.due - b.due);
       const id = next.current.shift() ?? (l.length && l[0].due <= now ? l.shift()!.id : (queue.current.shift() ?? l.shift()?.id));
+      if (id === undefined && mix && !mixReplayed.current && foldedIds.current.length > 0) {
+        // P2 혼합 회독: 접어둔 카드는 회독 끝에 한 번 더 (두 번째 접히면 그대로 둔다)
+        mixReplayed.current = true;
+        const ids = foldedIds.current;
+        for (const f of ids) await api.unburyCard(session.current!, f);
+        setFolded([]);
+        setDone((d) => d - ids.length);
+        queue.current.push(...ids);
+        continue;
+      }
       if (id === undefined) return finish(true);
       try {
         return await show(id);
@@ -641,7 +538,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         // 편집 중 지워진 빈칸 카드 등. 건너뛴다
       }
     }
-  }, [finish, show]);
+  }, [finish, show, mix]);
+  useEffect(() => void (foldedIds.current = folded.map((f) => f.id)), [folded]);
 
   useEffect(() => {
     if (started.current) return; // StrictMode 에서 두 번 부르지 않게
@@ -656,6 +554,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             : await api.startSession(deckIds, scale);
         session.current = s.session_id;
         queue.current = [...s.card_ids];
+        if (mix) {
+          for (const c of mix.cards) mixRoles.current.set(c.id, [...(mixRoles.current.get(c.id) ?? []), c.weak]);
+          const weak = mix.cards.filter((c) => c.weak).length;
+          mixStats.current = { full: [0, mix.cards.length - weak], weak: [0, weak], again: [0, 0], due: 0 };
+        }
         setTotal(s.card_ids.length);
         await advance();
       } catch (e) {
@@ -773,6 +676,16 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     guard(async () => {
       const c = card!;
       const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current);
+      if (mix) {
+        const role = mixRoles.current.get(c.view.id)?.shift();
+        const st = mixStats.current;
+        if (role !== undefined) {
+          const k = role === null ? "full" : "weak";
+          st[k][0] += 1;
+          if (r === 1) st.again[role === null ? 0 : 1] += 1;
+        }
+        if (mix.dueToday.includes(c.view.id) && role === null) st.due += 1;
+      }
       const counted = res.action !== "again_later";
       if (counted) setDone((d) => d + 1);
       else later.current.push({ id: c.view.id, due: Date.now() + (res.due_in_ms ?? 60_000) });
@@ -916,7 +829,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
   const keysQ = writing
     ? [`${actionKey("save")} 비교하기`, `Esc 입력 칸 나가기 (그다음 ${actionKey("reveal")}로 바로 답 보기)`]
-    : [`${actionKey("reveal")} 답 보기`, fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
+    : [`${actionKey("reveal")} 답 보기`, mix && "평가가 복습 일정에 반영돼요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
@@ -986,6 +899,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           </div>
         )}
         {cram && <Badge tone="accent">압축 회독</Badge>}
+        {mix && (
+          <Badge tone="accent">
+            혼합 회독 · 전체 {n(mixStats.current.full[0])}/{n(mixStats.current.full[1])} · 취약 {n(mixStats.current.weak[0])}/{n(mixStats.current.weak[1])}
+          </Badge>
+        )}
         <span className="t-body-s c-tertiary">남은 {n(remaining)}장</span>
       </div>
 
@@ -997,6 +915,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             <header className="study__card-head">
               <span className="study__meta">
                 <Importance level={card.view.importance} />
+                {typeof mixRoles.current.get(card.view.id)?.[0] === "string" && <Badge tone="danger">취약 · {mixRoles.current.get(card.view.id)![0]}</Badge>}
                 {card.written?.written && <Badge tone="accent">서술형</Badge>}
                 <span className="t-caption c-tertiary">{pathLabel(card.view.deck_path)}</span>
               </span>
