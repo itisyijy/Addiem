@@ -123,6 +123,7 @@ export function Segment<T extends string | number>({
   onChange,
   boxed,
   label,
+  disabled,
 }: {
   options: { value: T; label: string }[];
   value: T;
@@ -130,6 +131,7 @@ export function Segment<T extends string | number>({
   /** 회색 트랙 (segment--boxed) */
   boxed?: boolean;
   label?: string;
+  disabled?: boolean;
 }) {
   return (
     <div className={`segment ${boxed ? "segment--boxed" : ""}`} role="radiogroup" aria-label={label}>
@@ -139,6 +141,7 @@ export function Segment<T extends string | number>({
           role="radio"
           aria-checked={o.value === value}
           className={`segment__item t-label-m ${o.value === value ? "is-selected" : ""}`}
+          disabled={disabled}
           onClick={() => onChange(o.value)}
         >
           {o.label}

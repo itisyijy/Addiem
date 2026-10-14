@@ -45,7 +45,8 @@ export const placeOf = (s: { material: string; page: number }) => `${s.material}
 /** 신뢰도 순 (source.rs SIGNALS) */
 export type Signal = "highlight" | "underline" | "red" | "star" | "bold";
 export const SIGNAL_LABEL: Record<Signal, string> = { highlight: "하이라이트", underline: "밑줄", red: "붉은 글씨", star: "★", bold: "볼드" };
-export const SIGNAL_TONE: Record<Signal, string> = { highlight: "warn", underline: "warn", red: "danger", star: "accent", bold: "neutral" };
+/** 밑줄은 하이라이트와 구분되게 회색 + 글자 밑줄 (SignalBadge) */
+export const SIGNAL_TONE: Record<Signal, string> = { highlight: "warn", underline: "neutral", red: "danger", star: "accent", bold: "neutral" };
 export const SIGNAL_ORDER: Signal[] = ["highlight", "underline", "red", "star", "bold"];
 
 export type Material = {

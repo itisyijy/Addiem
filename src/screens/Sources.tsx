@@ -45,13 +45,18 @@ export function SourcesButton({ deckId }: { deckId: number }) {
   return <Button variant="secondary" size="M" icon="file" label={label} onClick={() => nav({ name: "sources", deckId, gaps: gaps > 0 })} />;
 }
 
-/** R1-a 정렬: ★ · 붉은 글씨 > 하이라이트 · 밑줄 > 볼드, 그다음 쪽 순서 */
-const gapRank = (s: Segment) => (s.signals.some((g) => g === "star" || g === "red") ? 0 : s.signals.some((g) => g === "highlight" || g === "underline") ? 1 : 2);
+/** R1-a 정렬: ★ · 붉은 글씨 > 하이라이트 > 밑줄 > 볼드, 같은 등급은 쪽 순서 */
+const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underline: 2, bold: 3 };
+const gapRank = (s: Segment) => Math.min(...s.signals.map((g) => GAP_RANK[g] ?? 3));
 /** 보내는 글자 수 어림 (1구간 600자에서 자른다, rag.rs) */
 const sentChars = (s: Segment) => Math.min(s.text.trim().length, 600);
 
 export function SignalBadge({ signal }: { signal: Signal }) {
-  return <Badge tone={SIGNAL_TONE[signal] as BadgeTone}>{SIGNAL_LABEL[signal]}</Badge>;
+  return (
+    <Badge tone={SIGNAL_TONE[signal] as BadgeTone}>
+      <span className={signal === "underline" ? "u-line" : undefined}>{SIGNAL_LABEL[signal]}</span>
+    </Badge>
+  );
 }
 
 const rankOf = (s: Segment) => SIGNAL_ORDER.indexOf(topSignal(s));

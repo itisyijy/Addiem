@@ -29,8 +29,9 @@ const MAX_DRAFTS: usize = 30;
 /// R1-c "비슷한 카드가 있어요": 이 덱 카드와의 e5 유사도 (자동 연결 I3 과 같은 기준)
 const SIMILAR_CARD: f32 = source::AUTO_LINK;
 /// R1-c "근거 구간에 없는 말이 있어요": 뒷면 문장과 근거 구간의 유사도가 이보다 낮으면 짚는다.
-/// ponytail: 어림값 (I3 실측 "틀린 짝 0.85~0.875"의 아래쪽). 실제 초안으로 재서 조정한다
-const UNGROUNDED: f32 = 0.85;
+/// 실측 (2026-10-15, 손으로 쓴 초안 문장 25개 · 구간 5개): 근거 있는 문장 0.872~0.969, 없는 문장 0.809~0.912.
+/// 0.86 이면 없는 문장 14개 중 10개를 짚고 있는 문장은 짚지 않는다. ponytail: 숫자 · 용어만 바뀐 문장은 유사도로 못 잡는다
+const UNGROUNDED: f32 = 0.86;
 
 fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Res<T>) -> Result<T, AiError> {
     let st = app.state::<AppState>();
@@ -480,6 +481,11 @@ mod tests {
             assert_eq!(d.len(), n, "{amount}");
             assert!(!d.iter().any(|x| x.2 == 103), "마지막 구간은 초안이 안 나온다 (부분 성공)");
         }
+        // 소수점에서 문장을 자르지 않는다 (가짜 응답도 앱의 문장 나누기를 쓴다)
+        let mut v = sent(1);
+        v[0].text = "VIF 10 이상 또는 공차한계 0.1 이하로 판단한다. 둘째 문장.".into();
+        let d = parse_drafts(&fake_drafts(&v, "few", false), &v, false).unwrap();
+        assert_eq!(d[0].1, "VIF 10 이상 또는 공차한계 0.1 이하로 판단한다");
     }
 
     #[test]
@@ -538,3 +544,4 @@ mod tests {
         assert!(apply_drafts(&mut con, 3, false, &[]).is_err());
     }
 }
+

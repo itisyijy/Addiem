@@ -83,6 +83,8 @@
 .ai-send__row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border-default); }
 .ai-send__row > .icon { flex-shrink: 0; margin-top: 2px; }
 .ai-send__row > .src-icon-btn { margin-top: -2px; color: var(--text-tertiary); }
+.ai-send__row > .src-icon-btn:disabled { opacity: 0.35; }
+.ai-send__rows { display: flex; flex-direction: column; }
 .ai-send__text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
 .ai-send__meta { display: flex; align-items: center; gap: 8px; }
 .ai-send__meta .badge { padding: 2px 8px; }

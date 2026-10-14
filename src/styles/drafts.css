@@ -1,7 +1,10 @@
 /* R1 자료에서 카드 초안. R1-b 보낼 내용 미리보기(Figma 80:9464) · R1-c 초안 검토(80:9793). 색은 토큰만 */
 
 /* R1-b 창 700 */
-.modal.draft-send { top: 94px; width: 700px; max-height: calc(100vh - 120px); overflow-y: auto; gap: 16px; padding: 28px 32px 24px; }
+/* 창은 화면 안에 두고 보낼 내용 목록만 안에서 스크롤한다 (머리말 · 오류 상자 · 푸터는 고정) */
+.modal.draft-send { top: 50%; width: 700px; max-height: calc(100vh - 48px); transform: translate(-50%, -50%); gap: 16px; padding: 28px 32px 24px; }
+.draft-send .ai-send { flex-shrink: 1; min-height: 0; }
+.draft-send .ai-send__rows { min-height: 0; overflow-y: auto; }
 .draft-opts { display: flex; gap: 24px; }
 .draft-opt { display: flex; flex-direction: column; gap: 6px; }
 .draft-opt__label { display: flex; align-items: baseline; gap: 8px; }

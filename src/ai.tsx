@@ -486,7 +486,11 @@ export const sentRows = (sent: Sent[], remove: (id: number) => void, how = false
           {placeOf(s)}
           {how && s.how !== "picked" ? ` · ${HOW[s.how]}` : ""}
         </span>
-        {s.signals[0] && <Badge tone={SIGNAL_TONE[s.signals[0]] as BadgeTone}>{SIGNAL_LABEL[s.signals[0]]}</Badge>}
+        {s.signals[0] && (
+          <Badge tone={SIGNAL_TONE[s.signals[0]] as BadgeTone}>
+            <span className={s.signals[0] === "underline" ? "u-line" : undefined}>{SIGNAL_LABEL[s.signals[0]]}</span>
+          </Badge>
+        )}
       </>
     ),
     text: s.text,
@@ -498,7 +502,14 @@ const HOW: Record<Sent["how"], string> = { manual: "직접 연결", auto: "자�
  * "OpenAI로 보낼 내용" (Row R 공통). 머리 오른쪽 "자료 N구간 · 약 N자", 행마다 ✕, 아래 한 줄 안내.
  * compact: 첫 전송 확인 팝오버처럼 발췌를 한 줄로 줄인다
  */
-export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foot }: { title?: string; rows: SendRow[]; compact?: boolean; foot?: ReactNode }) {
+export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foot, locked }: {
+  title?: string;
+  rows: SendRow[];
+  compact?: boolean;
+  foot?: ReactNode;
+  /** 보내는 중: ✕ 를 끈다 */
+  locked?: boolean;
+}) {
   const segs = rows.filter((r) => r.icon === "file");
   const chars = rows.reduce((t, r) => t + r.text.length, 0);
   return (
@@ -512,6 +523,7 @@ export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foo
           </span>
         )}
       </div>
+      <div className="ai-send__rows">
       {rows.map((r) => (
         <div key={r.key} className="ai-send__row">
           <Icon name={r.icon} size={compact ? 14 : 16} className="c-secondary" />
@@ -520,7 +532,7 @@ export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foo
             <span className="ai-send__body t-body-s">{r.text}</span>
           </span>
           {r.remove ? (
-            <button type="button" className="src-icon-btn" aria-label="이 구간 빼기" onClick={r.remove}>
+            <button type="button" className="src-icon-btn" aria-label="이 구간 빼기" disabled={locked} onClick={r.remove}>
               <Icon name="x" size={compact ? 14 : 16} />
             </button>
           ) : (
@@ -528,6 +540,7 @@ export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foo
           )}
         </div>
       ))}
+      </div>
       {foot}
     </div>
   );

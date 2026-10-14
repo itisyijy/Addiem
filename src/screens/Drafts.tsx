@@ -104,6 +104,7 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
           <Segment
             boxed
             label="만들 양"
+            disabled={busy}
             value={amount}
             onChange={setAmount}
             options={[
@@ -118,6 +119,7 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
           <Segment
             boxed
             label="카드 유형"
+            disabled={busy}
             value={cloze ? "cloze" : "basic"}
             onChange={(v) => setCloze(v === "cloze")}
             options={[
@@ -139,6 +141,7 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
       )}
       {rows && (
         <SendList
+          locked={busy}
           rows={sentRows(rows, (id) => setRows(rows.filter((r) => r.id !== id)))}
           foot={
             <p className="ai-send__foot t-caption c-tertiary">
@@ -152,16 +155,14 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
         {busy ? (
           <span className="ai-busy">
             <Spinner size={16} />
-            <span className="t-label-m c-secondary">{slow ? "오래 걸려요" : "ChatGPT가 초안을 만드는 중…"}</span>
-            <button type="button" className="ai-link t-label-s" onClick={stop}>
-              취소
-            </button>
+            <span className="t-label-m c-secondary">{slow ? "오래 걸려요 · [취소]로 멈출 수 있어요" : "ChatGPT가 초안을 만드는 중…"}</span>
           </span>
         ) : (
           <UsingPlan />
         )}
         <span className="draft-send__actions">
-          <Button variant="ghost" size="M" label="취소" onClick={onClose} />
+          {/* 보내는 중에는 요청만 멈추고 창은 둔다 (고른 구간 그대로) */}
+          <Button variant="ghost" size="M" label="취소" onClick={busy ? stop : onClose} />
           <Button size="M" icon="send" label="초안 만들기" busy={busy} busyLabel="만드는 중…" disabled={!rows?.length} onClick={send} />
         </span>
       </div>
@@ -246,15 +247,20 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
           <h1 className="t-title-l">카드 초안 {n(items.length)}장</h1>
           <p className="t-body-s c-secondary">{whereFrom(draft.sent)} · ChatGPT 제안 · 승인한 카드만 만들어요</p>
         </div>
+        {/* 기기 안 검사를 하지 않았으면 0 이 아니라 모르는 것이라 거르기 칸을 숨긴다 */}
         <Segment
           boxed
           label="초안 거르기"
           value={view}
           onChange={setView}
           options={[
-            { value: "all", label: `모두 ${n(items.length)}` },
-            { value: "similar", label: `비슷한 카드 있음 ${n(similar)}` },
-            { value: "ungrounded", label: `근거와 다름 ${n(ungrounded)}` },
+            { value: "all" as const, label: `모두 ${n(items.length)}` },
+            ...(draft.checked
+              ? [
+                  { value: "similar" as const, label: `비슷한 카드 있음 ${n(similar)}` },
+                  { value: "ungrounded" as const, label: `근거와 다름 ${n(ungrounded)}` },
+                ]
+              : []),
           ]}
         />
       </div>
