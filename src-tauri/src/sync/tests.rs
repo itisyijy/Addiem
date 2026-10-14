@@ -750,3 +750,34 @@ fn merging_two_copies_of_one_old_database_does_not_duplicate() {
     env.sync(&a);
     assert_eq!(a.dump(), b.dump());
 }
+
+#[test]
+fn exam_marks_round_trip_and_tag_fill_converges() {
+    // 8.4 기출: 사용자가 단 표시(이름 · 지우기)는 다른 기기로 간다.
+    // 태그에서 채운 값은 올리지 않고(변경 기록 없음) 기기마다 같은 태그로 같은 값을 만든다
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let deck = a.n("SELECT id FROM deck WHERE name = '2과목'");
+    let (marked, _) = a.note(deck, "직접 표시할 카드", None, 2000);
+    let (tagged, _) = a.note(deck, "태그 카드", None, 2000);
+    a.con().execute("UPDATE note SET tags = '기출::2023_중간' WHERE id = ?1", [tagged]).unwrap();
+    env.sync(&a);
+    env.sync(&b);
+    // 두 기기가 각자 앱을 다시 열었다: 태그에서 채우고, 올릴 것은 생기지 않는다
+    let before = a.outbox();
+    for d in [&a, &b] {
+        assert_eq!(crate::exam::fill_from_tags(&d.con()).unwrap(), 1);
+    }
+    assert_eq!(a.outbox(), before);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(b.n("SELECT count(*) FROM note WHERE exam_hits = 1 AND exam_names = '[\"2023 중간\"]'"), 1);
+    // A 에서 표시하고, 태그로 채운 것은 지운다 → B 도 같고, B 가 다시 열어도 지운 것을 되살리지 않는다
+    crate::exam::mark(&a.con(), "note", &[marked], Some("2024 기말")).unwrap();
+    crate::exam::set(&a.con(), "note", &[crate::exam::ExamState { id: tagged, hits: None, names: vec![] }]).unwrap();
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(crate::exam::fill_from_tags(&b.con()).unwrap(), 0);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(b.n("SELECT count(*) FROM note WHERE exam_hits = 1 AND exam_names = '[\"2024 기말\"]'"), 1);
+    assert_eq!(b.n("SELECT count(*) FROM note WHERE exam_hits = 0"), 1);
+}

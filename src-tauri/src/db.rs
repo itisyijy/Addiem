@@ -50,6 +50,11 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("deck_config", "write_mode", "INTEGER"),
         // H3 압축 회독: 'cram' 이면 SRS 에 넘기지 않은 기록. 오늘의 계획 · 지표 쿼리는 kind IS NULL 만 센다 (히트맵은 함께 센다)
         ("review_log", "kind", "TEXT"),
+        // 8.4 기출 이력 (exam.rs): 횟수 · 시험 이름 JSON 배열. 0 이면 지운 것, NULL 이면 노트 태그에서 채운다
+        ("note", "exam_hits", "INTEGER"),
+        ("note", "exam_names", "TEXT"),
+        ("source_segment", "exam_hits", "INTEGER"),
+        ("source_segment", "exam_names", "TEXT"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
@@ -72,6 +77,10 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     // 기본 노트 유형도 멱등. 나중에 더한 유형(앞뒤 둘 다)이 기존 DB 에도 생긴다
     seed_note_types(&con)?;
     migrate(&con)?;
+    // 8.4 이 기능보다 먼저 가져온 노트 · 다른 기기에서 받은 노트의 기출 태그
+    let tx = con.unchecked_transaction()?;
+    crate::exam::fill_from_tags(&tx)?;
+    tx.commit()?;
     // 앱을 닫아 끝나지 못한 세션. 합격선 ② 계산에서 "완주하지 못함" 으로 센다
     con.execute(
         "UPDATE study_session SET ended_at = started_at, end_reason = 'app_exit' WHERE ended_at IS NULL",

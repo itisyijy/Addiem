@@ -4,6 +4,7 @@ mod cram;
 mod written;
 mod db;
 mod embed;
+mod exam;
 mod export;
 mod import;
 mod plan;
@@ -113,6 +114,8 @@ pub fn run() {
             written::written_card, written::save_written_answer, written::compare_written, written::written_note, written::save_written_note,
             written::suggest_keywords, written::add_written_card, written::split_signal,
             cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo,
+            // 8.4 기출 이력
+            exam::mark_exam, exam::set_exam,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
             source::source_list, source::source_add, source::source_delete, source::source_bytes, source::source_save_pdf,
             source::source_segments, source::source_slide, source::source_link, source::source_unlink, source::source_for_card,

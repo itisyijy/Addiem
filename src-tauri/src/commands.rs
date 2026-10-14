@@ -105,12 +105,13 @@ pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
 
 pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
     let mut st = con
-        .prepare(
+        .prepare(&format!(
             "SELECT c.id, c.deck_id, c.state, c.eff_importance, c.due_at, COALESCE(c.anki_card_id, c.id), c.buried_until,
-                    CASE WHEN nt.name = 'Cloze' OR EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = nt.id AND t.qfmt LIKE '%{{cloze:%')
-                         THEN NULL ELSE c.note_id END, c.note_id
+                    CASE WHEN nt.name = 'Cloze' OR EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = nt.id AND t.qfmt LIKE '%{{{{cloze:%')
+                         THEN NULL ELSE c.note_id END, c.note_id, {}
              FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id",
-        )
+            crate::exam::IS_EXAM
+        ))
         .map_err(err)?;
     let rows = st
         .query_map([], |r| {
@@ -125,6 +126,7 @@ pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
                 sibling: r.get(7)?,
                 note_id: r.get(8)?,
                 weak: false,
+                exam: r.get(9)?,
             })
         })
         .map_err(err)?;
