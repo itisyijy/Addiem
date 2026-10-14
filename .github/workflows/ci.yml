@@ -1,0 +1,41 @@
+# PR마다(스택 PR 포함) 프론트 빌드 · 타입 검사 · clippy · Rust 테스트를 Windows 에서 돌린다.
+# 앱이 Windows 데스크톱(WebView2)이라 러너도 Windows 로 맞춘다. Rust 버전은 rust-toolchain.toml 을 따른다
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # tauri::generate_context! 가 ../dist 를 읽으므로 cargo 보다 먼저 만든다
+      - run: npm run build
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
