@@ -271,7 +271,7 @@ INSERT OR IGNORE INTO schema_meta (key, value) VALUES
 
 -- ---- G · 카드 품질
 -- G2 나누기 같은 카드 변경 한 번 = 한 줄. [되돌리기]가 이 줄로 새 카드를 지우고 원래 카드를 되살린다.
--- 이 기기 안에서만 쓴다 (payload 가 로컬 id 를 가리킨다)
+-- 이 기기 안에서만 쓴다 (payload 가 로컬 id 를 가리킨다. 카드 자체는 card · note 로 동기화된다)
 CREATE TABLE IF NOT EXISTS card_change (
     id         INTEGER PRIMARY KEY,
     kind       TEXT    NOT NULL CHECK (kind IN ('split')),
@@ -285,10 +285,11 @@ CREATE TABLE IF NOT EXISTS card_change (
 CREATE INDEX IF NOT EXISTS idx_card_change_deck ON card_change(deck_id, created_at);
 
 -- ---- H · 시험 계획
--- 사용자 설정 (쓸 수 있는 시간 등). 키-값
+-- 사용자 설정 (쓸 수 있는 시간 등). 키-값. 동기화한다 (uid)
 CREATE TABLE IF NOT EXISTS plan_setting (
     key   TEXT PRIMARY KEY,                    -- 'weekday_min' | 'weekend_min'
-    value TEXT NOT NULL
+    value TEXT NOT NULL,
+    uid   TEXT
 );
 -- H1 [N일로 당겨 맞추기]. 예산 덱(deck_id)의 그날 신규 몫에 더하거나 뺀다. 큐가 따른다
 CREATE TABLE IF NOT EXISTS plan_shift (
@@ -296,7 +297,8 @@ CREATE TABLE IF NOT EXISTS plan_shift (
     deck_id    INTEGER NOT NULL REFERENCES deck(id) ON DELETE CASCADE,
     day        TEXT    NOT NULL,               -- 'YYYY-MM-DD'
     delta      INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    uid        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_plan_shift_day ON plan_shift(day);
 -- H2 목표일 충돌에서 고른 것. deck_a 의 시험이 먼저다. 목표일은 바꾸지 않는다
@@ -306,11 +308,13 @@ CREATE TABLE IF NOT EXISTS plan_conflict (
     deck_b     INTEGER NOT NULL REFERENCES deck(id) ON DELETE CASCADE,
     mode       TEXT    NOT NULL CHECK (mode IN ('spread','first','keep')),
     created_at INTEGER NOT NULL,
+    uid        TEXT,
     UNIQUE (deck_a, deck_b)
 );
 
 -- ---------------------------------------------------------------- I · 원자료
 -- 덱에 붙인 강의 자료 (I1, post-mvp B-1). 원본은 <data_dir>/sources/ 에 복사해 두고 고치지 않는다.
+-- 자료·구간·연결은 사용자 데이터라 동기화 대상(uid, db::SYNC_TABLES). 자료 파일 자체는 기본으로 올리지 않는다
 
 CREATE TABLE IF NOT EXISTS source_material (
     id         INTEGER PRIMARY KEY,
@@ -322,7 +326,8 @@ CREATE TABLE IF NOT EXISTS source_material (
     status     TEXT    NOT NULL DEFAULT 'pending'
                CHECK (status IN ('pending','ready','unsupported')), -- unsupported: 글자를 읽을 수 없음 (스캔본)
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    uid        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_source_material_deck ON source_material(deck_id);
 
@@ -337,7 +342,8 @@ CREATE TABLE IF NOT EXISTS source_segment (
     weight      REAL    NOT NULL,
     rects       TEXT,                        -- 쪽 위 위치 JSON [[x,y,w,h],..] 0~1 비율. PPTX 는 없음
     before_text TEXT,                        -- 앞뒤 문단 (I2 패널)
-    after_text  TEXT
+    after_text  TEXT,
+    uid         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_source_segment_material ON source_segment(material_id, page, ord);
 
@@ -350,6 +356,7 @@ CREATE TABLE IF NOT EXISTS source_link (
     method     TEXT    NOT NULL CHECK (method IN ('manual','auto','rejected')),
     score      REAL,                         -- auto 일 때 코사인 유사도
     created_at INTEGER NOT NULL,
+    uid        TEXT,
     UNIQUE (segment_id, card_id)
 );
 CREATE INDEX IF NOT EXISTS idx_source_link_card ON source_link(card_id);
@@ -372,12 +379,14 @@ CREATE TABLE IF NOT EXISTS note_written (
     write_mode INTEGER CHECK (write_mode IN (0,1)),  -- 공부할 때 직접 써서 답하기. NULL 이면 템플릿대로
     keywords   TEXT    NOT NULL DEFAULT '[]',        -- 필수 키워드 JSON [{"word","synonyms":[..],"source":"user"|"suggested"}]
     dismissed  TEXT    NOT NULL DEFAULT '[]',        -- 뺀 제안 JSON ["..."]. 다시 제안하지 않는다
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    uid        TEXT
 );
 
 -- J1 "지난번에 쓴 답". 카드마다 마지막 하나 (자동 저장이 덮어쓴다)
 CREATE TABLE IF NOT EXISTS written_answer (
     card_id    INTEGER PRIMARY KEY REFERENCES card(id) ON DELETE CASCADE,
     answer     TEXT    NOT NULL,
-    written_at INTEGER NOT NULL
+    written_at INTEGER NOT NULL,
+    uid        TEXT
 );

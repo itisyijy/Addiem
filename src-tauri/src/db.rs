@@ -29,7 +29,7 @@ pub fn open_in_memory() -> rusqlite::Result<Connection> {
     Ok(con)
 }
 
-/// 스키마 1 이후에 더한 열. 이미 있으면 건너뛴다.
+/// 스키마 1 이후에 더한 열과 동기화 선행 스키마. 이미 있으면 건너뛴다.
 /// 메모리 DB(S1-6 빈 데이터)도 같은 열을 가져야 화면이 같은 쿼리를 쓸 수 있다
 fn migrate(con: &Connection) -> rusqlite::Result<()> {
     for (table, col, ty) in [
@@ -60,7 +60,7 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
             con.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"))?;
         }
     }
-    Ok(())
+    sync_schema(con)
 }
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -82,6 +82,90 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         DAY_CUTOFF_HOUR.store(h, Ordering::Relaxed);
     }
     Ok(con)
+}
+
+/// Drive 동기화 대상 (drive-sync.md 6장). session_card_state · import_* · schema_meta 는 기기 안에서만 쓴다
+pub const SYNC_TABLES: [&str; 18] = [
+    "deck", "deck_config", "note_type", "card_template", "note", "card", "review_log", "media", "study_session", "daily_plan",
+    // H 시험 계획: 쓸 수 있는 시간 · 당겨 맞추기 · 충돌 조정은 사용자의 결정이라 기기 사이에 따라간다
+    "plan_setting", "plan_shift", "plan_conflict",
+    // I 원자료: 자료 목록 · 강조 구간 · 카드 연결. 자료 파일과 임베딩 캐시(embedding_cache)는 기기 안에만
+    "source_material", "source_segment", "source_link",
+    // J 서술형: 노트별 필수 키워드 · 써서 답하기, 카드별 지난번에 쓴 답
+    "note_written", "written_answer",
+];
+
+/// ULID 처럼 시간 순으로 정렬되는 uid: 48비트 ms 시각 + 80비트 난수, 16진수 32자
+const NEW_UID: &str = "printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || lower(hex(randomblob(10)))";
+
+/// 동기화 선행 스키마 (drive-sync.md 6장). 멱등이라 열 때마다 부른다.
+///   - 대상 테이블마다 uid 열 (없던 행은 채우고, 새 행은 트리거가 채운다) + 유일 인덱스
+///   - sync_outbox: 무엇이 바뀌었는지. sync_tombstone: 지운 사실 (삭제는 CASCADE 라 흔적이 남지 않는다)
+///   - 둘 다 동기화를 켰을 때만 쌓고, 받은 변경을 적용하는 동안(applying)은 쌓지 않는다 (되울림 방지)
+///   - HLC 는 트리거가 아니라 올릴 때 seq 순서로 매긴다. 트리거는 벽시계 시각(at)만 남긴다
+fn sync_schema(con: &Connection) -> rusqlite::Result<()> {
+    con.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_flags (
+             id       INTEGER PRIMARY KEY CHECK (id = 1),
+             enabled  INTEGER NOT NULL DEFAULT 0,
+             applying INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT OR IGNORE INTO sync_flags (id) VALUES (1);
+         CREATE TABLE IF NOT EXISTS sync_outbox (
+             seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+             table_name TEXT    NOT NULL,
+             uid        TEXT    NOT NULL,
+             op         TEXT    NOT NULL CHECK (op IN ('insert','update','delete')),
+             at         INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS sync_tombstone (
+             table_name TEXT    NOT NULL,
+             uid        TEXT    NOT NULL,
+             deleted_at INTEGER NOT NULL,
+             PRIMARY KEY (table_name, uid)
+         );",
+    )?;
+    let has = |table: &str, col: &str| -> rusqlite::Result<bool> {
+        con.query_row(&format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get::<_, i64>(0)).map(|n| n > 0)
+    };
+    if !has("card_template", "updated_at")? {
+        con.execute_batch("ALTER TABLE card_template ADD COLUMN updated_at INTEGER")?;
+    }
+    let now_expr = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
+    let on = "(SELECT enabled AND NOT applying FROM sync_flags WHERE id = 1)";
+    for t in SYNC_TABLES {
+        if !has(t, "uid")? {
+            con.execute_batch(&format!("ALTER TABLE {t} ADD COLUMN uid TEXT"))?;
+        }
+        con.execute_batch(&format!(
+            "UPDATE {t} SET uid = {NEW_UID} WHERE uid IS NULL;
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_{t}_uid ON {t}(uid);
+             DROP TRIGGER IF EXISTS {t}_uid_fill;
+             DROP TRIGGER IF EXISTS {t}_sync_insert;
+             -- 넣기는 트리거 하나로: uid 를 먼저 채우고 나서 기록한다 (트리거끼리의 실행 순서는 보장되지 않는다)
+             CREATE TRIGGER IF NOT EXISTS {t}_after_insert AFTER INSERT ON {t}
+             BEGIN
+               UPDATE {t} SET uid = {NEW_UID} WHERE rowid = NEW.rowid AND uid IS NULL;
+               INSERT INTO sync_outbox (table_name, uid, op, at) SELECT '{t}', uid, 'insert', {now_expr} FROM {t} WHERE rowid = NEW.rowid AND {on};
+             END;
+             CREATE TRIGGER IF NOT EXISTS {t}_sync_update AFTER UPDATE ON {t} WHEN OLD.uid IS NOT NULL AND {on}
+             BEGIN INSERT INTO sync_outbox (table_name, uid, op, at) VALUES ('{t}', NEW.uid, 'update', {now_expr}); END;
+             CREATE TRIGGER IF NOT EXISTS {t}_sync_delete AFTER DELETE ON {t} WHEN OLD.uid IS NOT NULL AND {on}
+             BEGIN
+               INSERT INTO sync_outbox (table_name, uid, op, at) VALUES ('{t}', OLD.uid, 'delete', {now_expr});
+               INSERT OR REPLACE INTO sync_tombstone (table_name, uid, deleted_at) VALUES ('{t}', OLD.uid, {now_expr});
+             END;"
+        ))?;
+    }
+    // 이 기기 (처음 열 때 한 번). 이름은 컴퓨터 이름, K3 에서 바꾼다
+    let device: Option<String> = con.query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).optional()?;
+    if device.is_none() {
+        con.execute(&format!("INSERT INTO schema_meta (key, value) VALUES ('device_uid', {NEW_UID})"), [])?;
+        let name = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "이 기기".into());
+        con.execute("INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [name])?;
+        con.execute("INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('hlc_last', '0')", [])?;
+    }
+    Ok(())
 }
 
 /// (이름, 앞면, 뒷면)
@@ -163,10 +247,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sync_groundwork() {
+        let dir = std::env::temp_dir().join(format!("neoanki-sync-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let con = open(&dir.join("t.sqlite")).unwrap();
+        let count = |sql: &str| con.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        // 모든 대상 테이블에 uid. 열기 전에 있던 행(기본 노트 유형)도 채워졌다
+        for t in SYNC_TABLES {
+            assert_eq!(count(&format!("SELECT count(*) FROM pragma_table_info('{t}') WHERE name = 'uid'")), 1, "{t}");
+        }
+        assert_eq!(count("SELECT count(*) FROM note_type WHERE uid IS NULL OR length(uid) <> 32"), 0);
+        assert_eq!(count("SELECT count(*) FROM schema_meta WHERE key IN ('device_uid', 'device_name', 'hlc_last')"), 3);
+
+        // 꺼져 있으면 아무것도 쌓지 않는다. 새 행에도 uid 는 생긴다
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('꺼짐', 0, 0)", []).unwrap();
+        assert_eq!(count("SELECT count(*) FROM sync_outbox"), 0);
+        assert_eq!(count("SELECT count(*) FROM deck WHERE name = '꺼짐' AND uid IS NOT NULL"), 1);
+
+        // 켜면 넣기 · 고치기 · 지우기가 쌓이고, 지우면 흔적이 남는다 (CASCADE 로 지워진 자식 행도)
+        con.execute("UPDATE sync_flags SET enabled = 1", []).unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('켜짐', 0, 0)", []).unwrap();
+        let id = con.last_insert_rowid();
+        con.execute("INSERT INTO deck_config (deck_id, updated_at) VALUES (?1, 0)", [id]).unwrap();
+        con.execute("UPDATE deck SET name = '켜짐2' WHERE id = ?1", [id]).unwrap();
+        con.execute("DELETE FROM deck WHERE id = ?1", [id]).unwrap();
+        let ops: Vec<String> = con
+            .prepare("SELECT table_name || ':' || op FROM sync_outbox ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(ops, ["deck:insert", "deck_config:insert", "deck:update", "deck_config:delete", "deck:delete"]);
+        assert_eq!(count("SELECT count(*) FROM sync_tombstone WHERE table_name IN ('deck', 'deck_config')"), 2);
+
+        // 받은 변경을 적용하는 동안은 쌓지 않는다 (되울림 방지)
+        con.execute("UPDATE sync_flags SET applying = 1", []).unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('받음', 0, 0)", []).unwrap();
+        assert_eq!(count("SELECT count(*) FROM sync_outbox"), 5);
+        drop(con);
+        // 두 번 열어도 그대로 (멱등)
+        let con = open(&dir.join("t.sqlite")).unwrap();
+        assert_eq!(con.query_row("SELECT count(*) FROM sync_outbox", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn in_memory_has_migrated_columns() {
         // S1-6 빈 데이터도 같은 쿼리를 쓴다 (deck.weak 등)
         let con = open_in_memory().unwrap();
-        con.query_row("SELECT count(weak) FROM deck", [], |r| r.get::<_, i64>(0)).unwrap();
+        con.query_row("SELECT count(weak) + count(uid) FROM deck", [], |r| r.get::<_, i64>(0)).unwrap();
     }
 
     #[test]
