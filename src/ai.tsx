@@ -1,12 +1,13 @@
 // G2 성격별로 묶기 · ChatGPT 요금제 (Figma Row L: L1–L4). 일은 Rust(src-tauri/src/ai.rs)가 하고, 로그인 결과는 "ai-auth" 이벤트로 온다.
 // 이 파일: 상태 공유(useAiStatus) · 설정 칸(L1 · L1-c) · 연결 창(L2 · L2-w · L2-x · L3) · 나누기 창의 오류 상자(L4-e)
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { aiApi, errorText, type AiAuthEvent, type AiError, type AiStatus } from "./api";
-import { Button, Icon, Spinner, type IconName } from "./ui";
+import { Badge, Button, Icon, Spinner, type BadgeTone, type IconName } from "./ui";
 import { useToast } from "./toast";
 import { n } from "./nav";
 import { Head, Sheet, when } from "./sync";
+import { placeOf, SIGNAL_LABEL, SIGNAL_TONE, type Sent } from "./sourceApi";
 // OpenAI 공식 로그인 버튼 로고 (developers.openai.com/assets/siwc/sign-in-buttons, 고치지 않고 쓴다)
 import logoWhite from "./assets/brand/chatgpt-logo-white.svg";
 import logoBlack from "./assets/brand/chatgpt-logo-black.svg";
@@ -386,27 +387,39 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-// ---------------------------------------------------------------- L4-e 나누기 창 오른쪽 목록 칸의 오류
+// ---------------------------------------------------------------- L4-e · R1-e 오류 (토스트가 아니라 결과 자리에 머문다)
 
-/** 어떤 오류든 [규칙으로 나누기]로 돌아갈 수 있다 (깨진 응답이면 아래에 규칙 제안이 이미 보인다) */
-export function AiErrorBox({ e, onRule, onRetry, onReconnect }: {
+type Copy = Partial<Record<AiError["kind"], [string, string]>>;
+
+/**
+ * 어떤 오류든 다른 길로 돌아갈 수 있다: L4 는 [규칙으로 나누기](onRule), R1 은 [닫기](onClose).
+ * 사용량 한도는 [사용량 관리]가 주 버튼. 깨진 응답은 한 조각도 쓰지 않고 [다시 …]만 (L4 는 아래에 규칙 제안이 이미 보인다).
+ * copy: 기능마다 다른 제목 · 본문 (R1-e)
+ */
+export function AiErrorBox({ e, onRule, onClose, onRetry, onReconnect, copy = {}, retryLabel = "다시 묶기" }: {
   e: AiError;
-  onRule: () => void;
+  onRule?: () => void;
+  onClose?: () => void;
   onRetry: () => void;
   /** 다시 로그인 · 사용량 권한 다시 허락 */
   onReconnect: (reconsent: boolean) => void;
+  copy?: Copy;
+  /** 깨진 응답의 다시 보내기 */
+  retryLabel?: string;
 }) {
   const grey = e.kind === "offline" || e.kind === "unavailable";
-  const [icon, title, text]: [IconName, string, string] =
-    e.kind === "limit" ? ["gauge", "사용량 한도에 도달했어요", "ChatGPT 설정에서 요금제나 이 앱의 한도를 확인해 주세요."]
-    : e.kind === "expired" ? ["alert", "ChatGPT 로그인이 만료됐어요", "다시 로그인하면 이어서 쓸 수 있어요. 이 카드는 아직 보내지 않았어요."]
-    : e.kind === "offline" ? ["wifi-off", "인터넷에 연결되어 있지 않아요", "규칙으로 나눈 제안은 인터넷 없이도 그대로 쓸 수 있어요."]
-    : e.kind === "bad_output" ? ["alert", "ChatGPT 답을 카드로 바꾸지 못했어요", "형식이 맞지 않아 쓰지 않았어요. 아래는 규칙으로 나눈 제안이에요."]
-    : e.kind === "scope" ? ["alert", "사용량 권한이 필요해요", `Neo-Anki는 내 ChatGPT 요금제로만 요청해요. 다시 연결할 때 "사용량" 권한을 허락해 주세요.`]
-    : e.kind === "not_eligible" ? ["alert", "이 요금제에서는 쓸 수 없어요", "지금 계정의 ChatGPT 요금제는 다른 앱에서 요금제로 요청하는 기능을 지원하지 않아요."]
-    : e.kind === "unavailable" ? ["alert", "지금은 ChatGPT 요금제를 쓸 수 없어요", "잠시 뒤 다시 해 보세요. 규칙으로 나눈 제안은 그대로 쓸 수 있어요."]
-    : ["alert", "ChatGPT로 묶지 못했어요", e.message];
-  const rule = <Button variant="ghost" size="M" label="규칙으로 나누기" onClick={onRule} />;
+  const icon: IconName = e.kind === "limit" ? "gauge" : e.kind === "offline" ? "wifi-off" : "alert";
+  const [title, text] =
+    copy[e.kind] ??
+    (e.kind === "limit" ? ["사용량 한도에 도달했어요", "ChatGPT 설정에서 요금제나 이 앱의 한도를 확인해 주세요."]
+    : e.kind === "expired" ? ["ChatGPT 로그인이 만료됐어요", "다시 로그인하면 이어서 쓸 수 있어요. 이 카드는 아직 보내지 않았어요."]
+    : e.kind === "offline" ? ["인터넷에 연결되어 있지 않아요", "규칙으로 나눈 제안은 인터넷 없이도 그대로 쓸 수 있어요."]
+    : e.kind === "bad_output" ? ["ChatGPT 답을 카드로 바꾸지 못했어요", "형식이 맞지 않아 쓰지 않았어요. 아래는 규칙으로 나눈 제안이에요."]
+    : e.kind === "scope" ? ["사용량 권한이 필요해요", `Neo-Anki는 내 ChatGPT 요금제로만 요청해요. 다시 연결할 때 "사용량" 권한을 허락해 주세요.`]
+    : e.kind === "not_eligible" ? ["이 요금제에서는 쓸 수 없어요", "지금 계정의 ChatGPT 요금제는 다른 앱에서 요금제로 요청하는 기능을 지원하지 않아요."]
+    : e.kind === "unavailable" ? ["지금은 ChatGPT 요금제를 쓸 수 없어요", "잠시 뒤 다시 해 보세요. 규칙으로 나눈 제안은 그대로 쓸 수 있어요."]
+    : ["ChatGPT로 묶지 못했어요", e.message]);
+  const back = onRule ? <Button variant="ghost" size="M" label="규칙으로 나누기" onClick={onRule} /> : onClose && <Button variant="ghost" size="M" label="닫기" onClick={onClose} />;
   return (
     <div className={`ai-error ${grey ? "is-grey" : ""}`} role="alert">
       <span className="ai-error__title">
@@ -418,24 +431,104 @@ export function AiErrorBox({ e, onRule, onRetry, onReconnect }: {
         {e.kind === "limit" ? (
           <>
             <Button size="M" icon="external" label="사용량 관리" onClick={openUsage} />
-            {rule}
+            {back}
           </>
         ) : e.kind === "expired" || e.kind === "scope" ? (
           <>
             <Button size="M" icon="external" label={e.kind === "scope" ? "다시 연결" : "다시 로그인"} onClick={() => onReconnect(e.kind === "scope")} />
-            {rule}
+            {back}
           </>
         ) : e.kind === "bad_output" ? (
-          <Button variant="secondary" size="M" icon="rotate" label="다시 묶기" onClick={onRetry} />
+          <>
+            <Button variant="secondary" size="M" icon="rotate" label={retryLabel} onClick={onRetry} />
+            {!onRule && back}
+          </>
         ) : e.kind === "not_eligible" ? (
-          rule
+          back
         ) : (
           <>
             <Button variant="secondary" size="M" icon="rotate" label="다시 시도" onClick={onRetry} />
-            {rule}
+            {back}
           </>
         )}
       </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Row R 공통: 보내는 범위 한 줄 · "OpenAI로 보낼 내용"
+
+/** "카드 + 자료 2구간을 보내요 · 보기 ▾" (R2-s · R3-s). 실행 버튼 가까이에 늘 보인다 */
+export function ScopeLine({ text, open, onToggle }: { text: string; open?: boolean; onToggle: () => void }) {
+  return (
+    <span className="ai-hint ai-scope t-caption c-tertiary">
+      <Icon name="send" size={12} />
+      {text} ·
+      <button type="button" className="ai-link t-label-s" aria-expanded={!!open} onClick={onToggle}>
+        보기
+        <Icon name="chevron-down" size={12} className={open ? "is-flipped" : ""} />
+      </button>
+    </span>
+  );
+}
+
+/** 보낼 내용 한 행. remove 가 있으면 ✕ 로 뺄 수 있고, 없으면 "필수" */
+export type SendRow = { key: string | number; icon: IconName; meta: ReactNode; text: string; remove?: () => void };
+
+/** 자료 구간 행 (자료 이름 · 쪽 · 연결 방식 · 신호 칩). 구간 글은 보내는 글자 그대로 */
+export const sentRows = (sent: Sent[], remove: (id: number) => void, how = false): SendRow[] =>
+  sent.map((s) => ({
+    key: s.id,
+    icon: "file",
+    meta: (
+      <>
+        <span className="t-label-s c-secondary">
+          {placeOf(s)}
+          {how && s.how !== "picked" ? ` · ${HOW[s.how]}` : ""}
+        </span>
+        {s.signals[0] && <Badge tone={SIGNAL_TONE[s.signals[0]] as BadgeTone}>{SIGNAL_LABEL[s.signals[0]]}</Badge>}
+      </>
+    ),
+    text: s.text,
+    remove: () => remove(s.id),
+  }));
+const HOW: Record<Sent["how"], string> = { manual: "직접 연결", auto: "자동 연결", similar: "비슷한 구간", picked: "" };
+
+/**
+ * "OpenAI로 보낼 내용" (Row R 공통). 머리 오른쪽 "자료 N구간 · 약 N자", 행마다 ✕, 아래 한 줄 안내.
+ * compact: 첫 전송 확인 팝오버처럼 발췌를 한 줄로 줄인다
+ */
+export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foot }: { title?: string; rows: SendRow[]; compact?: boolean; foot?: ReactNode }) {
+  const segs = rows.filter((r) => r.icon === "file");
+  const chars = rows.reduce((t, r) => t + r.text.length, 0);
+  return (
+    <div className={`ai-send ${compact ? "is-compact" : ""}`}>
+      <div className="ai-send__head">
+        <Icon name="send" size={16} />
+        <span className="t-label-m">{title}</span>
+        {!compact && (
+          <span className="t-caption c-tertiary">
+            자료 {n(segs.length)}구간 · 약 {n(chars)}자
+          </span>
+        )}
+      </div>
+      {rows.map((r) => (
+        <div key={r.key} className="ai-send__row">
+          <Icon name={r.icon} size={compact ? 14 : 16} className="c-secondary" />
+          <span className="ai-send__text">
+            <span className="ai-send__meta">{r.meta}</span>
+            <span className="ai-send__body t-body-s">{r.text}</span>
+          </span>
+          {r.remove ? (
+            <button type="button" className="src-icon-btn" aria-label="이 구간 빼기" onClick={r.remove}>
+              <Icon name="x" size={compact ? 14 : 16} />
+            </button>
+          ) : (
+            <span className="t-caption c-tertiary">필수</span>
+          )}
+        </div>
+      ))}
+      {foot}
     </div>
   );
 }

@@ -329,7 +329,7 @@ pub struct SplitPart {
 }
 
 /// 글자를 카드 필드 HTML 로 (줄바꿈 → <br>)
-fn to_html(text: &str) -> String {
+pub(crate) fn to_html(text: &str) -> String {
     text.trim().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
 
@@ -567,7 +567,7 @@ pub struct ChangeRow {
     undone: bool,
 }
 
-/// 덱 설정의 "최근 변경 30개"
+/// G1 "최근 나눈 카드" 30개 (R1 초안은 토스트의 [되돌리기]로만)
 #[tauri::command]
 pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow>> {
     let con = state.db.lock().map_err(err)?;
@@ -575,7 +575,7 @@ pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow
     let ids = commands::descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let mut st = con
         .prepare(&format!(
-            "SELECT id, summary, card_id, created_at, undone_at IS NOT NULL FROM card_change WHERE deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
+            "SELECT id, summary, card_id, created_at, undone_at IS NOT NULL FROM card_change WHERE kind = 'split' AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
         ))
         .map_err(err)?;
     let rows = st

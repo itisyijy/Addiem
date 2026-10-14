@@ -121,13 +121,18 @@ export function Segment<T extends string | number>({
   options,
   value,
   onChange,
+  boxed,
+  label,
 }: {
   options: { value: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
+  /** 회색 트랙 (segment--boxed) */
+  boxed?: boolean;
+  label?: string;
 }) {
   return (
-    <div className="segment" role="radiogroup">
+    <div className={`segment ${boxed ? "segment--boxed" : ""}`} role="radiogroup" aria-label={label}>
       {options.map((o) => (
         <button
           key={String(o.value)}
@@ -200,12 +205,13 @@ export function Input({ label, helper, error, className = "", ...rest }: InputPr
 
 // ---------------------------------------------------------------- Checkbox
 
-export function Checkbox({ checked, label, onChange }: { checked: boolean; label: string; onChange: (v: boolean) => void }) {
+/** quiet: 글자 없이 상자만 (label 은 화면 읽기용). 목록 행의 고르기 */
+export function Checkbox({ checked, label, onChange, quiet, disabled }: { checked: boolean; label: string; onChange: (v: boolean) => void; quiet?: boolean; disabled?: boolean }) {
   return (
-    <label className="checkbox">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <label className={`checkbox ${disabled ? "is-disabled" : ""}`} onClick={(e) => e.stopPropagation()}>
+      <input type="checkbox" checked={checked} disabled={disabled} aria-label={quiet ? label : undefined} onChange={(e) => onChange(e.target.checked)} />
       <span className={`checkbox__box ${checked ? "is-on" : ""}`}>{checked && <Icon name="check" size={14} />}</span>
-      <span className="t-body-m">{label}</span>
+      {!quiet && <span className="t-body-m">{label}</span>}
     </label>
   );
 }

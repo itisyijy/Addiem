@@ -18,6 +18,7 @@ import { Settings } from "./screens/Settings";
 import { Recover } from "./screens/Recover";
 import { Quality } from "./screens/Quality";
 import { Sources } from "./screens/Sources";
+import { Drafts } from "./screens/Drafts";
 import { Plan, PlanConflictScreen } from "./screens/Plan";
 
 export default function App() {
@@ -114,7 +115,9 @@ function Screen({ route }: { route: Route }) {
     case "quality":
       return <Quality key={route.deckId} deckId={route.deckId} />;
     case "sources": // I1 자료
-      return <Sources key={`${route.deckId}-${route.segmentId}`} {...route} />;
+      return <Sources key={`${route.deckId}-${route.segmentId}-${route.gaps}`} {...route} />;
+    case "drafts": // R1-c 초안 검토
+      return <Drafts {...route} />;
     case "plan":
       return <Plan key={route.deckId ?? "all"} deckId={route.deckId} />;
     case "planConflict":

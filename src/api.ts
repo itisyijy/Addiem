@@ -473,7 +473,7 @@ export const aiApi = {
   openUsage: () => invoke<void>("ai_open_usage"),
   /** 카드 한 장을 보내 같은 모양의 제안을 받는다. 아무것도 바꾸지 않는다 (승인은 qualityApi.apply). 오류는 AiError */
   regroup: (cardId: number) => invoke<SplitProposal>("ai_regroup", { cardId }),
-  cancelRegroup: () => invoke<void>("ai_regroup_cancel"),
+  cancel: () => invoke<void>("ai_cancel"),
 };
 /** ai_regroup 오류는 { kind, message }. 다른 오류(글자)도 받는다 */
 export const aiError = (e: unknown): AiError =>

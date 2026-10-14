@@ -274,7 +274,7 @@ INSERT OR IGNORE INTO schema_meta (key, value) VALUES
 -- 이 기기 안에서만 쓴다 (payload 가 로컬 id 를 가리킨다. 카드 자체는 card · note 로 동기화된다)
 CREATE TABLE IF NOT EXISTS card_change (
     id         INTEGER PRIMARY KEY,
-    kind       TEXT    NOT NULL CHECK (kind IN ('split')),
+    kind       TEXT    NOT NULL CHECK (kind IN ('split','draft')), -- draft: R1 자료에서 카드 초안 승인
     deck_id    INTEGER,
     card_id    INTEGER,                        -- 원래 카드
     summary    TEXT    NOT NULL,               -- "3장으로 나누기"
@@ -348,7 +348,8 @@ CREATE TABLE IF NOT EXISTS source_segment (
 CREATE INDEX IF NOT EXISTS idx_source_segment_material ON source_segment(material_id, page, ord);
 
 -- 구간 ↔ 카드. manual: [카드 잇기] / auto: 임베딩 유사도가 기준 이상 (I3) /
--- rejected: 사용자가 끊은 자동 연결 (다시 분석해도 되살리지 않는다). 카드나 자료를 지우면 연결만 사라진다 (CASCADE)
+-- rejected: 사용자가 끊은 자동 연결 (다시 분석해도 되살리지 않는다). 카드나 자료를 지우면 연결만 사라진다 (CASCADE).
+-- origin 열(db.rs migrate): 'draft' 면 R1 초안에서 만든 카드의 연결 (method 는 manual). NULL 허용 (예전 앱이 만든 행)
 CREATE TABLE IF NOT EXISTS source_link (
     id         INTEGER PRIMARY KEY,
     segment_id INTEGER NOT NULL REFERENCES source_segment(id) ON DELETE CASCADE,

@@ -50,6 +50,9 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("deck_config", "write_mode", "INTEGER"),
         // H3 압축 회독: 'cram' 이면 SRS 에 넘기지 않은 기록. 오늘의 계획 · 지표 쿼리는 kind IS NULL 만 센다 (히트맵은 함께 센다)
         ("review_log", "kind", "TEXT"),
+        // R1 "초안에서 만듦": 'draft' 면 초안을 승인해 만든 카드의 연결. method 는 manual 이라 연결 규칙은 직접 연결과 같다.
+        // 동기화 대상 표라 CHECK 를 바꾸는 재생성 대신 열을 더한다 (NULL 허용: 예전 앱이 만든 행에는 없다)
+        ("source_link", "origin", "TEXT"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
@@ -59,6 +62,20 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         if has == 0 {
             con.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"))?;
         }
+    }
+    // R1: 변경 기록에 초안(draft)도 남긴다. CHECK 는 바꿀 수 없어 표를 다시 만든다 (기기 안 표 · 기존 행 그대로 · 한 번만)
+    let sql: String = con.query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'card_change'", [], |r| r.get(0))?;
+    if !sql.contains("'draft'") {
+        let new = sql.replacen("card_change", "card_change_new", 1).replace("('split')", "('split','draft')");
+        con.execute_batch(&format!(
+            "BEGIN;
+             {new};
+             INSERT INTO card_change_new SELECT id, kind, deck_id, card_id, summary, payload, created_at, undone_at FROM card_change;
+             DROP TABLE card_change;
+             ALTER TABLE card_change_new RENAME TO card_change;
+             CREATE INDEX IF NOT EXISTS idx_card_change_deck ON card_change(deck_id, created_at);
+             COMMIT;"
+        ))?;
     }
     sync_schema(con)
 }
@@ -290,6 +307,39 @@ mod tests {
         let con = open(&dir.join("t.sqlite")).unwrap();
         assert_eq!(con.query_row("SELECT count(*) FROM sync_outbox", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
         drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn card_change_accepts_drafts_after_rebuild() {
+        // 예전 DB: card_change.kind 가 'split' 만 받는다. 열면 표를 다시 만들어 'draft' 도 받고, 기존 행은 그대로
+        let dir = std::env::temp_dir().join(format!("neoanki-draft-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.sqlite");
+        let con = open(&path).unwrap();
+        con.execute_batch(
+            "DROP TABLE card_change;
+             CREATE TABLE card_change (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('split')), deck_id INTEGER, card_id INTEGER,
+               summary TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, undone_at INTEGER);
+             INSERT INTO card_change (kind, deck_id, card_id, summary, payload, created_at, undone_at) VALUES ('split', 1, 2, '3장으로 나누기', '{}', 5, 6);",
+        )
+        .unwrap();
+        assert!(con.execute("INSERT INTO card_change (kind, summary, payload, created_at) VALUES ('draft', 's', '{}', 0)", []).is_err());
+        drop(con);
+        for _ in 0..2 {
+            let con = open(&path).unwrap();
+            let row: (String, i64, i64, String, i64, Option<i64>) = con
+                .query_row("SELECT kind, deck_id, card_id, summary, created_at, undone_at FROM card_change WHERE id = 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                })
+                .unwrap();
+            assert_eq!(row, ("split".into(), 1, 2, "3장으로 나누기".into(), 5, Some(6)));
+            con.execute("INSERT INTO card_change (kind, summary, payload, created_at) VALUES ('draft', 's', '{}', 0)", []).unwrap();
+            assert!(con.execute("INSERT INTO card_change (kind, summary, payload, created_at) VALUES ('other', 's', '{}', 0)", []).is_err());
+            assert_eq!(con.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'idx_card_change_deck'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+            // source_link.origin 은 NULL 을 받는다 (예전 앱이 만든 행)
+            assert_eq!(con.query_row("SELECT \"notnull\" FROM pragma_table_info('source_link') WHERE name = 'origin'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

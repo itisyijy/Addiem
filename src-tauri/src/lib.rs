@@ -8,6 +8,7 @@ mod export;
 mod import;
 mod plan;
 mod quality;
+mod rag;
 mod queue;
 mod render;
 mod source;
@@ -116,12 +117,12 @@ pub fn run() {
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
             source::source_list, source::source_add, source::source_delete, source::source_bytes, source::source_save_pdf,
             source::source_segments, source::source_slide, source::source_link, source::source_unlink, source::source_for_card,
-            source::source_analyze, source::source_unanalyzed, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
+            source::source_analyze, source::source_unanalyzed, source::source_segment, rag::rag_preview, rag::rag_draft, rag::rag_draft_apply, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
             quality::quality_check,
             quality::hide_quality,
             quality::split_suggest,
             quality::split_apply,
-            ai::ai_status, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_regroup_cancel,
+            ai::ai_status, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_cancel,
             quality::undo_change,
             quality::recent_changes,
             plan::study_plan,

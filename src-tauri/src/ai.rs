@@ -493,32 +493,49 @@ fn regroup_input(question: &str, items: &[String]) -> String {
     s
 }
 
-fn request_body(model: &str, input: &str, format: bool) -> J {
+/// 요청 본문. schema 가 있으면 text.format(json_schema, strict)으로 (받지 않으면 complete 가 형식 없이 다시 보낸다)
+pub(crate) fn request_body(model: &str, instructions: &str, input: &str, schema: Option<(&str, &J)>) -> J {
     let mut b = json!({
         "model": model,
-        "instructions": INSTRUCTIONS,
+        "instructions": instructions,
         "input": [{ "role": "user", "content": input }],
         "store": false,
         "stream": true,
     });
-    if format {
-        // 길이 제한(minItems 등)은 strict 스키마가 받지 않을 수 있어 parse_regroup 이 검사한다
-        let card = json!({ "type": "object", "additionalProperties": false, "required": ["front", "items"],
-            "properties": { "front": { "type": "string" }, "items": { "type": "array", "items": { "type": "integer" } } } });
-        let schema = json!({ "type": "object", "additionalProperties": false, "required": ["cards"],
-            "properties": { "cards": { "type": "array", "items": card } } });
-        b["text"] = json!({ "format": { "type": "json_schema", "name": "regroup", "strict": true, "schema": schema } });
+    if let Some((name, schema)) = schema {
+        b["text"] = json!({ "format": { "type": "json_schema", "name": name, "strict": true, "schema": schema } });
     }
     b
+}
+
+/// strict json_schema 의 객체 (모든 속성 필수, 다른 속성 없음)
+pub(crate) fn object(props: J) -> J {
+    let required: Vec<String> = props.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+    json!({ "type": "object", "additionalProperties": false, "required": required, "properties": props })
+}
+
+fn regroup_schema(segments: bool) -> J {
+    // 길이 제한(minItems 등)은 strict 스키마가 받지 않을 수 있어 parse_regroup 이 검사한다
+    let ints = json!({ "type": "array", "items": { "type": "integer" } });
+    let mut card = json!({ "front": { "type": "string" }, "items": ints });
+    if segments {
+        card["segments"] = ints;
+    }
+    object(json!({ "cards": { "type": "array", "items": object(card) } }))
+}
+
+/// 모델 출력의 JSON. 코드 블록으로 감싸도 읽는다
+pub(crate) fn parse_json(text: &str) -> Result<J, AiError> {
+    let t = text.trim();
+    let t = t.strip_prefix("```json").or_else(|| t.strip_prefix("```")).map_or(t, |x| x.trim_end().trim_end_matches("```")).trim();
+    serde_json::from_str(t).map_err(|_| AiError::BadOutput("JSON 이 아니에요".into()))
 }
 
 /// 모델 출력 → 카드. 2–8장, 질문이 비지 않고, 모든 항목이 정확히 한 번씩. 답은 원래 항목 글자 그대로다.
 /// 하나라도 어긋나면 BadOutput (화면은 규칙 나누기를 보인다)
 fn parse_regroup(text: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError> {
     let bad = |m: &str| AiError::BadOutput(m.to_string());
-    let t = text.trim();
-    let t = t.strip_prefix("```json").or_else(|| t.strip_prefix("```")).map_or(t, |x| x.trim_end().trim_end_matches("```")).trim();
-    let v: J = serde_json::from_str(t).map_err(|_| bad("JSON 이 아니에요"))?;
+    let v = parse_json(text)?;
     let cards = v["cards"].as_array().ok_or_else(|| bad("cards 가 없어요"))?;
     if !(MIN_CARDS..=MAX_CARDS).contains(&cards.len()) {
         return Err(bad("카드 수가 2–8장이 아니에요"));
@@ -549,17 +566,18 @@ fn parse_regroup(text: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError
 
 // ---------------------------------------------------------------- 개발용 가짜 응답
 
-/// debug 빌드에서만: NEOANKI_AI_FAKE=ok|slow|limit|expired|offline|unavailable|malformed.
-/// 실제 계정 없이 L4 의 보내는 중 · 오류 · 결과를 그리려는 것. 네트워크 · 키체인을 쓰지 않는다
-fn fake_mode() -> Option<String> {
+/// debug 빌드에서만: NEOANKI_AI_FAKE=ok|slow|usage_limit(limit)|expired|offline|unavailable|malformed.
+/// 실제 계정 없이 L4 · R1 · R2 · R3 의 보내는 중 · 오류 · 결과를 그리려는 것. 네트워크 · 키체인을 쓰지 않는다
+pub(crate) fn fake_mode() -> Option<String> {
     if !cfg!(debug_assertions) {
         return None;
     }
     std::env::var("NEOANKI_AI_FAKE").ok().filter(|v| !v.is_empty())
 }
 
-/// 실제 응답과 같은 검증(parse_regroup)을 거친다. slow 는 30초 넘김 안내를 보려고 35초 기다린다
-fn fake_regroup(st: &AiState, run: u64, mode: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError> {
+/// 가짜 응답: 기다린 뒤 오류 모드면 그 오류, malformed 면 깨진 JSON, 아니면 ok() 의 글자.
+/// 실제 응답과 같은 검증을 거친다. slow 는 30초 넘김 안내를 보려고 35초 기다린다
+fn fake_text(st: &AiState, run: u64, mode: &str, ok: impl FnOnce() -> String) -> Result<String, AiError> {
     let wait_ms = if cfg!(test) { 0 } else if mode == "slow" { 35_000 } else { 1_500 };
     for _ in 0..wait_ms / 100 {
         if st.run.load(Ordering::Relaxed) != run {
@@ -568,22 +586,98 @@ fn fake_regroup(st: &AiState, run: u64, mode: &str, items: &[String]) -> Result<
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     match mode {
-        "limit" => Err(AiError::Limit),
+        "limit" | "usage_limit" => Err(AiError::Limit),
         "expired" => Err(AiError::Expired),
         "offline" => Err(AiError::Offline("가짜 오프라인".into())),
         "unavailable" => Err(AiError::Unavailable),
-        "malformed" => parse_regroup("{\"cards\": [", items),
-        _ => {
-            // 앞에서부터 항목을 3묶음(항목이 6개 미만이면 2묶음)으로
-            let n = if items.len() >= 6 { 3 } else { 2 };
-            let size = items.len().div_ceil(n);
-            let cards: Vec<J> = (0..n)
-                .map(|g| (g * size + 1..=((g + 1) * size).min(items.len())).collect::<Vec<_>>())
-                .filter(|idx| !idx.is_empty())
-                .enumerate()
-                .map(|(g, idx)| json!({ "front": format!("가짜 묶음 {}", g + 1), "items": idx }))
-                .collect();
-            parse_regroup(&json!({ "cards": cards }).to_string(), items)
+        "malformed" => Ok("{\"cards\": [".into()),
+        _ => Ok(ok()),
+    }
+}
+
+/// 성격별로 묶기 가짜 결과: 항목을 앞에서부터 3묶음 (사람·집단 / 통제·위험 / 구조·성과). 구간이 있으면 첫 구간을 근거로
+fn fake_regroup(items: usize, segments: usize) -> String {
+    let names = ["사람·집단", "통제·위험", "구조·성과"];
+    let cards: Vec<J> = (0..3)
+        .map(|g| {
+            let idx: Vec<usize> = (0..items).filter(|i| i * 3 / items == g).map(|i| i + 1).collect();
+            json!({ "front": format!("{}에 관한 것은?", names[g]), "items": idx, "segments": if segments > 0 { vec![1] } else { vec![] } })
+        })
+        .collect();
+    json!({ "cards": cards }).to_string()
+}
+
+/// 보내고 모델 출력 글자를 받는다 (모든 기능이 같이 쓴다). 연결 확인 · 가짜 응답 · 이번 달 보낸 수 세기까지.
+/// body(모델, 형식 씀)가 요청 본문을 만든다. fake: 가짜 모드의 ok 출력
+pub(crate) fn generate(app: &AppHandle, body: &dyn Fn(&str, bool) -> J, fake: impl FnOnce() -> String) -> Result<String, AiError> {
+    let st = app.state::<AiState>();
+    let run = st.run.load(Ordering::Relaxed);
+    if let Some(mode) = fake_mode() {
+        let text = fake_text(&st, run, &mode, fake)?;
+        let _ = with_db(app, count_sent);
+        return Ok(text);
+    }
+    if with_db(app, |c| Ok(get_meta(c, META_EMAIL)))?.is_none() {
+        return Err(AiError::NotConnected);
+    }
+    complete(app, &st, run, body)
+}
+
+/// 모델 고르기 · 401 이면 토큰을 한 번 새로 받아 다시 · text.format 을 안 받으면 형식 없이 · 쓸 수 없는 모델이면 목록의 다음.
+/// response.completed 의 글자를 돌려준다. 처음 200 을 받으면 이번 달 보낸 수를 센다
+fn complete(app: &AppHandle, st: &AiState, run: u64, body: &dyn Fn(&str, bool) -> J) -> Result<String, AiError> {
+    let mut token = access_token(app, st, false)?;
+    let mut model = with_db(app, |c| Ok(get_meta(c, META_MODEL)))?;
+    let mut tried: Vec<String> = vec![];
+    let mut models: Option<Vec<String>> = None;
+    let (mut format, mut reauthed, mut counted) = (true, false, false);
+    loop {
+        let m = match model.take() {
+            Some(m) => m,
+            None => {
+                if models.is_none() {
+                    models = Some(list_models(&st.agent, &token).map_err(|r| match r {
+                        Reject::Fail(e) => e,
+                        _ => AiError::Other("쓸 수 있는 모델 목록을 받지 못했어요.".into()),
+                    })?);
+                }
+                let next = models.iter().flatten().find(|m| !tried.contains(*m)).cloned();
+                let next = next.ok_or_else(|| AiError::Other("이 계정으로 쓸 수 있는 모델이 없어요.".into()))?;
+                let _ = with_db(app, |c| set_meta(c, META_MODEL, Some(&next)));
+                next
+            }
+        };
+        tried.push(m.clone());
+        let res = agent_stream(st, run, &token, &body(&m, format), &mut || {
+            if !counted {
+                counted = true;
+                let _ = with_db(app, count_sent);
+            }
+        });
+        match res {
+            Ok(Outcome::Done(text)) => return Ok(text),
+            Ok(Outcome::Failed(e)) => return Err(e),
+            Ok(Outcome::Incomplete(reason)) => return Err(AiError::BadOutput(format!("응답이 끝나지 않았어요 ({reason})"))),
+            Ok(Outcome::Truncated) if st.run.load(Ordering::Relaxed) != run => return Err(AiError::Cancelled),
+            Ok(Outcome::Truncated) => return Err(AiError::Offline("응답이 중간에 끊겼어요".into())),
+            Err(Reject::Unauthorized) if !reauthed => {
+                reauthed = true;
+                token = access_token(app, st, true)?;
+                model = Some(m);
+                tried.pop();
+            }
+            Err(Reject::Unauthorized) => return Err(AiError::Other("ChatGPT가 이 계정의 요청을 받지 않았어요 (401).".into())),
+            Err(Reject::DropFormat) if format => {
+                format = false;
+                model = Some(m);
+                tried.pop();
+            }
+            Err(Reject::NextModel) => {}
+            Err(Reject::DropFormat) => return Err(AiError::Other("ChatGPT가 이 요청 형식을 받지 않았어요.".into())),
+            Err(Reject::Fail(e)) => return Err(e),
+        }
+        if st.run.load(Ordering::Relaxed) != run {
+            return Err(AiError::Cancelled);
         }
     }
 }
@@ -714,6 +808,10 @@ struct AuthEvent {
 /// reconsent: 사용량 권한을 다시 묻는다. new_account: 저장한 등록 대신 새로 등록한다 (L2-x [다른 계정으로])
 #[tauri::command]
 pub fn ai_connect(app: AppHandle, state: State<AiState>, reconsent: bool, new_account: bool) -> Res<String> {
+    // 가짜 응답으로 화면을 그리는 동안 [다시 로그인] 등을 눌러도 실제 로그인 창을 열지 않는다
+    if fake_mode().is_some() {
+        return Err("개발용 가짜 응답 모드(NEOANKI_AI_FAKE)에서는 ChatGPT에 로그인하지 않아요.".into());
+    }
     let (host, client) = with_db(&app, |c| {
         let host = match get_meta(c, META_HOST) {
             Some(h) => h,
@@ -845,9 +943,9 @@ pub fn ai_open_usage() {
     crate::sync::open_url(USAGE_URL);
 }
 
-/// L4-s [취소]
+/// [취소] · 결과 전에 평가 (L4 · R1 · R2 · R3). 진행 중인 요청을 멈춘다
 #[tauri::command]
-pub fn ai_regroup_cancel(state: State<AiState>) {
+pub fn ai_cancel(state: State<AiState>) {
     state.run.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -858,14 +956,7 @@ pub async fn ai_regroup(app: AppHandle, card_id: i64) -> Result<SplitProposal, A
 }
 
 fn regroup_blocking(app: &AppHandle, card_id: i64) -> Result<SplitProposal, AiError> {
-    let st = app.state::<AiState>();
-    let run = st.run.load(Ordering::Relaxed);
-    let (rule, model) = with_db(app, |c| {
-        if get_meta(c, META_EMAIL).is_none() && fake_mode().is_none() {
-            return Err(AiError::NotConnected);
-        }
-        Ok((quality::suggest(c, card_id, None).map_err(AiError::Other)?, get_meta(c, META_MODEL)))
-    })?;
+    let rule = with_db(app, |c| quality::suggest(c, card_id, None).map_err(AiError::Other))?;
     let items = regroup_items(&rule.answer);
     if items.len() < MIN_ITEMS {
         return Err(AiError::Other("답 항목이 3개 이상일 때 묶을 수 있어요.".into()));
@@ -874,72 +965,12 @@ fn regroup_blocking(app: &AppHandle, card_id: i64) -> Result<SplitProposal, AiEr
     if items.len() > MAX_ITEMS || input.chars().count() > MAX_INPUT_CHARS {
         return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 규칙으로 나눠 주세요.".into()));
     }
-    if let Some(mode) = fake_mode() {
-        let parts = fake_regroup(&st, run, &mode, &items)?;
-        let _ = with_db(app, count_sent);
-        let why = format!("{}. ChatGPT가 성격이 비슷한 것끼리 {}장으로 묶었어요.", quality::reason_of(&rule.flags), parts.len());
-        return Ok(SplitProposal { why, parts, kind: "nature", ..rule });
-    }
-    let mut token = access_token(app, &st, false)?;
-    let mut tried: Vec<String> = vec![];
-    let mut models: Option<Vec<String>> = None;
-    let mut model = model;
-    let (mut format, mut reauthed, mut counted) = (true, false, false);
-    loop {
-        let m = match model.take() {
-            Some(m) => m,
-            None => {
-                if models.is_none() {
-                    models = Some(list_models(&st.agent, &token).map_err(|r| match r {
-                        Reject::Fail(e) => e,
-                        _ => AiError::Other("쓸 수 있는 모델 목록을 받지 못했어요.".into()),
-                    })?);
-                }
-                let next = models.iter().flatten().find(|m| !tried.contains(*m)).cloned();
-                let next = next.ok_or_else(|| AiError::Other("이 계정으로 쓸 수 있는 모델이 없어요.".into()))?;
-                let _ = with_db(app, |c| set_meta(c, META_MODEL, Some(&next)));
-                next
-            }
-        };
-        tried.push(m.clone());
-        let body = request_body(&m, &input, format);
-        let res = agent_stream(&st, run, &token, &body, &mut || {
-            if !counted {
-                counted = true;
-                let _ = with_db(app, count_sent);
-            }
-        });
-        match res {
-            Ok(Outcome::Done(text)) => {
-                let parts = parse_regroup(&text, &items)?;
-                // L4 "왜?": 걸린 규칙 + ChatGPT 가 묶은 장수
-                let why = format!("{}. ChatGPT가 성격이 비슷한 것끼리 {}장으로 묶었어요.", quality::reason_of(&rule.flags), parts.len());
-                return Ok(SplitProposal { why, parts, kind: "nature", ..rule });
-            }
-            Ok(Outcome::Failed(e)) => return Err(e),
-            Ok(Outcome::Incomplete(reason)) => return Err(AiError::BadOutput(format!("응답이 끝나지 않았어요 ({reason})"))),
-            Ok(Outcome::Truncated) if st.run.load(Ordering::Relaxed) != run => return Err(AiError::Cancelled),
-            Ok(Outcome::Truncated) => return Err(AiError::Offline("응답이 중간에 끊겼어요".into())),
-            Err(Reject::Unauthorized) if !reauthed => {
-                reauthed = true;
-                token = access_token(app, &st, true)?;
-                model = Some(m);
-                tried.pop();
-            }
-            Err(Reject::Unauthorized) => return Err(AiError::Other("ChatGPT가 이 계정의 요청을 받지 않았어요 (401).".into())),
-            Err(Reject::DropFormat) if format => {
-                format = false;
-                model = Some(m);
-                tried.pop();
-            }
-            Err(Reject::NextModel) => {}
-            Err(Reject::DropFormat) => return Err(AiError::Other("ChatGPT가 이 요청 형식을 받지 않았어요.".into())),
-            Err(Reject::Fail(e)) => return Err(e),
-        }
-        if st.run.load(Ordering::Relaxed) != run {
-            return Err(AiError::Cancelled);
-        }
-    }
+    let schema = regroup_schema(false);
+    let text = generate(app, &|m, f| request_body(m, INSTRUCTIONS, &input, f.then_some(("regroup", &schema))), || fake_regroup(items.len(), 0))?;
+    let parts = parse_regroup(&text, &items)?;
+    // L4 "왜?": 걸린 규칙 + ChatGPT 가 묶은 장수
+    let why = format!("{}. ChatGPT가 성격이 비슷한 것끼리 {}장으로 묶었어요.", quality::reason_of(&rule.flags), parts.len());
+    Ok(SplitProposal { why, parts, kind: "nature", ..rule })
 }
 
 /// 보내고 스트림을 끝까지 읽는다. 200 이면 sent() (이번 달 보낸 카드). 취소되면 읽기를 멈춘다 (Truncated)
@@ -973,13 +1004,17 @@ mod tests {
     #[test]
     fn fake_ok_groups_every_item_once() {
         let st = AiState::new();
-        for n in [3, 5, 6, 7, 11] {
+        for n in [3, 4, 5, 6, 7, 11] {
             let items: Vec<String> = (1..=n).map(|i| format!("항목 {i}")).collect();
-            let parts = fake_regroup(&st, 0, "ok", &items).unwrap();
-            assert_eq!(parts.len(), if n >= 6 { 3 } else { 2 });
+            let text = fake_text(&st, 0, "ok", || fake_regroup(n, 0)).unwrap();
+            let parts = parse_regroup(&text, &items).unwrap();
+            assert_eq!(parts.iter().map(|p| p.front.as_str()).collect::<Vec<_>>(), ["사람·집단에 관한 것은?", "통제·위험에 관한 것은?", "구조·성과에 관한 것은?"]);
             assert_eq!(parts.iter().map(|p| p.back.lines().count()).sum::<usize>(), n);
         }
-        assert!(matches!(fake_regroup(&st, 0, "malformed", &["a".into(), "b".into(), "c".into()]), Err(AiError::BadOutput(_))));
+        let text = fake_text(&st, 0, "malformed", || unreachable!()).unwrap();
+        assert!(matches!(parse_regroup(&text, &["a".into(), "b".into(), "c".into()]), Err(AiError::BadOutput(_))));
+        assert_eq!(fake_text(&st, 0, "usage_limit", String::new), Err(AiError::Limit));
+        assert_eq!(fake_text(&st, 0, "limit", String::new), Err(AiError::Limit));
     }
 
     fn query(u: &str) -> HashMap<String, String> {
@@ -1239,10 +1274,12 @@ mod tests {
         for leak in ["<", "secret.png", "chart.png", "sound", "비밀 덱"] {
             assert!(!input.contains(leak), "{leak}");
         }
-        let body = request_body("m", &input, true);
+        let schema = regroup_schema(false);
+        let body = request_body("m", INSTRUCTIONS, &input, Some(("regroup", &schema)));
         assert_eq!((body["store"].as_bool(), body["stream"].as_bool()), (Some(false), Some(true)));
         assert_eq!(body["text"]["format"]["type"], "json_schema");
-        assert!(request_body("m", &input, false).get("text").is_none());
+        assert_eq!(body["text"]["format"]["schema"]["properties"]["cards"]["items"]["required"], json!(["front", "items"]));
+        assert!(request_body("m", INSTRUCTIONS, &input, None).get("text").is_none());
         // 이번 달 보낸 카드: 이 기기에서만 센다
         assert_eq!(sent_this_month(&con), 0);
         count_sent(&con).unwrap();

@@ -304,14 +304,14 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   // 창을 닫으면 보내던 요청도 멈춘다
   useEffect(
     () => () => {
-      if (inFlight.current) aiApi.cancelRegroup().catch(() => {});
+      if (inFlight.current) aiApi.cancel().catch(() => {});
     },
     [],
   );
 
   /** 규칙 제안으로 돌아간다. 보내던 요청은 멈춘다 */
   const toRule = () => {
-    if (inFlight.current) aiApi.cancelRegroup().catch(() => {});
+    if (inFlight.current) aiApi.cancel().catch(() => {});
     inFlight.current = false;
     seq.current++;
     setAiBusy(false);
