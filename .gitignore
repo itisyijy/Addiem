@@ -10,6 +10,7 @@
 
 # Python 가상환경. requirements.txt 로 다시 만든다
 .venv/
+__pycache__/
 
 # 프론트엔드 (Vite)
 node_modules/
