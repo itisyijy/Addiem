@@ -31,6 +31,18 @@
   scrollbar-gutter: stable; /* 넘칠 때와 아닐 때 글 폭이 같게 */
   padding: 0 30px 40px 0;
 }
+/* 위로 올라간 내용이 머리글 바로 아래에서 끊겨 보이지 않게 12px 페이드 (D3-l 아래 페이드와 같은 규칙) */
+.study__scroll::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex-shrink: 0;
+  height: 12px;
+  margin-bottom: -12px;
+  background: linear-gradient(var(--bg-surface), transparent);
+  pointer-events: none;
+}
 .study__scroll::-webkit-scrollbar { width: 4px; }
 .study__scroll::-webkit-scrollbar-track { margin: 16px 0 48px; border-radius: 2px; background: var(--bg-subtle); }
 .study__scroll::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: var(--border-strong); }

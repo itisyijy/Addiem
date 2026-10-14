@@ -21,7 +21,11 @@ const COPY = (e: AiError): Partial<Record<AiError["kind"], [string, string]>> =>
   error: ["채점 보조를 받지 못했어요", e.message],
 });
 
-const what = (segs: number) => `내 답 · 모범 답${segs ? ` · 자료 ${n(segs)}구간` : ""}`;
+/** "내 답 · 모범 답 · 자료 3구간(비슷한 구간)" (연결이 없어 비슷한 구간을 보낼 때 그렇게 알린다) */
+const what = (segs: Sent[]) =>
+  `내 답 · 모범 답${segs.length ? ` · 자료 ${n(segs.length)}구간${segs.every((s) => s.how === "similar") ? "(비슷한 구간)" : ""}` : ""}`;
+/** 오류 뒤에 G 로 다시 보낼 만한 것 (한도 · 만료 · 권한은 다시 보내도 같다) */
+const RETRY: AiError["kind"][] = ["offline", "unavailable", "bad_output", "error"];
 
 /**
  * J2 의 채점 보조. on: 쓴 답과 비교 화면이 있을 때. confirmed: 학습 세션마다 한 번 확인 (Study 의 ref).
@@ -141,8 +145,8 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
       size="M"
       className="grade__btn"
       icon="sparkles"
-      label="ChatGPT로 채점 보조"
-      shortcut={actionKey("grade")}
+      label={phase === "done" ? "다시 채점 보조" : "ChatGPT로 채점 보조"}
+      shortcut={phase === "done" ? undefined : actionKey("grade")}
       disabled={phase === "busy"}
       aria-keyshortcuts={actionKey("grade")}
       onClick={start}
@@ -151,7 +155,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   // 버튼 아래 늘 보이는 범위 한 줄. [보기]는 같은 확인 목록을 펼친다
   const scopeLine = on && scope && phase !== "done" && (
     <span className="grade__scope">
-      <ScopeLine text={`${what(segs.length)}을 보내요`} open={phase === "confirm"} onToggle={() => setPhase((p) => (p === "confirm" ? "idle" : p === "busy" ? p : "confirm"))} />
+      <ScopeLine text={`${what(segs)}을 보내요`} open={phase === "confirm"} onToggle={() => setPhase((p) => (p === "confirm" ? "idle" : p === "busy" ? p : "confirm"))} />
     </span>
   );
 
@@ -198,7 +202,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
           <span className="t-label-m">ChatGPT 채점 보조</span>
           <span className="t-caption c-tertiary">참고용이에요 · 평가는 직접 해요</span>
         </span>
-        <ScopeLine text={`보낸 것: ${what(result.sent.length)}`} open={showSent} onToggle={() => setShowSent((v) => !v)} />
+        <ScopeLine text={`보낸 것: ${what(result.sent)}`} open={showSent} onToggle={() => setShowSent((v) => !v)} />
       </div>
       {showSent && (
         <SendList
@@ -253,8 +257,9 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
     /** ChatGPT 추천 (결과가 있을 때만) */
     rating: phase === "done" && result ? result.rating : null,
     busy: phase === "busy",
-    /** 단축키 G 를 받을 때. 결과가 있으면 받지 않는다 (실수로 다시 보내 사용량을 쓰지 않게, 다시 받으려면 버튼) */
-    ready: on && (phase === "idle" || phase === "error"),
+    /** 단축키 G 를 받을 때 (힌트 줄도 이때만). 결과가 있으면 받지 않는다 (실수로 다시 보내 사용량을 쓰지 않게, 다시 받으려면 버튼).
+     *  오류 뒤에는 다시 보내 볼 만할 때만 */
+    ready: on && (phase === "idle" || (phase === "error" && !!fail && RETRY.includes(fail.kind))),
     start,
     stop,
     button,
