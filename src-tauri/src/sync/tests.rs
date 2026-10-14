@@ -754,7 +754,13 @@ fn copied_data_folder_gets_its_own_device_id() {
 #[test]
 fn merging_two_copies_of_one_old_database_does_not_duplicate() {
     // 동기화 전에 DB 를 복사해 두 컴퓨터에서 따로 쓴 경우: uid 는 열 때 각자 만들어 모두 다르다.
-    // 앱에서 만든 노트 · 복습 기록 · 세션도 (같은 ms, 같은 내용이면) 하나로 합친다
+    // 앱에서 만든 노트 · 복습 기록 · 세션도 (같은 ms, 같은 내용이면) 하나로 합친다.
+    // uid 는 시각 순이라 어느 컴퓨터가 먼저 열었는지에 따라 합치는 쪽 uid 가 더 작을 수도 클 수도 있다: 둘 다 본다
+    merge_old_copy("00");
+    merge_old_copy("ff");
+}
+
+fn merge_old_copy(b_uid_prefix: &str) {
     let env = Env::new();
     let a = Dev::new("노트북");
     let deck = a.deck("직접 만든 덱", None);
@@ -766,7 +772,7 @@ fn merging_two_copies_of_one_old_database_does_not_duplicate() {
     a.con().execute("VACUUM INTO ?1", [copy_dir.join("neoanki.sqlite").to_string_lossy()]).unwrap();
     let b = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("neoanki.sqlite")).unwrap()) };
     for t in db::SYNC_TABLES {
-        b.con().execute(&format!("UPDATE {t} SET uid = lower(hex(randomblob(16)))"), []).unwrap();
+        b.con().execute(&format!("UPDATE {t} SET uid = ?1 || lower(hex(randomblob(15)))"), [b_uid_prefix]).unwrap();
     }
     b.con().execute("UPDATE schema_meta SET value = lower(hex(randomblob(16))) WHERE key = 'device_uid'", []).unwrap();
     engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
@@ -776,5 +782,5 @@ fn merging_two_copies_of_one_old_database_does_not_duplicate() {
     }
     env.sync(&b);
     env.sync(&a);
-    assert_eq!(a.dump(), b.dump());
+    assert_eq!(a.dump(), b.dump(), "합치는 쪽 uid 가 {b_uid_prefix}…");
 }
