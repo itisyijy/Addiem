@@ -406,6 +406,39 @@ export const api = {
   wipeAll: (backup: boolean) => invoke<string | null>("wipe_all", { backup }),
 };
 
+// ---------------------------------------------------------------- G 카드 점검 · 나누기 (quality.rs)
+
+/** lines · items · questions = 카드 모양 (노랑/회색), again = 최근 14일 Again (빨강) */
+export type QualityFlag = { kind: "lines" | "items" | "questions" | "again"; n: number };
+export type QualityCard = { id: number; question: string; path: string[]; flags: QualityFlag[]; hidden: boolean };
+/** 글자 그대로. back 은 줄바꿈으로 항목을 나눈다 (만들 때 HTML 로 바뀐다) */
+export type SplitPart = { front: string; back: string };
+export type SplitProposal = {
+  card_id: number;
+  question: string;
+  answer: string[];
+  why: string;
+  parts: SplitPart[];
+  per_card: number;
+  flags: QualityFlag[];
+  /** questions 면 한 장 항목 수를 바꿔도 같은 제안이다 */
+  kind: "items" | "lines" | "questions";
+};
+export type CardChange = { id: number; summary: string; card_id: number | null; created_at: number; undone: boolean };
+
+export const qualityApi = {
+  check: (deckId: number) => invoke<QualityCard[]>("quality_check", { deckId }),
+  /** [그대로 두기] 30일 동안 목록에서 뺀다. hide=false 면 다시 올린다 */
+  hide: (cardId: number, hide: boolean) => invoke<void>("hide_quality", { cardId, hide }),
+  suggest: (cardId: number, perCard: number | null = null) => invoke<SplitProposal>("split_suggest", { cardId, perCard }),
+  /** 승인. 변경 id 를 돌려준다 (되돌리기용) */
+  apply: (cardId: number, parts: SplitPart[], archiveOriginal: boolean) => invoke<number>("split_apply", { cardId, parts, archiveOriginal }),
+  undo: (changeId: number) => invoke<void>("undo_change", { changeId }),
+  recent: (deckId: number) => invoke<CardChange[]>("recent_changes", { deckId }),
+  /** G3 토스트 둘째 줄의 이유 ("답이 10항목이라"). 카드 모양 문제가 없으면 null */
+  splitSignal: (cardId: number) => invoke<string | null>("split_signal", { cardId }),
+};
+
 /** Rust 쪽 오류는 사용자에게 보여줄 문장으로 온다 */
 export function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : "알 수 없는 오류가 났어요.";

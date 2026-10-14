@@ -243,3 +243,9 @@
 .study__card.is-overflow .study__scroll::-webkit-scrollbar-track { margin: 16px 0 8px; }
 .study__card.is-overflow .study__fade { bottom: 48px; }
 .study__card.is-overflow .study__more { bottom: 9px; }
+
+/* ---------------------------------------------------------------- G3 학습 중 신호 (Figma 53:6032) */
+.study .study__toast-btn--accent { border-color: transparent; background: var(--accent-default); }
+.study .study__toast-btn--accent:hover { background: var(--accent-pressed); }
+/* D5 접어둔 카드 행의 [나누기 제안] 칩 (StudyParts SplitLaterChip) */
+.split-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; border-radius: 999px; background: var(--accent-subtle); color: var(--accent-text); white-space: nowrap; }

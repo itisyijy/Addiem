@@ -274,3 +274,7 @@
    고른 행은 중립 bg/subtle 로 두고(체크박스가 선택을 말해 준다), 알약도 원래 색으로 */
 :root[data-theme="dark"] .cards__table .cards__row.is-selected { background: var(--bg-subtle); }
 :root[data-theme="dark"] .cards__table .cards__row.is-selected .badge--accent { background: var(--accent-subtle); }
+
+/* G1 진입: C2 상단 칩 "고칠 만한 카드 N" */
+.cards__fix { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 7px 14px; border-radius: 999px; background: var(--status-warn-bg); color: var(--status-warn-fg); white-space: nowrap; }
+.cards__fix:hover { filter: brightness(0.97); }

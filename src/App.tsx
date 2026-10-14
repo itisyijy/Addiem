@@ -15,6 +15,7 @@ import { Import, ImportResultScreen } from "./screens/Import";
 import { Importance } from "./screens/Importance";
 import { Settings } from "./screens/Settings";
 import { Recover } from "./screens/Recover";
+import { Quality } from "./screens/Quality";
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
@@ -104,6 +105,8 @@ function Screen({ route }: { route: Route }) {
       return <Settings focus={route.focus} />;
     case "deckSettings":
       return <DeckSettings key={route.deckId} deckId={route.deckId} />;
+    case "quality":
+      return <Quality key={route.deckId} deckId={route.deckId} />;
     case "summary":
       return <Summary deckIds={route.deckIds} />;
     case "study":

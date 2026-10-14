@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod export;
 mod import;
+mod quality;
 mod queue;
 mod render;
 mod srs;
@@ -95,6 +96,13 @@ pub fn run() {
             export::export_preview,
             export::reveal_file,
             export::export_csv,
+            quality::quality_check,
+            quality::hide_quality,
+            quality::split_suggest,
+            quality::split_apply,
+            quality::undo_change,
+            quality::recent_changes,
+            quality::split_signal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

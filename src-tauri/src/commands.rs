@@ -2414,7 +2414,8 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
     tx.execute_batch(
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
-         DELETE FROM media; DELETE FROM import_issue; DELETE FROM import_batch;",
+         DELETE FROM media; DELETE FROM import_issue; DELETE FROM import_batch;
+         DELETE FROM card_change;",
     )
     .map_err(err)?;
     db::seed_note_types(&tx).map_err(err)?;

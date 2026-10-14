@@ -42,6 +42,8 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("deck", "weak", "INTEGER NOT NULL DEFAULT 0"),
         ("deck", "weak_dismissed_until", "TEXT"),
         ("deck", "weak_recovery_shown", "INTEGER NOT NULL DEFAULT 0"),
+        // G1 [그대로 두기]: 이 시각까지 점검 목록에 다시 올리지 않는다
+        ("card", "quality_hidden_until", "INTEGER"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),

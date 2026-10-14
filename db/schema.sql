@@ -265,3 +265,18 @@ INSERT OR IGNORE INTO schema_meta (key, value) VALUES
     ('day_cutoff_hour', '4'),
     ('srs', 'fsrs'),               -- 스파이크 5: Rating 1..4가 우리 review_log.rating과 정확히 일치
     ('fsrs_learning_steps', '1m,10m');
+
+-- ---- G · 카드 품질
+-- G2 나누기 같은 카드 변경 한 번 = 한 줄. [되돌리기]가 이 줄로 새 카드를 지우고 원래 카드를 되살린다.
+-- 이 기기 안에서만 쓴다 (payload 가 로컬 id 를 가리킨다)
+CREATE TABLE IF NOT EXISTS card_change (
+    id         INTEGER PRIMARY KEY,
+    kind       TEXT    NOT NULL CHECK (kind IN ('split')),
+    deck_id    INTEGER,
+    card_id    INTEGER,                        -- 원래 카드
+    summary    TEXT    NOT NULL,               -- "3장으로 나누기"
+    payload    TEXT    NOT NULL,               -- JSON. {prev_state, new_notes}
+    created_at INTEGER NOT NULL,
+    undone_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_card_change_deck ON card_change(deck_id, created_at);

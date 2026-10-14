@@ -14,6 +14,7 @@ export type Route =
   | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean } // C2. deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w)
   | { name: "addCard"; deckId: number } // C3
   | { name: "deckSettings"; deckId: number } // C4
+  | { name: "quality"; deckId: number } // G1 카드 점검 (G2 나누기 제안은 그 위 모달)
   | { name: "summary"; deckIds: number[] | null } // D1
   | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number } // D2~D4
   | { name: "done"; sessionId: number; summary: SessionSummary; completed: boolean; deckIds: number[] | null; scale: number } // D5

@@ -1,0 +1,114 @@
+/* G1 카드 점검 (53:5650) · G2 나누기 제안 (53:5871). 수치는 Figma 프레임에서 옮겼다 */
+
+.quality { gap: 16px; }
+.quality .deck__head > .badge { margin-bottom: 2px; }
+
+/* 보라 안내 한 줄 (G1 · G2 "왜?") */
+.quality__info {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+.quality__info .icon { flex-shrink: 0; margin-top: 2px; }
+
+.quality__list { display: flex; flex-direction: column; }
+.quality__row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px 14px 24px;
+  border-bottom: 1px solid var(--border-default);
+}
+.quality__row:last-child { border-bottom: none; }
+.quality__row:hover { background: var(--bg-canvas); }
+.quality__text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+.quality__text > .t-body-m { overflow-wrap: anywhere; }
+.quality__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.quality__row .btn { flex-shrink: 0; }
+.quality__row--change { gap: 12px; }
+.quality__row--change > .t-body-m { flex: 1; }
+
+.quality__empty { display: flex; flex-direction: column; gap: 4px; padding: 28px 24px; }
+
+.quality__section { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; }
+.quality__fold { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; }
+.quality__fold:hover { color: var(--text-primary); }
+
+/* ---------------------------------------------------------------- G2 나누기 제안 (모달) */
+.modal.split {
+  top: 56px;
+  width: 1080px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  gap: 18px;
+  padding: 26px 32px 24px;
+}
+.split__why { padding: 10px 14px; border-radius: 14px; }
+.split__cols { display: flex; align-items: flex-start; gap: 16px; }
+/* 아래 버튼 줄이 늘 보이게 두 열은 각자 스크롤한다 (창 높이 800 기준 약 400) */
+.split__orig, .split__parts { max-height: calc(100vh - 400px); overflow-y: auto; }
+.split__parts { padding: 0 4px 4px 0; }
+.split__orig {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 10px;
+  width: 380px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: var(--bg-canvas);
+  overflow-wrap: anywhere;
+}
+.split__arrow { display: inline-flex; align-items: center; justify-content: center; align-self: center; width: 28px; }
+.split__parts { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 10px; }
+.split__card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 12px 12px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  background: var(--bg-surface);
+  overflow-wrap: anywhere;
+}
+/* 1.5px 테두리. 안쪽 여백을 0.5px 줄여 글자가 움직이지 않게 한다 */
+.split__card.is-editing { padding: 11.5px 11.5px 11.5px 15.5px; border: 1.5px solid var(--accent-default); }
+.split__card-head { display: flex; align-items: center; gap: 8px; }
+.split__card-head > :first-child { flex: 1; min-width: 0; }
+.split__tools { display: inline-flex; flex-shrink: 0; gap: 2px; align-self: flex-start; margin-top: 2px; }
+.split__tool { display: inline-flex; padding: 2px; border-radius: 6px; }
+.split__tool:hover { color: var(--text-primary); background: var(--bg-subtle); }
+.split__input {
+  width: 100%;
+  padding: 4px 8px;
+  margin-left: -8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+}
+.split__input:focus { border-color: var(--accent-default); }
+.split__input::placeholder { color: var(--text-tertiary); }
+.split__textarea { resize: vertical; font-family: inherit; }
+.split__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 7px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+}
+.split__add:hover { color: var(--text-secondary); border-color: var(--text-tertiary); }
+.split__keep { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.split__foot { display: flex; align-items: center; justify-content: space-between; }
+.split__alts, .split__actions { display: inline-flex; align-items: center; gap: 8px; }
+.split__input:focus-visible { outline: none; } /* 테두리가 초점을 보여준다 */
+/* 글자만 옮겨서 잃는 그림·서식 안내 (원래 카드에 있을 때만) */
+.split__lost { color: var(--status-warn-fg); }
