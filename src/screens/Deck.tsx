@@ -8,6 +8,7 @@ import { actionKey } from "../keys";
 import { useToast, type ToastInput } from "../toast";
 import { Modal, NewDeckModal } from "./NewDeck";
 import { ExportDeckDialog } from "./ExportDeck";
+import { SourcesButton } from "./Sources";
 
 const WEEKDAY = "일월화수목금토";
 export function dateWithDay(iso: string) {
@@ -133,6 +134,7 @@ function Header({ d, reload, variant }: { d: DeckDetail; reload: Reload; variant
           {variant === "full" && (
             <Button variant="secondary" size="M" icon="list" label="카드 보기" onClick={() => nav({ name: "cards", deckId: d.id })} />
           )}
+          {variant === "full" && <SourcesButton deckId={d.id} /> /* I1 [자료 N] (screens/Sources.tsx) */}
           <Button
             variant={variant === "full" ? "secondary" : "ghost"}
             size="M"

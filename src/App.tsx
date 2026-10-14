@@ -16,6 +16,7 @@ import { Importance } from "./screens/Importance";
 import { Settings } from "./screens/Settings";
 import { Recover } from "./screens/Recover";
 import { Quality } from "./screens/Quality";
+import { Sources } from "./screens/Sources";
 import { Plan, PlanConflictScreen } from "./screens/Plan";
 
 export default function App() {
@@ -108,6 +109,8 @@ function Screen({ route }: { route: Route }) {
       return <DeckSettings key={route.deckId} deckId={route.deckId} />;
     case "quality":
       return <Quality key={route.deckId} deckId={route.deckId} />;
+    case "sources": // I1 자료
+      return <Sources key={`${route.deckId}-${route.segmentId}`} {...route} />;
     case "plan":
       return <Plan key={route.deckId ?? "all"} deckId={route.deckId} />;
     case "planConflict":

@@ -12,6 +12,7 @@ import { Modal } from "./NewDeck";
 import { DeleteDeckConfirm } from "./Deck";
 import { SKIP_SUMMARY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
+import { ModelRow } from "./Sources";
 
 const HOURS = [0, 1, 2, 3, 4, 5, 6];
 const THEMES: [ThemePref, string][] = [
@@ -81,7 +82,7 @@ export function Settings({ focus }: { focus?: "archived" }) {
             <span className="t-body-m-strong">지금 백업 만들기</span>
             <span className="t-body-s c-secondary">
               {info.last_backup ? `마지막 백업 · ${when(info.last_backup)} · ` : "아직 백업이 없어요 · "}
-              덱, 카드, 복습 기록, 미디어가 파일 하나에 들어가요.
+              덱, 카드, 복습 기록, 미디어, 연결한 자료가 파일 하나에 들어가요.
             </span>
           </span>
           <Button size="M" icon="download" label={busy ? "만드는 중…" : "백업 만들기"} disabled={busy} onClick={() => act(api.createBackup, "백업을 만들었어요")} />
@@ -185,10 +186,11 @@ export function Settings({ focus }: { focus?: "archived" }) {
 
       <section className="prefs__section">
         <p className="prefs__label t-label-s c-tertiary">데이터</p>
+        <ModelRow /> {/* I3 분석 모델 (받았을 때만, screens/Sources.tsx) */}
         <div className="prefs__row">
           <span className="prefs__text">
             <span className="t-body-m-strong">모든 데이터 삭제</span>
-            <span className="t-body-s c-secondary">덱, 카드, 복습 기록, 미디어를 이 기기에서 지워요. 삭제 전에 백업을 만들어요.</span>
+            <span className="t-body-s c-secondary">덱, 카드, 복습 기록, 미디어, 연결한 자료를 이 기기에서 지워요. 삭제 전에 백업을 만들어요.</span>
           </span>
           <Button variant="danger" size="M" icon="trash" label="모든 데이터 삭제" onClick={() => setWiping(true)} />
         </div>

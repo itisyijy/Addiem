@@ -1,12 +1,14 @@
 mod commands;
 mod cram;
 mod db;
+mod embed;
 mod export;
 mod import;
 mod plan;
 mod quality;
 mod queue;
 mod render;
+mod source;
 mod srs;
 
 use tauri::Manager;
@@ -100,6 +102,10 @@ pub fn run() {
             export::export_csv,
             // H3 압축 회독 (학습 화면)
             cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo,
+            // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
+            source::source_list, source::source_add, source::source_delete, source::source_bytes, source::source_save_pdf,
+            source::source_segments, source::source_slide, source::source_link, source::source_unlink, source::source_for_card,
+            source::source_analyze, source::source_unanalyzed, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
             quality::quality_check,
             quality::hide_quality,
             quality::split_suggest,

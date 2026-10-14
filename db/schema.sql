@@ -308,3 +308,58 @@ CREATE TABLE IF NOT EXISTS plan_conflict (
     created_at INTEGER NOT NULL,
     UNIQUE (deck_a, deck_b)
 );
+
+-- ---------------------------------------------------------------- I · 원자료
+-- 덱에 붙인 강의 자료 (I1, post-mvp B-1). 원본은 <data_dir>/sources/ 에 복사해 두고 고치지 않는다.
+
+CREATE TABLE IF NOT EXISTS source_material (
+    id         INTEGER PRIMARY KEY,
+    deck_id    INTEGER NOT NULL REFERENCES deck(id) ON DELETE CASCADE,
+    file_name  TEXT    NOT NULL,             -- 사용자가 고른 파일 이름 (보여주기용)
+    rel_path   TEXT    NOT NULL,             -- data_dir 기준 복사본 경로 (sources/12.pdf)
+    kind       TEXT    NOT NULL CHECK (kind IN ('pdf','pptx')),
+    pages      INTEGER NOT NULL DEFAULT 0,   -- PDF 쪽 수 / PPTX 슬라이드 수
+    status     TEXT    NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','ready','unsupported')), -- unsupported: 글자를 읽을 수 없음 (스캔본)
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_material_deck ON source_material(deck_id);
+
+-- 강조된 구간. signals 는 'highlight,red' 처럼 신뢰도 순. weight 는 신호 가중치 합 (post-mvp 5장)
+CREATE TABLE IF NOT EXISTS source_segment (
+    id          INTEGER PRIMARY KEY,
+    material_id INTEGER NOT NULL REFERENCES source_material(id) ON DELETE CASCADE,
+    page        INTEGER NOT NULL,            -- 1부터
+    ord         INTEGER NOT NULL,            -- 쪽 안 순서
+    text        TEXT    NOT NULL,
+    signals     TEXT    NOT NULL,
+    weight      REAL    NOT NULL,
+    rects       TEXT,                        -- 쪽 위 위치 JSON [[x,y,w,h],..] 0~1 비율. PPTX 는 없음
+    before_text TEXT,                        -- 앞뒤 문단 (I2 패널)
+    after_text  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_source_segment_material ON source_segment(material_id, page, ord);
+
+-- 구간 ↔ 카드. manual: [카드 잇기] / auto: 임베딩 유사도가 기준 이상 (I3) /
+-- rejected: 사용자가 끊은 자동 연결 (다시 분석해도 되살리지 않는다). 카드나 자료를 지우면 연결만 사라진다 (CASCADE)
+CREATE TABLE IF NOT EXISTS source_link (
+    id         INTEGER PRIMARY KEY,
+    segment_id INTEGER NOT NULL REFERENCES source_segment(id) ON DELETE CASCADE,
+    card_id    INTEGER NOT NULL REFERENCES card(id) ON DELETE CASCADE,
+    method     TEXT    NOT NULL CHECK (method IN ('manual','auto','rejected')),
+    score      REAL,                         -- auto 일 때 코사인 유사도
+    created_at INTEGER NOT NULL,
+    UNIQUE (segment_id, card_id)
+);
+CREATE INDEX IF NOT EXISTS idx_source_link_card ON source_link(card_id);
+
+-- 임베딩 캐시. 이 기기에서만 쓴다 (모델만 있으면 다시 만들 수 있다). 글이 바뀌면 text_hash 가 달라져 다시 계산
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    kind      TEXT    NOT NULL CHECK (kind IN ('card','segment')),
+    ref_id    INTEGER NOT NULL,
+    model     TEXT    NOT NULL,
+    text_hash TEXT    NOT NULL,
+    vec       BLOB    NOT NULL,              -- f32 little-endian
+    PRIMARY KEY (kind, ref_id, model)
+);

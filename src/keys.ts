@@ -4,7 +4,7 @@
 import { useSyncExternalStore } from "react";
 
 export type Scope = "study" | "app";
-export type ActionId = "reveal" | "rate" | "edit" | "bury" | "undo" | "newDeck" | "import" | "addCard" | "save" | "math";
+export type ActionId = "reveal" | "rate" | "edit" | "bury" | "undo" | "source" | "newDeck" | "import" | "addCard" | "save" | "math";
 
 export const SCOPE_LABEL: Record<Scope, string> = { study: "학습 화면", app: "앱 전체" };
 
@@ -15,6 +15,8 @@ export const ACTIONS: { id: ActionId; label: string; scope: Scope; keys: string[
   { id: "edit", label: "카드 편집", scope: "study", keys: ["KeyE"] },
   { id: "bury", label: "접어두기", scope: "study", keys: ["Minus"] },
   { id: "undo", label: "평가 되돌리기", scope: "study", keys: ["Ctrl+KeyZ"] },
+  // I2: 연결된 자료가 있는 카드의 답 화면에서 원자료 패널을 열고 닫는다. 학습 화면 · 앱 범위 키와 겹치지 않음 확인 (2026-10-14)
+  { id: "source", label: "원자료 보기", scope: "study", keys: ["KeyS"] },
   { id: "newDeck", label: "새 덱", scope: "app", keys: ["KeyN"] },
   { id: "import", label: "가져오기", scope: "app", keys: ["KeyI"] },
   { id: "addCard", label: "카드 추가", scope: "app", keys: ["KeyA"] },

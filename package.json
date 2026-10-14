@@ -16,6 +16,7 @@
     "@tauri-apps/plugin-dialog": "^2.8.2",
     "dompurify": "^3.4.17",
     "katex": "0.18.11",
+    "pdfjs-dist": "6.3.289",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -30,5 +31,8 @@
   "description": "시험일까지의 완주 전략을 관리하는 Anki 호환 학습 앱",
   "engines": {
     "node": ">=24"
+  },
+  "overrides": {
+    "@napi-rs/canvas": "1.0.9"
   }
 }

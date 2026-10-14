@@ -1,0 +1,149 @@
+/* I 원자료. I1 자료 화면(Figma 53:6560) · I2 학습 중 원자료 패널(53:6730) · I3 중요도 배너와 출처 태그(53:6875) */
+
+/* 강조 표시 색. 자료 쪽은 종이처럼 늘 흰 바탕이라 미리보기 위 표시는 밝은 값 그대로, 글 위 노란 바탕만 다크에서 낮춘다 */
+:root {
+  --src-hit: rgba(255, 232, 115, 0.55);
+  --src-mark-highlight: rgba(255, 232, 115, 0.55);
+  --src-mark-red: rgba(204, 46, 46, 0.18);
+  --src-mark-other: rgba(68, 51, 255, 0.14);
+}
+:root[data-theme="dark"] {
+  --src-hit: rgba(255, 214, 10, 0.2);
+}
+
+/* ---------------------------------------------------------------- I1 */
+.sources { display: flex; flex-direction: column; gap: 16px; width: 1120px; margin: 0 auto; padding: 96px 0 48px; }
+.src-cols { display: flex; align-items: flex-start; gap: 20px; }
+
+.src-files { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; width: 260px; }
+.src-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  background: var(--bg-canvas);
+}
+/* 고른 자료: 1.5px 강조 테두리. 크기가 흔들리지 않게 안쪽 그림자로 0.5px 를 더한다 */
+.src-file.is-selected { border-color: var(--accent-default); box-shadow: inset 0 0 0 0.5px var(--accent-default); background: var(--bg-surface); }
+.src-file__main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 10px 12px; text-align: left; }
+.src-file__text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.src-file__text > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-file__del { display: inline-flex; padding: 8px; margin-right: 6px; border-radius: 999px; color: var(--text-tertiary); }
+.src-file__del:hover { background: var(--bg-subtle); color: var(--status-danger-fg); }
+.src-file__confirm { display: flex; flex-direction: column; gap: 6px; width: 100%; padding: 0 12px 10px 40px; }
+.src-file__confirm-btns { display: flex; justify-content: flex-end; gap: 6px; }
+
+.src-preview { display: flex; flex-direction: column; align-items: center; gap: 8px; flex-shrink: 0; }
+.src-preview__nav { display: flex; align-items: center; gap: 6px; }
+.src-icon-btn { display: inline-flex; padding: 4px; border-radius: 999px; color: var(--text-secondary); }
+.src-icon-btn:hover:not(:disabled) { background: var(--bg-subtle); }
+.src-icon-btn:disabled { opacity: 0.35; }
+
+/* 쪽 미리보기: 문서라 다크에서도 흰 종이 */
+.src-page {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+.src-page__inner { position: relative; }
+.src-page__inner canvas { display: block; }
+.src-page--empty { display: flex; align-items: center; justify-content: center; width: 300px; height: 400px; }
+.src-page__fail { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.src-mark { position: absolute; border-radius: 2px; cursor: pointer; mix-blend-mode: multiply; }
+.src-mark--highlight, .src-mark--underline { background: var(--src-mark-highlight); }
+.src-mark--red { background: var(--src-mark-red); }
+.src-mark--star, .src-mark--bold { background: var(--src-mark-other); }
+.src-mark.is-active { outline: 2px solid var(--accent-default); outline-offset: 1px; }
+
+/* PPTX 미리보기: 그림 없이 슬라이드 글만 (16:9 폭 300) */
+.src-page--slide {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 300px;
+  min-height: 169px;
+  max-height: 400px;
+  padding: 16px 18px;
+  overflow: auto;
+  color: #26262e;
+  font: 400 11px/16px var(--font-sans);
+}
+.src-slide__para { padding: 1px 4px; border-radius: 3px; }
+.src-slide__para.is-active { outline: 2px solid var(--accent-default); }
+
+.src-list { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.src-list__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px 20px; white-space: nowrap; }
+.src-list__note { padding: 12px 20px 16px; }
+.src-seg { border-bottom: 1px solid var(--border-default); }
+.src-seg:last-child { border-bottom: 0; }
+.src-seg.is-active { background: var(--bg-canvas); }
+.src-seg__row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px 12px 20px; cursor: pointer; }
+.src-seg__body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.src-seg__meta { display: flex; align-items: center; gap: 8px; }
+.src-seg__meta .badge { padding: 2px 8px; }
+.src-seg__count { cursor: pointer; }
+.src-seg__count:hover { box-shadow: inset 0 0 0 1px var(--accent-default); }
+
+/* [카드 잇기] 칸 */
+.src-link { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px 20px; }
+.src-link__group { display: flex; flex-direction: column; gap: 2px; }
+.src-link__row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--border-default); }
+.src-link__group > .t-label-s { padding-bottom: 4px; }
+.src-link__text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.src-link__text > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-link__search.field__input { height: 40px; }
+.src-link__done { display: inline-flex; align-items: center; gap: 4px; padding: 0 16px; }
+
+.src-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 48px 24px; text-align: center; }
+
+/* 분석 진행 (I1 · I3) */
+.src-progress { display: flex; flex-direction: column; gap: 6px; }
+.src-progress__track { display: block; width: 100%; height: 4px; border-radius: 999px; background: var(--border-default); overflow: hidden; }
+.src-progress__fill { display: block; height: 100%; background: var(--accent-default); transition: width 0.2s; }
+
+/* ---------------------------------------------------------------- I2 */
+.src-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 420px;
+  padding: 20px 22px;
+  border: 1px solid var(--border-default);
+  border-radius: 24px;
+  background: var(--bg-surface);
+}
+.src-panel__head { display: flex; align-items: flex-start; justify-content: space-between; }
+.src-panel__title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.src-panel__head .src-icon-btn { color: var(--text-tertiary); }
+.src-panel__text { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--bg-canvas); }
+.src-panel__hit { padding: 4px 6px; border-radius: 4px; background: var(--src-hit); }
+.src-panel__meta { display: flex; align-items: center; gap: 8px; }
+.src-panel__meta .badge { padding: 2px 8px; }
+.src-panel .src-page--slide { width: 376px; max-height: none; }
+.src-panel__actions { display: flex; gap: 8px; }
+
+/* ---------------------------------------------------------------- I3 */
+.src-banner { display: flex; align-items: center; gap: 14px; padding: 14px 12px 14px 18px; border-radius: 18px; background: var(--accent-subtle); }
+.src-banner__icon { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 40px; height: 40px; border-radius: 999px; background: var(--bg-surface); }
+.src-banner__text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.src-banner__text .src-progress__track, .src-banner__text .src-progress { margin-top: 4px; }
+.src-banner__text .src-progress { margin-top: 2px; }
+.src-banner__error { flex-basis: 100%; padding-left: 54px; }
+.src-banner { flex-wrap: wrap; }
+
+/* 칩 출처 태그: 자료(노랑) / 태그 / 이름 규칙 */
+.src-tag { display: inline-flex; padding: 1px 6px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-secondary); white-space: nowrap; }
+.src-tag--material { background: var(--status-warn-bg); color: var(--status-warn-fg); }
+
+/* 자료 근거는 길어 줄을 바꾼다 (Figma 툴팁 폭 340) */
+.board .board__tip { width: max-content; max-width: 340px; white-space: normal; }
+
+/* I1 파일 목록 아래 한 줄: 분석 모델 상태 (지우기는 설정 E1) */
+.src-model { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border-default); }
+/* I1 부제 안의 [분석하기] */
+.src-inline { padding: 0; text-decoration: underline; text-underline-offset: 3px; }
+.src-inline:hover { color: var(--accent-default); }

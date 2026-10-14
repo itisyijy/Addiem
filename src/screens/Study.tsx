@@ -1,5 +1,5 @@
 // D1 학습 시작 전 요약 / D2 질문 / D3 답변과 평가 / D4 접어두기 / C3-e 카드 편집
-// H3 압축 회독 · G3 학습 중 신호
+// H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { api, cramApi, errorText, qualityApi, type CardView, type CramPlan, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, type Rating } from "../ui";
@@ -12,7 +12,15 @@ import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { RichField, makeCloze, toCloze, fromCloze, type FieldHandle } from "./AddCard";
 import { CramHint, splitLater, takeSignal } from "./StudyParts";
+import { SourcePanel } from "./SourcePanel";
+import { cardSource } from "../sourceApi";
 import "../styles/study.css";
+
+/*
+ * I2 원자료 패널은 가져오기 쪽이 만든다 (SourcePanel.tsx · sourceApi.ts · source.rs). 패널은 420px 겉모양까지 스스로 그리고,
+ * 이 화면은 자리만 잡는다. 카드를 보일 때 새로 물어 둔 값을 패널이 그대로 쓴다 (cardSource 캐시)
+ */
+const hasSource = (cardId: number) => cardSource(cardId, true).then((s) => s !== null);
 
 // 이 기기에서만 쓰는 편의 설정. 지워져도 기본 동작으로 돌아갈 뿐이다
 export const SKIP_SUMMARY = "neo.skipSummary";
@@ -332,12 +340,13 @@ const RATING_NAME: Record<Rating, string> = { 1: "Again", 2: "Hard", 3: "Good", 
 const RATING_DOT: Record<Rating, string> = { 1: "again", 2: "hard", 3: "good", 4: "easy" }; // components.css .dot--*
 const SEP = "   ·   ";
 
-type Shown = { view: CardView; front: string; question: string; answer: string };
+/** source: I2 연결된 자료가 있다 */
+type Shown = { view: CardView; front: string; question: string; answer: string; source: boolean };
 type Folded = { id: number; question: string; importance: Level; deck_path: string[]; auto: boolean; at: number };
 /** 되돌릴 수 있는 일. D2-u: 이 세션의 마지막 평가나 접기 하나뿐 (백엔드는 더 쌓지만 화면에서 막는다). log: H3 압축 회독 기록 id */
 type Last = { id: number; rating: Rating | null; phase: "q" | "a"; counted: boolean; folded: boolean; log?: number };
-/** 접기 토스트. reason: G3 카드 모양 신호 ("답이 10항목이라") */
-type FoldToast = { id: number; auto: boolean; reason?: string };
+/** 접기 토스트. reason: G3 카드 모양 신호 ("답이 10항목이라"). source: I2 [원자료 보기] */
+type FoldToast = { id: number; auto: boolean; reason?: string; source?: boolean };
 type AnswerAction = { action: string; due_in_ms: number | null; log?: number };
 
 /**
@@ -534,6 +543,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const session = useRef<number | null>(null);
   const cramAgain = useRef(new Map<number, number>()); // H3: 이 화면 안의 Again 횟수 (두 번째 Again 에 접는다)
   const cramDone = useRef(new Set<number>()); // H3: 평가한 카드 (마칠 때 "N장을 훑었어요")
+  const [srcOpen, setSrcOpen] = useState(false); // I2 세션 동안 열림 상태를 기억한다
   const queue = useRef<number[]>([]);
   const next = useRef<number[]>([]); // 바로 다음에 볼 카드 (D4-m 지금 보기, 되돌리기 전에 보던 카드)
   const later = useRef<{ id: number; due: number }[]>([]); // 이 세션 안에서 다시 나올 카드 (Again, 학습 단계)
@@ -575,7 +585,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   );
 
   const show = useCallback(async (id: number, at: "q" | "a" = "q") => {
-    const view = await api.cardView(id);
+    // I2 자료 연결은 없어도 카드는 보인다
+    const [view, source] = await Promise.all([api.cardView(id), hasSource(id)]);
     const parts = splitBack(view.back, view.front);
     // 살균(renderCardHtml) 뒤에 수식을 그린다 (math.ts)
     const [front, question, answer] = (await Promise.all([
@@ -583,7 +594,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       renderCardHtml(parts.question),
       renderCardHtml(parts.answer),
     ])).map(withMath);
-    setCard({ view, front, question, answer });
+    setCard({ view, front, question, answer, source });
     setPhase(at);
     setUndone(null);
     shownAt.current = Date.now();
@@ -719,7 +730,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       ...list,
       { id: c.view.id, question: lineOf(c.view.front), importance: c.view.importance, deck_path: c.view.deck_path, auto, at: Date.now() },
     ]);
-    setToast({ id: c.view.id, auto });
+    // I2: 두 번째 Again 으로 접히는 카드에 자료가 있으면 [원자료 보기]
+    setToast({ id: c.view.id, auto, source: auto && c.source });
     setRated(null); // 접기 토스트가 우선한다. 되돌리기는 그 안에 합친다
     // G3: 카드 모양 문제(G1 규칙: 긴 답 · 여러 물음)도 있으면 둘째 줄과 [나누기 제안]. 같은 카드는 하루 한 번
     if (auto)
@@ -813,6 +825,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
   const reveal = () => setPhase("a");
 
+  // ---- I2 원자료 패널: 답 화면에서만 (질문 화면에서 열면 답이 보일 수 있다)
+  const panel = srcOpen && phase === "a" && !!card?.source;
+  const openSourceOf = (id: number) =>
+    unfold([id], true).then(() => {
+      setPhase("a");
+      setSrcOpen(true);
+    });
+
   // 바꿀 수 있는 단축키는 설정 > 단축키(E4) 값으로 (keys.ts). 겹침 창(D4-m 목록 · 확대 보기 · 편집 창)이 떠 있으면 화면 키는 꺼진다
   useKeymap();
   useOverlayScope(foldMenu);
@@ -823,6 +843,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   useKey({ action: "edit" }, () => setEditing(true), keys);
   useKey({ action: "bury" }, bury, keys);
   useKey({ action: "undo" }, () => undo(), keys);
+  useKey({ action: "source" }, () => setSrcOpen((v) => !v), keys && phase === "a" && !!card?.source);
   useKey("b", () => (setFoldSel(0), setFoldMenu(true)), keys && folded.length > 0);
   useKey(["ArrowDown", "ArrowUp", "PageDown", "PageUp"], scrollCard, keys);
   // D4-m 목록 안의 키는 목록이 받는다 (B 로 닫기 · ↑↓ · Enter · Esc)
@@ -846,6 +867,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
+    card?.source && `${actionKey("source")} 원자료`,
     `${actionKey("edit")} 편집`,
     last && `${actionKey("undo")} 되돌리기`,
   ];
@@ -853,7 +875,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
   return (
     <main
-      className="study"
+      className={`study ${panel ? "has-source" : ""}`}
       // 마우스로 누른 버튼에는 초점을 두지 않는다. 남은 초점이 Space · Enter 를 가져가 답 보기 등이 안 되는 일을 막는다 (키보드 Tab 은 그대로)
       onMouseDown={(e) => (e.target as HTMLElement).closest(".study__tool, .study__toast-btn, .study__undo-btn, .study__more, .study__folded, .rating, .study__reveal") && e.preventDefault()}
     >
@@ -924,6 +946,19 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 <span className="t-caption c-tertiary">{pathLabel(card.view.deck_path)}</span>
               </span>
               <span className="study__tools">
+                {phase === "a" && card.source && (
+                  <button
+                    className={`study__tool study__tool--source ${panel ? "is-on" : ""}`}
+                    aria-label="원자료 보기"
+                    aria-pressed={panel}
+                    aria-keyshortcuts={actionKey("source")}
+                    onClick={() => setSrcOpen((v) => !v)}
+                  >
+                    <Icon name="file" size={16} />
+                    <span className="t-label-s">원자료</span>
+                    {!panel && <Kbd k={actionKey("source")} />}
+                  </button>
+                )}
                 <button className="study__tool" aria-label="카드 편집" aria-keyshortcuts={actionKey("edit")} onClick={() => setEditing(true)}>
                   <Icon name="pencil" size={16} className="c-secondary" />
                   <Kbd k={actionKey("edit")} />
@@ -1057,12 +1092,18 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
               나누기 제안
             </button>
           )}
+          {toast.source && (
+            <button className="study__toast-btn t-label-m" onClick={() => openSourceOf(toast.id)}>
+              <Icon name="file" size={14} />
+              원자료 보기
+            </button>
+          )}
           <button className="study__toast-btn t-label-m" onClick={() => unfold([toast.id], true)}>
             <Icon name="rotate" size={14} />
             지금 다시 보기
           </button>
           {/* 버튼이 늘면 되돌리기는 키(Ctrl Z)로만. 토스트가 화면 폭을 넘지 않게 */}
-          {last?.id === toast.id && !toast.reason && (
+          {last?.id === toast.id && !toast.reason && !toast.source && (
             <button className="study__toast-btn t-label-m" onClick={undo}>
               되돌리기
               <Kbd k={actionKey("undo")} tone="onAccent" />
@@ -1082,6 +1123,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             </button>
           </div>
         )
+      )}
+
+      {/* ---- I2 원자료 (통합 지점). 카드는 왼쪽으로 좁아지고 평가 줄이 카드 폭을 따라간다 */}
+      {panel && card && (
+        <div className="study__source">
+          <SourcePanel cardId={card.view.id} onClose={() => setSrcOpen(false)} />
+        </div>
       )}
 
       {zoom && (
