@@ -1,0 +1,276 @@
+/*
+ * C1-m ⋯ 메뉴 · 인라인 이름 바꾸기, C1-s 하위 덱 만들기, C1-t 오늘 완료 · 하위 덱 목록, C1-p 쉬는 중,
+ * C2-m 중요도 메뉴, C2-d 카드 삭제 확인, C4-p 잠시 쉬기. 기본 규칙은 screens.css.
+ * main.tsx 가 screens.css 를 이 파일보다 늦게 불러오므로, 같은 규칙을 덮을 때는 클래스를 하나 더 붙여 쓴다.
+ */
+
+/* ---------------------------------------------------------------- 공통 메뉴 조각 */
+.menu__text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; white-space: normal; }
+.menu__sep { height: 1px; margin: 5px 0; background: var(--border-default); }
+.menu__cap { padding: 6px 14px; }
+
+/* 패널 메뉴 (C1-m · C1-r · C2-r · C2-m). 항목이 가장자리까지 닿는다 */
+.menu__list.menu--panel { padding: 6px 0; border-radius: 18px; box-shadow: 0 12px 32px rgba(23, 23, 28, 0.14); white-space: normal; }
+.menu--panel .menu__item { padding: 9px 12px 9px 14px; }
+/* 아이콘은 보조 글자색 (Figma). 삭제는 항목 전체가 빨강, 꺾쇠는 옅게 */
+.menu--panel .menu__item:not(.menu__item--danger) > .icon:first-child { color: var(--text-secondary); }
+/* 설명이 붙은 항목은 아이콘을 첫 줄 위에 맞춘다 */
+.menu--panel .menu__item--top { align-items: flex-start; }
+/* 하위 메뉴가 열린 항목, 하위 메뉴에서 고르고 있는 항목 */
+.menu--panel .menu__item[aria-expanded="true"],
+.menu--panel .menu__item.is-active { background: var(--accent-subtle); }
+
+/* ⋯ 버튼. 메뉴가 열려 있으면 테두리를 진하게 (C1-m) */
+.iconbtn[aria-expanded="true"] { border-color: var(--border-ink); }
+
+/* ---------------------------------------------------------------- C1-m · C1-r 덱 메뉴 */
+.menu__list.deck__menu { width: 300px; } /* C1-x (내보내기 추가 뒤) 기준 */
+.deck__pause { position: relative; }
+/* 하위 메뉴는 왼쪽으로 편다. 오른쪽 8px 여백은 메뉴 사이를 건너는 다리 */
+.deck__submenu { position: absolute; top: 0; right: 100%; z-index: 6; padding-right: 8px; }
+.deck__submenu > .menu__list { position: static; width: 300px; }
+.deck__pause-hint { display: flex; align-items: flex-start; gap: 8px; margin: 6px 8px 0; padding: 10px 12px; border-radius: 12px; background: var(--bg-canvas); }
+.deck__pause-hint > .icon { margin-top: 1px; }
+.deck__date-input { position: absolute; right: 0; bottom: 0; width: 0; height: 0; opacity: 0; pointer-events: none; }
+
+/* 제목 자리 이름 바꾸기. 밑줄은 아래 테두리, 음수 여백으로 상쇄해 제목 높이가 그대로다 (선택 영역에 가리지 않게 글자 영역 밖에 둔다) */
+.deck__rename {
+  field-sizing: content;
+  min-width: 240px;
+  max-width: 720px;
+  margin-bottom: -2px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid var(--accent-default);
+  outline: none;
+  background: none;
+  color: var(--text-primary);
+}
+.deck__rename.is-error { border-bottom-color: var(--status-danger-fg); }
+/* 프레임대로 테두리 대신 밑줄. 초점 중에는 밑줄을 3px 로 굵혀 초점 링을 대신한다 (높이는 음수 여백으로 그대로) */
+.deck__rename:focus-visible { outline: none; }
+.deck__rename:focus { border-bottom-width: 3px; margin-bottom: -3px; }
+
+/* ---------------------------------------------------------------- C1-p 쉬는 중 배너 */
+.deck__paused {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px 10px 18px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+}
+.deck__paused > p { flex: 1; min-width: 0; }
+
+/* ---------------------------------------------------------------- C1-t 오늘 완료 (어두운 오늘 카드 안) */
+.deck__done { display: flex; flex-direction: column; gap: 8px; align-self: stretch; padding: 2px 0 20px; }
+.deck__done-row { display: flex; align-items: baseline; justify-content: space-between; white-space: nowrap; }
+.deck__done-count { display: flex; align-items: baseline; gap: 6px; }
+.deck__done-track { height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.deck__done-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent-on-inverse); }
+
+/* ---------------------------------------------------------------- C1-t 하위 덱 목록. 열(C1-w): 이름 / 중요도 90 / 최근 14일 Again 150 / 오늘 80 / 230 */
+/* overflow 를 자르지 않는다: 제안 근거 말풍선이 표 아래로 넘칠 수 있다. 대신 마지막 행의 모서리를 둥글린다 */
+.subdecks { display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: 24px; background: var(--bg-surface); }
+.subdecks__row:last-child { border-radius: 0 0 23px 23px; }
+.subdecks__head { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 12px 24px; }
+.subdecks__title { display: flex; align-items: center; gap: 8px; }
+.subdecks__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px 150px 80px 230px;
+  align-items: center;
+  padding: 11px 12px 11px 24px;
+  border-bottom: 1px solid var(--border-default);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.subdecks__row:last-child { border-bottom: 0; }
+.subdecks__row--head { padding-top: 8px; padding-bottom: 8px; background: var(--bg-canvas); cursor: default; }
+.subdecks__row:not(.subdecks__row--head):hover { background: var(--accent-subtle); }
+.subdecks__name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.subdecks__name > :nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
+.subdecks__fold { display: inline-flex; flex-shrink: 0; width: 16px; height: 16px; color: var(--text-secondary); }
+.subdecks__unseen { color: var(--text-secondary); }
+.subdecks__go { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.subdecks__today { color: var(--text-primary); } /* Body/M Strong · 그날 할 일의 숫자라 가장 먼저 읽힌다 (C1-t 규칙, 디자인 정정) */
+/* 오늘 볼 카드가 없는 하위 덱은 회색 */
+.subdecks__row.is-idle .subdecks__name,
+.subdecks__row.is-idle .subdecks__today,
+.subdecks__row.is-idle .subdecks__unseen { color: var(--text-tertiary); }
+.subdecks__row.is-idle .subdecks__today { font-weight: 400; }
+
+/* ---------------------------------------------------------------- C1-s 하위 덱 만들기 */
+.modal.modal--subdeck { top: 170px; width: 500px; gap: 18px; }
+.modal--subdeck .modal__body { gap: 18px; }
+.modal__titles { display: flex; flex-direction: column; gap: 4px; }
+.modal__titles + .modal__close { align-self: flex-start; }
+.newdeck__select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 14px 0 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--bg-surface);
+}
+/* Input 의 Focus 와 같이 2px. 안쪽 여백을 1px 줄여 글자가 움직이지 않게 */
+.newdeck__select:focus-within { border: 2px solid var(--accent-default); padding: 0 13px 0 15px; }
+.newdeck__select select { flex: 1; min-width: 0; appearance: none; border: 0; outline: none; background: none; color: var(--text-primary); cursor: pointer; }
+.newdeck__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.newdeck__label { display: flex; flex-direction: column; gap: 2px; }
+.newdeck__row .segment--boxed { align-self: center; }
+
+/* ---------------------------------------------------------------- C2-m 중요도 메뉴 (칩 바로 아래) */
+.menu__list.cards__imp-list { width: 260px; }
+.cards__imp-list .menu__item { padding: 9px 14px; }
+.cards__imp-list .menu__item:hover:not(:disabled) { background: var(--accent-subtle); }
+.cards__imp-list .menu__item:disabled:hover { background: none; }
+.cards__imp-label { flex: 1; }
+.cards__imp-list .cards__imp-follow { align-items: flex-start; }
+
+/* ---------------------------------------------------------------- C2-d 카드 삭제 확인 */
+.modal.cards__delete { top: 230px; width: 460px; }
+.cards__preview { display: flex; flex-direction: column; gap: 4px; padding: 12px 16px; border-radius: 14px; background: var(--bg-canvas); }
+.cards__preview > .t-body-m { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.cards__preview > .t-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- C4-p 잠시 쉬기 (설정 맨 아래 줄) */
+.settings__row.settings__pause { flex-direction: column; align-items: stretch; gap: 12px; }
+.settings__pause-top { display: flex; align-items: center; gap: 24px; }
+.settings__pause-period { display: flex; align-items: center; gap: 10px; }
+.settings__pause-period .segment--boxed { align-self: center; }
+.settings__pause-date {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 9px 14px;
+  border: 2px solid var(--accent-default);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.settings__pause-date input { position: absolute; left: 0; bottom: 0; width: 100%; height: 0; opacity: 0; pointer-events: none; }
+
+/* ---------------------------------------------------------------- C2-b 체크박스 열 (36px). 질문 열을 그만큼 줄여 표 폭을 지킨다 */
+.cards__table .cards__row { grid-template-columns: 36px 338px 290px 170px 110px 90px 60px; padding-left: 16px; }
+.cards__row > .cards__check { display: flex; align-items: center; overflow: visible; }
+.cards__cb { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 1.5px solid var(--border-strong); border-radius: 6px; background: var(--bg-surface); color: var(--text-inverse); }
+.cards__cb.is-on { border-color: var(--accent-default); background: var(--accent-default); }
+.cards__cb-mixed { width: 10px; height: 2px; border-radius: 1px; background: currentColor; }
+.cards__table .cards__row.is-selected { background: var(--accent-subtle); }
+.cards__hint { align-self: flex-end; margin-left: auto; }
+
+/* ---------------------------------------------------------------- C2-r 행 끝 ⋯ (늘 보임) + 올리면 ✎ · 🗑 */
+.cards__row > .cards__actions { gap: 6px; padding-right: 0; overflow: visible; }
+.cards__more { display: inline-flex; color: var(--text-tertiary); }
+.cards__table .cards__row:hover .cards__more { display: inline-flex; }
+.cards__table .cards__row.is-menu .cards__act { display: inline-flex; }
+/* 선택 중에는 한 번에 한 가지 조작만: 행의 ✎ · 🗑 · ⋯ 를 숨긴다 */
+.cards--selecting .cards__actions { visibility: hidden; }
+.menu__list.cards__row-menu { top: 26px; right: 0; left: auto; width: 260px; }
+.cards__move { position: relative; }
+/* 이동 하위 메뉴는 왼쪽으로 편다 (행 메뉴가 화면 오른쪽 끝이라) */
+.deckmenu.cards__move-menu { top: -8px; right: calc(100% + 8px); left: auto; width: 300px; }
+.deckmenu.cards__move-menu.is-up { top: auto; bottom: -8px; }
+
+/* ---------------------------------------------------------------- C2-b 선택 바. 토스트 자리 (아래 가운데) */
+.cards__bar {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  z-index: 25;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 8px 20px;
+  border-radius: 999px;
+  background: var(--bg-inverse);
+  color: var(--text-inverse);
+  box-shadow: 0 12px 32px rgba(23, 23, 28, 0.25);
+  white-space: nowrap;
+}
+.cards__bar-sep { width: 1px; height: 20px; margin: 0 6px 0 10px; background: var(--text-tertiary); }
+.cards__bar-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 999px; }
+.cards__bar-btn:hover,
+.cards__bar-btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.12); }
+.cards__bar-btn--danger { color: var(--rating-again); } /* Figma rating/again. 어두운 바 위에서 읽히는 빨강 */
+.cards__bar-clear { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; padding: 8px 12px; border: 1px solid var(--text-tertiary); border-radius: 999px; }
+.cards__bar-clear:hover { background: rgba(255, 255, 255, 0.12); }
+/* 바의 메뉴는 위로 */
+.menu__list.cards__bar-menu { top: auto; right: auto; bottom: calc(100% + 12px); left: 0; color: var(--text-primary); }
+.deckmenu.cards__bar-deckmenu { top: auto; bottom: calc(100% + 12px); color: var(--text-primary); }
+
+/* C2-d 미리보기: 답이 길어도 위치(하위 덱)는 보이게 */
+.cards__preview-meta { display: flex; gap: 4px; }
+.cards__preview-answer { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cards__preview-meta > span:last-child { flex-shrink: 0; }
+.cards__preview > .cards__preview-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* C1-xr 에서 온 카드만 보는 중. 검색 칸 옆 알약 */
+.cards__only { display: inline-flex; align-items: center; gap: 10px; height: 44px; padding: 0 16px; border: 1px dashed var(--border-strong); border-radius: 999px; background: var(--bg-surface); white-space: nowrap; }
+/* 감싼 div 안의 메뉴 항목(하위 메뉴가 달린 것)도 폭을 꽉 채운다. button 은 블록 안에서 늘어나지 않는다 */
+.deck__pause > .menu__item,
+.cards__move > .menu__item { width: 100%; }
+.menu--panel .menu__item:disabled:hover { background: none; }
+
+/* C2-b 고른 장수 읽어 주기. 화면에는 바가 보여 주므로 감춘다 */
+.cards__live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* ---------------------------------------------------------------- C1-w 약한 챕터 */
+/* 최근 14일 Again: 비율 + 56px 막대. 기준을 넘으면 빨강 */
+.subdecks__again { display: flex; align-items: center; gap: 8px; }
+.subdecks__again-track { width: 56px; height: 6px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; }
+.subdecks__again-fill { display: block; height: 100%; border-radius: 999px; background: var(--text-tertiary); }
+.subdecks__again-fill.is-over { background: var(--status-danger-fg); }
+/* 제안된 행은 위험 배경으로 눈에 띄게 */
+.subdecks__row.is-suggested,
+.subdecks__row.is-suggested:hover { background: var(--status-danger-bg); }
+/* [약함 표시]는 행에 올리거나 초점이 있을 때만 */
+.subdecks__mark { visibility: hidden; }
+.subdecks__row:hover .subdecks__mark,
+.subdecks__mark:focus-visible { visibility: visible; }
+
+/* 약함(실선) · 약해 보여요?(점선) 배지 */
+.weak { position: relative; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 3px 10px 3px 8px; border-radius: 999px; color: var(--status-danger-fg); white-space: nowrap; }
+.weak--on { background: var(--status-danger-bg); }
+.weak--suggested { padding: 2px 9px 2px 7px; border: 1px dashed var(--status-danger-fg); cursor: help; }
+/* 제안 근거. 배지에 올리거나 초점을 두면 아래에 뜬다 */
+.weak__tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 10;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--bg-inverse);
+  color: var(--text-inverse);
+  white-space: nowrap;
+}
+.weak--suggested:hover .weak__tip,
+.weak--suggested:focus-visible .weak__tip { display: flex; }
+.subdecks__name { overflow: visible; }
+.subdecks__recovered { display: inline-flex; align-items: center; gap: 4px; }
+.subdecks__recovered-close { display: inline-flex; color: var(--text-tertiary); }
+
+/* 중요도 띠 아래 "약한 챕터" 줄 */
+.deck__weak { display: flex; align-items: center; gap: 12px; padding: 12px 16px 12px 24px; border: 1px solid var(--border-default); border-radius: 999px; background: var(--bg-surface); white-space: nowrap; }
+.deck__weak-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.deck__weak-gap { flex: 1; }
+
+/* 비율 글자 폭을 고정해 막대가 모든 행에서 같은 x 에서 시작한다 (9% 와 12% 가 어긋나지 않게) */
+.subdecks__again > .t-body-s { width: 34px; flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* C2-b 고른 행 위의 "신규" 알약은 행과 같은 accent/subtle 이라 사라진다. 알약은 면 색으로 띄운다 */
+.cards__table .cards__row.is-selected .badge--accent { background: var(--bg-surface); }
+/* 다크: accent/subtle(#252150) 행과 bg/inverse(#34305A) 선택 바가 거의 같은 보라라 바가 묻힌다.
+   고른 행은 중립 bg/subtle 로 두고(체크박스가 선택을 말해 준다), 알약도 원래 색으로 */
+:root[data-theme="dark"] .cards__table .cards__row.is-selected { background: var(--bg-subtle); }
+:root[data-theme="dark"] .cards__table .cards__row.is-selected .badge--accent { background: var(--accent-subtle); }

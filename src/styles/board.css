@@ -1,0 +1,37 @@
+/* B4-g 중요도 · 과목별 묶음. 기본 B4 규칙(.board__*)은 screens.css */
+
+.board__bar { display: flex; align-items: center; justify-content: space-between; }
+.board__bar-left { display: flex; align-items: center; gap: 12px; }
+
+/* 과목 칩. 하위 덱 칩보다 모서리가 덜 둥글고 두 줄이다 */
+.board__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  cursor: grab;
+}
+.board__group:active { cursor: grabbing; }
+.board__group--suggested { border: 1px dashed var(--accent-default); background: var(--accent-subtle); }
+.board__group-text { display: flex; flex-direction: column; align-items: flex-start; }
+
+/* 펼친 과목. 줄 폭을 다 쓴다 */
+.board__tray {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-basis: 100%;
+  padding: 10px 14px 14px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 20px;
+  background: var(--bg-surface);
+}
+.board__tray-head { display: flex; align-items: center; gap: 8px; align-self: flex-start; white-space: nowrap; cursor: grab; }
+.board__tray-chips { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 24px; }
+
+.board__drop--group { padding: 12px 14px; border-radius: 16px; }

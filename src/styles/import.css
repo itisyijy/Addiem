@@ -1,0 +1,198 @@
+/*
+ * B2-0 · B2-r · B2-p · S1-5 · B3-j (Figma 26:2449, 31:3175, 26:2560, 26:3936, 27:2852).
+ * 이 파일은 screens.css 보다 먼저 읽힌다 (App 이 화면을 먼저 import). 그래서 screens.css 규칙을
+ * 덮을 때는 선택자를 한 단계 더 구체적으로 쓴다.
+ */
+
+/* ---------------------------------------------------------------- B2-0 끌어놓기 */
+.import__drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 64px 24px 56px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 28px;
+  background: var(--bg-surface);
+  text-align: center;
+}
+/* 끌어오는 중: accent 실선 2px + accent/subtle 배경. 테두리가 0.5px 굵어지는 만큼 안쪽을 줄인다 */
+.import__drop.is-over { border: 2px solid var(--accent-default); padding: 63.5px 23.5px 55.5px; background: var(--accent-subtle); }
+.import__drop-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 8px;
+  border-radius: 999px;
+  background: var(--accent-subtle);
+}
+.import__drop.is-over .import__drop-icon { background: var(--bg-surface); }
+.import__drop .btn { margin-bottom: 6px; }
+.import__drop-hint { white-space: pre; }
+.import__help { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 16px; background: var(--bg-subtle); }
+.import__help > span:last-child { flex: 1; min-width: 0; }
+
+/* B2-j 에 .json 을 끌어오는 중. B2-0 과 같은 accent 표시를 입력 칸 위에 덮는다 (레이아웃은 그대로) */
+.import__json { position: relative; }
+.import__json-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--accent-default);
+  border-radius: inherit;
+  background: var(--accent-subtle);
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- B2-r 복습 기록 고르기 */
+.import__choice { display: flex; flex-direction: column; gap: 10px; }
+.import__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-default);
+  border-radius: 18px;
+  background: var(--bg-surface);
+  cursor: pointer;
+}
+/* 고른 카드는 accent 2px. 굵어진 1px 만큼 안쪽을 줄여 내용이 움직이지 않게 */
+.import__option.is-on { padding: 15px 17px; border: 2px solid var(--accent-default); }
+.import__option input { position: absolute; opacity: 0; pointer-events: none; }
+.import__radio {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+}
+/* 채운 원 + 가운데 흰 점 8px */
+.import__option.is-on .import__radio { border: 0; background: var(--bg-surface); box-shadow: inset 0 0 0 6px var(--accent-default); }
+.import__option input:focus-visible + .import__radio { outline: 2px solid var(--accent-default); outline-offset: 2px; }
+.import__option-text { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; flex: 1; min-width: 0; }
+.import__option-title { display: flex; align-items: center; gap: 8px; }
+.import__overdue {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 12px 8px 10px;
+  border-radius: 12px;
+  background: var(--status-warn-bg);
+  color: var(--status-warn-fg);
+}
+
+/* ---------------------------------------------------------------- B2-p 가져오는 중 */
+.import__progress {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 24px;
+  background: var(--bg-surface);
+}
+.import__progress-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; white-space: nowrap; }
+.progress__fill--accent { background: var(--accent-default); transition: width 0.2s; }
+.import__step { display: flex; align-items: center; gap: 12px; padding: 12px 0 4px; }
+.import__step > span:nth-child(2) { flex: 1; min-width: 0; }
+.import__step > span:last-child { white-space: nowrap; }
+.import__step-icon { display: inline-flex; }
+.import__wait { flex-shrink: 0; width: 18px; height: 18px; border: 1.5px dashed var(--border-strong); border-radius: 999px; }
+
+/* ---------------------------------------------------------------- S1-5 가져오기 실패 */
+.import__fail { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border-radius: 16px; background: var(--status-danger-bg); }
+.import__fail-text { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; flex: 1; min-width: 0; }
+.import__fail-text .btn { margin-top: 4px; }
+
+/* ---------------------------------------------------------------- B3-j JSON 결과. .stat 은 components.css 라 한 단계 더 구체적으로 */
+.stat.stat--danger { border-color: var(--status-danger-bg); background: var(--status-danger-bg); }
+/* 덱 이름이 길면 타일 밖으로 나가지 않게 */
+.result__tiles .stat p { overflow: hidden; text-overflow: ellipsis; }
+.result__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 24px;
+  border: 1px solid var(--border-default);
+  border-radius: 24px;
+  background: var(--bg-surface);
+}
+.result__group-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 4px; }
+.result__divider { width: 100%; margin: 8px 0; border: 0; border-top: 1px solid var(--border-default); }
+
+/* ---------------------------------------------------------------- B2-c CSV (Figma 45:5105) */
+.csv__options { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+/* 알약 모양 고르기. 화살표까지 눌리게 select 가 화살표 위로 20px 겹친다 */
+.csv__pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.csv__pill select {
+  position: relative;
+  z-index: 1;
+  margin-right: -20px;
+  padding: 0 20px 0 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: inherit;
+  appearance: none;
+  cursor: pointer;
+}
+.csv__pill .icon { color: var(--text-secondary); }
+.csv__pill:focus-within { outline: 2px solid var(--accent-default); outline-offset: 2px; }
+/* 자동으로 EUC-KR 로 읽었을 때 인코딩을 accent 로 (아래 안내와 짝) */
+.csv__pill.is-accent { padding: 6.5px 9.5px 6.5px 11.5px; border: 1.5px solid var(--accent-default); }
+.csv__pill.is-muted { background: var(--bg-canvas); color: var(--text-tertiary); }
+.csv__header { display: inline-flex; align-items: center; gap: 8px; }
+.csv__note { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 12px; border-radius: 12px; background: var(--accent-subtle); color: var(--accent-text); }
+
+/* 열 연결 + 처음 3행. 열이 많으면 이 상자만 가로로 스크롤 */
+.csv__map { display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: 20px; background: var(--bg-surface); overflow-x: auto; }
+.csv__row { display: grid; grid-template-columns: repeat(var(--cols), minmax(130px, 1fr)); min-width: calc(var(--cols) * 130px + 32px); padding: 10px 16px; border-bottom: 1px solid var(--border-default); }
+.csv__row:nth-last-child(2) { border-bottom: 0; }
+.csv__row--head { padding: 12px 16px; background: var(--bg-canvas); }
+.csv__cell { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; padding-right: 12px; white-space: pre-line; overflow-wrap: anywhere; }
+.csv__row--head .csv__cell { white-space: nowrap; }
+.csv__more { margin: 0; padding: 8px 16px 10px; }
+
+.csv__check { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 28px; }
+.csv__count { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- B2-s 덱 골라 가져오기 (Figma 49:5963). 사전 검사 동안만 두 열로 넓힌다 */
+.import:has(.b2s) { width: 1120px; }
+.b2s { display: flex; align-items: flex-start; gap: 20px; }
+.b2s__side { display: flex; flex: 1; flex-direction: column; gap: 16px; min-width: 0; }
+.b2s__tree { display: flex; flex-shrink: 0; flex-direction: column; width: 560px; border: 1px solid var(--border-default); border-radius: 24px; background: var(--bg-surface); overflow: hidden; }
+.b2s__tree-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 12px 10px 20px; }
+.b2s__tree-head > span:last-child { display: flex; gap: 4px; }
+.b2s__tree-title { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+.b2s__row { display: flex; align-items: center; gap: 10px; padding: 9px 20px 9px 16px; border-bottom: 1px solid var(--border-default); }
+.b2s__row:last-child { border-bottom: 0; }
+.b2s__fold { display: inline-flex; flex-shrink: 0; width: 14px; height: 14px; color: var(--text-secondary); }
+.b2s__pick { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; text-align: left; }
+.b2s__pick > span:last-child { white-space: nowrap; }
+.b2s__pick:focus-visible { border-radius: 6px; }
+/* 3상태 체크박스: 켜짐 ✓ · 일부 – · 꺼짐 빈 칸 */
+.b2s__box { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 6px; background: var(--accent-default); color: var(--text-inverse); }
+.b2s__box.is-off { border: 1.5px solid var(--border-strong); background: var(--bg-surface); }
+.b2s__box.is-mixed::after { content: ""; width: 10px; height: 2px; border-radius: 1px; background: var(--text-inverse); }
+.b2s__name { display: flex; flex: 1; flex-direction: column; min-width: 0; white-space: nowrap; }
+.b2s__name > span { overflow: hidden; text-overflow: ellipsis; }
+/* 고르지 않은 덱은 흐리게 */
+.b2s__row.is-off .b2s__name > span:first-child, .b2s__row.is-off .b2s__pick > span:last-child { color: var(--text-tertiary); }

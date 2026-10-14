@@ -1,0 +1,7 @@
+/* 수식 (D3-m 43:5198). 색은 currentColor 라 회색 질문 글자와 어둡게 모드를 그대로 따른다 */
+.math .katex { font-size: 1.1em; } /* 본문 글자의 약 1.1배, 기준선 맞춤 */
+.math--block { display: block; margin: 12px 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+.math--block .katex-display { margin: 0; }
+.math--block .katex { font-size: 1.1em; }
+/* 읽지 못한 수식: 원문을 빨간 고정폭 글자로 (C3-m 과 같은 모양) */
+.math-error { font: 400 0.9em/1.5 var(--font-mono); color: var(--status-danger-fg); white-space: pre-wrap; }

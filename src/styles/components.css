@@ -1,0 +1,261 @@
+/* Figma "Components" 프레임. 수치는 Figma 값 그대로다 */
+
+.icon {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+}
+
+/* Kbd */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.kbd--default { background: var(--bg-surface); border: 1px solid var(--border-strong); color: var(--text-secondary); }
+.kbd--onAccent { background: var(--accent-pressed); color: var(--text-inverse); }
+
+/* Button */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn--L { gap: 10px; padding: 16px 28px; }
+.btn--M { gap: 6px; padding: 9px 16px; }
+.btn--primary { background: var(--accent-default); color: var(--text-inverse); }
+.btn--secondary { background: var(--bg-surface); border: 1px solid var(--border-ink); color: var(--text-primary); }
+.btn--ghost { color: var(--text-secondary); }
+.btn--danger { background: var(--status-danger-bg); color: var(--status-danger-fg); }
+.btn--primary:hover:not(:disabled) { background: var(--accent-pressed); }
+.btn--secondary:hover:not(:disabled), .btn--ghost:hover:not(:disabled) { background: var(--bg-subtle); }
+
+/* Badge */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.badge--neutral { background: var(--bg-subtle); color: var(--text-secondary); }
+.badge--accent { background: var(--accent-subtle); color: var(--accent-text); }
+.badge--warn { background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.badge--danger { background: var(--status-danger-bg); color: var(--status-danger-fg); }
+.badge--success { background: var(--status-success-bg); color: var(--status-success-fg); }
+.badge--ink { background: var(--bg-inverse); color: var(--text-inverse); }
+
+/* Importance */
+.importance {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.importance--core { background: var(--importance-core-bg); color: var(--importance-core-fg); }
+.importance--normal { background: var(--importance-normal-bg); color: var(--importance-normal-fg); }
+.importance--supp {
+  background: var(--importance-supp-bg);
+  color: var(--importance-supp-fg);
+  border: 1px dashed var(--border-strong);
+  padding: 3px 9px 3px 7px;
+}
+
+/* Segment */
+.segment { display: inline-flex; align-items: center; gap: 2px; }
+.segment__item {
+  padding: 7px 16px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.segment__item.is-selected { background: var(--bg-inverse); color: var(--text-inverse); }
+
+/* RatingButton */
+.rating {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 220px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-default);
+  border-radius: 18px;
+  background: var(--bg-surface);
+  text-align: left;
+}
+.rating:hover { border-color: var(--border-strong); }
+.rating__top { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.rating__name { display: flex; align-items: center; gap: 8px; }
+
+/* StatTile */
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 18px 20px;
+  border: 1px solid var(--border-default);
+  border-radius: 20px;
+  background: var(--bg-surface);
+  white-space: nowrap;
+}
+
+/* Input */
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field__input {
+  height: 48px;
+  padding: 0 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+  width: 100%;
+}
+.field__input::placeholder { color: var(--text-tertiary); }
+/* Figma State=Focus: 2px 테두리. 안쪽 여백을 1px 줄여 글자가 움직이지 않게 한다 */
+.field__input:focus { border: 2px solid var(--accent-default); padding: 0 15px; }
+.field__input.is-error { border-color: var(--status-danger-fg); }
+
+/* Checkbox */
+.checkbox { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.checkbox input { position: absolute; opacity: 0; pointer-events: none; }
+.checkbox__box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+}
+.checkbox__box.is-on { border: 0; background: var(--accent-default); color: var(--text-inverse); }
+.checkbox input:focus-visible + .checkbox__box { outline: 2px solid var(--accent-default); outline-offset: 2px; }
+
+/* Toggle. 트랙과 손잡이를 CSS 로 그려 다크 모드 토큰을 따른다 (ui.tsx 의 <img> 를 빼면 이것만 보인다) */
+.toggle { position: relative; display: inline-flex; width: 40px; height: 24px; border-radius: 12px; background: var(--border-strong); }
+.toggle[aria-checked="true"] { background: var(--accent-default); }
+.toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 999px; background: var(--text-inverse); }
+.toggle[aria-checked="true"]::after { left: 18px; }
+
+/* SubdeckChip */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.chip .t-label-m { color: var(--text-primary); }
+.chip--suggested { border: 1px dashed var(--accent-default); background: var(--accent-subtle); }
+
+/* DeckRow */
+.deckrow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 16px 16px 24px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  cursor: pointer;
+}
+.deckrow:hover { background: color-mix(in srgb, var(--bg-subtle) 30%, var(--bg-surface)); }
+.deckrow__main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.deckrow__name { display: flex; align-items: center; gap: 8px; }
+.deckrow__total { display: flex; align-items: baseline; gap: 2px; }
+.deckrow .badge { padding: 1px 8px; }
+
+/* Logo */
+.logo { position: relative; display: inline-block; width: 28px; height: 28px; flex-shrink: 0; }
+.logo__back {
+  position: absolute; left: 2px; top: 6px; width: 16px; height: 20px;
+  border-radius: 4px; background: var(--bg-inverse);
+}
+.logo__front {
+  position: absolute; left: 10px; top: 2px; width: 16px; height: 20px;
+  border-radius: 4px; background: var(--accent-default); border: 2px solid var(--bg-canvas);
+}
+
+/* TopNav */
+.topnav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 60px;
+  padding: 0 10px 0 20px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-nav);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 12px rgba(23, 23, 28, 0.06);
+}
+.topnav__brand { display: flex; align-items: center; gap: 10px; }
+.topnav__actions { display: flex; align-items: center; gap: 8px; }
+.topnav__settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+}
+
+/* Backdrop. 1280x800 원본 크기 그대로 왼쪽 위에 둔다. 창이 더 크면 바깥은 bg-canvas 가 이어진다 */
+.backdrop {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+/* 다크 배경 블롭 (Figma Dark 프레임의 Backdrop). img 의 src 를 바꾸지 않고 CSS 로 갈아 끼운다 */
+:root[data-theme="dark"] .backdrop { content: url("../assets/backdrop-dark.svg"); }
+
+/* 점 (상태·범례·평가). assets/dots 의 SVG 는 색이 박혀 있어 다크 모드를 못 따라가므로 이것을 쓴다 */
+.dot { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; border-radius: 999px; background: currentColor; }
+.dot--6 { width: 6px; height: 6px; }
+.dot--accent { background: var(--accent-default); }
+.dot--ink { background: var(--text-primary); } /* 데이터 표시(복습)는 bg/inverse 가 아니라 text/primary */
+.dot--local { background: var(--status-success-fg); }
+.dot--warm { background: var(--accent-warm); }
+.dot--strong { background: var(--border-strong); }
+.dot--core { background: var(--importance-core-fg); }
+.dot--normal { background: var(--importance-normal-fg); }
+.dot--supp { background: var(--importance-supp-fg); }
+.dot--again { background: var(--rating-again); }
+.dot--hard { background: var(--rating-hard); }
+.dot--good { background: var(--rating-good); }
+.dot--easy { background: var(--rating-easy); }
+
+/* Segment 묶음. Figma 에서는 bg/subtle 알약 안에 놓인다 */
+.segment--boxed { align-self: flex-start; padding: 4px; border-radius: 999px; background: var(--bg-subtle); }
+
+/* 오래 걸리는 버튼 (Figma S1-1). 흐리게, 누를 수 없음, 폭 유지 */
+.btn.is-busy { opacity: 0.6; cursor: progress; }
+.btn:disabled { cursor: default; }
+.spinner {
+  display: inline-block;
+  flex-shrink: 0;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 모달은 열릴 때 창 자체가 초점을 받는다 (스크린리더가 제목부터 읽게). 그때 테두리는 그리지 않는다 */
+.modal:focus-visible { outline: none; }

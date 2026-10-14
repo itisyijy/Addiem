@@ -1,0 +1,186 @@
+/*
+ * Figma 변수 "Neo-Anki Color" 와 텍스트 스타일을 그대로 옮긴 것.
+ * 이름은 Figma 와 맞춘다 (bg/canvas -> --bg-canvas). 값은 임시 테마라 여기만 바꾸면 전체가 따라간다.
+ * 자간은 Figma 의 퍼센트 값을 em 으로 옮겼다 (-0.5% -> -0.005em).
+ * 다크 모드(F)는 같은 변수의 Dark 값만 바꾼다. <html data-theme="dark"> 는 theme.ts 가 붙인다.
+ */
+@import "@fontsource/gothic-a1/300.css";
+@import "@fontsource/gothic-a1/400.css";
+@import "@fontsource/gothic-a1/600.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+/* [data-theme="light"]: 다크 테마 안에서 밝은 화면으로 그릴 한 덩어리 (D3-s 덱 스타일 카드 면). 같은 밝은 값을 다시 깐다 */
+:root,
+[data-theme="light"] {
+  --bg-canvas: #f4f2ee;
+  --bg-surface: #ffffff;
+  --bg-subtle: #ece9e3;
+  --bg-inverse: #16161d;
+  --bg-nav: rgb(255 255 255 / 0.72); /* 반투명 면은 변수에 알파를 넣는다 */
+
+  --text-primary: #16161d;
+  --text-secondary: #5e5c66;
+  --text-tertiary: #96939c;
+  --text-inverse: #ffffff;
+
+  --border-default: #e5e1da;
+  --border-strong: #cbc6bd;
+  --border-ink: #16161d;
+
+  --accent-default: #4433ff;
+  --accent-text: #3324d6;
+  --accent-subtle: #e9e6ff;
+  --accent-warm: #ff8a3d;
+  --accent-pressed: #2f22c4; /* 단축키 칩 on-accent 배경, 강조 버튼 hover */
+  --accent-on-inverse: #c9c1ff; /* 반전 면(오늘 카드) 안의 보조 글자. 두 모드 같다 */
+
+  --status-warn-bg: #fff1d6;
+  --status-warn-fg: #8f5b00;
+  --status-danger-bg: #fde8e8;
+  --status-danger-fg: #cc2f35;
+  --status-success-bg: #e3f5ea;
+  --status-success-fg: #1f7a4a;
+
+  --importance-core-bg: #ffe7d6;
+  --importance-core-fg: #c24e0a;
+  --importance-normal-bg: #ece9e3;
+  --importance-normal-fg: #4f4d56;
+  --importance-supp-bg: #f4f2ee;
+  --importance-supp-fg: #96939c;
+
+  --rating-again: #e5484d;
+  --rating-hard: #d98200;
+  --rating-good: #2e9e63;
+  --rating-easy: #4433ff;
+
+  --heat-0: #ece9e3;
+  --heat-1: #a69dff;
+  --heat-2: #8174ff;
+  --heat-3: #5d4dff;
+  --heat-4: #3a26e0;
+
+  --blob-lilac: #c9c1ff;
+  --blob-apricot: #ffcba6;
+
+  --font-sans: "Gothic A1", system-ui, "Malgun Gothic", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* Dark (Figma 35:4975). 구조는 그대로, 값만 바뀐다. bg/inverse 는 흰색으로 뒤집지 않고 남색 면으로 둔다 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-canvas: #121117;
+  --bg-surface: #1b1a21;
+  --bg-subtle: #24232b;
+  --bg-inverse: #34305a;
+  --bg-nav: rgb(27 26 33 / 0.78);
+
+  --text-primary: #edebf3;
+  --text-secondary: #b4b1be;
+  --text-tertiary: #85828f;
+  --text-inverse: #ffffff;
+
+  --border-default: #2c2b34;
+  --border-strong: #5c5a67;
+  --border-ink: #e9e7f0;
+
+  --accent-default: #5b4bff;
+  --accent-text: #a79fff;
+  --accent-subtle: #252150;
+  --accent-warm: #ff9a55;
+  --accent-pressed: #4335d9;
+  --accent-on-inverse: #c9c1ff;
+
+  --status-warn-bg: #33270f;
+  --status-warn-fg: #f2c46b;
+  --status-danger-bg: #3a1517;
+  --status-danger-fg: #ff7a7f;
+  --status-success-bg: #10291c;
+  --status-success-fg: #6fd49b;
+
+  --importance-core-bg: #3a2416;
+  --importance-core-fg: #ffb27a;
+  --importance-normal-bg: #2a2930;
+  --importance-normal-fg: #c9c6d2;
+  --importance-supp-bg: #1b1a21;
+  --importance-supp-fg: #85828f;
+
+  --rating-again: #ff6b70;
+  --rating-hard: #f0a43a;
+  --rating-good: #4cc98a;
+  --rating-easy: #8a80ff;
+
+  /* 다크 히트맵은 많을수록 밝아진다 */
+  --heat-0: #24232b;
+  --heat-1: #4a3db8;
+  --heat-2: #5f52e6;
+  --heat-3: #8378ff;
+  --heat-4: #b3adff;
+
+  --blob-lilac: #3a2f8c;
+  --blob-apricot: #5e3420;
+}
+
+/* 텍스트 스타일. Figma 이름을 클래스 이름으로 쓴다 */
+.t-display-l { font: 300 56px/64px var(--font-sans); letter-spacing: -0.03em; }
+.t-title-l   { font: 400 32px/42px var(--font-sans); letter-spacing: -0.02em; }
+.t-title-m   { font: 600 20px/28px var(--font-sans); letter-spacing: -0.01em; }
+.t-title-s   { font: 600 16px/24px var(--font-sans); letter-spacing: -0.005em; }
+.t-body-l    { font: 400 17px/28px var(--font-sans); letter-spacing: -0.005em; }
+.t-body-m    { font: 400 15px/24px var(--font-sans); letter-spacing: -0.003em; }
+.t-body-m-strong { font: 600 15px/24px var(--font-sans); letter-spacing: -0.003em; }
+.t-body-s    { font: 400 13px/20px var(--font-sans); }
+.t-label-m   { font: 600 14px/20px var(--font-sans); letter-spacing: -0.003em; }
+.t-label-s   { font: 600 12px/16px var(--font-sans); }
+.t-caption   { font: 400 12px/16px var(--font-sans); }
+.t-mono-key  { font: 500 11px/14px var(--font-mono); }
+
+.c-primary   { color: var(--text-primary); }
+.c-secondary { color: var(--text-secondary); }
+.c-tertiary  { color: var(--text-tertiary); }
+.c-inverse   { color: var(--text-inverse); }
+.c-accent    { color: var(--accent-text); }
+.c-warn      { color: var(--status-warn-fg); }
+.c-danger    { color: var(--status-danger-fg); }
+.c-success   { color: var(--status-success-fg); }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+/* 얇은 스크롤바. 자리를 미리 잡지 않는다 (잡으면 1280 기준 좌표가 10px 밀린다) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text-primary) 18%, transparent); border: 3px solid transparent; border-radius: 999px; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-primary) 32%, transparent); }
+
+body {
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* 한국어는 어절 단위로 줄을 바꾼다. "반영돼 / 요" 처럼 한 글자만 넘어가지 않게. 긴 영단어·주소는 넘칠 때만 끊는다 */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+p, h1, h2, h3 { margin: 0; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:disabled { cursor: default; opacity: 0.45; }
+
+/* 키보드로 옮긴 초점에만 링 (마우스 클릭에는 안 보인다). 알약 버튼은 radius 를 따라간다 */
+:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: 2px;
+}
+:root[data-theme="dark"] :focus-visible { outline-color: var(--accent-text); }

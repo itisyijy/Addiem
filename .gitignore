@@ -1,0 +1,28 @@
+# Anki 컬렉션/덱 원본. 개인 학습 데이터이므로 커밋하지 않는다
+*.colpkg
+*.apkg
+*.anki2
+*.anki21
+*.anki21b
+
+# 스파이크 작업 산출물
+*.sqlite
+
+# Python 가상환경. requirements.txt 로 다시 만든다
+.venv/
+__pycache__/
+
+# 프론트엔드 (Vite)
+node_modules/
+dist/
+*.local
+*.log
+
+# 편집기. 권장 확장 목록만 공유한다
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+
+# 구현 스크린샷 (디자인 검토용, 커밋하지 않는다)
+.review/

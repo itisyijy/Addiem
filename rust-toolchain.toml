@@ -1,0 +1,6 @@
+# 이 저장소 안에서는 rustup이 이 버전을 자동으로 쓴다 (없으면 자동 설치).
+# Python의 .venv 에 해당하는 Rust 쪽 장치다. 올릴 때는 이 숫자만 바꾼다
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

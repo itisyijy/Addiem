@@ -1,0 +1,10 @@
+/*
+ * D5-c 접어둔 카드 없음 · 내일 계획 패널 (Figma 26:2294). 접어둔 카드 패널(.done__folded)의 틀을 그대로 쓴다.
+ * 이 파일은 screens.css 보다 먼저 읽혀서 덮는 규칙은 선택자를 한 단계 더 구체적으로 쓴다.
+ */
+.done__folded-icon.done__icon--ok { background: var(--status-success-bg); color: var(--status-success-fg); }
+.done__tomorrow { display: flex; align-items: baseline; gap: 10px; padding-top: 4px; white-space: nowrap; }
+.done__list .done__plan-row { gap: 10px; padding: 11px 16px; }
+.done__plan-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.done__plan-row .badge { padding: 1px 8px; }
+.done__plan .done__actions { gap: 8px; }

@@ -1,0 +1,40 @@
+/* 공통 토스트 (Figma S1 26:3850 의 3번, D4 접어두기 토스트와 같은 자리·모양) */
+.toast {
+  position: fixed;
+  bottom: calc(48px + var(--toast-lift, 0px)); /* C2-b 선택 바가 떠 있으면 그 위로 */
+  left: 50%;
+  z-index: 30;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 640px;
+  padding: 12px 10px 12px 16px;
+  border-radius: 18px;
+  background: var(--bg-inverse);
+  color: var(--text-inverse);
+  box-shadow: 0 12px 32px rgba(23, 23, 28, 0.25);
+}
+.toast__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--accent-default);
+}
+.toast--undo .toast__icon { background: var(--accent-warm); }
+.toast--error .toast__icon { background: var(--status-danger-fg); }
+.toast__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.toast__btn {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--text-tertiary);
+  border-radius: 999px;
+  color: var(--text-inverse);
+  white-space: nowrap;
+}
+.toast__btn:hover { background: rgba(255, 255, 255, 0.08); }
+.toast__close { display: inline-flex; flex-shrink: 0; padding: 6px; color: var(--text-tertiary); }
