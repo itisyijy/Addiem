@@ -193,10 +193,8 @@ fn key_of(sh: &Shared) -> Option<[u8; 32]> {
 fn with_ctx<T>(sh: &Arc<Shared>, f: impl FnOnce(&Ctx) -> Result<T, SyncError>) -> Result<T, SyncError> {
     let store = store_of(sh)?;
     let locked = sh.with_db(|c| Ok(engine::local(c, "lock")?.as_deref() == Some("1")))?;
-    let key = key_of(sh);
-    if locked && key.is_none() {
-        return Err(SyncError::Locked);
-    }
+    // 잠갔을 때만 키를 쓴다. 다른 기기가 잠금을 푼 Drive 를 옛 키로 읽거나 잠그면 서로 읽지 못한다
+    let key = if locked { Some(key_of(sh).ok_or(SyncError::Locked)?) } else { None };
     let progress = |phase: &str, done: u64, total: u64| {
         let phase = phase.to_string();
         sh.set(|s| {
@@ -213,7 +211,8 @@ fn with_ctx<T>(sh: &Arc<Shared>, f: impl FnOnce(&Ctx) -> Result<T, SyncError>) -
 
 /// lib.rs setup 에서 AppState 다음에 부른다
 pub fn setup(app: &AppHandle) {
-    let folder = std::env::var_os("NEOANKI_SYNC_FOLDER").filter(|v| !v.is_empty()).map(PathBuf::from);
+    // 개발 빌드에서만. 배포 빌드에서 켜지면 연결 끊기가 실제 Google 토큰과 잠금 키를 지운다
+    let folder = std::env::var_os("NEOANKI_SYNC_FOLDER").filter(|v| !v.is_empty() && cfg!(debug_assertions)).map(PathBuf::from);
     let (tx, rx) = mpsc::channel();
     let sh = Arc::new(Shared {
         app: app.clone(),
@@ -732,6 +731,11 @@ fn local_backup(sh: &Shared, suffix: &str) -> Result<Option<PathBuf>, SyncError>
 
 fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
     let _g = sh.run.lock().map_err(store::other)?;
+    join_locked(sh, o, "fresh")
+}
+
+/// run 잠금을 쥔 채로 부른다. fresh_kind: 새로 시작할 때 다른 기기 고르는 창에 보일 이유 (fresh · lock · unlock)
+fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), SyncError> {
     let store = store_of(sh)?;
     let account = match sh.account.lock().ok().and_then(|a| a.clone()) {
         Some(a) => a,
@@ -794,7 +798,7 @@ fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
         local_backup(sh, "before-sync")?;
     }
     let reason = match o.mode {
-        Join::Fresh => json!({ "kind": "fresh", "device_name": sh.with_db(|c| engine::meta(c, "device_name"))? }),
+        Join::Fresh => json!({ "kind": fresh_kind, "device_name": sh.with_db(|c| engine::meta(c, "device_name"))? }),
         _ => json!({ "kind": "new" }),
     };
     drop(store);
@@ -926,16 +930,21 @@ pub async fn sync_set_lock(state: State<'_, SyncState>, password: Option<String>
     let r = tauri::async_runtime::spawn_blocking({
         let sh = sh.clone();
         move || -> Result<(), SyncError> {
+            // 끝까지 run 잠금을 쥔다: 새 세대로 옮긴 뒤 이 기기가 올린 변경을 아래에서 지우지 않게
+            let _g = sh.run.lock().map_err(store::other)?;
             let old_gen = sh.with_db(engine::gen_of)?;
+            let kind = if password.as_deref().is_some_and(|p| !p.is_empty()) { "lock" } else { "unlock" };
             let opts = JoinOpts { mode: Join::Fresh, device_name: None, backup: sh.with_db(|c| engine::local(c, "backup"))?, password, later: false };
-            join_blocking(&sh, opts)?;
-            // 지난 세대의 파일(평문이거나 옛 키)은 지운다
+            // 지울 변경 파일은 새 세대를 올리기 전에 정한다. 번호만으로는 세대를 모르고 옛 키로 잠근 파일은 머리도 못 읽는다
             let store = store_of(&sh)?;
+            let before = engine::remote(&*store)?;
+            join_locked(&sh, opts, kind)?;
+            // 지난 세대의 파일(평문이거나 옛 키)은 지운다
             let r = engine::remote(&*store)?;
             for s in r.snapshots.iter().filter(|s| s.generation <= old_gen) {
                 store.delete(&s.path)?;
             }
-            for files in r.changes.values() {
+            for files in before.changes.values() {
                 for (_, p) in files {
                     store.delete(p)?;
                 }
@@ -1013,7 +1022,9 @@ pub async fn sync_backups(state: State<'_, SyncState>) -> Res<Vec<DriveBackup>> 
 
 fn download_backup(sh: &Arc<Shared>, name: &str) -> Result<PathBuf, SyncError> {
     let store = store_of(sh)?;
-    let zip = engine::open_opt(store.get(&format!("backups/{name}"))?, key_of(sh).as_ref())?;
+    let data = store.get(&format!("backups/{name}"))?;
+    // 잠그기 전에 만든 백업은 평문이다 (잠가도 지우지 않는다). 사용자가 골라 되돌리는 것이라 그대로 연다
+    let zip = if crypto::is_sealed(&data) { engine::open_opt(data, key_of(sh).as_ref())? } else { data };
     let tmp = sh.state().data_dir.join("backups").join(format!(".drive-{}.sqlite", crypto::random_hex(6)));
     std::fs::create_dir_all(tmp.parent().expect("부모")).map_err(store::other)?;
     engine::unzip_db(&zip, &tmp)?;
