@@ -1,0 +1,605 @@
+// I1 자료 · 강조 구간 (Figma 53:6560, 노트 53:6724). 덱에 붙인 강의 PDF·슬라이드에서 하이라이트·붉은 글씨·★·볼드 구간을 찾아 카드와 잇는다.
+// 모델 없이 동작한다 (B-1). 모델이 있으면 자료를 넣은 뒤 카드와 자동으로 잇는다 (B-2, I3)
+import "../styles/sources.css";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
+import { api, errorText, type CardRow } from "../api";
+import { Badge, Button, Icon, type BadgeTone } from "../ui";
+import { eul, n, useKey, useNav } from "../nav";
+import { useToast } from "../toast";
+import { readPdf, renderPage } from "../pdf";
+import { Modal } from "./NewDeck";
+import {
+  cardSource,
+  mb,
+  refreshModel,
+  useModel,
+  sourceApi,
+  SIGNAL_LABEL,
+  SIGNAL_ORDER,
+  SIGNAL_TONE,
+  topSignal,
+  type AnalyzeProgress,
+  type Material,
+  type Para,
+  type Segment,
+  type Signal,
+} from "../sourceApi";
+
+/** 덱 상세 헤더의 [자료 N] (I1 노트) */
+export function SourcesButton({ deckId }: { deckId: number }) {
+  const nav = useNav();
+  const [count, setCount] = useState<number>();
+  useEffect(() => {
+    sourceApi
+      .list(deckId)
+      .then((m) => setCount(m.length))
+      .catch(() => setCount(0));
+  }, [deckId]);
+  return (
+    <Button variant="secondary" size="M" icon="file" label={count ? `자료 ${n(count)}` : "자료"} onClick={() => nav({ name: "sources", deckId })} />
+  );
+}
+
+export function SignalBadge({ signal }: { signal: Signal }) {
+  return <Badge tone={SIGNAL_TONE[signal] as BadgeTone}>{SIGNAL_LABEL[signal]}</Badge>;
+}
+
+const rankOf = (s: Segment) => SIGNAL_ORDER.indexOf(topSignal(s));
+const metaOf = (m: Material) =>
+  m.status === "unsupported" ? "글자를 읽을 수 없어요" : m.status === "pending" ? "읽는 중…" : `${n(m.pages)}${m.kind === "pptx" ? "장" : "쪽"} · 강조 ${n(m.segments)}곳`;
+
+/** 분석 진행 (I3 노트 "분석 중 2/3 · 기출_2023_필기.pdf"). 이벤트를 듣고, 이미 돌고 있으면 그 상태로 시작한다 */
+export function useAnalyzeProgress(initial: AnalyzeProgress | null | undefined) {
+  const [p, setP] = useState<AnalyzeProgress | null>(initial ?? null);
+  useEffect(() => setP(initial ?? null), [initial]);
+  useEffect(() => {
+    const off = listen<AnalyzeProgress>("source-analyze", (e) => setP(e.payload));
+    return () => {
+      off.then((f) => f());
+    };
+  }, []);
+  return [p, setP] as const;
+}
+
+export function AnalyzeBar({ p }: { p: AnalyzeProgress }) {
+  return (
+    <div className="src-progress" role="status">
+      <span className="t-body-s c-secondary">
+        분석 중 {p.step + 1}/{p.steps} · {p.label}
+      </span>
+      <span className="src-progress__track">
+        <span className="src-progress__fill" style={{ width: `${p.total ? Math.round((p.done / p.total) * 100) : 0}%` }} />
+      </span>
+    </div>
+  );
+}
+
+/** materialId · segmentId: I2 패널에서 들어올 때 그 구간을 보여준다. link: 카드 잇기 칸을 연 채로 */
+export function Sources({ deckId, materialId, segmentId, link }: { deckId: number; materialId?: number; segmentId?: number; link?: boolean }) {
+  const nav = useNav();
+  const toast = useToast();
+  const [deckName, setDeckName] = useState("");
+  const [materials, setMaterials] = useState<Material[] | null>(null);
+  const [sel, setSel] = useState<number | undefined>(materialId);
+  const [segs, setSegs] = useState<Segment[]>([]);
+  const [page, setPage] = useState(1);
+  const [active, setActive] = useState<number | undefined>(segmentId);
+  const [linking, setLinking] = useState<number | undefined>(link ? segmentId : undefined);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string>();
+  const [progress, setProgress] = useAnalyzeProgress(null);
+  const [stale, setStale] = useState(0);
+  const model = useModel();
+  const reading = useRef(new Set<number>());
+
+  const reload = useCallback(async () => {
+    const list = await sourceApi.list(deckId);
+    setMaterials(list);
+    sourceApi.unanalyzed(deckId).then(setStale, () => {});
+    setSel((s) => (s && list.some((m) => m.id === s) ? s : list[0]?.id));
+    return list;
+  }, [deckId]);
+
+  // 모델이 있으면 자료와 카드를 잇고 중요도 제안을 다시 만든다 (I3). 모델이 없으면 아무것도 하지 않는다
+  const analyze = useCallback(async () => {
+    const st = await refreshModel().catch(() => null);
+    if (!st?.ready) return;
+    try {
+      await sourceApi.analyze(deckId);
+    } catch (e) {
+      setError(errorText(e));
+    }
+    setProgress(null);
+    await reload();
+  }, [deckId, reload, setProgress]);
+
+  useEffect(() => {
+    api.deckDetail(deckId).then((d) => setDeckName(d.name));
+    reload();
+    refreshModel()
+      .then((s) => s.analyzing && setProgress(s.analyzing))
+      .catch(() => {});
+  }, [deckId, reload, setProgress]);
+
+  // 아직 읽지 않은 PDF 는 여기서 pdf.js 로 읽어 구간을 보낸다 (앱을 닫았다 열어도 이어서)
+  useEffect(() => {
+    const todo = materials?.filter((m) => m.kind === "pdf" && m.status === "pending" && !reading.current.has(m.id)) ?? [];
+    if (!todo.length) return;
+    (async () => {
+      for (const m of todo) {
+        reading.current.add(m.id);
+        try {
+          const r = await readPdf(m.id);
+          await sourceApi.savePdf(m.id, r.pages, r.segments, r.readable);
+        } catch {
+          // 암호가 걸렸거나 깨진 PDF 도 목록에 남겨 "읽을 수 없어요"로 알린다
+          await sourceApi.savePdf(m.id, 0, [], false).catch(() => {});
+        }
+      }
+      await reload();
+      analyze();
+    })();
+  }, [materials, reload, analyze]);
+
+  const current = materials?.find((m) => m.id === sel);
+  const loadSegs = useCallback(() => {
+    if (!sel) return setSegs([]);
+    sourceApi.segments(sel).then(setSegs);
+  }, [sel]);
+  useEffect(() => {
+    loadSegs();
+    setDeleting(false);
+  }, [loadSegs, current?.status]);
+  // 다른 자료를 고르면 첫 쪽부터. 구간에서 들어왔으면 그 쪽으로
+  useEffect(() => {
+    const s = segs.find((x) => x.id === active);
+    setPage(s ? s.page : 1);
+  }, [sel, segs, active]);
+
+  useKey("Escape", () => nav({ name: "deck", deckId }), linking === undefined);
+  // 검색 칸에 글을 쓰는 중에도 Esc 로 카드 잇기 칸만 닫는다
+  useKey("Escape", () => setLinking(undefined), linking !== undefined, { modal: true });
+  useKey("ArrowLeft", () => setPage((p) => Math.max(1, p - 1)), !!current && linking === undefined);
+  useKey("ArrowRight", () => setPage((p) => Math.min(current?.pages ?? 1, p + 1)), !!current && linking === undefined);
+
+  const add = async () => {
+    setError(undefined);
+    const picked = await open({ multiple: true, directory: false, filters: [{ name: "강의 자료", extensions: ["pdf", "pptx"] }] });
+    const paths = (Array.isArray(picked) ? picked : picked ? [picked] : []) as string[];
+    let last: Material | undefined;
+    for (const p of paths) {
+      try {
+        last = await sourceApi.add(deckId, p);
+      } catch (e) {
+        setError(errorText(e));
+      }
+    }
+    if (!last) return;
+    await reload();
+    setSel(last.id);
+    setActive(undefined);
+    // PPTX 는 바로 읽혔다. PDF 는 위의 읽기가 끝난 뒤 분석한다
+    if (last.kind === "pptx") analyze();
+  };
+
+  const remove = async () => {
+    if (!current) return;
+    try {
+      await sourceApi.remove(current.id);
+      toast({ title: `${current.file_name}${eul(current.file_name)} 지웠어요`, text: "카드와 그 학습 기록은 그대로예요" });
+      setSel(undefined);
+      await reload();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  const changed = () => {
+    loadSegs();
+    reload();
+  };
+
+  if (!materials) return null;
+  const sorted = [...segs].sort((a, b) => rankOf(a) - rankOf(b) || a.page - b.page || a.ord - b.ord);
+  const linkedSegs = segs.filter((s) => s.links.length).length;
+
+  return (
+    <main className="sources">
+      <button className="backlink t-label-m c-secondary" onClick={() => nav({ name: "deck", deckId })}>
+        <Icon name="chevron-left" size={18} />
+        {deckName}
+      </button>
+      <div className="deck__head">
+        <div className="deck__title">
+          <h1 className="t-title-l">자료</h1>
+          <p className="t-body-s c-secondary">
+            강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요.
+            {/* 다시 분석은 자동으로 하지 않는다. 지난 분석 뒤에 생긴 카드가 있을 때만 알린다 */}
+            {stale > 0 && model?.ready && !progress && (
+              <>
+                {" "}
+                · 분석 뒤에 추가한 카드 {n(stale)}장 ·{" "}
+                <button className="src-inline t-label-m c-accent" onClick={analyze}>
+                  분석하기
+                </button>
+              </>
+            )}
+          </p>
+        </div>
+        <Button variant="secondary" size="M" icon="plus" label="자료 추가" onClick={add} />
+      </div>
+      {progress && <AnalyzeBar p={progress} />}
+      {error && <p className="t-body-s c-danger">{error}</p>}
+
+      {materials.length === 0 ? (
+        <div className="panel src-empty">
+          <Icon name="file" size={24} className="c-tertiary" />
+          <p className="t-title-s">아직 자료가 없어요</p>
+          <p className="t-body-s c-secondary">텍스트를 고를 수 있는 PDF나 PPTX를 넣으면 강조된 곳을 찾아 보여줘요.</p>
+          <p className="t-caption c-tertiary">손으로 그린 별표·밑줄과 스캔본(글자를 고를 수 없는 PDF)은 읽지 못해요.</p>
+        </div>
+      ) : (
+        <div className="src-cols">
+          <div className="src-files">
+            {materials.map((m) => {
+              const bad = m.status === "unsupported";
+              const on = m.id === sel;
+              return (
+                <div key={m.id} className={`src-file ${on ? "is-selected" : ""}`}>
+                  <button
+                    className="src-file__main"
+                    aria-current={on || undefined}
+                    onClick={() => {
+                      setSel(m.id);
+                      setActive(undefined);
+                      setLinking(undefined);
+                    }}
+                  >
+                    <Icon name={bad ? "alert" : "file"} size={18} className={bad ? "c-warn" : "c-secondary"} />
+                    <span className="src-file__text">
+                      <span className={`t-label-m ${bad ? "c-tertiary" : "c-primary"}`}>{m.file_name}</span>
+                      <span className={`t-caption ${bad ? "c-warn" : "c-tertiary"}`}>{metaOf(m)}</span>
+                    </span>
+                  </button>
+                  {on && !deleting && (
+                    <button className="src-file__del" aria-label={`${m.file_name} 지우기`} onClick={() => setDeleting(true)}>
+                      <Icon name="trash" size={16} />
+                    </button>
+                  )}
+                  {on && deleting && (
+                    <div className="src-file__confirm">
+                      <span className="t-caption c-secondary">지워도 카드는 그대로, 연결만 끊겨요</span>
+                      <span className="src-file__confirm-btns">
+                        <Button variant="ghost" size="M" label="취소" onClick={() => setDeleting(false)} />
+                        <Button variant="danger" size="M" label="지우기" onClick={remove} />
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <p className="t-caption c-tertiary">손으로 그린 별표·밑줄과 스캔본(글자를 고를 수 없는 PDF)은 읽지 못해요.</p>
+            {model?.ready && <p className="src-model t-caption c-tertiary">분석 모델 있음 · 설정에서 지울 수 있어요</p>}
+          </div>
+
+          {current && (
+            <Preview
+              m={current}
+              page={page}
+              segs={segs.filter((s) => s.page === page)}
+              active={active}
+              onPage={setPage}
+              onPick={(id) => {
+                setActive(id);
+                document.getElementById(`seg-${id}`)?.scrollIntoView({ block: "nearest" });
+              }}
+            />
+          )}
+
+          <section className="panel src-list" aria-label="강조된 구간">
+            <div className="src-list__head">
+              <span className="t-title-s">강조된 구간 {n(segs.length)}</span>
+              <span className="t-caption c-tertiary">
+                연결된 카드 {n(linkedSegs)} · 연결 없음 {n(segs.length - linkedSegs)}
+              </span>
+            </div>
+            {current?.status === "unsupported" && (
+              <p className="src-list__note t-body-s c-secondary">
+                이 자료에서는 글자를 읽을 수 없어요. 스캔본이나 손글씨 자료는 아직 지원하지 않아요.
+              </p>
+            )}
+            {current?.status === "ready" && segs.length === 0 && (
+              <p className="src-list__note t-body-s c-secondary">하이라이트·붉은 글씨·★·볼드로 강조된 곳을 찾지 못했어요.</p>
+            )}
+            {sorted.map((s) => (
+              <div key={s.id} id={`seg-${s.id}`} className={`src-seg ${s.id === active ? "is-active" : ""}`}>
+                <div className="src-seg__row" onClick={() => setActive(s.id)}>
+                  <div className="src-seg__body">
+                    <span className="src-seg__meta">
+                      {s.signals.map((g) => (
+                        <SignalBadge key={g} signal={g} />
+                      ))}
+                      <span className="t-caption c-tertiary">p.{s.page}</span>
+                    </span>
+                    <p className="t-body-s c-primary">{s.text}</p>
+                  </div>
+                  {s.links.length ? (
+                    <button
+                      className="badge badge--accent t-label-s src-seg__count"
+                      aria-expanded={linking === s.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActive(s.id);
+                        setLinking(linking === s.id ? undefined : s.id);
+                      }}
+                    >
+                      카드 {n(s.links.length)}장
+                    </button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="M"
+                      icon="plus"
+                      label="카드 잇기"
+                      aria-expanded={linking === s.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActive(s.id);
+                        setLinking(linking === s.id ? undefined : s.id);
+                      }}
+                    />
+                  )}
+                </div>
+                {linking === s.id && <LinkEditor deckId={deckId} seg={s} onChange={changed} />}
+              </div>
+            ))}
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}
+
+/** E1 데이터 칸의 [분석 모델] 행 (Settings.tsx). 모델은 앱 전체에서 하나라 설정에서 지운다. 받았을 때만 보인다 */
+export function ModelRow() {
+  const model = useModel();
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  if (!model?.ready) return null;
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await sourceApi.deleteModel();
+      setAsking(false);
+      await refreshModel();
+    } catch (e) {
+      // 분석이나 내려받기 중이면 지우지 않는다 (embed.rs model_delete)
+      setError(errorText(e));
+    }
+    setBusy(false);
+  };
+  return (
+    <>
+      <div className="prefs__row">
+        <span className="prefs__text">
+          <span className="t-body-m-strong">분석 모델</span>
+          <span className="t-body-s c-secondary">약 {mb(model.bytes)} · 자료로 중요도를 제안할 때 써요</span>
+        </span>
+        <Button variant="ghost" size="M" label="지우기" onClick={() => setAsking(true)} />
+      </div>
+      {asking && (
+        <Modal title="분석 모델을 지울까요?" onClose={() => setAsking(false)} variant="confirm" icon="trash">
+          <p className="t-body-m c-secondary">이미 만든 연결과 제안은 그대로예요. 새 자료를 분석하려면 다시 받아야 해요.</p>
+          {error && <p className="t-body-s c-danger">{error}</p>}
+          <div className="modal__actions">
+            <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={() => setAsking(false)} />
+            <Button variant="danger" size="M" icon="trash" label="지우기" busy={busy} onClick={remove} />
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+/** 가운데 열: 쪽 미리보기와 강조 위치. PDF 는 그대로 그리고, PPTX 는 슬라이드 글을 줄로 보여준다 */
+function Preview({
+  m,
+  page,
+  segs,
+  active,
+  onPage,
+  onPick,
+}: {
+  m: Material;
+  page: number;
+  segs: Segment[];
+  active?: number;
+  onPage: (p: number) => void;
+  onPick: (id: number) => void;
+}) {
+  return (
+    <div className="src-preview">
+      {m.status !== "ready" ? (
+        <div className="src-page src-page--empty t-body-s c-tertiary">{m.status === "pending" ? "자료를 읽고 있어요…" : "미리 볼 수 없어요"}</div>
+      ) : m.kind === "pdf" ? (
+        <PdfPage materialId={m.id} page={page} width={300} segs={segs} active={active} onPick={onPick} />
+      ) : (
+        <SlidePage materialId={m.id} page={page} />
+      )}
+      {m.status === "ready" && (
+        <span className="src-preview__nav">
+          <button className="src-icon-btn" aria-label="이전 쪽" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+            <Icon name="chevron-left" size={16} scaled />
+          </button>
+          <span className="t-caption c-tertiary">
+            {n(page)}
+            {m.kind === "pptx" ? "장" : "쪽"} / {n(m.pages)}
+          </span>
+          <button className="src-icon-btn" aria-label="다음 쪽" disabled={page >= m.pages} onClick={() => onPage(page + 1)}>
+            <Icon name="chevron-right" size={16} />
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** PDF 한 쪽 + 강조 위치 표시. I2 패널도 쓴다 (height 를 주면 활성 구간이 보이게 잘라 보여준다) */
+export function PdfPage({
+  materialId,
+  page,
+  width,
+  height,
+  segs,
+  active,
+  onPick,
+}: {
+  materialId: number;
+  page: number;
+  width: number;
+  height?: number;
+  segs: Segment[];
+  active?: number;
+  onPick?: (id: number) => void;
+}) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const [size, setSize] = useState<{ w: number; h: number }>();
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const c = canvas.current;
+    if (!c) return;
+    let task: { cancel: () => void } | undefined;
+    let live = true;
+    setFailed(false);
+    renderPage(materialId, page, c, width)
+      .then((t) => {
+        task = t;
+        if (!live) return t.cancel();
+        setSize({ w: width, h: parseFloat(c.style.height) });
+        return t.promise;
+      })
+      .catch((e) => live && e?.name !== "RenderingCancelledException" && setFailed(true));
+    return () => {
+      live = false;
+      task?.cancel();
+    };
+  }, [materialId, page, width]);
+  const focus = segs.find((s) => s.id === active) ?? segs[0];
+  // 잘라 보일 때는 연결 구간이 가운데 오게
+  const top = height && size && focus?.rects?.length ? Math.max(0, Math.min(size.h - height, focus.rects[0][1] * size.h - height / 2)) : 0;
+  return (
+    <div className="src-page" style={{ width, height: height ?? size?.h ?? width * 1.33 }}>
+      {failed && <span className="src-page__fail t-body-s c-tertiary">이 기기에는 자료 파일이 없어요</span>}
+      <div className="src-page__inner" style={{ transform: `translateY(${-top}px)` }}>
+        <canvas ref={canvas} />
+        {segs.flatMap((s) =>
+          (s.rects ?? []).map((r, i) => (
+            <span
+              key={`${s.id}-${i}`}
+              className={`src-mark src-mark--${topSignal(s)} ${s.id === active ? "is-active" : ""}`}
+              style={{ left: `${r[0] * 100}%`, top: `${r[1] * 100}%`, width: `${r[2] * 100}%`, height: `${r[3] * 100}%` }}
+              onClick={onPick && (() => onPick(s.id))}
+            />
+          )),
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** PPTX 한 장. 그림은 그리지 않고 글만, 강조된 문단은 신호 색으로 */
+export function SlidePage({ materialId, page, active, height }: { materialId: number; page: number; active?: string; height?: number }) {
+  const [paras, setParas] = useState<Para[]>();
+  useEffect(() => {
+    sourceApi
+      .slide(materialId, page)
+      .then(setParas)
+      .catch(() => setParas([]));
+  }, [materialId, page]);
+  return (
+    <div className="src-page src-page--slide" style={height ? { height } : undefined}>
+      {paras?.length === 0 && <span className="t-caption c-tertiary">이 슬라이드에는 글이 없어요</span>}
+      {paras?.map((p, i) => (
+        <p
+          key={i}
+          className={`src-slide__para ${p.signals.length ? `src-mark--${topSignal(p)}` : ""} ${p.text === active ? "is-active" : ""}`}
+        >
+          {p.text}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** [카드 잇기]: 이 덱 카드 검색 → 골라서 연결 (B-1 수동 연결). 이어진 카드는 끊을 수 있다 */
+function LinkEditor({ deckId, seg, onChange }: { deckId: number; seg: Segment; onChange: () => void }) {
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState<CardRow[]>([]);
+  const [linked, setLinked] = useState<CardRow[]>([]);
+  const ids = seg.links.map((l) => l.card_id);
+  const key = ids.join(",");
+  useEffect(() => {
+    const t = setTimeout(() => api.listCards(deckId, q, 8).then((r) => setRows(r.rows)), 150);
+    return () => clearTimeout(t);
+  }, [deckId, q]);
+  useEffect(() => {
+    if (!key) return setLinked([]);
+    api.listCards(null, "", 50, false, key.split(",").map(Number)).then((r) => setLinked(r.rows));
+  }, [key]);
+  const act = async (fn: Promise<void>, cardId: number) => {
+    await fn;
+    cardSource(cardId, true); // 학습 화면의 [원자료] 버튼이 바로 따라오게
+    onChange();
+  };
+  const method = (id: number) => (seg.links.find((l) => l.card_id === id)?.method === "auto" ? "자동 연결" : "직접 연결");
+  return (
+    <div className="src-link" onClick={(e) => e.stopPropagation()}>
+      {linked.length > 0 && (
+        <div className="src-link__group">
+          <span className="t-label-s c-secondary">이어진 카드</span>
+          {linked.map((c) => (
+            <div key={c.id} className="src-link__row">
+              <span className="src-link__text">
+                <span className="t-body-s c-primary">{c.question}</span>
+                <span className="t-caption c-tertiary">
+                  {method(c.id)} · {c.deck_path.slice(1).join(" › ") || c.deck_path[0]}
+                </span>
+              </span>
+              <Button variant="ghost" size="M" label="끊기" onClick={() => act(sourceApi.unlink(seg.id, c.id), c.id)} />
+            </div>
+          ))}
+        </div>
+      )}
+      <input
+        className="field__input t-body-s src-link__search"
+        placeholder="이 덱 카드 검색"
+        aria-label="이 덱 카드 검색"
+        autoFocus
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+      <div className="src-link__group">
+        {rows.length === 0 && <span className="t-caption c-tertiary">맞는 카드가 없어요</span>}
+        {rows.map((c) => (
+          <div key={c.id} className="src-link__row">
+            <span className="src-link__text">
+              <span className="t-body-s c-primary">{c.question}</span>
+              <span className="t-caption c-tertiary">{c.answer}</span>
+            </span>
+            {ids.includes(c.id) ? (
+              <span className="t-label-s c-accent src-link__done">
+                <Icon name="check" size={14} />
+                이어짐
+              </span>
+            ) : (
+              <Button variant="secondary" size="M" label="잇기" onClick={() => act(sourceApi.link(seg.id, c.id), c.id)} />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

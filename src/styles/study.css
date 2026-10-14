@@ -265,3 +265,17 @@
 .study .study__toast-btn--accent:hover { background: var(--accent-pressed); }
 /* D5 접어둔 카드 행의 [나누기 제안] 칩 (StudyParts SplitLaterChip) */
 .split-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; border-radius: 999px; background: var(--accent-subtle); color: var(--accent-text); white-space: nowrap; }
+
+/* ---------------------------------------------------------------- I2 원자료 패널 (Figma 53:6730) */
+/* 카드는 왼쪽으로 좁아지고 (760) 평가 줄이 카드 폭을 따라간다. 패널은 오른쪽 420. 둘을 합쳐 가운데 (1280 에서 왼쪽 40) */
+.study__tool--source { color: var(--text-secondary); }
+.study__tool--source.is-on { padding: 6px 10px; background: var(--accent-subtle); color: var(--accent-text); }
+.study.has-source .study__col { width: 760px; margin: 0 0 0 max(40px, calc((100vw - 1210px) / 2)); }
+.study__source {
+  position: absolute;
+  top: 96px;
+  left: calc(max(40px, (100vw - 1210px) / 2) + 790px);
+  width: 420px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}

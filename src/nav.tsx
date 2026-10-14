@@ -14,6 +14,7 @@ export type Route =
   | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean } // C2. deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w)
   | { name: "addCard"; deckId: number } // C3
   | { name: "deckSettings"; deckId: number } // C4
+  | { name: "sources"; deckId: number; materialId?: number; segmentId?: number; link?: boolean } // I1 자료. I2 패널에서 오면 그 구간 (link: 카드 잇기 칸을 연 채로)
   | { name: "quality"; deckId: number } // G1 카드 점검 (G2 나누기 제안은 그 위 모달)
   | { name: "plan"; deckId: number | null } // H1 학습 계획. null 이면 모든 덱
   | { name: "planConflict"; back?: Route } // H2 목표일 충돌

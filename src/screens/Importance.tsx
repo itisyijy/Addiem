@@ -5,6 +5,7 @@ import { api, errorText, type BoardDeck, type DeckDetail, type Level } from "../
 import { Badge, Button, Icon, Importance as ImportanceBadge, LEVEL_LABEL } from "../ui";
 import { n, useKey, useNav, useOverlayScope } from "../nav";
 import { menuKeys } from "./Deck";
+import { SourceBanner, SourceTag } from "./SourceBanner";
 
 const LANES: Level[] = [2, 1, 0];
 const GROUP_OVER = 12; // 하위 덱이 이보다 많으면 과목별로 묶어서 연다
@@ -112,11 +113,12 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
         <Icon name="grip" size={16} />
         <span className="t-label-m">{label}</span>
         <span className="t-caption c-tertiary">{n(d.cards)}장</span>
+        {suggested(d) && <SourceTag source={d.source} /> /* I3 출처 태그 */}
         {suggested(d) && <span className="t-label-s c-accent">제안</span>}
       </button>
       {suggested(d) && d.reason && menu !== d.id && (
         <span className="board__tip" role="tooltip">
-          <span className="t-label-s">왜 {LEVEL_LABEL[d.importance]}인가요?</span>
+          <span className="t-label-s">왜 {LEVEL_LABEL[d.importance]}인가요?{d.source === "material" && " · 자료"}</span>
           <span className="t-caption">{d.reason}</span>
         </span>
       )}
@@ -180,6 +182,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
           <span className="t-label-m c-primary">{name}</span>
           <span className="t-caption">{caption}</span>
         </span>
+        {kids.some((d) => d.source === "material") && <SourceTag source="material" />}
         {sug && <span className="t-label-s c-accent">제안</span>}
         {split && <Badge>나뉨</Badge>}
       </button>,
@@ -228,6 +231,8 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
         </div>
       )}
 
+      {/* I3 자료 기반 제안: 모델 배너 · 분석 진행 · 결과 (screens/SourceBanner.tsx) */}
+      <SourceBanner deckId={deckId} board={board} onChanged={load} onShow={() => setGrouped(false)} />
       <div className="board__lanes">
         {LANES.map((level) => {
           const items = board.filter((d) => d.importance === level);

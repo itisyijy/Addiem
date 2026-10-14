@@ -2101,11 +2101,12 @@ pub(crate) fn write_backup(con: &Connection, data_dir: &std::path::Path) -> Res<
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         zip.start_file("neoanki.sqlite", opts).map_err(err)?;
         zip.write_all(&std::fs::read(&db_copy).map_err(err)?).map_err(err)?;
-        // 그림은 이미 압축돼 있다. 다시 압축하지 않는다
+        // 그림과 원자료(PDF 등)는 이미 압축돼 있다. 다시 압축하지 않는다. models/ 는 앱이 받는 것이라 넣지 않는다
         let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        if let Ok(entries) = std::fs::read_dir(media_dir(data_dir)) {
+        for sub in ["media", "sources"] {
+            let Ok(entries) = std::fs::read_dir(data_dir.join(sub)) else { continue };
             for e in entries.filter_map(Result::ok).filter(|e| e.path().is_file()) {
-                zip.start_file(format!("media/{}", e.file_name().to_string_lossy()), stored).map_err(err)?;
+                zip.start_file(format!("{sub}/{}", e.file_name().to_string_lossy()), stored).map_err(err)?;
                 zip.write_all(&std::fs::read(e.path()).map_err(err)?).map_err(err)?;
             }
         }
@@ -2365,8 +2366,8 @@ pub async fn restore_backup(state: State<'_, AppState>) -> Res<String> {
         let name = f.name().map_err(err)?.into_owned();
         let target = if name == "neoanki.sqlite" {
             db_path.clone()
-        } else if let Some(file) = name.strip_prefix("media/") {
-            let dir = media_dir(&state.data_dir);
+        } else if let Some((sub, file)) = name.split_once('/').filter(|(sub, _)| ["media", "sources"].contains(sub)) {
+            let dir = state.data_dir.join(sub);
             if safe_media_name(file).is_err() || dir.join(file).exists() {
                 continue;
             }
@@ -2419,13 +2420,15 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
          DELETE FROM media; DELETE FROM import_issue; DELETE FROM import_batch;
-         DELETE FROM card_change; DELETE FROM plan_setting;",
+         DELETE FROM card_change; DELETE FROM plan_setting; DELETE FROM embedding_cache;",
     )
     .map_err(err)?;
     db::seed_note_types(&tx).map_err(err)?;
     tx.commit().map_err(err)?;
     let _ = con.execute_batch("VACUUM");
     let _ = std::fs::remove_dir_all(media_dir(&state.data_dir));
+    // 원자료 복사본도 사용자 데이터다. models/ 는 앱 자원이라 남긴다
+    let _ = std::fs::remove_dir_all(state.data_dir.join("sources"));
     Ok(saved)
 }
 
