@@ -213,7 +213,7 @@ pub fn export_preview(state: State<AppState>, deck_id: i64) -> Res<ExportPreview
         notes: count("SELECT count(DISTINCT note_id) FROM card WHERE deck_id IN ($IDS)")?,
         cards: count("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?,
         media: media.len(),
-        reviews: count("SELECT count(*) FROM review_log WHERE card_id IN (SELECT id FROM card WHERE deck_id IN ($IDS))")?,
+        reviews: count("SELECT count(*) FROM review_log WHERE card_id IN (SELECT id FROM card WHERE deck_id IN ($IDS)) AND kind IS NULL")?,
     })
 }
 
@@ -658,7 +658,7 @@ fn write_revlog(con: &Connection, tx: &Connection, in_decks: &str, card_ids: &Ha
     let mut st = con
         .prepare(&format!(
             "SELECT card_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state FROM review_log
-             WHERE card_id IN (SELECT id FROM card WHERE deck_id IN ({in_decks})) ORDER BY reviewed_at"
+             WHERE card_id IN (SELECT id FROM card WHERE deck_id IN ({in_decks})) AND kind IS NULL ORDER BY reviewed_at"
         ))
         .map_err(err)?;
     let rows = st

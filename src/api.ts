@@ -439,6 +439,97 @@ export const qualityApi = {
   splitSignal: (cardId: number) => invoke<string | null>("split_signal", { cardId }),
 };
 
+// ---------------------------------------------------------------- H 학습 계획 · 목표일 충돌 (plan.rs). 예상 점수 · 합격 가능성은 없다
+
+export type PlanBar = {
+  date: string;
+  weekend: boolean;
+  kind: "past" | "today" | "future" | "exam";
+  review: number;
+  new: number;
+  /** 지난 날 실제로 본 카드 */
+  done: number;
+  /** 시간을 넣었을 때 이날의 장수 상한 */
+  cap: number | null;
+};
+export type PlanExam = { date: string; deck_id: number; name: string };
+/** to_date 가 null 이면 당겨도 줄지 않는다. after: 당긴 뒤 그날 예정 (다시 내다본 값) */
+export type PlanOver = { date: string; weekend: boolean; total: number; cap: number; to_date: string | null; to_weekend: boolean; n: number; after: number; deck_id: number };
+export type StudyPlan = {
+  bars: PlanBar[];
+  exams: PlanExam[];
+  target_date: string | null;
+  days_left: number | null;
+  remaining_new: number;
+  sec_per_card: number;
+  /** 최근 14일 기록이 충분하면 true. 아니면 10초로 잡는다 */
+  measured: boolean;
+  weekday_min: number | null;
+  weekend_min: number | null;
+  weekday_cap: number | null;
+  weekend_cap: number | null;
+  over: PlanOver | null;
+  pace: string | null;
+  /** 다시 나누기 (덱 계획 · 목표일이 있을 때만) */
+  recompute: boolean | null;
+  has_conflict: boolean;
+};
+export type PlanMode = "spread" | "first" | "keep";
+export type ConflictDeck = { id: number; name: string; target: string };
+export type PlanConflict = {
+  a: ConflictDeck;
+  b: ConflictDeck;
+  peak_date: string;
+  peak: number;
+  limit: number;
+  /** 기준선이 쓸 수 있는 시간이면 true, 아니면 최근 30일 평균의 1.5배 */
+  by_time: boolean;
+  bars: { date: string; a: number; b: number; other: number; limit: number }[];
+  spread_peak: number;
+  spread_extra: number;
+  first_peak: number;
+  first_days: number;
+  over_dates: string[];
+  chosen: PlanMode | null;
+};
+
+export const planApi = {
+  plan: (deckId: number | null) => invoke<StudyPlan>("study_plan", { deckId }),
+  /** 분. null 이면 지운다 */
+  setTime: (weekdayMin: number | null, weekendMin: number | null) => invoke<void>("set_study_time", { weekdayMin, weekendMin }),
+  pull: (deckId: number, fromDate: string, toDate: string, n: number) => invoke<void>("pull_plan", { deckId, fromDate, toDate, n }),
+  setRecompute: (deckId: number, on: boolean) => invoke<void>("set_recompute", { deckId, on }),
+  /** includeResolved=false: 아직 고르지 않은 충돌만 (홈 배너) */
+  conflict: (includeResolved = false) => invoke<PlanConflict | null>("plan_conflict", { includeResolved }),
+  resolve: (deckA: number, deckB: number, mode: PlanMode) => invoke<void>("resolve_plan_conflict", { deckA, deckB, mode }),
+  /** C4 "충돌 조정으로 +18장" */
+  adjust: (deckId: number) => invoke<{ mode: PlanMode; delta: number } | null>("plan_adjust", { deckId }),
+};
+
+// ---------------------------------------------------------------- H3 압축 회독 (cram.rs)
+
+export type CramPlan = {
+  deck_id: number;
+  name: string;
+  dday: number;
+  core: number;
+  core_total: number;
+  weak: number;
+  weak_names: string[];
+  again: number;
+  stable: number;
+  /** 핵심만 · 핵심 + 약한 챕터 · 불안한 카드 전부 */
+  scopes: [number, number, number];
+  sec_per_card: number;
+};
+
+export const cramApi = {
+  plan: (deckIds: number[] | null) => invoke<CramPlan | null>("cram_plan", { deckIds }),
+  cards: (deckId: number, scope: number) => invoke<number[]>("cram_cards", { deckId, scope }),
+  answer: (cardId: number, rating: number, elapsedMs: number) => invoke<number>("cram_answer", { cardId, rating, elapsedMs }),
+  undo: (logId: number) => invoke<void>("cram_undo", { logId }),
+};
+
 /** Rust 쪽 오류는 사용자에게 보여줄 문장으로 온다 */
 export function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : "알 수 없는 오류가 났어요.";

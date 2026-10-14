@@ -1,7 +1,33 @@
-// 학습 화면 묶음의 작은 조각: G3 [나누기 제안] 칩 (D5)과 "나중에 볼 제안"
-import { Icon } from "../ui";
-import { studyDate } from "../nav";
+// 학습 화면 묶음의 작은 조각: H3 압축 회독 안내 줄 (홈 · D1) · G3 [나누기 제안] 칩 (D5)과 "나중에 볼 제안"
+import { useEffect, useState } from "react";
+import { cramApi, type CramPlan } from "../api";
+import { Button, Icon } from "../ui";
+import { n, studyDate, useNav } from "../nav";
 import "../styles/study.css";
+
+// ---------------------------------------------------------------- H3 압축 회독 안내 (홈 · D1)
+
+/** 목표일 3일 전부터 "압축 회독을 할 수 있어요" 한 줄 + [압축 회독]. 열 수 없으면 아무것도 그리지 않는다 */
+export function CramHint({ deckIds }: { deckIds: number[] | null }) {
+  const nav = useNav();
+  const [plan, setPlan] = useState<CramPlan | null>(null);
+  useEffect(() => {
+    cramApi.plan(deckIds).then(setPlan, () => setPlan(null));
+  }, [deckIds]);
+  if (!plan) return null;
+  return (
+    <div className="cram-hint">
+      <Icon name="target" size={16} className="c-accent" />
+      <span className="cram-hint__text">
+        <span className="t-label-m">압축 회독을 할 수 있어요</span>
+        <span className="t-caption c-tertiary">
+          {plan.name} {plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`} · 불안한 카드 {n(plan.scopes[2])}장
+        </span>
+      </span>
+      <Button variant="secondary" size="M" label="압축 회독" onClick={() => nav({ name: "summary", deckIds, cram: true })} />
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------- G3 "나중에 볼 제안" (이 기기에서만)
 

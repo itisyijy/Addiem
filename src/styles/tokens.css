@@ -59,6 +59,10 @@
   --heat-3: #5d4dff;
   --heat-4: #3a26e0;
 
+  /* 차트 시리즈 (H2 덱별 쌓기 막대). 막대 색으로만 쓰고 글자는 text 토큰을 쓴다 */
+  --chart-1: #4433ff;
+  --chart-2: #d2600f;
+
   --blob-lilac: #c9c1ff;
   --blob-apricot: #ffcba6;
 
@@ -116,6 +120,9 @@
   --heat-2: #5f52e6;
   --heat-3: #8378ff;
   --heat-4: #b3adff;
+
+  --chart-1: #6a5cff;
+  --chart-2: #d2702e;
 
   --blob-lilac: #3a2f8c;
   --blob-apricot: #5e3420;

@@ -1,6 +1,6 @@
 // C4 목표 및 학습 설정 / C4-b 상한 부족 경고 / C4-p 잠시 쉬기
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorText, type ConfigPreview, type DeckConfig, type DeckDetail } from "../api";
+import { api, errorText, planApi, type ConfigPreview, type DeckConfig, type DeckDetail } from "../api";
 import { Button, Icon, Toggle } from "../ui";
 import { n, studyDate, useKey, useNav } from "../nav";
 
@@ -47,6 +47,11 @@ export function DeckSettings({ deckId }: { deckId: number }) {
   const [before, setBefore] = useState<ConfigPreview | null>(null);
   const [after, setAfter] = useState<ConfigPreview | null>(null);
   const [error, setError] = useState<string>();
+  // H2 에서 고른 조정이 오늘 신규를 몇 장 바꿨는지 ("충돌 조정으로 +18장"). 미리보기 산식에는 들어가지 않는다
+  const [adjust, setAdjust] = useState<{ mode: string; delta: number } | null>(null);
+  useEffect(() => {
+    planApi.adjust(deckId).then(setAdjust, () => {});
+  }, [deckId]);
   const dateInput = useRef<HTMLInputElement>(null);
   const pauseInput = useRef<HTMLInputElement>(null);
 
@@ -303,6 +308,15 @@ export function DeckSettings({ deckId }: { deckId: number }) {
             </div>
           ))}
           <p className="recalc__formula t-body-s c-secondary">{formula}</p>
+          {adjust && adjust.delta !== 0 && (
+            <p className="recalc__adjust t-body-s c-accent">
+              충돌 조정으로 {adjust.delta > 0 ? "+" : ""}
+              {n(adjust.delta)}장 · {adjust.mode === "first" ? "먼저 볼 덱의 시험 뒤에 신규를 넣어요" : "늦은 시험의 신규를 앞당겨 나눠요"}
+              <button className="recalc__adjust-link t-label-m" onClick={() => nav({ name: "planConflict", back: { name: "deckSettings", deckId } })}>
+                조정 보기
+              </button>
+            </p>
+          )}
           {hasDate && !warn && !paused && after.days !== null && after.days > 0 && (
             <div className="recalc__ok">
               <Icon name="check-circle" size={20} className="c-success" />

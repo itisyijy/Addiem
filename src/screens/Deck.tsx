@@ -1,7 +1,7 @@
 // C1 덱 상세 / C1-a 빈 덱 / C1-b 목표일 없음 / C1-m · C1-r ⋯ 메뉴 / C1-t 오늘 완료 + 하위 덱 목록 / C1-p 쉬는 중
 import "../styles/deck.css";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { api, errorText, type DeckDetail, type Level, type Subdeck } from "../api";
+import { api, errorText, planApi, type DeckDetail, type Level, type PlanMode, type Subdeck } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Input, Kbd, StatTile } from "../ui";
 import { n, studyDate, useKey, useNav, useOverlayScope } from "../nav";
 import { actionKey } from "../keys";
@@ -223,9 +223,16 @@ function EmptyDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
 
 // ---------------------------------------------------------------- C1, C1-b, C1-t, C1-p
 
-function reasonText(d: DeckDetail) {
+/** H2 충돌 조정 (plan.rs). 목표일은 그대로 두고 신규를 나누는 방식만 바뀐 덱 */
+type Adjust = { mode: PlanMode; delta: number } | null;
+
+function reasonText(d: DeckDetail, adjust: Adjust) {
   if (d.paused) return d.paused_until ? `쉬는 중 · ${monthDay(addDays(d.paused_until, 1))}부터 다시 올라와요` : "쉬는 중 · 다시 시작할 때까지 올라오지 않아요";
   if (d.unseen === 0) return "남은 신규 카드가 없어요 · 복습만 남았어요";
+  if (adjust?.mode === "first" && d.per_day === 0) return "먼저 볼 덱의 시험이 끝난 뒤부터 신규를 넣어요 · 목표일은 그대로";
+  if (adjust?.mode === "spread") return `앞선 시험 전에 나눠 넣어요 · 하루 신규 ${n(d.per_day)}장 (충돌 조정 ${adjust.delta > 0 ? "+" : ""}${n(adjust.delta)}장)`;
+  // H1 "실제 속도에 맞춰 다시 나누기"를 끈 덱. 큐가 남긴 문장으로 알아본다
+  if (d.reason?.startsWith("하루 몫")) return `하루 신규 ${n(d.per_day)}장으로 고정했어요 · 학습 계획에서 바꿀 수 있어요`;
   // 상위 덱 목표를 따르는 하위 덱은 이 덱 설정으로 계산할 수 없다. 큐가 남긴 문장("상위 덱: 남은 …")을 그대로 쓴다
   if (!d.target_date && d.target_from && d.reason) return d.reason;
   if (!d.target_date || d.learnable_days === null) return `목표일 없음 · 하루 신규 상한 ${n(d.per_day)}장대로`;
@@ -252,6 +259,10 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
       ? { dday: d.dday, text: `${dateWithDay(d.target_date)} 시험` }
       : d.target_from && { dday: d.target_from.dday, text: `상위 덱 「${d.target_from.name}」 목표를 따라요` };
   const showSuggestion = !goal && (d.total >= 20 || d.studied);
+  const [adjust, setAdjust] = useState<Adjust>(null);
+  useEffect(() => {
+    planApi.adjust(d.id).then(setAdjust, () => {});
+  }, [d.id, d.per_day]);
   const seen = d.total - d.unseen;
 
   return (
@@ -294,7 +305,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
           <div className="deck__reason-wrap">
             <span className="deck__reason t-label-s">
               <Icon name="info" size={16} />
-              {reasonText(d)}
+              {reasonText(d, adjust)}
             </span>
           </div>
           {d.paused ? (
@@ -329,6 +340,8 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
               </div>
               <Progress label="본 카드" value={seen} total={d.total} pct={d.seen_pct} color="ink" />
               <Progress label="핵심 카드 학습률" value={d.core_seen} total={d.core_total} pct={d.core_learned_pct} color="core" />
+              {/* H1. 날짜별 분량과 쓸 수 있는 시간 */}
+              <Button variant="ghost" size="M" icon="calendar" label="계획 보기" className="deck__plan" onClick={() => nav({ name: "plan", deckId: d.id })} />
             </section>
           ) : (
             showSuggestion && (

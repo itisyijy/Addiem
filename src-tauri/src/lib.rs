@@ -1,7 +1,9 @@
 mod commands;
+mod cram;
 mod db;
 mod export;
 mod import;
+mod plan;
 mod quality;
 mod queue;
 mod render;
@@ -96,6 +98,8 @@ pub fn run() {
             export::export_preview,
             export::reveal_file,
             export::export_csv,
+            // H3 압축 회독 (학습 화면)
+            cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo,
             quality::quality_check,
             quality::hide_quality,
             quality::split_suggest,
@@ -103,6 +107,13 @@ pub fn run() {
             quality::undo_change,
             quality::recent_changes,
             quality::split_signal,
+            plan::study_plan,
+            plan::set_study_time,
+            plan::pull_plan,
+            plan::set_recompute,
+            plan::plan_conflict,
+            plan::resolve_plan_conflict,
+            plan::plan_adjust,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

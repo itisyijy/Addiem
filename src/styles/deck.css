@@ -275,6 +275,10 @@
 :root[data-theme="dark"] .cards__table .cards__row.is-selected { background: var(--bg-subtle); }
 :root[data-theme="dark"] .cards__table .cards__row.is-selected .badge--accent { background: var(--accent-subtle); }
 
+/* H1 진입: 목표 카드 맨 아래 [계획 보기]. 글자 줄을 카드 안쪽 여백에 맞춘다 */
+.deck__plan { align-self: flex-start; margin: -4px 0 -10px -16px; }
 /* G1 진입: C2 상단 칩 "고칠 만한 카드 N" */
 .cards__fix { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 7px 14px; border-radius: 999px; background: var(--status-warn-bg); color: var(--status-warn-fg); white-space: nowrap; }
 .cards__fix:hover { filter: brightness(0.97); }
+/* H2 조정이 C4 계산에 반영됐다는 한 줄 */
+.recalc__adjust-link { margin-left: 8px; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }

@@ -239,7 +239,7 @@ fn again_counts(con: &Connection, card_filter: &str, args: &[&dyn rusqlite::ToSq
     let mut st = con
         .prepare(&format!(
             "SELECT r.card_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id
-             WHERE r.rating = 1 AND r.reviewed_at >= {since} AND {card_filter} GROUP BY r.card_id"
+             WHERE r.rating = 1 AND r.reviewed_at >= {since} AND r.kind IS NULL AND {card_filter} GROUP BY r.card_id"
         ))
         .map_err(err)?;
     let rows = st.query_map(args, |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;

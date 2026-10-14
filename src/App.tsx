@@ -16,6 +16,7 @@ import { Importance } from "./screens/Importance";
 import { Settings } from "./screens/Settings";
 import { Recover } from "./screens/Recover";
 import { Quality } from "./screens/Quality";
+import { Plan, PlanConflictScreen } from "./screens/Plan";
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
@@ -107,8 +108,12 @@ function Screen({ route }: { route: Route }) {
       return <DeckSettings key={route.deckId} deckId={route.deckId} />;
     case "quality":
       return <Quality key={route.deckId} deckId={route.deckId} />;
+    case "plan":
+      return <Plan key={route.deckId ?? "all"} deckId={route.deckId} />;
+    case "planConflict":
+      return <PlanConflictScreen back={route.back} />;
     case "summary":
-      return <Summary deckIds={route.deckIds} />;
+      return <Summary key={route.cram ? "cram" : "d1"} deckIds={route.deckIds} cram={route.cram} />;
     case "study":
       return <Study key={route.sessionId ?? "new"} {...route} />;
     case "done":

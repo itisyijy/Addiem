@@ -244,6 +244,22 @@
 .study__card.is-overflow .study__fade { bottom: 48px; }
 .study__card.is-overflow .study__more { bottom: 9px; }
 
+/* ---------------------------------------------------------------- H3 압축 회독 (Figma 53:6439) */
+.cram__gap { height: 16px; }
+.cram__title { margin-top: 10px; font: 300 56px/64px var(--font-sans); letter-spacing: -0.03em; }
+.cram__lead { padding: 8px 0 20px; }
+.cram__num { font: 300 120px/126px var(--font-sans); letter-spacing: -0.06em; }
+.cram__note { display: flex; align-items: flex-start; gap: 8px; width: 100%; margin-top: 20px; padding: 8px 12px; border-radius: 12px; background: var(--bg-subtle); }
+.cram__note .icon { flex: none; margin-top: 1px; }
+.cram__cta { display: flex; gap: 10px; padding-top: 24px; }
+.summary__order.cram__parts { margin-top: 0; }
+.cram__parts .cram__out { border-bottom: 0; }
+.cram__scope { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px 18px 28px; }
+.cram .dot--danger { background: var(--status-danger-fg); }
+/* 홈 · D1 의 한 줄 안내 */
+.cram-hint { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 20px; padding: 10px 10px 10px 14px; border-radius: 16px; background: var(--accent-subtle); }
+.cram-hint__text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+
 /* ---------------------------------------------------------------- G3 학습 중 신호 (Figma 53:6032) */
 .study .study__toast-btn--accent { border-color: transparent; background: var(--accent-default); }
 .study .study__toast-btn--accent:hover { background: var(--accent-pressed); }

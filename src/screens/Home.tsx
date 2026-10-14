@@ -4,6 +4,8 @@ import { api, errorText, type Home as HomeData } from "../api";
 import { Badge, Button, DeckRow, Icon, Kbd } from "../ui";
 import { useToast } from "../toast";
 import { actionKey, useKeymap } from "../keys";
+import { CramHint } from "./StudyParts";
+import { PlanConflictBanner } from "./Plan";
 import { dateLabel, n, useKey, useNav } from "../nav";
 
 export function Home() {
@@ -108,9 +110,15 @@ function ActiveHome({ data, reload }: { data: HomeData; reload: () => void }) {
         <div className="home__cta">
           <Button icon="arrow-right" label="오늘 학습 시작" shortcut="Enter" onClick={start} />
         </div>
+        {/* H3 목표일 0–3일 전에만 보인다 */}
+        <div className="home__cram">
+          <CramHint deckIds={null} />
+        </div>
       </section>
 
       <div className="home__side">
+        {/* H2 목표일 충돌: 아직 고르지 않은 충돌이 있을 때만 */}
+        <PlanConflictBanner />
         <DeckPanel title="덱별 오늘 학습량" caption="최상위 덱 기준 · 하위 덱 합산" data={data} mode="today" reload={reload} />
       </div>
     </main>
@@ -146,9 +154,13 @@ function DoneHome({ data, reload }: { data: HomeData; reload: () => void }) {
             />
           )}
         </div>
+        <div className="home__cram">
+          <CramHint deckIds={null} />
+        </div>
       </section>
 
       <div className="home__side">
+        <PlanConflictBanner />
         <DeckPanel title="내 덱" caption="오늘 남은 카드" data={data} mode="done" reload={reload} />
       </div>
     </main>
@@ -209,7 +221,14 @@ function DeckPanel({ title, caption, data, mode, reload }: PanelProps) {
     <section className="panel home__decks">
       <header className="panel__head">
         <span className="t-title-s">{title}</span>
-        <span className="t-caption c-tertiary">{caption}</span>
+        <span className="home__head-right">
+          <span className="t-caption c-tertiary">{caption}</span>
+          {/* H1 모든 덱의 학습 계획 */}
+          <button className="home__plan-link t-caption c-secondary" onClick={() => nav({ name: "plan", deckId: null })}>
+            계획
+            <Icon name="chevron-right" size={14} scaled />
+          </button>
+        </span>
       </header>
       {active.map((d) => (
         <DeckRow
