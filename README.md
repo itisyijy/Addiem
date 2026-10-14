@@ -101,6 +101,15 @@ $env:NEOANKI_SYNC_FOLDER = "C:\temp\neoanki-drive"; $env:NEOANKI_DATA_DIR = "C:\
 
 엔진 테스트(두 기기 시뮬레이션)는 `cargo test sync::` 로 돈다.
 
+### ChatGPT 연결 (개발)
+
+환경 변수가 필요 없다 (Sign in with ChatGPT 의 직접 흐름은 클라이언트 비밀이 없다). 실제 계정 없이 화면 상태를 보려면 debug 빌드에서 가짜 응답을 켠다. 네트워크와 키체인을 쓰지 않는다.
+
+```powershell
+# ok | slow | limit | expired | offline | unavailable | malformed
+$env:NEOANKI_AI_FAKE = "ok"; $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm run tauri dev
+```
+
 ### 확인
 
 ```powershell

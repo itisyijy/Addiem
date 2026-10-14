@@ -546,7 +546,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
         <Checkbox checked={archive} onChange={setArchive} label="원래 카드는 보관해요 (학습에서 빠지고, 복습 기록은 그대로 남아요)" />
         {lost && lostLine(lost, archive) && <p className="split__lost t-caption">{lostLine(lost, archive)}</p>}
         <p className="t-caption c-tertiary">
-          새 카드 {n(ready.length)}장은 새 카드로 시작하고, 중요도·하위 덱은 원래 카드를 따라요. 카드 점검의 "최근 나눈 카드"에서 언제든 되돌릴 수 있어요.
+          새 카드{listed ? ` ${n(ready.length)}장` : ""}은 새 카드로 시작하고, 중요도·하위 덱은 원래 카드를 따라요. 카드 점검의 "최근 나눈 카드"에서 언제든 되돌릴 수 있어요.
         </p>
       </div>
       {error && <p className="t-body-s c-danger">{error}</p>}
@@ -602,7 +602,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
         </span>
         <span className="split__actions">
           <Button variant="ghost" size="M" label="그대로 두기" onClick={onKeep} />
-          <Button size="M" icon="check" label={`${n(ready.length)}장으로 나누기`} disabled={ready.length < 2} busy={busy} busyLabel="나누는 중…" onClick={apply} />
+          <Button size="M" icon="check" label={listed ? `${n(ready.length)}장으로 나누기` : "나누기"} disabled={ready.length < 2} busy={busy} busyLabel="나누는 중…" onClick={apply} />
         </span>
       </div>
     </Modal>

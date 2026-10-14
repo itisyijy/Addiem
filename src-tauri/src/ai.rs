@@ -547,6 +547,47 @@ fn parse_regroup(text: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError
     Ok(parts)
 }
 
+// ---------------------------------------------------------------- 개발용 가짜 응답
+
+/// debug 빌드에서만: NEOANKI_AI_FAKE=ok|slow|limit|expired|offline|unavailable|malformed.
+/// 실제 계정 없이 L4 의 보내는 중 · 오류 · 결과를 그리려는 것. 네트워크 · 키체인을 쓰지 않는다
+fn fake_mode() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("NEOANKI_AI_FAKE").ok().filter(|v| !v.is_empty())
+}
+
+/// 실제 응답과 같은 검증(parse_regroup)을 거친다. slow 는 30초 넘김 안내를 보려고 35초 기다린다
+fn fake_regroup(st: &AiState, run: u64, mode: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError> {
+    let wait_ms = if cfg!(test) { 0 } else if mode == "slow" { 35_000 } else { 1_500 };
+    for _ in 0..wait_ms / 100 {
+        if st.run.load(Ordering::Relaxed) != run {
+            return Err(AiError::Cancelled);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    match mode {
+        "limit" => Err(AiError::Limit),
+        "expired" => Err(AiError::Expired),
+        "offline" => Err(AiError::Offline("가짜 오프라인".into())),
+        "unavailable" => Err(AiError::Unavailable),
+        "malformed" => parse_regroup("{\"cards\": [", items),
+        _ => {
+            // 앞에서부터 항목을 3묶음(항목이 6개 미만이면 2묶음)으로
+            let n = if items.len() >= 6 { 3 } else { 2 };
+            let size = items.len().div_ceil(n);
+            let cards: Vec<J> = (0..n)
+                .map(|g| (g * size + 1..=((g + 1) * size).min(items.len())).collect::<Vec<_>>())
+                .filter(|idx| !idx.is_empty())
+                .enumerate()
+                .map(|(g, idx)| json!({ "front": format!("가짜 묶음 {}", g + 1), "items": idx }))
+                .collect();
+            parse_regroup(&json!({ "cards": cards }).to_string(), items)
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 상태 · 명령
 
 pub struct AiState {
@@ -651,6 +692,7 @@ pub fn ai_status(app: AppHandle) -> Res<AiStatus> {
     with_db(&app, |c| {
         let email = get_meta(c, META_EMAIL);
         let sent_at = get_meta(c, META_SENT_AT).and_then(|v| v.parse().ok());
+        let email = email.or_else(|| fake_mode().map(|m| format!("개발용 가짜 연결 ({m})")));
         Ok(AiStatus { connected: email.is_some(), email, model: get_meta(c, META_MODEL), sent_month: sent_this_month(c), sent_at })
     })
     .map_err(|e| e.to_string())
@@ -819,7 +861,7 @@ fn regroup_blocking(app: &AppHandle, card_id: i64) -> Result<SplitProposal, AiEr
     let st = app.state::<AiState>();
     let run = st.run.load(Ordering::Relaxed);
     let (rule, model) = with_db(app, |c| {
-        if get_meta(c, META_EMAIL).is_none() {
+        if get_meta(c, META_EMAIL).is_none() && fake_mode().is_none() {
             return Err(AiError::NotConnected);
         }
         Ok((quality::suggest(c, card_id, None).map_err(AiError::Other)?, get_meta(c, META_MODEL)))
@@ -831,6 +873,12 @@ fn regroup_blocking(app: &AppHandle, card_id: i64) -> Result<SplitProposal, AiEr
     let input = regroup_input(&rule.question, &items);
     if items.len() > MAX_ITEMS || input.chars().count() > MAX_INPUT_CHARS {
         return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 규칙으로 나눠 주세요.".into()));
+    }
+    if let Some(mode) = fake_mode() {
+        let parts = fake_regroup(&st, run, &mode, &items)?;
+        let _ = with_db(app, count_sent);
+        let why = format!("{}. ChatGPT가 성격이 비슷한 것끼리 {}장으로 묶었어요.", quality::reason_of(&rule.flags), parts.len());
+        return Ok(SplitProposal { why, parts, kind: "nature", ..rule });
     }
     let mut token = access_token(app, &st, false)?;
     let mut tried: Vec<String> = vec![];
@@ -921,6 +969,18 @@ fn agent_stream(st: &AiState, run: u64, token: &str, body: &J, sent: &mut dyn Fn
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn fake_ok_groups_every_item_once() {
+        let st = AiState::new();
+        for n in [3, 5, 6, 7, 11] {
+            let items: Vec<String> = (1..=n).map(|i| format!("항목 {i}")).collect();
+            let parts = fake_regroup(&st, 0, "ok", &items).unwrap();
+            assert_eq!(parts.len(), if n >= 6 { 3 } else { 2 });
+            assert_eq!(parts.iter().map(|p| p.back.lines().count()).sum::<usize>(), n);
+        }
+        assert!(matches!(fake_regroup(&st, 0, "malformed", &["a".into(), "b".into(), "c".into()]), Err(AiError::BadOutput(_))));
+    }
 
     fn query(u: &str) -> HashMap<String, String> {
         url::Url::parse(u).unwrap().query_pairs().into_owned().collect()
