@@ -602,7 +602,7 @@ pub fn sync_connect(state: State<SyncState>) -> Res<Option<String>> {
         return Ok(None);
     }
     let client = auth::client().ok_or(NO_CLIENT)?;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(err)?;
+    let listener = auth::loopback().map_err(err)?;
     let redirect = format!("http://127.0.0.1:{}", listener.local_addr().map_err(err)?.port());
     let p = auth::pkce();
     let url = auth::auth_url(client.0, &redirect, &p);
@@ -617,10 +617,8 @@ pub fn sync_connect(state: State<SyncState>) -> Res<Option<String>> {
             Err(auth::WaitError::Other(e)) => fail("error", e),
             Ok(code) => match auth::exchange(&sh.agent, client, &code, &p.verifier, &redirect) {
                 Err(e) => fail("error", e.to_string()),
-                Ok(t) if !auth::granted_all(&t.scope) => {
-                    auth::revoke(&sh.agent, &t.access);
-                    fail("scopes", "권한 2개가 모두 필요해요".into())
-                }
+                // 받은 토큰은 쓰지 않고 버린다. 폐기(revoke)하면 이 계정의 다른 기기 로그인까지 끊긴다 (others_active)
+                Ok(t) if !auth::granted_all(&t.scope) => fail("scopes", "권한 2개가 모두 필요해요".into()),
                 Ok(t) => {
                     if let Some(r) = &t.refresh {
                         let _ = auth::save_secret(auth::REFRESH, r);
@@ -834,7 +832,20 @@ pub fn forget_local(con: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// K10. delete_remote 면 Drive 의 백업과 동기화 데이터도 지운다
+/// 이 계정으로 맞추는 다른 기기가 있는지 (90일 안에 맞춘 기기). 모르면(오프라인 · 만료) 있다고 본다.
+/// Google 폐기는 토큰 하나가 아니라 이 계정이 앱에 준 권한 전체를 없애서, 다른 기기도 "다시 로그인"이 된다
+fn others_active(sh: &Arc<Shared>) -> bool {
+    let me = sh.with_db(engine::device_uid).unwrap_or_default();
+    store_of(sh).ok().is_none_or(|s| others_in(&*s, &me, crate::db::now_ms()))
+}
+
+fn others_in(store: &dyn Store, me: &str, now: i64) -> bool {
+    let Ok(r) = engine::remote(store) else { return true };
+    engine::read_devices(store, &r).iter().any(|d| d["uid"].as_str() != Some(me) && now - d["at"].as_i64().unwrap_or(0) < engine::STALE_MS)
+}
+
+/// K10. delete_remote 면 Drive 의 백업과 동기화 데이터도 지우고 Google 권한도 폐기한다.
+/// 남기면 다른 기기가 없을 때만 폐기하고, 있으면 이 기기 키체인의 토큰만 지운다
 #[tauri::command]
 pub async fn sync_disconnect(state: State<'_, SyncState>, delete_remote: bool) -> Res<()> {
     let sh = state.0.clone();
@@ -847,8 +858,14 @@ pub async fn sync_disconnect(state: State<'_, SyncState>, delete_remote: bool) -
                 for e in store.list("backups/")?.into_iter().chain(store.list("")?) {
                     store.delete(&e.path)?;
                 }
+            } else if let Ok(store) = store_of(&sh) {
+                // 남기더라도 이 기기 파일은 지운다. 남으면 다른 기기가 끊은 기기를 90일 동안 기다린다 (기기 목록 · 정리 · 폐기 판단).
+                // 못 지우면(오프라인) 90일 뒤 "오래 안 씀"으로 빠진다
+                let me = sh.with_db(engine::device_uid).unwrap_or_default();
+                let _ = store.delete(&format!("devices/{me}.json"));
             }
             if sh.folder.is_none()
+                && (delete_remote || !others_active(&sh))
                 && let Some(t) = auth::load_secret(auth::REFRESH)
             {
                 auth::revoke(&sh.agent, &t);
@@ -1347,4 +1364,50 @@ pub fn sync_conflicts_seen(state: State<SyncState>) -> Res<()> {
     state.0.with_db(|c| c.execute("UPDATE sync_conflict SET seen = 1", []).map(|_| ()).map_err(store::other)).map_err(err)?;
     refresh(&state.0);
     Ok(())
+}
+
+#[cfg(test)]
+mod revoke_tests {
+    use super::*;
+    use store::{Entry, SRes};
+
+    /// 목록을 못 읽는 저장소 (오프라인 · 만료)
+    struct Down;
+    impl Store for Down {
+        fn list(&self, _: &str) -> SRes<Vec<Entry>> {
+            Err(SyncError::Offline("x".into()))
+        }
+        fn get(&self, _: &str) -> SRes<Vec<u8>> {
+            Err(SyncError::Auth)
+        }
+        fn put(&self, _: &str, _: &[u8]) -> SRes<()> {
+            Err(SyncError::Auth)
+        }
+        fn delete(&self, _: &str) -> SRes<()> {
+            Err(SyncError::Auth)
+        }
+        fn about(&self) -> SRes<(String, Option<(u64, u64)>)> {
+            Err(SyncError::Auth)
+        }
+        fn folder_link(&self) -> SRes<String> {
+            Err(SyncError::Auth)
+        }
+    }
+
+    #[test]
+    fn revoke_only_without_other_devices() {
+        let dir = std::env::temp_dir().join(format!("neoanki-revoke-{}", crypto::random_hex(6)));
+        let s = FolderStore::new(&dir);
+        let now = 1000 * crate::db::DAY_MS;
+        let dev = |uid: &str, at: i64| s.put(&format!("devices/{uid}.json"), json!({ "uid": uid, "at": at }).to_string().as_bytes()).unwrap();
+        assert!(!others_in(&s, "me", now), "Drive 에 아무도 없으면 폐기한다");
+        dev("me", now);
+        assert!(!others_in(&s, "me", now), "나만 있으면 폐기한다");
+        dev("old", now - engine::STALE_MS - 1);
+        assert!(!others_in(&s, "me", now), "90일 넘게 안 맞춘 기기는 기다리지 않는다");
+        dev("b", now - crate::db::DAY_MS);
+        assert!(others_in(&s, "me", now), "다른 기기가 쓰고 있으면 폐기하지 않는다 (그 기기도 로그아웃된다)");
+        assert!(others_in(&Down, "me", now), "모르면 있다고 본다");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

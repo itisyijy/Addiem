@@ -109,8 +109,10 @@ pub fn parse_callback(request_line: &str, state: &str) -> Result<Callback, Strin
     if q.is_empty() {
         return Ok(Callback::Ignore);
     }
+    // 다른 요청은 무시하고 계속 기다린다. 오류로 끝내면 아무 웹페이지나 로컬 프로세스가 이 포트로 요청 하나만 보내도 로그인이 취소된다
+    // (코드는 state · PKCE 때문에 넣지 못한다)
     if q.get("state").map(String::as_str) != Some(state) {
-        return Err("로그인 응답이 이 요청과 맞지 않아요. 다시 시도해 주세요.".into());
+        return Ok(Callback::Ignore);
     }
     if q.contains_key("error") {
         return Ok(Callback::Denied);
@@ -124,6 +126,25 @@ pub fn parse_callback(request_line: &str, state: &str) -> Result<Callback, Strin
 const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Neo-Anki</title>\
 <body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;height:90vh;color:#16161d\">\
 <div style=text-align:center><h2>Google 로그인을 마쳤어요</h2><p>이 탭을 닫고 Neo-Anki 로 돌아가세요.</p></div>";
+
+/// 브라우저가 막는 포트 (Chrome · Firefox 의 unsafe port 목록 중 1024 이상. 임의 포트는 그 아래로 오지 않는다).
+/// OS 가 임의 포트를 낮은 범위에서 주는 PC 가 있어 1719 를 받으면 리디렉션이 ERR_UNSAFE_PORT 로 끝났다
+const UNSAFE_PORTS: [u16; 19] = [1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080];
+
+/// 루프백 서버. 막힌 포트를 받으면 쥔 채로 다시 받아 같은 포트가 돌아오지 않게 한다
+pub fn loopback() -> std::io::Result<TcpListener> {
+    let mut held = vec![];
+    loop {
+        let l = TcpListener::bind("127.0.0.1:0")?;
+        if !UNSAFE_PORTS.contains(&l.local_addr()?.port()) {
+            return Ok(l);
+        }
+        if held.len() >= UNSAFE_PORTS.len() {
+            return Err(std::io::Error::other("쓸 수 있는 포트를 찾지 못했어요"));
+        }
+        held.push(l);
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum WaitError {
@@ -269,7 +290,8 @@ mod tests {
     fn callback_parsing_and_scopes() {
         let line = "GET /?state=abc&code=4%2F0Ab&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file HTTP/1.1";
         assert_eq!(parse_callback(line, "abc"), Ok(Callback::Code("4/0Ab".into())));
-        assert!(parse_callback(line, "zzz").is_err(), "state 가 다르면 받지 않는다 (CSRF)");
+        assert_eq!(parse_callback(line, "zzz"), Ok(Callback::Ignore), "state 가 다르면 받지 않고 계속 기다린다 (CSRF · 취소 공격)");
+        assert_eq!(parse_callback("GET /?state=zzz&error=access_denied HTTP/1.1", "abc"), Ok(Callback::Ignore), "남이 보낸 취소도 무시");
         assert_eq!(parse_callback("GET /?state=abc&error=access_denied HTTP/1.1", "abc"), Ok(Callback::Denied));
         assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1", "abc"), Ok(Callback::Ignore));
         assert!(granted_all("https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file"));
@@ -278,16 +300,22 @@ mod tests {
 
     #[test]
     fn loopback_returns_code() {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let l = loopback().unwrap();
         let port = l.local_addr().unwrap().port();
+        assert!(!UNSAFE_PORTS.contains(&port), "브라우저가 막는 포트는 쓰지 않는다");
         let cancel = AtomicBool::new(false);
         let t = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
-            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-            write!(s, "GET /?state=st&code=xyz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
-            let mut out = String::new();
-            s.read_to_string(&mut out).unwrap();
-            out
+            let get = |line: &str| {
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                write!(s, "GET {line} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+                let mut out = String::new();
+                s.read_to_string(&mut out).unwrap();
+                out
+            };
+            // 남이 먼저 보낸 요청(다른 state)에 끝나지 않는다
+            get("/?state=evil&error=access_denied");
+            get("/?state=st&code=xyz")
         });
         assert_eq!(wait_code(l, "st", &cancel), Ok("xyz".into()));
         assert!(t.join().unwrap().contains("Google 로그인을 마쳤어요"));

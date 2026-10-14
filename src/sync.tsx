@@ -80,7 +80,9 @@ const backupDate = (ms: number) => {
   const d = new Date(ms);
   return `${md(d)} (${WEEKDAY[d.getDay()]}) ${hm(d)}`;
 };
-export const size = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)}GB` : b >= 1e8 ? `${Math.round(b / 1e6)}MB` : `${(b / 1e6).toFixed(1)}MB`);
+// 1MB 아래는 KB (처음 쓰는 계정의 백업 17KB 가 "0.0MB" 로 보였다)
+export const size = (b: number) =>
+  b >= 1e9 ? `${(b / 1e9).toFixed(1)}GB` : b >= 1e8 ? `${Math.round(b / 1e6)}MB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)}MB` : `${Math.ceil(b / 1e3)}KB`;
 const counts = (c: { decks: number; cards: number; reviews: number } | null | undefined) =>
   c ? `덱 ${n(c.decks)}개 · 카드 ${n(c.cards)}장 · 기록 ${n(c.reviews)}개` : "덱 · 카드 수를 아직 몰라요";
 /** 은/는 */
@@ -128,8 +130,10 @@ function Sheet({ label, onClose, className = "", children }: { label: string; on
   useKey("Escape", onClose, true, { modal: true });
   const box = useRef<HTMLDivElement>(null);
   useFocusTrap(box);
+  // 바깥을 눌러도 닫지 않는다 (X · 취소 · Esc 만). 브라우저에서 로그인하고 앱 창을 눌러 돌아오면 Windows 는 그 클릭을
+  // 웹뷰에도 보내서, 방금 뜬 K3 가 닫히고 K2 는 로그인 기다리기를 취소했다
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="scrim">
       <div ref={box} tabIndex={-1} className={`modal sync-modal ${className}`} role="dialog" aria-modal="true" aria-label={label}>
         {children}
       </div>
