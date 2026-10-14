@@ -1,0 +1,72 @@
+/* 덱 트리 고르기 (DeckPicker.tsx). C3-n 넣을 곳 · C3-e 이동 · C2-r · C2-b 가 같이 쓴다. Figma C3-n 34:4229 */
+
+.deckpick { position: relative; display: inline-flex; min-width: 0; }
+
+/* 덱 경로 알약. 열려 있으면 accent 2px 테두리 (안쪽 여백을 1px 줄여 크기를 지킨다) */
+.deckpick__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+.deckpick__pill:hover:not(:disabled) { border-color: var(--text-tertiary); }
+.deckpick__pill.is-open { padding: 6px 9px 6px 11px; border: 2px solid var(--accent-default); }
+.deckpick__label { min-width: 0; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deckpick__label--tail { direction: rtl; text-align: left; } /* 앞쪽부터 말줄임 (…1-03 데이터 산업의 이해) */
+
+/* 드롭다운. 가장 가까운 position 부모 기준 아래, 창 아래가 모자라면 위 (.is-up) */
+.deckmenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  padding: 8px 0 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 18px;
+  background: var(--bg-surface);
+  box-shadow: 0 12px 32px rgba(23, 23, 28, 0.14);
+  overflow: hidden;
+  text-align: left;
+}
+.deckmenu[hidden] { display: none; }
+.deckmenu.is-up { top: auto; bottom: calc(100% + 6px); }
+
+.deckmenu__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 8px 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--bg-canvas);
+}
+.deckmenu__search input { flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: none; color: var(--text-primary); }
+.deckmenu__search input::placeholder { color: var(--text-tertiary); }
+
+.deckmenu__list { position: relative; max-height: 280px; overflow-y: auto; } /* relative: 행의 offsetTop 기준 (지금 위치로 스크롤) */
+.deckmenu__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px 9px 14px;
+  border-radius: 10px;
+  text-align: left;
+  color: var(--text-primary);
+}
+.deckmenu__row .icon { margin-top: 4px; }
+.deckmenu__row.is-active { background: var(--bg-subtle); }
+.deckmenu__new.is-active { background: var(--accent-subtle); }
+.deckmenu__text { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.deckmenu__text > :first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deckmenu__empty { padding: 9px 14px; }
+.deckmenu__rule { flex-shrink: 0; height: 1px; margin: 5px 0; background: var(--border-default); }
+.deckmenu__modal { display: contents; }

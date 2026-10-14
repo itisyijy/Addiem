@@ -1,0 +1,76 @@
+/* ---------------------------------------------------------------- C1-xe · C1-xp · C1-xr 덱 내보내기 */
+.modal.modal--export { top: 150px; width: 520px; gap: 18px; }
+.modal.modal--export.is-progress { top: 190px; }
+.modal.modal--export.is-result { top: 170px; }
+/* 결과 창은 확인 창 모양(아이콘 + 제목, 닫기 버튼 없음)을 빌려 초록 체크로 바꾼다 */
+.modal--export .modal__alert { background: var(--status-success-bg); }
+.modal--export .modal__alert .icon { color: var(--status-success-fg); }
+
+/* 덱 상자 */
+.export__deck { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 16px; background: var(--bg-canvas); }
+.export__deck-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--accent-subtle);
+}
+.export__deck-text, .export__switch-text, .export__warn-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+
+.export__switch { display: flex; align-items: center; gap: 16px; }
+.export__switch .toggle { flex-shrink: 0; }
+
+/* 회색 안내 한 줄 */
+.export__note { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: 14px; background: var(--bg-subtle); }
+
+/* 기본 파일 이름 미리보기 */
+.export__file { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.export__file-name, .export__path { font: 400 12px/16px var(--font-mono); }
+.export__file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* C1-xp 진행 */
+.export__progress { display: flex; flex-direction: column; }
+.export__progress-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 10px; white-space: nowrap; }
+.export__fill { background: var(--accent-default); transition: width 0.2s; }
+.export__step { display: flex; align-items: center; gap: 12px; padding-top: 12px; }
+.export__step > span:nth-child(2) { flex: 1; min-width: 0; }
+.export__step > span:last-child { white-space: nowrap; }
+.export__step-icon { display: inline-flex; }
+.export__wait { flex-shrink: 0; width: 18px; height: 18px; border: 1.5px dashed var(--border-strong); border-radius: 999px; }
+.export__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+/* C1-xr 결과. 경로는 제목 바로 아래 (창의 간격 18 → 4) */
+.export__path { margin-top: -14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.export__tiles { display: flex; gap: 8px; }
+.export__tile { display: flex; flex: 1; flex-direction: column; min-width: 0; padding: 10px 12px; border-radius: 14px; background: var(--bg-canvas); }
+.export__warn { display: flex; align-items: center; gap: 10px; padding: 12px 10px 12px 14px; border-radius: 14px; background: var(--status-warn-bg); }
+
+/* C1-xc CSV 넣을 열 칩. 켜면 accent/subtle + 채운 체크 상자 */
+.export__cols { display: flex; flex-direction: column; gap: 10px; }
+.export__chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.export__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+.export__chip.is-on { border-color: var(--accent-subtle); background: var(--accent-subtle); color: var(--accent-text); }
+.export__chip-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-surface);
+  color: var(--text-inverse);
+}
+.export__chip.is-on .export__chip-box { border: 0; background: var(--accent-default); }
