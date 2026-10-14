@@ -1071,9 +1071,6 @@ impl Applier<'_> {
 
     fn row(&mut self, table: &Table, uid: String, f: &Fold) -> SRes<Step> {
         let t = table.name;
-        if self.mode == Mode::Merge {
-            self.remote_rows.insert((t.into(), uid.clone()));
-        }
         match rowid_of(self.tx, t, &uid)? {
             Some(rowid) => self.update(table, &uid, rowid, f),
             None => self.insert(table, uid, f),
@@ -1117,8 +1114,9 @@ impl Applier<'_> {
                 return self.daily_plan(table, &uid, rowid, &local_uid, &vals, row_h);
             }
             // 같은 것: 작은 uid 로 합치고 열 단위로 맞춘다. 모든 기기가 같은 쪽을 고르므로 별칭도 같아진다.
-            // 이 기기 uid 가 남으면 Drive 는 그 uid 를 모른다: 처음 합치기라면 올릴 변경으로 쌓인다 (remote_rows 에 없으므로)
-            let keep = if uid < local_uid {
+            // 단 처음 합칠 때 Drive 가 모르는 이 기기 uid 는 버리고 Drive 쪽을 따른다: 별칭은 이 기기에만 남아서,
+            // 이 기기 uid 로 올리면 처음 합치기 전용 자연 키(guid · K13)가 없는 다른 기기에는 새 행으로 두 벌이 된다
+            let keep = if uid < local_uid || (self.mode == Mode::Merge && !self.remote_rows.contains(&(t.to_string(), local_uid.clone()))) {
                 rename_uid(self.tx, t, &local_uid, &uid)?;
                 self.rekey_pending(t, &local_uid, &uid);
                 self.aliases.insert((t.into(), local_uid.clone()), uid.clone());
@@ -1341,6 +1339,10 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS) ->
         local_won: HashSet::new(),
         deletes: vec![],
     };
+    if mode == Mode::Merge {
+        // 아직 차례가 오지 않은 행도 Drive 가 아는 uid 다 (insert 가 이 기기 uid 를 버려도 되는지 본다)
+        ap.remote_rows.extend(folds.keys().cloned());
+    }
     for table in &tables {
         let mut keys: Vec<(String, String)> = folds.keys().filter(|(t, _)| t == table.name).cloned().collect();
         // 같은 HLC 순서로 (먼저 생긴 부모가 먼저)
