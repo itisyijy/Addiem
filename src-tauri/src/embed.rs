@@ -1,6 +1,6 @@
 //! I3 문장 임베딩 (post-mvp 6장). multilingual-e5-small(MIT)을 candle 로 CPU 에서 돌린다.
 //! 모델은 사용자가 [내려받기]를 누를 때만 Hugging Face 의 고정 리비전에서 받고(앱의 유일한 외부 연결),
-//! 파일마다 크기와 SHA-256 을 확인한다. 받은 뒤에는 인터넷 없이 동작하고, 자료나 카드는 기기 밖으로 나가지 않는다.
+//! 파일마다 크기와 SHA-256 을 확인한다. 받은 뒤에는 인터넷 없이 동작하고, 분석하려고 자료나 카드를 밖으로 보내지 않는다.
 
 use crate::commands::AppState;
 use candle_core::{DType, Device, Tensor};

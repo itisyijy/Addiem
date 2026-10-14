@@ -12,6 +12,8 @@ export type ToastInput = {
   icon?: IconName;
   /** 오른쪽 버튼 하나 (되돌리기, 다시 시도) */
   action?: { label: string; onClick: () => void };
+  /** 머무는 시간(ms). 없으면 종류의 기본값 (K7 정보 토스트는 [보기]가 있어 5초) */
+  ms?: number;
 };
 
 const LIFETIME: Record<ToastTone, number | null> = { info: 3000, undo: 5000, error: null };
@@ -27,7 +29,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const close = useCallback(() => setToast(null), []);
 
   useEffect(() => {
-    const life = toast && LIFETIME[toast.tone ?? "info"];
+    const life = toast && (toast.ms ?? LIFETIME[toast.tone ?? "info"]);
     if (!life) return;
     const t = setTimeout(close, life);
     return () => clearTimeout(t);

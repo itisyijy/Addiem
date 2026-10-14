@@ -3,6 +3,7 @@ import { api, type AppInfo } from "./api";
 import { NavContext, isNavLocked, setCutoff, useKey, type Route } from "./nav";
 import { Backdrop, TopNav } from "./ui";
 import { ToastProvider } from "./toast";
+import { SyncButton, SyncHost } from "./sync";
 import { Home } from "./screens/Home";
 import { NewDeckModal } from "./screens/NewDeck";
 import { Deck } from "./screens/Deck";
@@ -60,10 +61,13 @@ export default function App() {
                 onImport={() => nav({ name: "import" })}
                 onNewDeck={() => nav({ name: "newDeck" })}
                 onSettings={() => nav({ name: "settings" })}
+                sync={<SyncButton />}
               />
             </div>
           )}
           {ready && (broken ? <Recover info={broken} onRecovered={() => (load(), nav({ name: "home" }))} /> : <Screen route={route} />)}
+          {/* K Drive 동기화 창들. 학습 화면에서는 동기화를 멈추고, 나오면(학습을 마치면) 올린다 */}
+          <SyncHost studying={focused} />
         </div>
       </NavContext.Provider>
     </ToastProvider>

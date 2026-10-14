@@ -7,6 +7,7 @@ import { actionKey, useKeymap } from "../keys";
 import { CramHint } from "./StudyParts";
 import { PlanConflictBanner } from "./Plan";
 import { dateLabel, n, useKey, useNav } from "../nav";
+import { DriveLoadLink, useSyncStatus } from "../sync";
 
 export function Home() {
   const toast = useToast();
@@ -27,6 +28,11 @@ export function Home() {
       (e) => setError(errorText(e)),
     );
   }, [toast]);
+  // K Drive 받기로 데이터가 바뀌면 다시 읽는다 (다른 기기에서 만든 덱이 바로 보이게)
+  const changed = useSyncStatus()?.changed_seq ?? 0;
+  useEffect(() => {
+    if (changed) reload();
+  }, [changed, reload]);
   if (!data) return error ? <p className="load-error t-body-m c-danger">{error}</p> : null;
   if (!data.has_decks) return <EmptyHome />;
   return data.review + data.new > 0 ? <ActiveHome data={data} reload={reload} /> : <DoneHome data={data} reload={reload} />;
@@ -71,6 +77,8 @@ function EmptyHome() {
           </span>
         </button>
       </div>
+      {/* K6 두 번째 기기의 입구. 두 카드와 같은 무게로 두지 않는다 */}
+      <DriveLoadLink />
     </main>
   );
 }

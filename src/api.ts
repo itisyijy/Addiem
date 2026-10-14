@@ -510,6 +510,121 @@ export const planApi = {
   adjust: (deckId: number) => invoke<{ mode: PlanMode; delta: number } | null>("plan_adjust", { deckId }),
 };
 
+// ================================================================ K · Google Drive 보관·동기화 (src-tauri/src/sync) — 시작
+// 네트워크는 모두 Rust 가 쓴다 (웹뷰 CSP connect-src 는 연결 뒤에도 그대로). 상태는 "sync-status" 이벤트로도 온다
+
+export type SyncState = "off" | "paused" | "idle" | "syncing" | "offline" | "login" | "quota" | "update" | "choice" | "gone" | "locked" | "error";
+export type SyncDevice = {
+  uid: string;
+  name: string;
+  at: number | null;
+  me: boolean;
+  /** 90일 동안 맞추지 않음 ("오래 안 씀") */
+  stale: boolean;
+  reviews: number | null;
+  reviews_at: number | null;
+};
+export type SyncStatus = {
+  /** Google 클라이언트가 들어 있는 빌드 (또는 개발용 폴더). false 면 K1-n */
+  configured: boolean;
+  folder: boolean;
+  connected: boolean;
+  /** K3 [나중에] 면 false */
+  enabled: boolean;
+  account: string | null;
+  state: SyncState;
+  phase: "pull" | "push" | "media" | "snapshot" | "backup" | "restore" | null;
+  done: number;
+  total: number;
+  last_sync: number | null;
+  /** 아직 올리지 않은 변경 묶음 (복습 기록은 세션 단위) */
+  pending: number;
+  pending_reviews: number;
+  pending_notes: number;
+  usage: number | null;
+  quota: [number, number] | null;
+  devices: SyncDevice[];
+  device_name: string;
+  backup: "daily" | "weekly" | "off";
+  lock: boolean;
+  /** 다른 기기가 되돌리기 · 새로 시작을 했다 (K6-m). header.reason.kind: restore | fresh | lock */
+  choice: { gen: number; header: SyncHeader; locked: boolean } | null;
+  conflicts: number;
+  conflict_seq: number;
+  error: string | null;
+  studying: boolean;
+  /** 받기로 이 기기 데이터가 바뀔 때마다 커진다 */
+  changed_seq: number;
+  closing: boolean;
+};
+export type SyncHeader = {
+  gen?: number;
+  device?: string;
+  device_name?: string | null;
+  at?: number;
+  reason?: { kind?: "restore" | "fresh" | "lock" | "new" | "compact"; backup_at?: number | null; device_name?: string | null };
+  counts?: SyncCounts;
+};
+export type SyncCounts = { decks: number; cards: number; reviews: number; media_bytes: number };
+export type SyncProbe = {
+  account: string;
+  /** Drive 에 Neo-Anki 데이터가 있으면 (K6-f · K6-m) */
+  remote: { gen: number; locked: boolean; devices: number; bytes: number; device: string | null; at: number | null; counts: SyncCounts | null } | null;
+  local: SyncCounts & { empty: boolean };
+  device_name: string;
+};
+/** "sync-auth" 이벤트 (K2 결과) */
+export type SyncAuthEvent = { ok: boolean; reason: "timeout" | "cancelled" | "denied" | "scopes" | "error" | null; message: string | null; probe: SyncProbe | null };
+export type SyncJoinMode = "new" | "take" | "merge" | "fresh";
+export type SyncJoinOpts = { mode: SyncJoinMode; device_name?: string; backup?: "daily" | "weekly" | "off"; password?: string; later?: boolean };
+export type DriveBackup = { name: string; at: number; size: number; device: string | null; cards: number | null; reviews: number | null };
+/** K9 머리: 무엇이 사라지는지 */
+export type RestorePreview = {
+  name: string;
+  at: number;
+  device: string | null;
+  cards: number;
+  reviews: number;
+  /** 이 백업 뒤의 복습 기록 · 카드 변경 (되돌리면 빠진다. 방금 남긴 이 기기 백업에는 있다) */
+  lost_reviews: number;
+  lost_changes: number;
+  /** 다음 동기화에서 고르는 창을 보게 될 다른 기기 */
+  others: string[];
+};
+export type SyncVersion = { device: string; at: number; fields: string[]; current: boolean };
+export type SyncConflict = { id: number; question: string; deck_path: string[]; versions: [SyncVersion, SyncVersion] };
+
+export const syncApi = {
+  status: () => invoke<SyncStatus>("sync_status"),
+  /** 학습 화면에 들어가면 true. 나오면(학습을 마칠 때) 받기 -> 올리기 */
+  pause: (paused: boolean) => invoke<void>("sync_pause", { paused }),
+  now: () => invoke<void>("sync_now"),
+  /** K8 [기다리지 않고 닫기] */
+  closeNow: () => invoke<void>("sync_close_now"),
+  /** K1 [Google Drive 연결]. 브라우저를 열고 로그인 주소를 돌려준다 ([링크 복사]). 개발용 폴더면 null. 결과는 "sync-auth" */
+  connect: () => invoke<string | null>("sync_connect"),
+  cancelConnect: () => invoke<void>("sync_connect_cancel"),
+  probe: () => invoke<SyncProbe>("sync_probe"),
+  join: (opts: SyncJoinOpts) => invoke<void>("sync_join", { opts }),
+  disconnect: (deleteRemote: boolean) => invoke<void>("sync_disconnect", { deleteRemote }),
+  settings: (opts: { device_name?: string; backup?: "daily" | "weekly" | "off" }) => invoke<void>("sync_settings", { opts }),
+  /** 암호로 잠그기. null 이면 푼다. 다른 기기는 K6-m 을 거친다 */
+  setLock: (password: string | null) => invoke<void>("sync_set_lock", { password }),
+  unlock: (password: string) => invoke<void>("sync_unlock", { password }),
+  backups: () => invoke<DriveBackup[]>("sync_backups"),
+  restorePreview: (name: string) => invoke<RestorePreview>("sync_restore_preview", { name }),
+  restore: (name: string) => invoke<void>("sync_restore", { name }),
+  /** [그림까지 묶어 내려받기]. path 는 저장 대화상자에서 */
+  backupFull: (name: string, path: string) => invoke<string>("sync_backup_full", { name, path }),
+  deleteBackup: (name: string) => invoke<void>("sync_delete_backup", { name }),
+  pruneBackups: () => invoke<number>("sync_prune_backups"),
+  openFolder: () => invoke<void>("sync_open_folder"),
+  conflicts: () => invoke<SyncConflict[]>("sync_conflicts"),
+  useConflict: (id: number) => invoke<void>("sync_conflict_use", { id }),
+  conflictsSeen: () => invoke<void>("sync_conflicts_seen"),
+};
+// ================================================================ K · Google Drive 보관·동기화 — 끝
+
 /** Rust 쪽 오류는 사용자에게 보여줄 문장으로 온다 */
 export function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : "알 수 없는 오류가 났어요.";

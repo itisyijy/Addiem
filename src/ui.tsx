@@ -17,7 +17,9 @@ export type IconName =
   | "plus" | "x" | "chevron-right" | "chevron-down" | "chevron-left" | "check" | "settings"
   | "upload" | "download" | "pencil" | "archive" | "alert" | "info" | "image" | "search"
   | "folder" | "calendar" | "file" | "arrow-right" | "layers" | "list" | "more" | "grip"
-  | "rotate" | "trash" | "target" | "clock" | "check-circle";
+  | "rotate" | "trash" | "target" | "clock" | "check-circle"
+  // K Google Drive (Figma Row K)
+  | "cloud" | "cloud-check" | "cloud-off" | "lock" | "laptop" | "merge" | "external" | "link-off";
 
 /**
  * Figma 는 작은 크기에서도 선 두께를 2px 로 유지한다. 그래서 크기별 원본(plus-16.svg)이
@@ -285,11 +287,13 @@ export function Logo() {
   );
 }
 
-export function TopNav({ onImport, onNewDeck, onSettings, onHome }: {
+export function TopNav({ onImport, onNewDeck, onSettings, onHome, sync }: {
   onImport: () => void;
   onNewDeck: () => void;
   onSettings: () => void;
   onHome: () => void;
+  /** K5 동기화 버튼 자리 (설정 버튼 바로 왼쪽). 연결하지 않았으면 비어 있다 */
+  sync?: ReactNode;
 }) {
   return (
     <header className="topnav">
@@ -300,6 +304,7 @@ export function TopNav({ onImport, onNewDeck, onSettings, onHome }: {
       <div className="topnav__actions">
         <Button variant="ghost" size="M" icon="upload" label="가져오기" onClick={onImport} />
         <Button variant="secondary" size="M" icon="plus" label="새 덱" onClick={onNewDeck} />
+        {sync}
         <button className="topnav__settings" aria-label="설정" onClick={onSettings}>
           <Icon name="settings" size={18} className="c-secondary" />
         </button>
