@@ -11,6 +11,7 @@ mod queue;
 mod render;
 mod source;
 mod srs;
+mod sync;
 
 use tauri::Manager;
 
@@ -40,8 +41,12 @@ pub fn run() {
                 undo: std::sync::Mutex::new(vec![]),
                 import_cancel: std::sync::atomic::AtomicBool::new(false),
             });
+            // K Google Drive 동기화: 상태 · 백그라운드 작업 (연결하지 않았으면 네트워크를 쓰지 않는다)
+            sync::setup(app.handle());
             Ok(())
         })
+        // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
+        .on_window_event(sync::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::home,
             commands::create_deck,
@@ -122,6 +127,11 @@ pub fn run() {
             plan::plan_conflict,
             plan::resolve_plan_conflict,
             plan::plan_adjust,
+            // K Google Drive 보관 · 동기화
+            sync::sync_status, sync::sync_pause, sync::sync_now, sync::sync_close_now, sync::sync_connect, sync::sync_connect_cancel,
+            sync::sync_probe, sync::sync_join, sync::sync_disconnect, sync::sync_settings, sync::sync_set_lock, sync::sync_unlock,
+            sync::sync_backups, sync::sync_restore_preview, sync::sync_restore, sync::sync_backup_full, sync::sync_delete_backup,
+            sync::sync_prune_backups, sync::sync_open_folder, sync::sync_conflicts, sync::sync_conflict_use, sync::sync_conflicts_seen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

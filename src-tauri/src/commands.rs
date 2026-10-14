@@ -2444,6 +2444,8 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
     let mut con = state.db.lock().map_err(err)?;
     let saved = if backup { Some(write_backup(&con, &state.data_dir)?.display().to_string()) } else { None };
     let tx = con.transaction().map_err(err)?;
+    // Drive 동기화 중이면 "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 먼저 끊는다 (Drive 데이터는 그대로, K10)
+    crate::sync::forget_local(&tx).map_err(err)?;
     tx.execute_batch(
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
