@@ -44,6 +44,10 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("deck", "weak_recovery_shown", "INTEGER NOT NULL DEFAULT 0"),
         // G1 [그대로 두기]: 이 시각까지 점검 목록에 다시 올리지 않는다
         ("card", "quality_hidden_until", "INTEGER"),
+        // H1 "실제 속도에 맞춰 다시 나누기"를 끄면 정해 둔 하루 몫. NULL 이면 매일 다시 나눈다
+        ("deck_config", "fixed_new_per_day", "INTEGER"),
+        // H3 압축 회독: 'cram' 이면 SRS 에 넘기지 않은 기록. 오늘의 계획 · 지표 쿼리는 kind IS NULL 만 센다 (히트맵은 함께 센다)
+        ("review_log", "kind", "TEXT"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),

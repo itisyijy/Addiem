@@ -26,6 +26,15 @@ pub struct Deck {
     pub paused_until: Option<i64>,
     /// 약한 챕터로 확정 (C1-w). 하위 덱까지 복습을 먼저 보여준다. 장수와 일정은 바꾸지 않는다
     pub weak: bool,
+    // ---- H 시험 계획 (plan.rs 가 채운다). 목표일 자체는 바꾸지 않고 신규를 나누는 방식만 바꾼다
+    /// H2 앞당겨 나누기: 신규를 이 날까지 나눈다 (목표일보다 이르다)
+    pub new_until: Option<i64>,
+    /// H2 먼저 볼 덱: 이 날부터 신규를 넣는다
+    pub new_from: Option<i64>,
+    /// H1 "실제 속도에 맞춰 다시 나누기"를 끄면 정해 둔 하루 몫. 매일 다시 나누지 않는다
+    pub fixed_new: Option<i64>,
+    /// H1 [N일로 당겨 맞추기]: 오늘 몫에 더하거나 빼는 장수
+    pub new_shift: i64,
 }
 
 impl Deck {
@@ -139,8 +148,16 @@ pub fn new_target_for_deck(deck: &Deck, today: i64, remaining_new: i64) -> (i64,
     if remaining_new == 0 {
         return (0, "남은 신규 카드가 없다".into());
     }
+    if deck.new_from.is_some_and(|f| today < f) {
+        return (0, "먼저 볼 덱의 시험이 끝난 뒤 신규를 넣는다".into());
+    }
+    if let Some(n) = deck.fixed_new {
+        let n = n.clamp(0, remaining_new);
+        return (n, format!("하루 몫 {n}장으로 고정 (다시 나누지 않는다)"));
+    }
     let cap = deck.daily_new_limit;
-    match learnable_days(resume_day(deck, today), deck.target_day, deck.include_target_day) {
+    // 앞당겨 나누기면 목표일 대신 그 날까지로 나눈다
+    match learnable_days(resume_day(deck, today), deck.new_until.or(deck.target_day), deck.include_target_day) {
         None => {
             let n = cap.unwrap_or(DEFAULT_NEW_LIMIT);
             (n.min(remaining_new), format!("목표일 없음. 하루 상한 {n}장"))
@@ -263,6 +280,10 @@ pub fn build_queue_with_progress(
             Some(n) => (n.min(group.len() as i64 + done), format!("오늘만 신규 {n}장으로 조정")),
             None => new_target_for_deck(deck, today, group.len() as i64 + done),
         };
+        if deck.new_shift != 0 {
+            target = (target + deck.new_shift).max(0);
+            why.push_str(&format!(" (계획 조정 {:+}장)", deck.new_shift));
+        }
         if (new_scale - 1.0).abs() > f64::EPSILON {
             target = (target as f64 * new_scale).round() as i64;
             why.push_str(&format!(" (사용자 조정 x{new_scale})"));
@@ -568,6 +589,28 @@ mod tests {
         let d = Deck { daily_new_limit: Some(20), ..deck(1) };
         let done = Today { introduced: [(1, 15)].into(), ..Default::default() };
         assert_eq!(build_queue_with_progress(T, &[d], &news(100, 1, 1), None, 1.0, &done).new.len(), 5);
+    }
+
+    #[test]
+    fn plan_adjustments_change_only_the_new_split() {
+        // 목표일까지 10일, 신규 100장 = 하루 10장
+        let base = Deck { target_day: Some(T + 10), ..deck(1) };
+        assert_eq!(new_target_for_deck(&base, T, 100).0, 10);
+        // H2 앞당겨 나누기: 5일 안에 끝낸다
+        assert_eq!(new_target_for_deck(&Deck { new_until: Some(T + 5), ..base.clone() }, T, 100).0, 20);
+        // H2 먼저 볼 덱: 그 날 전에는 0, 그 날부터 남은 날로 나눈다
+        let later = Deck { new_from: Some(T + 6), ..base.clone() };
+        assert_eq!(new_target_for_deck(&later, T, 100).0, 0);
+        assert_eq!(new_target_for_deck(&later, T + 6, 100).0, 25);
+        // H1 다시 나누기를 끄면 하루 몫 그대로 (남은 것보다 많이는 아니다)
+        let fixed = Deck { fixed_new: Some(12), ..base.clone() };
+        assert_eq!(new_target_for_deck(&fixed, T, 100).0, 12);
+        assert_eq!(new_target_for_deck(&fixed, T, 5).0, 5);
+        // H1 당겨 맞추기: 오늘 몫에 더하고, 큐는 남은 장수를 넘지 않는다
+        let p = build_queue(T, &[Deck { new_shift: 6, ..base.clone() }], &news(100, 1, 1), None, 1.0);
+        assert_eq!(p.new.len(), 16);
+        let p = build_queue(T, &[Deck { new_shift: -30, ..base }], &news(100, 1, 1), None, 1.0);
+        assert_eq!(p.new.len(), 0);
     }
 
     #[test]

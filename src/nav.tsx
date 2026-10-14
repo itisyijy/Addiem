@@ -15,8 +15,10 @@ export type Route =
   | { name: "addCard"; deckId: number } // C3
   | { name: "deckSettings"; deckId: number } // C4
   | { name: "quality"; deckId: number } // G1 카드 점검 (G2 나누기 제안은 그 위 모달)
-  | { name: "summary"; deckIds: number[] | null } // D1
-  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number } // D2~D4
+  | { name: "plan"; deckId: number | null } // H1 학습 계획. null 이면 모든 덱
+  | { name: "planConflict"; back?: Route } // H2 목표일 충돌
+  | { name: "summary"; deckIds: number[] | null; cram?: boolean } // D1. cram: H3 압축 회독 화면으로
+  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이)
   | { name: "done"; sessionId: number; summary: SessionSummary; completed: boolean; deckIds: number[] | null; scale: number } // D5
   | { name: "settings"; focus?: "archived" }; // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
 

@@ -1,0 +1,104 @@
+/* H1 학습 계획 (53:6121) · H2 목표일 충돌 (53:6299). 수치는 Figma 프레임에서 옮겼다.
+   데이터 색: 복습 text/primary · 신규 accent · 지난 날 border/strong · 덱별 chart/1 · chart/2 (글자는 text 토큰) */
+
+.plan { gap: 18px; }
+.plan__row { display: flex; align-items: flex-start; gap: 20px; }
+
+.plan__chart-card { display: flex; flex-direction: column; gap: 12px; padding: 20px 24px; overflow: visible; }
+.plan__row > .plan__chart-card { flex-shrink: 0; width: 720px; }
+.plan__legend { display: flex; align-items: center; gap: 14px; white-space: nowrap; }
+.plan__legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.plan__key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.plan__key--review, .plan__seg--review { background: var(--text-primary); }
+.plan__key--new, .plan__seg--new { background: var(--accent-default); }
+.plan__key--done, .plan__seg--done { background: var(--border-strong); }
+.plan__key--a, .plan__seg--a { background: var(--chart-1); }
+.plan__key--b, .plan__seg--b { background: var(--chart-2); }
+
+/* 막대 그래프. 칸 = 하루. 막대 영역 190 + 날짜 줄 24 */
+.plan__chart { position: relative; display: flex; height: 230px; padding-top: 16px; }
+.plan__col { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: center; gap: 8px; }
+.plan__area { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; width: 100%; height: 190px; }
+.plan__stack { display: flex; flex-direction: column; gap: 2px; width: min(22px, 72%); }
+.plan__seg { display: block; min-height: 2px; }
+.plan__stack > .plan__seg:first-child { border-radius: 4px 4px 0 0; }
+.plan__seg--zero { height: 3px; min-height: 3px; background: var(--border-default); border-radius: 0 !important; }
+.plan__total { margin-bottom: 2px; white-space: nowrap; }
+.plan__date { color: var(--text-tertiary); white-space: nowrap; }
+/* 오늘: 막대를 감싼 강조 테두리 */
+.plan__col--today .plan__area::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: 50%;
+  width: calc(min(22px, 72%) + 8px);
+  transform: translateX(-50%);
+  border: 1.5px solid var(--accent-default);
+  border-radius: 8px;
+  pointer-events: none;
+}
+.plan__col--today .plan__date { color: var(--accent-text); }
+/* 시험일: 빨간 점선 칸 */
+.plan__col--exam .plan__area::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: min(22px, 72%);
+  transform: translateX(-50%);
+  border: 1px dashed var(--status-danger-fg);
+  border-radius: 4px;
+  pointer-events: none;
+}
+.plan__col--exam .plan__date { color: var(--status-danger-fg); }
+/* 평일 상한 점선. 주말 상한은 막대 툴팁에만 */
+.plan__cap { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--status-warn-fg); pointer-events: none; }
+.plan__cap > span { position: absolute; left: 0; bottom: 2px; white-space: nowrap; }
+
+.plan__pace { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; border-radius: 14px; background: var(--bg-canvas); }
+.plan__pace .icon { flex-shrink: 0; margin-top: 2px; }
+
+/* 오른쪽: 공부할 수 있는 시간 */
+.plan__side { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 16px; padding: 20px 24px; }
+.plan__time { display: flex; align-items: center; justify-content: space-between; align-self: stretch; }
+.plan__time .stepper__btn { width: 32px; height: 32px; }
+.plan__time .stepper__btn:disabled { color: var(--text-tertiary); }
+.plan__warn { display: flex; align-items: flex-start; gap: 10px; align-self: stretch; padding: 12px 14px; border-radius: 14px; background: var(--status-warn-bg); }
+.plan__warn .icon { flex-shrink: 0; margin-top: 4px; }
+.plan__warn-text { display: flex; flex-direction: column; gap: 2px; }
+.plan__recompute { display: flex; align-items: center; gap: 12px; align-self: stretch; padding-top: 4px; }
+.plan__recompute-text { display: flex; flex: 1; flex-direction: column; gap: 2px; }
+
+/* H2 홈 배너 (덱 목록 위 한 줄) */
+.plan__banner { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 18px; border-radius: 999px; background: var(--status-warn-bg); }
+.plan__banner > p { flex: 1; min-width: 0; }
+/* 이미 고른 충돌: 경고가 아니라 알림 (학습 계획 화면에서 다시 보기) */
+.plan__banner.is-resolved { background: var(--bg-subtle); }
+
+/* H2 조정 화면 */
+.plan__chart--conflict { height: auto; padding-top: 0; }
+.plan__chart--conflict .plan__area { height: 150px; }
+.plan__chart--conflict .plan__stack { width: min(40px, 60%); }
+.plan__chart--conflict .plan__col { gap: 8px; }
+.plan__exam { height: 16px; margin-top: -8px; white-space: nowrap; }
+.plan__options { display: flex; gap: 12px; }
+.plan__option {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-default);
+  border-radius: 18px;
+  background: var(--bg-surface);
+  text-align: left;
+}
+.plan__option:hover { border-color: var(--border-strong); }
+/* 2px 테두리. 안쪽 여백을 1px 줄여 글자가 움직이지 않게 한다 */
+.plan__option.is-selected { padding: 15px 17px; border: 2px solid var(--accent-default); }
+.plan__option-head { display: flex; align-items: center; gap: 8px; }
+.plan__actions { display: flex; justify-content: flex-end; gap: 8px; }

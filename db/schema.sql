@@ -170,7 +170,10 @@ CREATE TABLE IF NOT EXISTS review_log (
     anki_revlog_id INTEGER,
 
     -- 밀린 복습(예정일이 어제 이전)이었던 카드를 평가했는가. 하루 상한 200장에서 오늘 이미 한 만큼 뺀다
-    overdue INTEGER
+    overdue INTEGER,
+
+    -- NULL = 학습 평가. 'cram' = H3 압축 회독 (SRS 에 넘기지 않음). 오늘의 계획 · 지표는 NULL 만 센다, 히트맵은 둘 다
+    kind TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_revlog_card ON review_log(card_id, reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_revlog_time ON review_log(reviewed_at);
@@ -280,3 +283,28 @@ CREATE TABLE IF NOT EXISTS card_change (
     undone_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_card_change_deck ON card_change(deck_id, created_at);
+
+-- ---- H · 시험 계획
+-- 사용자 설정 (쓸 수 있는 시간 등). 키-값
+CREATE TABLE IF NOT EXISTS plan_setting (
+    key   TEXT PRIMARY KEY,                    -- 'weekday_min' | 'weekend_min'
+    value TEXT NOT NULL
+);
+-- H1 [N일로 당겨 맞추기]. 예산 덱(deck_id)의 그날 신규 몫에 더하거나 뺀다. 큐가 따른다
+CREATE TABLE IF NOT EXISTS plan_shift (
+    id         INTEGER PRIMARY KEY,
+    deck_id    INTEGER NOT NULL REFERENCES deck(id) ON DELETE CASCADE,
+    day        TEXT    NOT NULL,               -- 'YYYY-MM-DD'
+    delta      INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plan_shift_day ON plan_shift(day);
+-- H2 목표일 충돌에서 고른 것. deck_a 의 시험이 먼저다. 목표일은 바꾸지 않는다
+CREATE TABLE IF NOT EXISTS plan_conflict (
+    id         INTEGER PRIMARY KEY,
+    deck_a     INTEGER NOT NULL REFERENCES deck(id) ON DELETE CASCADE,
+    deck_b     INTEGER NOT NULL REFERENCES deck(id) ON DELETE CASCADE,
+    mode       TEXT    NOT NULL CHECK (mode IN ('spread','first','keep')),
+    created_at INTEGER NOT NULL,
+    UNIQUE (deck_a, deck_b)
+);

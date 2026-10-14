@@ -93,7 +93,11 @@
 .home__cta { padding-top: 36px; }
 .home__done-line { padding-top: 16px; }
 .home__actions { display: flex; gap: 10px; padding-top: 32px; }
+.home__cram:not(:empty) { padding-top: 20px; }
 .home__side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.home__head-right { display: inline-flex; align-items: center; gap: 12px; }
+.home__plan-link { display: inline-flex; align-items: center; gap: 2px; }
+.home__plan-link:hover { color: var(--text-primary); }
 .home__idle {
   display: flex;
   align-items: center;

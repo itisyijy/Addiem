@@ -93,10 +93,14 @@ pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
                 paused: r.get::<_, i64>(7)? == 1 && until.is_none_or(|u| u >= today),
                 paused_until: until,
                 weak: r.get::<_, i64>(9)? == 1,
+                ..Default::default()
             })
         })
         .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    let mut decks: Vec<queue::Deck> = rows.collect::<Result<_, _>>().map_err(err)?;
+    // H 시험 계획: 충돌 조정 · 당겨 맞추기 · 하루 몫 고정을 큐가 따르게 한다 (목표일은 그대로)
+    crate::plan::adjust_decks(con, &mut decks, today)?;
+    Ok(decks)
 }
 
 pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
@@ -153,7 +157,7 @@ fn today_progress(con: &Connection, today: i64) -> Res<queue::Today> {
         .query_row("SELECT count(DISTINCT card_id) FROM review_log WHERE overdue = 1 AND reviewed_at >= ?1", [since], |r| r.get(0))
         .map_err(err)?;
     let mut st = con
-        .prepare("SELECT DISTINCT c.note_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1")
+        .prepare("SELECT DISTINCT c.note_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND r.kind IS NULL")
         .map_err(err)?;
     let siblings_seen = st.query_map([since], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     Ok(queue::Today { introduced: introduced_today(con, today)?, backlog_done: backlog_done as usize, siblings_seen })
@@ -284,7 +288,7 @@ pub fn home(state: State<AppState>) -> Res<Home> {
     let mut studied_roots = std::collections::HashSet::new();
     {
         let mut st = con
-            .prepare("SELECT DISTINCT c.deck_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1")
+            .prepare("SELECT DISTINCT c.deck_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND r.kind IS NULL")
             .map_err(err)?;
         for id in st.query_map([today_start_ms(today)], |r| r.get::<_, i64>(0)).map_err(err)? {
             studied_roots.insert(root_of(id.map_err(err)?, &by_id));
@@ -651,7 +655,7 @@ fn again_counts(con: &Connection, ids: &str, today: i64) -> Res<(i64, i64)> {
     con.query_row(
         &format!(
             "SELECT count(*), coalesce(sum(r.rating = 1), 0) FROM review_log r JOIN card c ON c.id = r.card_id
-             WHERE c.deck_id IN ({ids}) AND r.reviewed_at >= ?1"
+             WHERE c.deck_id IN ({ids}) AND r.reviewed_at >= ?1 AND r.kind IS NULL"
         ),
         [today_start_ms(today - WEAK_DAYS + 1)],
         |r| Ok((r.get(0)?, r.get(1)?)),
@@ -827,7 +831,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
             .query_row(
                 &format!(
                     "SELECT count(DISTINCT r.card_id) FROM review_log r JOIN card c ON c.id = r.card_id
-                     WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({id_list})"
+                     WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({id_list}) AND r.kind IS NULL"
                 ),
                 [today_start_ms(today)],
                 |r| r.get(0),
@@ -1883,7 +1887,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
     let scope = scope.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let one = |cond: &str| -> Res<i64> {
         con.query_row(
-            &format!("SELECT {cond} FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({scope})"),
+            &format!("SELECT {cond} FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({scope}) AND r.kind IS NULL"),
             [since],
             |r| r.get(0),
         )
@@ -2207,7 +2211,7 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
             .query_row(
                 &format!(
                     "SELECT count(DISTINCT r.card_id) FROM review_log r JOIN card c ON c.id = r.card_id
-                     WHERE c.deck_id IN ({ids}) AND r.reviewed_at BETWEEN ?1 AND ?2"
+                     WHERE c.deck_id IN ({ids}) AND r.reviewed_at BETWEEN ?1 AND ?2 AND r.kind IS NULL"
                 ),
                 params![today_start_ms(d), study_day_end_ms(d)],
                 |r| r.get(0),
@@ -2415,7 +2419,7 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
          DELETE FROM media; DELETE FROM import_issue; DELETE FROM import_batch;
-         DELETE FROM card_change;",
+         DELETE FROM card_change; DELETE FROM plan_setting;",
     )
     .map_err(err)?;
     db::seed_note_types(&tx).map_err(err)?;
