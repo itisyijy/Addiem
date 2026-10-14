@@ -363,3 +363,21 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     vec       BLOB    NOT NULL,              -- f32 little-endian
     PRIMARY KEY (kind, ref_id, model)
 );
+
+-- ---------------------------------------------------------------- J · 서술형 (학습 화면 J1~J3)
+
+-- 서술형 설정. 노트 단위 (서술형 노트는 카드가 하나다). 행이 없으면 기본값: 앞면에 {{type:필드}} 가 있으면 써서 답하기, 키워드 없음
+CREATE TABLE IF NOT EXISTS note_written (
+    note_id    INTEGER PRIMARY KEY REFERENCES note(id) ON DELETE CASCADE,
+    write_mode INTEGER CHECK (write_mode IN (0,1)),  -- 공부할 때 직접 써서 답하기. NULL 이면 템플릿대로
+    keywords   TEXT    NOT NULL DEFAULT '[]',        -- 필수 키워드 JSON [{"word","synonyms":[..],"source":"user"|"suggested"}]
+    dismissed  TEXT    NOT NULL DEFAULT '[]',        -- 뺀 제안 JSON ["..."]. 다시 제안하지 않는다
+    updated_at INTEGER NOT NULL
+);
+
+-- J1 "지난번에 쓴 답". 카드마다 마지막 하나 (자동 저장이 덮어쓴다)
+CREATE TABLE IF NOT EXISTS written_answer (
+    card_id    INTEGER PRIMARY KEY REFERENCES card(id) ON DELETE CASCADE,
+    answer     TEXT    NOT NULL,
+    written_at INTEGER NOT NULL
+);

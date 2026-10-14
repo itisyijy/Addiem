@@ -46,6 +46,8 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("card", "quality_hidden_until", "INTEGER"),
         // H1 "실제 속도에 맞춰 다시 나누기"를 끄면 정해 둔 하루 몫. NULL 이면 매일 다시 나눈다
         ("deck_config", "fixed_new_per_day", "INTEGER"),
+        // J1 · C4 "이 덱은 써서 답하기". 1 이면 켬, NULL 이면 템플릿대로. 하위 덱은 가장 가까운 위 덱을 따른다
+        ("deck_config", "write_mode", "INTEGER"),
         // H3 압축 회독: 'cram' 이면 SRS 에 넘기지 않은 기록. 오늘의 계획 · 지표 쿼리는 kind IS NULL 만 센다 (히트맵은 함께 센다)
         ("review_log", "kind", "TEXT"),
     ] {
@@ -85,13 +87,23 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 /// (이름, 앞면, 뒷면)
 type Template = (&'static str, &'static str, &'static str);
 /// 앱이 직접 만드는 노트 유형 (Anki 기본 유형과 같은 이름·필드·템플릿). 없는 것만 넣는다
-const NATIVE_TYPES: [(&str, &str, &[Template]); 3] = [
+const NATIVE_TYPES: [(&str, &str, &[Template]); 4] = [
     ("Basic", r#"["Front","Back"]"#, &[("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")]),
     ("Cloze", r#"["Text","Back Extra"]"#, &[("Cloze", "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}")]),
     (
         "Basic (and reversed card)",
         r#"["Front","Back"]"#,
         &[("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}"), ("Card 2", "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}")],
+    ),
+    // J 서술형 (C3 네 번째 유형). Anki 에 내보내면 type-in 입력칸이 있는 카드가 된다. Anki 에 같은 기본 유형이 없어 이름은 우리말
+    (
+        "서술형",
+        r#"["질문","모범 답안","채점 메모"]"#,
+        &[(
+            "Card 1",
+            "{{질문}}{{type:모범 답안}}",
+            "{{FrontSide}}<hr id=answer>{{모범 답안}}{{#채점 메모}}<div class=\"grading-memo\">{{채점 메모}}</div>{{/채점 메모}}",
+        )],
     ),
 ];
 
@@ -163,12 +175,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let con = open(&dir.join("t.sqlite")).unwrap();
         let n: i64 = con.query_row("SELECT count(*) FROM note_type", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 3, "Basic · Cloze · Basic (and reversed card)");
+        assert_eq!(n, 4, "Basic · Cloze · Basic (and reversed card) · 서술형");
         drop(con);
         // 두 번 열어도 다시 시드하지 않는다
         let con = open(&dir.join("t.sqlite")).unwrap();
         let n: i64 = con.query_row("SELECT count(*) FROM note_type", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 3);
+        assert_eq!(n, 4);
     }
 
     #[test]

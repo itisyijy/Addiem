@@ -642,6 +642,10 @@ pub struct DeckDetail {
     paused: bool,
     /// C1-w 이 덱 전체의 최근 14일 Again 비율 (덱 평균)
     again_avg: Option<f64>,
+    /// J1 · C4 이 덱이 "써서 답하기"를 켰는가
+    write_mode: bool,
+    /// 위 덱의 "써서 답하기"를 따르면 그 덱 이름
+    write_from: Option<String>,
 }
 
 /// C1-w 제안 기준
@@ -712,6 +716,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         .optional()
         .map_err(err)?;
     let (target_date, include_target_day, daily_new_limit) = config.unwrap_or((None, 0, None));
+    let write_src = write_mode_source(&con, deck_id)?;
 
     // C1-w: 덱 평균 (이 덱 전체)
     let (all_reviews, all_again) = again_counts(&con, &id_list, today)?;
@@ -825,6 +830,8 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         tree,
         target_from,
         again_avg,
+        write_mode: write_src.as_ref().is_some_and(|(id, _)| *id == deck_id),
+        write_from: write_src.filter(|(id, _)| *id != deck_id).map(|(_, name)| name),
         paused_until: me.paused_until.map(db::date_from_day),
         paused: me.paused,
         done_today: con
@@ -1280,6 +1287,24 @@ pub struct DeckConfigInput {
     paused: Option<bool>,
     #[serde(default)]
     paused_until: Option<String>,
+    /// J1 "이 덱은 써서 답하기". None 이면 지금 상태를 그대로 둔다
+    #[serde(default)]
+    write_mode: Option<bool>,
+}
+
+/// J1 · C4: 이 덱이나 가장 가까운 위 덱 중 "써서 답하기"를 켠 덱 (id, 이름). 없으면 템플릿대로
+pub(crate) fn write_mode_source(con: &Connection, deck_id: i64) -> Res<Option<(i64, String)>> {
+    con.query_row(
+        "WITH RECURSIVE up(id, depth) AS (
+             SELECT ?1, 0
+             UNION ALL SELECT d.parent_id, up.depth + 1 FROM deck d JOIN up ON d.id = up.id WHERE d.parent_id IS NOT NULL AND up.depth < 64)
+         SELECT d.id, d.name FROM up JOIN deck_config c ON c.deck_id = up.id JOIN deck d ON d.id = up.id
+         WHERE c.write_mode = 1 ORDER BY up.depth LIMIT 1",
+        [deck_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .map_err(err)
 }
 
 #[tauri::command]
@@ -1309,6 +1334,9 @@ pub fn save_deck_config(state: State<AppState>, config: DeckConfigInput) -> Res<
             params![config.deck_id, p as i64, if p { config.paused_until.clone() } else { None }],
         )
         .map_err(err)?;
+    }
+    if let Some(w) = config.write_mode {
+        con.execute("UPDATE deck_config SET write_mode = ?2 WHERE deck_id = ?1", params![config.deck_id, w.then_some(1)]).map_err(err)?;
     }
     Ok(())
 }
@@ -2459,5 +2487,18 @@ mod tests {
         assert_eq!(super::answer_part("질문<hr id=answer>답"), "답");
         assert_eq!(super::answer_part("Q<HR id=\"answer\">A"), "A");
         assert_eq!(super::answer_part("빈칸 답"), "빈칸 답");
+    }
+
+    #[test]
+    fn write_mode_follows_the_nearest_deck() {
+        let con = crate::db::open_in_memory().unwrap();
+        for (id, parent) in [(1, None), (2, Some(1)), (3, Some(2))] {
+            con.execute("INSERT INTO deck (id, parent_id, name, created_at, updated_at) VALUES (?1, ?2, ?3, 0, 0)", rusqlite::params![id, parent, format!("d{id}")]).unwrap();
+        }
+        assert_eq!(super::write_mode_source(&con, 3).unwrap(), None, "켠 덱이 없으면 템플릿대로");
+        con.execute("INSERT INTO deck_config (deck_id, write_mode, updated_at) VALUES (1, 1, 0)", []).unwrap();
+        assert_eq!(super::write_mode_source(&con, 3).unwrap(), Some((1, "d1".into())), "위 덱을 따른다");
+        con.execute("INSERT INTO deck_config (deck_id, write_mode, updated_at) VALUES (3, 1, 0)", []).unwrap();
+        assert_eq!(super::write_mode_source(&con, 3).unwrap().map(|s| s.0), Some(3), "가장 가까운 덱");
     }
 }

@@ -60,8 +60,12 @@ fn tag_value(tag: &str, fields: &HashMap<String, String>, ord: u32, is_back: boo
     match tag.rsplit_once(':') {
         Some((filters, field)) => {
             let value = fields.get(field.trim()).cloned().unwrap_or_default();
-            // type-in 입력칸과 읽어주기는 지원하지 않는다. 빈 문자열로 그린다 (답이 앞면에 새지 않게. 가져오기 결과에 보고한다)
-            if filters.split(':').any(|f| f.trim() == "type" || f.trim().starts_with("tts")) {
+            // type-in 입력칸은 앞면에서 비운다 (답이 새지 않게. 입력은 학습 화면의 J1 칸이 받는다).
+            // 뒷면에서는 Anki 처럼 정답을 보여준다. 읽어주기는 지원하지 않는다 (가져오기 결과에 보고한다)
+            if filters.split(':').any(|f| f.trim() == "type") {
+                return if is_back { value } else { String::new() };
+            }
+            if filters.split(':').any(|f| f.trim().starts_with("tts")) {
                 return String::new();
             }
             if filters.split(':').any(|f| f.trim() == "cloze") {
@@ -254,8 +258,8 @@ mod tests {
     fn filters_and_missing_fields() {
         assert_eq!(render_card("{{text:Front}}|{{Nope}}", "", &f(&[("Front", "Q")]), 0).front, "Q|");
         assert_eq!(render_card("{{Front", "", &f(&[]), 0).front, "{{Front", "닫히지 않은 태그는 그대로 둔다");
-        // type-in 입력칸은 그리지 않는다 (답이 앞면에 새지 않게)
+        // type-in: 앞면은 비우고 뒷면은 정답 (J1)
         let t = render_card("{{Front}}{{type:Back}}", "{{FrontSide}}<hr id=answer>{{type:Back}}", &f(&[("Front", "Q"), ("Back", "A")]), 0);
-        assert_eq!((t.front.as_str(), t.back.as_str()), ("Q", "Q<hr id=answer>"));
+        assert_eq!((t.front.as_str(), t.back.as_str()), ("Q", "Q<hr id=answer>A"));
     }
 }
