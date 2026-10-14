@@ -11,6 +11,7 @@
 
 use crate::commands::AppState;
 use crate::quality::{self, SplitPart, SplitProposal};
+use crate::rag;
 use crate::sync::{auth, crypto, store};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -476,6 +477,10 @@ const INSTRUCTIONS: &str = "암기 카드 한 장을 더 작은 카드로 나누
 - 모든 항목 번호를 정확히 한 번씩, 어느 한 카드에 넣으세요. 항목 글자는 고치지 말고 번호만 쓰세요.
 - 카드마다 front 에 그 묶음만 묻는 짧은 질문을 쓰세요. 원래 질문의 주제와 묶음의 성격이 드러나게, 원래 질문과 같은 언어로.
 - 답은 {\"cards\": [{\"front\": 질문, \"items\": [번호, …]}]} 모양의 JSON 하나만.";
+
+/// R3: 카드에 연결된 자료 구간을 함께 보낼 때 덧붙인다
+const EVIDENCE: &str = "- 번호 붙은 자료 구간도 보내요. 묶음과 질문을 정할 때 참고하고, 카드마다 참고한 구간 번호를 \"segments\": [번호, …] 에 쓰세요 (없으면 빈 배열). \
+구간 내용을 답에 더하지는 마세요.";
 
 /// 답의 항목 (규칙 분할과 같은 기준: 항목 표시가 있으면 그것, 없으면 줄). 앞 표시(①, 1.)는 뗀다
 fn regroup_items(answer: &[String]) -> Vec<String> {
@@ -951,26 +956,54 @@ pub fn ai_cancel(state: State<AiState>) {
 
 /// G2 [성격별로 묶기]: 카드 한 장을 ChatGPT 로 보내 같은 모양의 제안을 받는다. 아무것도 바꾸지 않는다
 #[tauri::command]
-pub async fn ai_regroup(app: AppHandle, card_id: i64) -> Result<SplitProposal, AiError> {
-    tauri::async_runtime::spawn_blocking(move || regroup_blocking(&app, card_id)).await.map_err(|e| AiError::Other(e.to_string()))?
+/// segment_ids: 첫 확인 목록에서 남긴 구간 (R3). 이 카드에 연결된 구간만 받는다. 비면 카드 한 장만 (L4 그대로)
+pub async fn ai_regroup(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) -> Result<SplitProposal, AiError> {
+    tauri::async_runtime::spawn_blocking(move || regroup_blocking(&app, card_id, &segment_ids)).await.map_err(|e| AiError::Other(e.to_string()))?
 }
 
-fn regroup_blocking(app: &AppHandle, card_id: i64) -> Result<SplitProposal, AiError> {
-    let rule = with_db(app, |c| quality::suggest(c, card_id, None).map_err(AiError::Other))?;
+fn regroup_blocking(app: &AppHandle, card_id: i64, segment_ids: &[i64]) -> Result<SplitProposal, AiError> {
+    let (rule, sent) = with_db(app, |c| {
+        let rule = quality::suggest(c, card_id, None).map_err(AiError::Other)?;
+        let picks: Vec<(i64, &str)> = rag::linked_segments(c, card_id).map_err(AiError::Other)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
+        Ok((rule, rag::sent_of(c, &picks).map_err(AiError::Other)?))
+    })?;
     let items = regroup_items(&rule.answer);
     if items.len() < MIN_ITEMS {
         return Err(AiError::Other("답 항목이 3개 이상일 때 묶을 수 있어요.".into()));
     }
-    let input = regroup_input(&rule.question, &items);
+    let mut input = regroup_input(&rule.question, &items);
     if items.len() > MAX_ITEMS || input.chars().count() > MAX_INPUT_CHARS {
         return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 규칙으로 나눠 주세요.".into()));
     }
-    let schema = regroup_schema(false);
-    let text = generate(app, &|m, f| request_body(m, INSTRUCTIONS, &input, f.then_some(("regroup", &schema))), || fake_regroup(items.len(), 0))?;
+    let instructions = if sent.is_empty() {
+        INSTRUCTIONS.to_string()
+    } else {
+        input.push_str(&format!("자료 구간:\n{}", rag::segments_input(&sent)));
+        format!("{INSTRUCTIONS}\n{EVIDENCE}")
+    };
+    let schema = regroup_schema(!sent.is_empty());
+    let text = generate(app, &|m, f| request_body(m, &instructions, &input, f.then_some(("regroup", &schema))), || fake_regroup(items.len(), sent.len()))?;
     let parts = parse_regroup(&text, &items)?;
-    // L4 "왜?": 걸린 규칙 + ChatGPT 가 묶은 장수
-    let why = format!("{}. ChatGPT가 성격이 비슷한 것끼리 {}장으로 묶었어요.", quality::reason_of(&rule.flags), parts.len());
-    Ok(SplitProposal { why, parts, kind: "nature", ..rule })
+    let evidence = parse_cited(&text, &sent)?;
+    // L4 "왜?": 걸린 규칙 + ChatGPT 가 묶은 장수 (R3: 함께 보낸 구간 수)
+    let seen = if sent.is_empty() { String::new() } else { format!("연결된 자료 {}구간을 보고 ", sent.len()) };
+    let why = format!("{}. ChatGPT가 {seen}성격이 비슷한 것끼리 {}장으로 묶었어요.", quality::reason_of(&rule.flags), parts.len());
+    Ok(SplitProposal { why, parts, kind: "nature", evidence, sent, ..rule })
+}
+
+/// R3 근거 칩: 카드들이 실제로 인용한 구간 (처음 나온 순서, 겹치지 않게). 보내지 않은 번호면 BadOutput (일부도 쓰지 않는다)
+fn parse_cited(text: &str, sent: &[rag::Sent]) -> Result<Vec<rag::Sent>, AiError> {
+    let v = parse_json(text)?;
+    let mut out: Vec<rag::Sent> = vec![];
+    for c in v["cards"].as_array().into_iter().flatten() {
+        for n in c["segments"].as_array().into_iter().flatten() {
+            let id = rag::segment_at(sent, n).ok_or_else(|| AiError::BadOutput("보내지 않은 구간 번호예요".into()))?;
+            if !out.iter().any(|s| s.id == id) {
+                out.extend(sent.iter().find(|s| s.id == id).cloned());
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// 보내고 스트림을 끝까지 읽는다. 200 이면 sent() (이번 달 보낸 카드). 취소되면 읽기를 멈춘다 (Truncated)
@@ -1249,6 +1282,31 @@ mod tests {
         assert!(bad(r#"{"cards":[{"front":"a","items":[1,2,3]},{"front":"b","items":[4,5,6,7]}]}"#), "없는 번호");
         assert!(bad("묶으면 이렇게 돼요: {\"cards\""), "JSON 이 아니다");
         assert!(bad(r#"{"cards":"x"}"#));
+    }
+
+    #[test]
+    fn cited_segments_become_evidence() {
+        let seg = |id: i64| rag::Sent {
+            id,
+            material_id: 1,
+            material: "ITPM.pdf".into(),
+            kind: "pdf".into(),
+            page: id,
+            signals: vec![],
+            text: format!("구간 {id}"),
+            how: "manual".into(),
+        };
+        let sent = vec![seg(31), seg(32), seg(33)];
+        let text = r#"{"cards":[{"front":"a","items":[1,2],"segments":[2]},{"front":"b","items":[3],"segments":[2,1]}]}"#;
+        let ev = parse_cited(text, &sent).unwrap();
+        assert_eq!(ev.iter().map(|s| s.id).collect::<Vec<_>>(), [32, 31], "인용한 구간만, 처음 나온 순서, 한 번씩 (33 은 칩이 없다)");
+        assert!(matches!(parse_cited(r#"{"cards":[{"front":"a","items":[1],"segments":[4]}]}"#, &sent), Err(AiError::BadOutput(_))));
+        assert!(parse_cited(r#"{"cards":[{"front":"a","items":[1]}]}"#, &sent).unwrap().is_empty(), "segments 가 없으면 근거 없음");
+        let schema = regroup_schema(true);
+        assert_eq!(schema["properties"]["cards"]["items"]["required"], json!(["front", "items", "segments"]));
+        let parts = parse_regroup(&fake_regroup(3, 2), &items(3)).unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parse_cited(&fake_regroup(3, 2), &sent[..2]).unwrap().len(), 1);
     }
 
     #[test]

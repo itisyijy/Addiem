@@ -41,6 +41,8 @@ export const ragApi = {
   /** R1-c 승인. 되돌리기는 qualityApi.undo(변경 id) */
   apply: (deckId: number, cloze: boolean, cards: { front: string; back: string; segment_id: number; importance: number }[]) =>
     invoke<number>("rag_draft_apply", { deckId, cloze, cards }),
+  /** R3 성격별로 묶기에 함께 보낼 구간 (이 카드에 연결된 것 최대 3개) */
+  linked: (cardId: number) => invoke<Sent[]>("rag_linked", { cardId }),
   /** R2 버튼 아래 한 줄 · 첫 확인 목록. 아무것도 보내지 않는다 */
   gradeScope: (cardId: number, answer: string) => invoke<GradeScope>("rag_grade_scope", { cardId, answer }),
   /** R2 채점 보조. 오류는 AiError */

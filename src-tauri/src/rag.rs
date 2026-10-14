@@ -111,6 +111,13 @@ pub(crate) fn segment_at(sent: &[Sent], n: &J) -> Option<i64> {
     sent.get(i - 1).map(|s| s.id)
 }
 
+/// R3 성격별로 묶기에 함께 보낼 구간: 이 카드에 연결된 것 최대 3개 (직접 > 자동). 아무것도 보내지 않는다
+#[tauri::command]
+pub fn rag_linked(state: State<AppState>, card_id: i64) -> Res<Vec<Sent>> {
+    let con = state.db.lock().map_err(err)?;
+    sent_of(&con, &linked_segments(&con, card_id)?)
+}
+
 /// R1-b 미리보기: 고른 구간을 보내는 모양으로 (R1 은 매번 이 목록을 보고 보낸다)
 #[tauri::command]
 pub fn rag_preview(state: State<AppState>, segment_ids: Vec<i64>) -> Res<Vec<Sent>> {

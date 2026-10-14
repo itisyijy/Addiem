@@ -348,6 +348,9 @@ pub struct SplitProposal {
     pub(crate) flags: Vec<Flag>,
     /// items | lines | questions | nature(ChatGPT 성격별로 묶기). questions 면 한 장 항목 수를 바꿔도 같은 제안이다
     pub(crate) kind: &'static str,
+    /// R3: ChatGPT 에 함께 보낸 자료 구간 · 그중 실제로 인용한 구간 (근거 칩). 규칙 제안은 비어 있다
+    pub(crate) sent: Vec<crate::rag::Sent>,
+    pub(crate) evidence: Vec<crate::rag::Sent>,
 }
 
 /// 받침이 있는가 (조사 고르기)
@@ -464,7 +467,7 @@ pub(crate) fn suggest(con: &Connection, card_id: i64, per_card: Option<i64>) -> 
         _ => format!("순서대로 {each}줄씩 나눴어요."),
     };
     let why = format!("{}. {how}", reason_of(&flags));
-    Ok(SplitProposal { card_id, question: t.question, answer: t.answer, why, parts, per_card: per, flags, kind })
+    Ok(SplitProposal { card_id, question: t.question, answer: t.answer, why, parts, per_card: per, flags, kind, sent: vec![], evidence: vec![] })
 }
 
 /// "왜?"의 앞부분 = 걸린 규칙 (G1 배지와 같은 말) + Again. 뒤에 어떻게 나눴는지를 붙인다 (ai.rs 도 쓴다)

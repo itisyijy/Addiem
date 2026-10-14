@@ -110,6 +110,18 @@
   white-space: nowrap;
 }
 .src-chip:hover { border-color: var(--accent-default); }
+.src-chip--surface { background: var(--bg-surface); }
+
+/* ---------------------------------------------------------------- R3 묶기 + 근거 (Figma 82:9900 · 82:10071) */
+.split__evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ai-confirm.ai-confirm--list { width: 520px; padding: 0; overflow: hidden; }
+.ai-confirm--list .ai-send { border: 0; }
+/* 근거 칩을 누르면 창 오른쪽에 I2 패널(420): 창은 왼쪽으로 비켜서 좁아진다 */
+/* 좁아진 창은 화면 안에 두고 가운데 두 열만 스크롤한다 (머리말 · 푸터 고정, R1-e 와 같은 규칙) */
+.modal.split.has-panel { top: 24px; left: 24px; width: calc(100vw - 492px); max-height: calc(100vh - 48px); overflow: hidden; transform: none; }
+.split.has-panel .split__cols { flex: 1; min-height: 0; align-items: stretch; }
+.split.has-panel .split__orig, .split.has-panel .split__parts { max-height: none; min-height: 0; }
+.split__source { position: fixed; top: 24px; right: 24px; z-index: 30; width: 420px; max-height: calc(100vh - 48px); overflow-y: auto; }
 
 /* ---------------------------------------------------------------- R2 서술형 채점 보조 (J2 카드 안, Figma 81:9865 · 81:10044) */
 .cmp__kw > .grade__btn { margin-left: auto; }
