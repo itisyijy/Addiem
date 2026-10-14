@@ -84,7 +84,8 @@ impl FolderStore {
     }
 
     fn file(&self, path: &str) -> SRes<PathBuf> {
-        if path.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
+        // Windows 는 \ 도 경로 구분자이고 C: 같은 드라이브 경로는 root 밖이다
+        if path.contains(['\\', ':']) || path.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
             return Err(other(format!("잘못된 경로: {path}")));
         }
         Ok(match path.strip_prefix("backups/") {

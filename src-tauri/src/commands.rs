@@ -2024,6 +2024,11 @@ pub(crate) fn safe_media_name(name: &str) -> Res<&str> {
     Ok(name)
 }
 
+/// data_dir 기준 `<dir>/<안전한 이름>` 경로인가. 동기화로 받은 경로가 다른 곳의 파일을 가리키지 않게
+pub(crate) fn safe_rel_path(rel: &str, dir: &str) -> bool {
+    rel.strip_prefix(dir).and_then(|r| r.strip_prefix('/')).is_some_and(|n| safe_media_name(n).is_ok())
+}
+
 pub(crate) fn mime_of(name: &str) -> &'static str {
     match name.rsplit('.').next().map(|e| e.to_ascii_lowercase()).as_deref() {
         Some("png") => "image/png",
