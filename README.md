@@ -77,6 +77,30 @@ npm run tauri build     # 설치 파일 생성 (src-tauri/target/release/bundle/
 $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm run tauri dev
 ```
 
+### Google Drive 동기화 (개발)
+
+[설계](docs/engineering/drive-sync.md) · 코드는 `src-tauri/src/sync/`. Google 연결은 빌드할 때 넣는 OAuth 클라이언트가 있어야 켜진다. 없으면 설정의 Google Drive 칸이 "이 빌드에는 Google 연결이 설정되지 않았어요"로 보이고 나머지는 그대로 동작한다.
+
+1. Google Cloud 콘솔에서 Drive API 를 켜고, OAuth 동의 화면에 범위 `drive.file` · `drive.appdata` 두 개만 넣는다 (테스트 단계에서는 테스트 사용자를 등록).
+2. 사용자 인증 정보 > OAuth 클라이언트 ID > **데스크톱 앱**을 만든다. 리디렉션은 `http://127.0.0.1:<임의 포트>` 루프백이라 따로 적지 않는다.
+3. 빌드하는 셸에서 두 값을 넣고 빌드한다 (`option_env!` 라 빌드할 때만 읽는다. 바꾸면 다시 빌드).
+
+```powershell
+$env:NEOANKI_GOOGLE_CLIENT_ID = "<클라이언트 ID>.apps.googleusercontent.com"
+$env:NEOANKI_GOOGLE_CLIENT_SECRET = "<클라이언트 보안 비밀>"   # 데스크톱 클라이언트에 Google 이 주는 값. PKCE 와 함께 쓴다
+npm run tauri dev
+```
+
+토큰과 잠금 키는 OS 키체인(Windows 자격 증명 관리자, 서비스 이름 `io.github.itisyijy.neoanki`)에만 저장된다.
+
+Google 계정 없이 시험하려면 로컬 폴더를 Drive 대신 쓴다. 같은 폴더를 가리키는 두 인스턴스(데이터 폴더는 다르게)가 두 기기처럼 맞춰진다. 로그인 창 없이 바로 연결된다.
+
+```powershell
+$env:NEOANKI_SYNC_FOLDER = "C:\temp\neoanki-drive"; $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-a"; npm run tauri dev
+```
+
+엔진 테스트(두 기기 시뮬레이션)는 `cargo test sync::` 로 돈다.
+
 ### 확인
 
 ```powershell
