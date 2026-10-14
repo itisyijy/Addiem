@@ -1,6 +1,7 @@
 // D1 학습 시작 전 요약 / D2 질문 / D3 답변과 평가 / D4 접어두기 / C3-e 카드 편집
+// G3 학습 중 신호
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { api, errorText, type CardView, type Level, type NoteEdit, type QueueSummary } from "../api";
+import { api, errorText, qualityApi, type CardView, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, type Rating } from "../ui";
 import { eul, n, useKey, useNav, useOverlayScope } from "../nav";
 import { actionKey, getKeys, matchAction, useKeymap } from "../keys";
@@ -10,6 +11,7 @@ import { findMath, withMath } from "../math";
 import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { RichField, makeCloze, toCloze, fromCloze, type FieldHandle } from "./AddCard";
+import { splitLater, takeSignal } from "./StudyParts";
 import "../styles/study.css";
 
 // 이 기기에서만 쓰는 편의 설정. 지워져도 기본 동작으로 돌아갈 뿐이다
@@ -206,7 +208,8 @@ type Shown = { view: CardView; front: string; question: string; answer: string }
 type Folded = { id: number; question: string; importance: Level; deck_path: string[]; auto: boolean; at: number };
 /** 되돌릴 수 있는 일. D2-u: 이 세션의 마지막 평가나 접기 하나뿐 (백엔드는 더 쌓지만 화면에서 막는다) */
 type Last = { id: number; rating: Rating | null; phase: "q" | "a"; counted: boolean; folded: boolean };
-type FoldToast = { id: number; auto: boolean };
+/** 접기 토스트. reason: G3 카드 모양 신호 ("답이 10항목이라") */
+type FoldToast = { id: number; auto: boolean; reason?: string };
 
 /**
  * 뒷면을 질문 부분과 답 부분으로 나눈다. Basic 템플릿은 <hr id=answer> 로 나뉜다.
@@ -547,6 +550,12 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     ]);
     setToast({ id: c.view.id, auto });
     setRated(null); // 접기 토스트가 우선한다. 되돌리기는 그 안에 합친다
+    // G3: 카드 모양 문제(G1 규칙: 긴 답 · 여러 물음)도 있으면 둘째 줄과 [나누기 제안]. 같은 카드는 하루 한 번
+    if (auto)
+      qualityApi.splitSignal(c.view.id).then(
+        (reason) => reason && takeSignal(c.view.id) && setToast((t) => (t?.id === c.view.id ? { ...t, reason } : t)),
+        () => {},
+      );
   };
 
   const rate = (r: Rating) =>
@@ -856,16 +865,32 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           <span className="study__toast-text">
             <span className="t-body-m-strong">{toast.auto ? "방금 카드를 잠시 접어둘게요" : "방금 카드를 접어뒀어요"}</span>
             <span className="t-body-s c-tertiary">
-              {toast.auto
-                ? "같은 학습에서 두 번 기억나지 않았어요. 나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
-                : "학습을 마치면 다시 볼지 물어볼게요."}
+              {toast.reason
+                ? `두 번 막혔어요. ${toast.reason}, 나눠서 외우는 게 나을 수도 있어요.`
+                : toast.auto
+                  ? "같은 학습에서 두 번 기억나지 않았어요. 나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
+                  : "학습을 마치면 다시 볼지 물어볼게요."}
             </span>
           </span>
+          {/* G3: 학습을 멈추지 않는다. "나중에 볼 제안"에 넣고 토스트만 닫는다 (D5 접어둔 카드 행에 칩으로 다시 나온다) */}
+          {toast.reason && (
+            <button
+              className="study__toast-btn study__toast-btn--accent t-label-m"
+              onClick={() => {
+                splitLater.add(toast.id);
+                setToast(null);
+              }}
+            >
+              <Icon name="layers" size={14} />
+              나누기 제안
+            </button>
+          )}
           <button className="study__toast-btn t-label-m" onClick={() => unfold([toast.id], true)}>
             <Icon name="rotate" size={14} />
             지금 다시 보기
           </button>
-          {last?.id === toast.id && (
+          {/* 버튼이 늘면 되돌리기는 키(Ctrl Z)로만. 토스트가 화면 폭을 넘지 않게 */}
+          {last?.id === toast.id && !toast.reason && (
             <button className="study__toast-btn t-label-m" onClick={undo}>
               되돌리기
               <Kbd k={actionKey("undo")} tone="onAccent" />

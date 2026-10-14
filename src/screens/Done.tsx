@@ -3,6 +3,8 @@ import { useState } from "react";
 import { api, errorText, type SessionSummary } from "../api";
 import { Badge, Button, Icon, Importance, StatTile } from "../ui";
 import { getCutoff, hourLabel, n, useNav } from "../nav";
+import { SplitLaterChip } from "./StudyParts";
+import { SplitDialog } from "./Quality";
 import "../styles/done.css";
 
 export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
@@ -14,6 +16,8 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
 }) {
   const nav = useNav();
   const [error, setError] = useState<string>();
+  // G3: 학습 중 [나누기 제안]을 눌러 둔 카드는 여기서 G2 나누기 창을 연다
+  const [splitting, setSplitting] = useState<number | null>(null);
   const remaining = s.remaining_review + s.remaining_new;
   const finished = completed && remaining === 0;
   const folded = s.buried.length > 0;
@@ -148,6 +152,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
                   <span className="t-body-m">{b.question || "(내용 없음)"}</span>
                   <span className="t-caption c-tertiary">{b.deck_path.join(" · ")}</span>
                 </span>
+                <SplitLaterChip cardId={b.id} onOpen={() => setSplitting(b.id)} />
               </div>
             ))}
           </div>
@@ -165,6 +170,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
           </div>
         </section>
       )}
+      {splitting !== null && <SplitDialog cardId={splitting} onClose={() => setSplitting(null)} />}
     </main>
   );
 }

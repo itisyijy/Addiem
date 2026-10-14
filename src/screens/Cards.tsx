@@ -1,6 +1,6 @@
 // C2 카드 목록 / C2-m 중요도 메뉴 / C2-d 카드 삭제 확인 / C2-r 행 ⋯ 메뉴 / C2-b 일괄 선택
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
-import { api, errorText, type CardList, type CardRow, type DeckDetail, type Level } from "../api";
+import { api, errorText, qualityApi, type CardList, type CardRow, type DeckDetail, type Level } from "../api";
 import { Badge, Button, Icon, Importance, Kbd, LEVEL_LABEL, type BadgeTone } from "../ui";
 import { n, useKey, useNav, ro, useOverlayScope } from "../nav";
 import { actionKey } from "../keys";
@@ -74,6 +74,11 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
     );
   }, [deckId]);
   useEffect(loadDeck, [loadDeck]);
+  // G1 진입 칩 "고칠 만한 카드 N" (숨긴 카드는 빼고 센다)
+  const [fixable, setFixable] = useState(0);
+  useEffect(() => {
+    if (deckId !== null && !buriedOnly) qualityApi.check(deckId).then((c) => setFixable(c.filter((x) => !x.hidden).length), () => {});
+  }, [deckId, buriedOnly]);
 
   const load = useCallback(
     () => api.listCards(scope, query, limit, buriedOnly, only, weak).then(setList, (e) => setError(errorText(e))),
@@ -382,6 +387,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
           </span>
         )}
         {error && <span className="t-body-s c-danger">{error}</span>}
+        {deckId !== null && fixable > 0 && !selecting && (
+          <button className="cards__fix t-label-m" onClick={() => nav({ name: "quality", deckId })}>
+            <Icon name="layers" size={16} />
+            고칠 만한 카드 {n(fixable)}
+          </button>
+        )}
         {selecting && <span className="cards__hint t-caption c-tertiary">Shift 클릭으로 범위 선택 · Ctrl A 보이는 카드 모두</span>}
       </div>
 

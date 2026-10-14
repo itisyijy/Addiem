@@ -769,6 +769,11 @@ function MoreMenu({ d, onRename, onPause, onResume }: {
             <span className="menu__text">이름 바꾸기</span>
             <Kbd k="F2" />
           </button>
+          {/* G1. 하위 덱까지 규칙으로 검사한다 */}
+          <button role="menuitem" className="menu__item t-body-m" disabled={d.total === 0} onClick={() => nav({ name: "quality", deckId: d.id })}>
+            <Icon name="layers" size={16} />
+            <span className="menu__text">카드 점검</span>
+          </button>
           {d.paused ? (
             <button role="menuitem" className="menu__item t-body-m" onClick={onResume}>
               <Icon name="rotate" size={16} scaled />
