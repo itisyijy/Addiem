@@ -1,20 +1,23 @@
-// C3 카드 추가 / C3-b 빈칸 카드 / C3-r 앞뒤 둘 다 / C3-n 넣을 곳
+// C3 카드 추가 / C3-b 빈칸 카드 / C3-r 앞뒤 둘 다 / C3-n 넣을 곳 / J3 서술형
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, type DeckDetail, type Level } from "../api";
-import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge } from "../ui";
+import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge, Toggle } from "../ui";
 import { n, useNav, type Route } from "../nav";
 import { actionKey, chordOf, getKeys, matchAction, useKeymap } from "../keys";
 import { imageTag, plainText, renderCardHtml, sanitize, toStoredHtml } from "../cardHtml";
 import { checkMath, findMath, withMath } from "../math";
 import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
+import { KeywordEditor } from "./StudyParts";
+import { written, type Keyword } from "../written";
 import "../styles/study.css";
 
-type Kind = "basic" | "reversed" | "cloze";
+type Kind = "basic" | "reversed" | "cloze" | "written";
 const KINDS: [Kind, string][] = [
   ["basic", "질문과 답변"],
   ["reversed", "앞뒤 둘 다"],
   ["cloze", "빈칸"],
+  ["written", "서술형"],
 ];
 
 export function AddCard({ deckId }: { deckId: number }) {
@@ -33,6 +36,12 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [, setTick] = useState(0); // 편집기 내용이 바뀌면 미리보기를 다시 그린다
   const q = useRef<FieldHandle>(null);
   const a = useRef<FieldHandle>(null);
+  const memo = useRef<FieldHandle>(null); // J3 채점 메모
+  // J3 서술형: 필수 키워드 · 제안 · 공부할 때 직접 써서 답하기
+  const [kws, setKws] = useState<Keyword[]>([]);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [write, setWrite] = useState(true);
 
   useEffect(() => {
     api.deckDetail(deckId).then(async (d) => {
@@ -55,13 +64,20 @@ export function AddCard({ deckId }: { deckId: number }) {
     const aHtml = a.current?.html() ?? "";
     const front = kind === "cloze" ? toCloze(qHtml) : toStoredHtml(qHtml);
     try {
-      const made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
+      let made = 1;
+      if (kind === "written") {
+        const memoHtml = memo.current?.html() ?? "";
+        await written.add({ deck_id: target, question: front, answer: toStoredHtml(aHtml), memo: toStoredHtml(memoHtml), importance, write, keywords: kws });
+      } else made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
       setAdded((list) => [...list, plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml)].slice(-5));
       setAddedCount((c) => c + made);
       setError(undefined);
+      setKws([]);
+      setDismissed([]);
       if (keepGoing) {
         q.current?.clear();
         a.current?.clear();
+        memo.current?.clear();
         q.current?.focus();
         refresh();
       } else {
@@ -74,7 +90,7 @@ export function AddCard({ deckId }: { deckId: number }) {
 
   // 쓰던 내용이 있으면 말없이 버리지 않고 먼저 묻는다
   const leave = (r: Route) => {
-    const typed = [q, a].some((f) => {
+    const typed = [q, a, memo].some((f) => {
       const html = f.current?.html() ?? "";
       return plainText(html).replace(/​/g, "") !== "" || html.includes("<img"); // 빈칸 뒤 공백 문자는 내용이 아니다
     });
@@ -99,7 +115,17 @@ export function AddCard({ deckId }: { deckId: number }) {
   const qHtml = q.current?.html() ?? "";
   const marks = kind === "cloze" ? clozeMarks(qHtml) : [];
   // C3-m: 읽지 못한 수식. 저장은 막지 않는다
-  const names = kind === "cloze" ? ["본문", "추가 설명"] : kind === "reversed" ? ["앞면", "뒷면"] : ["질문", "답변"];
+  const names = kind === "cloze" ? ["본문", "추가 설명"] : kind === "reversed" ? ["앞면", "뒷면"] : kind === "written" ? ["질문", "모범 답안"] : ["질문", "답변"];
+  // J3 제안 칩: 모범 답안에서 뽑는다. 이미 정한 키워드와 뺀 말은 빼고
+  const answerHtml = kind === "written" ? (a.current?.html() ?? "") : "";
+  useEffect(() => {
+    if (kind !== "written") return;
+    const t = setTimeout(
+      () => written.suggest(answerHtml, [...kws.map((k) => k.word), ...dismissed]).then(setSuggestions, () => setSuggestions([])),
+      250,
+    );
+    return () => clearTimeout(t);
+  }, [kind, answerHtml, kws, dismissed]);
   const mathErrors = [qHtml, a.current?.html() ?? ""].flatMap((h, i) => checkMath(h).map((e) => ({ ...e, field: names[i] })));
 
   return (
@@ -155,7 +181,29 @@ export function AddCard({ deckId }: { deckId: number }) {
             )}
           </div>
 
-          {kind !== "cloze" ? (
+          {kind === "written" ? (
+            <>
+              <span className="t-label-m">질문</span>
+              <RichField key="q-written" ref={q} minHeight={64} onInput={refresh} />
+              <span className="t-label-m">모범 답안</span>
+              <RichField key="a-written" ref={a} minHeight={84} toolbar={false} onInput={refresh} />
+              <span className="addcard__label">
+                <span className="t-label-m">채점 메모</span>
+                <span className="t-caption c-tertiary">선택 · 답을 본 뒤에 함께 보여요</span>
+              </span>
+              <RichField key="m-written" ref={memo} minHeight={44} toolbar={false} onInput={refresh} />
+              <KeywordEditor
+                keywords={kws}
+                suggestions={suggestions}
+                onChange={setKws}
+                onDismiss={(w) => setDismissed((d) => (d.includes(w) ? d : [...d, w]))}
+              />
+              <label className="edit__write">
+                <Toggle on={write} onChange={setWrite} label="공부할 때 직접 써서 답하기" />
+                <span className="t-body-s c-secondary">공부할 때 직접 써서 답하기</span>
+              </label>
+            </>
+          ) : kind !== "cloze" ? (
             <>
               {/* 앞뒤 둘 다는 어느 쪽도 질문이 되므로 앞면 · 뒷면. 질문과 답변을 오가도 쓴 내용은 남는다 */}
               <span className="t-label-m">{kind === "reversed" ? "앞면" : "질문"}</span>

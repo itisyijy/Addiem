@@ -93,6 +93,10 @@ export type DeckDetail = {
   target_from: { name: string; dday: number } | null;
   /** C1-w 이 덱 전체의 최근 14일 Again 비율 (덱 평균) */
   again_avg: number | null;
+  /** J1 · C4 이 덱이 "써서 답하기"를 켰는가 */
+  write_mode: boolean;
+  /** 위 덱의 "써서 답하기"를 따르면 그 덱 이름 */
+  write_from: string | null;
 };
 
 export type NewCard = { deck_id: number; kind: "basic" | "reversed" | "cloze"; front: string; back: string; importance: Level | null };
@@ -121,6 +125,8 @@ export type DeckConfig = {
   paused?: boolean;
   /** 'YYYY-MM-DD' 까지 (그날 포함). null 이면 다시 시작할 때까지 */
   paused_until?: string | null;
+  /** J1 "이 덱은 써서 답하기". 빼면 지금 상태를 그대로 둔다 */
+  write_mode?: boolean;
 };
 export type ConfigPreview = {
   remaining_new: number;
@@ -435,8 +441,6 @@ export const qualityApi = {
   apply: (cardId: number, parts: SplitPart[], archiveOriginal: boolean) => invoke<number>("split_apply", { cardId, parts, archiveOriginal }),
   undo: (changeId: number) => invoke<void>("undo_change", { changeId }),
   recent: (deckId: number) => invoke<CardChange[]>("recent_changes", { deckId }),
-  /** G3 토스트 둘째 줄의 이유 ("답이 10항목이라"). 카드 모양 문제가 없으면 null */
-  splitSignal: (cardId: number) => invoke<string | null>("split_signal", { cardId }),
 };
 
 // ---------------------------------------------------------------- H 학습 계획 · 목표일 충돌 (plan.rs). 예상 점수 · 합격 가능성은 없다
@@ -504,30 +508,6 @@ export const planApi = {
   resolve: (deckA: number, deckB: number, mode: PlanMode) => invoke<void>("resolve_plan_conflict", { deckA, deckB, mode }),
   /** C4 "충돌 조정으로 +18장" */
   adjust: (deckId: number) => invoke<{ mode: PlanMode; delta: number } | null>("plan_adjust", { deckId }),
-};
-
-// ---------------------------------------------------------------- H3 압축 회독 (cram.rs)
-
-export type CramPlan = {
-  deck_id: number;
-  name: string;
-  dday: number;
-  core: number;
-  core_total: number;
-  weak: number;
-  weak_names: string[];
-  again: number;
-  stable: number;
-  /** 핵심만 · 핵심 + 약한 챕터 · 불안한 카드 전부 */
-  scopes: [number, number, number];
-  sec_per_card: number;
-};
-
-export const cramApi = {
-  plan: (deckIds: number[] | null) => invoke<CramPlan | null>("cram_plan", { deckIds }),
-  cards: (deckId: number, scope: number) => invoke<number[]>("cram_cards", { deckId, scope }),
-  answer: (cardId: number, rating: number, elapsedMs: number) => invoke<number>("cram_answer", { cardId, rating, elapsedMs }),
-  undo: (logId: number) => invoke<void>("cram_undo", { logId }),
 };
 
 /** Rust 쪽 오류는 사용자에게 보여줄 문장으로 온다 */

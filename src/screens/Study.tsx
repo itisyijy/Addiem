@@ -1,17 +1,20 @@
 // D1 학습 시작 전 요약 / D2 질문 / D3 답변과 평가 / D4 접어두기 / C3-e 카드 편집
-// H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { api, cramApi, errorText, qualityApi, type CardView, type CramPlan, type Level, type NoteEdit, type QueueSummary } from "../api";
-import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, type Rating } from "../ui";
+// J1~J3 서술형 · H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { api, errorText, type CardView, type Level, type NoteEdit, type QueueSummary } from "../api";
+import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
 import { eul, n, useKey, useNav, useOverlayScope } from "../nav";
 import { actionKey, getKeys, matchAction, useKeymap } from "../keys";
 import { useToast } from "../toast";
 import { plainText, renderCardHtml, toStoredHtml } from "../cardHtml";
 import { findMath, withMath } from "../math";
+import {
+  cram as cramApi, splitLater, takeSignal, written as writtenApi, type Compare, type CramPlan, type Keyword, type WrittenCard, type WrittenNote,
+} from "../written";
 import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { RichField, makeCloze, toCloze, fromCloze, type FieldHandle } from "./AddCard";
-import { CramHint, splitLater, takeSignal } from "./StudyParts";
+import { CramHint, KeywordEditor } from "./StudyParts";
 import { SourcePanel } from "./SourcePanel";
 import { cardSource } from "../sourceApi";
 import "../styles/study.css";
@@ -340,14 +343,34 @@ const RATING_NAME: Record<Rating, string> = { 1: "Again", 2: "Hard", 3: "Good", 
 const RATING_DOT: Record<Rating, string> = { 1: "again", 2: "hard", 3: "good", 4: "easy" }; // components.css .dot--*
 const SEP = "   ·   ";
 
-/** source: I2 연결된 자료가 있다 */
-type Shown = { view: CardView; front: string; question: string; answer: string; source: boolean };
+/** written: J 서술형 정보 (써서 답하기 · 정답 글자 · 필수 키워드). source: I2 연결된 자료가 있다 */
+type Shown = { view: CardView; front: string; question: string; answer: string; written: WrittenCard | null; source: boolean };
 type Folded = { id: number; question: string; importance: Level; deck_path: string[]; auto: boolean; at: number };
 /** 되돌릴 수 있는 일. D2-u: 이 세션의 마지막 평가나 접기 하나뿐 (백엔드는 더 쌓지만 화면에서 막는다). log: H3 압축 회독 기록 id */
 type Last = { id: number; rating: Rating | null; phase: "q" | "a"; counted: boolean; folded: boolean; log?: number };
 /** 접기 토스트. reason: G3 카드 모양 신호 ("답이 10항목이라"). source: I2 [원자료 보기] */
 type FoldToast = { id: number; auto: boolean; reason?: string; source?: boolean };
 type AnswerAction = { action: string; due_in_ms: number | null; log?: number };
+
+/** J2 비교 글. 맞은 핵심어는 초록 밑줄, 빠진 핵심어는 빨간 굵은 글씨 (위치는 Rust 가 준 JS 문자열 위치) */
+function marked(text: string, hits: [number, number][], misses: [number, number][] = []): ReactNode[] {
+  const cls = new Array<string>(text.length).fill("");
+  for (const [s, e] of misses) cls.fill("miss", s, e);
+  for (const [s, e] of hits) cls.fill("hit", s, e);
+  const out: ReactNode[] = [];
+  for (let i = 0; i < text.length; ) {
+    let j = i;
+    while (j < text.length && cls[j] === cls[i]) j++;
+    out.push(cls[i] ? <mark key={i} className={`cmp__${cls[i]}`}>{text.slice(i, j)}</mark> : text.slice(i, j));
+    i = j;
+  }
+  return out;
+}
+
+const daysAgo = (at: number) => {
+  const d = Math.floor((Date.now() - at) / 86_400_000);
+  return d < 1 ? "오늘" : `${d}일 전`;
+};
 
 /**
  * 뒷면을 질문 부분과 답 부분으로 나눈다. Basic 템플릿은 <hr id=answer> 로 나뉜다.
@@ -543,7 +566,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const session = useRef<number | null>(null);
   const cramAgain = useRef(new Map<number, number>()); // H3: 이 화면 안의 Again 횟수 (두 번째 Again 에 접는다)
   const cramDone = useRef(new Set<number>()); // H3: 평가한 카드 (마칠 때 "N장을 훑었어요")
+  const [typed, setTyped] = useState(""); // J1 내 답
+  const [compare, setCompare] = useState<Compare | null>(null); // J2
   const [srcOpen, setSrcOpen] = useState(false); // I2 세션 동안 열림 상태를 기억한다
+  const writeBox = useRef<HTMLTextAreaElement>(null);
   const queue = useRef<number[]>([]);
   const next = useRef<number[]>([]); // 바로 다음에 볼 카드 (D4-m 지금 보기, 되돌리기 전에 보던 카드)
   const later = useRef<{ id: number; due: number }[]>([]); // 이 세션 안에서 다시 나올 카드 (Again, 학습 단계)
@@ -585,8 +611,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   );
 
   const show = useCallback(async (id: number, at: "q" | "a" = "q") => {
-    // I2 자료 연결은 없어도 카드는 보인다
-    const [view, source] = await Promise.all([api.cardView(id), hasSource(id)]);
+    // J 서술형 정보 · I2 자료 연결은 없어도 카드는 보인다
+    const [view, written, source] = await Promise.all([api.cardView(id), writtenApi.card(id).catch(() => null), hasSource(id)]);
     const parts = splitBack(view.back, view.front);
     // 살균(renderCardHtml) 뒤에 수식을 그린다 (math.ts)
     const [front, question, answer] = (await Promise.all([
@@ -594,9 +620,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       renderCardHtml(parts.question),
       renderCardHtml(parts.answer),
     ])).map(withMath);
-    setCard({ view, front, question, answer, source });
+    setCard({ view, front, question, answer, written, source });
     setPhase(at);
     setUndone(null);
+    setTyped("");
+    setCompare(null);
     shownAt.current = Date.now();
   }, []);
 
@@ -735,7 +763,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     setRated(null); // 접기 토스트가 우선한다. 되돌리기는 그 안에 합친다
     // G3: 카드 모양 문제(G1 규칙: 긴 답 · 여러 물음)도 있으면 둘째 줄과 [나누기 제안]. 같은 카드는 하루 한 번
     if (auto)
-      qualityApi.splitSignal(c.view.id).then(
+      writtenApi.splitSignal(c.view.id).then(
         (reason) => reason && takeSignal(c.view.id) && setToast((t) => (t?.id === c.view.id ? { ...t, reason } : t)),
         () => {},
       );
@@ -823,7 +851,27 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     if (e.target instanceof HTMLImageElement) setZoom(e.target.src);
   };
 
-  const reveal = () => setPhase("a");
+  // ---- J1 직접 써보기 (선택). 쓰지 않고 Space 로 답을 봐도 된다
+  const writing = phase === "q" && !!card?.written?.written;
+  // 서술형 카드가 나오면 입력 칸에 바로 쓴다 (Esc 로 나와서 Space 로 답 보기)
+  useEffect(() => {
+    if (writing) writeBox.current?.focus({ preventScroll: true });
+  }, [writing, card]);
+  // 자동 저장 ("지난번에 쓴 답"). 빈 글은 저장하지 않는다
+  useEffect(() => {
+    if (!writing || !typed.trim() || !card) return;
+    const t = setTimeout(() => writtenApi.saveAnswer(card.view.id, typed).catch(() => {}), 600);
+    return () => clearTimeout(t);
+  }, [typed, writing, card]);
+  /** 답 보기. 쓴 답이 있으면 J2 비교 (핵심어 판정 · 평가 추천) */
+  const reveal = () => {
+    if (!card || phase !== "q") return;
+    if (!card.written?.written || !typed.trim()) return setPhase("a");
+    return guard(async () => {
+      setCompare(await writtenApi.compare(card.view.id, typed));
+      setPhase("a");
+    });
+  };
 
   // ---- I2 원자료 패널: 답 화면에서만 (질문 화면에서 열면 답이 보일 수 있다)
   const panel = srcOpen && phase === "a" && !!card?.source;
@@ -861,9 +909,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
   const position = Math.min(done + 1, total);
   const remaining = Math.max(0, total - position);
-  const tip = hints || undone !== null;
+  // J2 평가 추천 (되돌린 직후에는 되돌리기 안내가 먼저)
+  const suggest = undone === null ? (compare?.suggest ?? null) : null;
+  const missing = compare?.keywords.filter((k) => !k.hit).map((k) => k.word) ?? [];
+  const tip = hints || undone !== null || suggest !== null;
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
-  const keysQ = [`${actionKey("reveal")} 답 보기`, fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
+  const keysQ = writing
+    ? [`${actionKey("save")} 비교하기`, `Esc 입력 칸 나가기 (그다음 ${actionKey("reveal")}로 바로 답 보기)`]
+    : [`${actionKey("reveal")} 답 보기`, fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
@@ -872,6 +925,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     last && `${actionKey("undo")} 되돌리기`,
   ];
   const keyLine = (parts: unknown[]) => parts.filter(Boolean).join(SEP);
+  const keywords = card?.written?.keywords ?? [];
 
   return (
     <main
@@ -936,13 +990,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       </div>
 
       {card && (
-        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""}`}>
+        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${writing ? "is-writing" : ""}`}>
           {/* 밝은 덱 카드는 카드 면만 밝은 토큰으로 (tokens.css [data-theme="light"]) */}
           <article className={`study__card ${fit.overflow ? "is-overflow" : ""}`} data-theme={face === "light" ? "light" : undefined}>
             {noteCss && <style>{noteCss}</style>}
             <header className="study__card-head">
               <span className="study__meta">
                 <Importance level={card.view.importance} />
+                {card.written?.written && <Badge tone="accent">서술형</Badge>}
                 <span className="t-caption c-tertiary">{pathLabel(card.view.deck_path)}</span>
               </span>
               <span className="study__tools">
@@ -982,7 +1037,54 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                         <div className="study__rule" />
                       </>
                     ) : null}
-                    <div className="study__a-body card-html" dangerouslySetInnerHTML={{ __html: card.answer }} />
+                    {compare ? (
+                      <>
+                        {compare.keywords.length > 0 && (
+                          <div className="cmp__kw">
+                            <span className="t-label-m">
+                              핵심어 {n(compare.keywords.length)}개 중 {n(compare.hits)}개
+                            </span>
+                            {compare.keywords.map((k) => (
+                              <span key={k.word} className={`kwhit t-label-s ${k.hit ? "is-hit" : "is-miss"}`}>
+                                <Icon name={k.hit ? "check" : "x"} size={12} />
+                                {k.word}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="cmp">
+                          <div className="cmp__col">
+                            <span className="t-caption c-tertiary">내 답</span>
+                            <p className="cmp__text">{marked(typed, compare.mine_hits)}</p>
+                          </div>
+                          <div className="cmp__col">
+                            <span className="t-caption c-tertiary">정답</span>
+                            <p className="cmp__text">{marked(compare.correct, compare.correct_hits, compare.correct_misses)}</p>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {/* J2: 쓰지 않고 답을 봤으면 핵심어만 정답 위에 (스스로 채점하게) */}
+                        {card.written?.written && keywords.length > 0 && (
+                          <div className="cmp__kw">
+                            <span className="t-label-m c-secondary">핵심어</span>
+                            {keywords.map((k) => (
+                              <span key={k.word} className="kwhit t-label-s">
+                                {k.word}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="study__a-body card-html" dangerouslySetInnerHTML={{ __html: card.answer }} />
+                        {card.written?.written && card.written.last && card.written.last_at !== null && (
+                          <details className="study__last">
+                            <summary className="t-label-s c-secondary">지난번에 쓴 답 · {daysAgo(card.written.last_at)}</summary>
+                            <p className="t-body-m c-secondary">{card.written.last}</p>
+                          </details>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
                 </div>
@@ -1001,11 +1103,40 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
           {phase === "q" ? (
             <>
+              {writing && (
+                <div className="write">
+                  <p className="write__head">
+                    <span className="t-label-m">내 답</span>
+                    <span className="t-caption c-tertiary">쓰지 않고 답을 봐도 돼요</span>
+                  </p>
+                  <textarea
+                    ref={writeBox}
+                    className="write__input"
+                    value={typed}
+                    aria-label="내 답"
+                    onChange={(e) => setTyped(e.target.value)}
+                    onKeyDown={(e) => {
+                      // 입력 중에는 학습 단축키가 꺼진다. Ctrl Enter 비교하기, Esc 입력 칸 나가기 (화면의 Esc 그만하기로 가지 않게)
+                      if (matchAction("save", e.nativeEvent) >= 0) {
+                        e.preventDefault();
+                        reveal();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.currentTarget.blur();
+                      }
+                    }}
+                  />
+                  <p className="write__foot t-caption c-tertiary">
+                    <span>{n(typed.length)}자 · 자동 저장</span>
+                    <span>Esc로 입력 칸 나가기</span>
+                  </p>
+                </div>
+              )}
               <Button
                 className="study__reveal"
-                label="답 보기"
-                shortcut={actionKey("reveal")}
-                aria-keyshortcuts={actionKey("reveal")}
+                label={writing ? "답과 비교하기" : "답 보기"}
+                shortcut={writing ? actionKey("save") : actionKey("reveal")}
+                aria-keyshortcuts={writing ? actionKey("save") : actionKey("reveal")}
                 onClick={reveal}
               />
               {!toast && <p className={`study__keys t-caption c-tertiary ${rated ? "is-pushed" : ""}`}>{keyLine(keysQ)}</p>}
@@ -1017,6 +1148,17 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   <span className="study__tip">
                     <Icon name="rotate" size={16} className="c-accent" />
                     <span className="t-label-s c-accent">평가를 되돌렸어요 · 복습 일정도 원래대로예요. 다시 골라 주세요.</span>
+                  </span>
+                ) : suggest !== null ? (
+                  <span className="study__tip study__tip--warn">
+                    <Icon name="info" size={16} />
+                    <span className="t-label-s">
+                      {RATING_NAME[suggest]} 추천 ·{" "}
+                      {missing.length
+                        ? `핵심어 ${n(missing.length)}개가 빠졌어요 (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " 등" : ""}).`
+                        : "핵심어를 모두 썼어요."}{" "}
+                      추천은 따르지 않아도 돼요.
+                    </span>
                   </span>
                 ) : (
                   hints && (
@@ -1037,7 +1179,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   )
                 )}
               </div>
-              <div className="study__ratings" data-undone={undone ?? undefined}>
+              <div className="study__ratings" data-undone={undone ?? undefined} data-suggest={suggest ?? undefined}>
                 {([1, 2, 3, 4] as const).map((r) => (
                   <RatingButton
                     key={r}
@@ -1048,9 +1190,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                         ? r === undone
                           ? "방금 고른 평가"
                           : undefined
-                        : hints
-                          ? HINT[r]
-                          : undefined
+                        : r === suggest
+                          ? `추천 · ${HINT[r]}`
+                          : hints
+                            ? HINT[r]
+                            : undefined
                     }
                     onClick={() => rate(r)}
                   />
@@ -1209,10 +1353,38 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   const fields = useRef<(FieldHandle | null)[]>([]);
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
   const root = card?.deck_path[0];
+  // J3 서술형: 필수 키워드 · 제안 · 공부할 때 직접 써서 답하기
+  const [wn, setWn] = useState<WrittenNote | null>(null);
+  const [kws, setKws] = useState<Keyword[]>([]);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const [write, setWrite] = useState(true);
+  const [answerHtml, setAnswerHtml] = useState("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
 
   useEffect(() => {
-    api.noteEdit(noteId).then((n) => setNote({ ...n, roles: fieldRoles(n) }), (e) => setError(errorText(e)));
+    Promise.all([api.noteEdit(noteId), writtenApi.note(noteId).catch(() => null)]).then(([n, w]) => {
+      const roles = fieldRoles(n);
+      if (w?.native) roles.splice(0, 3, "front", "rich", "rich"); // 질문 · 모범 답안 · 채점 메모
+      else if (w?.capable && w.answer_field !== null) roles[w.answer_field] = "rich"; // 제안 칩을 뽑는 칸
+      setNote({ ...n, roles });
+      if (w?.capable) {
+        setWn(w);
+        setKws(w.keywords);
+        setDismissed(w.dismissed);
+        setWrite(w.write);
+        setAnswerHtml(w.answer_field !== null ? (n.values[w.answer_field] ?? "") : "");
+      }
+    }, (e) => setError(errorText(e)));
   }, [noteId]);
+  // 모범 답안이 바뀌면 제안을 다시 뽑는다. 이미 정한 키워드와 뺀 말은 빼고
+  useEffect(() => {
+    if (!wn) return;
+    const t = setTimeout(
+      () => writtenApi.suggest(answerHtml, [...kws.map((k) => k.word), ...dismissed]).then(setSuggestions, () => setSuggestions([])),
+      250,
+    );
+    return () => clearTimeout(t);
+  }, [wn, answerHtml, kws, dismissed]);
   // 열릴 때 첫 필드에 포커스 (짧은 값은 뒤로 모이므로 편집기가 먼저)
   useEffect(() => {
     if (note) (fields.current.find(Boolean) ?? inputs.current.find(Boolean))?.focus();
@@ -1229,7 +1401,9 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   const cloze = note?.kind === "cloze";
   const reversed = !!note && isReversed(note);
   const label = (i: number) =>
-    note?.kind === "basic"
+    wn?.native
+      ? (["질문", "모범 답안", "채점 메모"][i] ?? note?.names[i] ?? "")
+      : note?.kind === "basic"
       ? (reversed ? ["앞면", "뒷면"] : ["질문", "답변"])[i]
       : cloze && i === 0
         ? "본문"
@@ -1251,6 +1425,7 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
     setSaving(true);
     try {
       await api.updateNote(note.note_id, values);
+      if (wn) await writtenApi.saveNote(note.note_id, write, kws, dismissed);
       if (card && target && target.id !== here?.id) await api.moveCard(card.id, target.id);
       // 옮길 덱의 기본값과 같으면 개별 지정을 풀어 덱 설정을 따르게 한다
       if (card && level !== null && level !== card.importance) await api.setCardImportance(card.id, level === target?.importance ? null : level);
@@ -1284,13 +1459,15 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
       <Modal
         title="카드 편집"
         sub={`${
-          note?.kind === "other"
-            ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
-            : reversed
-              ? "앞뒤 둘 다 · 카드 2장 · "
-              : ""
+          wn?.native
+            ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
+            : note?.kind === "other"
+              ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
+              : reversed
+                ? "앞뒤 둘 다 · 카드 2장 · "
+                : ""
         }저장해도 복습 일정은 그대로예요`}
-        className="modal--edit"
+        className={`modal--edit ${wn ? "modal--written" : ""}`}
         onClose={() => (confirming ? setConfirming(false) : onClose())}
       >
         <div
@@ -1329,7 +1506,7 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
                     initial={cloze ? fromCloze(note.values[i]) : note.values[i]}
                     minHeight={44}
                     toolbar={note.roles[i] === "front"}
-                    onInput={() => {}}
+                    onInput={() => i === wn?.answer_field && setAnswerHtml(fields.current[i]?.html() ?? "")}
                     extraTool={
                       cloze && i === 0 ? (
                         <Button
@@ -1346,10 +1523,26 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
                 </div>
               ),
             )}
+            {wn && (
+              <div className="edit__item edit__item--wide edit__written">
+                <KeywordEditor
+                  keywords={kws}
+                  suggestions={suggestions}
+                  onChange={setKws}
+                  onDismiss={(w) => setDismissed((d) => (d.includes(w) ? d : [...d, w]))}
+                />
+              </div>
+            )}
           </div>
+          {(card || wn) && <div className="edit__rule" />}
+          {wn && (
+            <label className="edit__write">
+              <Toggle on={write} onChange={setWrite} label="공부할 때 직접 써서 답하기" />
+              <span className="t-body-s c-secondary">공부할 때 직접 써서 답하기</span>
+            </label>
+          )}
           {card && (
             <>
-              <div className="edit__rule" />
               <div className="edit__card">
                 <div className="edit__importance">
                   <span className="edit__importance-label">

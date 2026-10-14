@@ -7,7 +7,7 @@ import { n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { Badge, Button, Checkbox, Icon } from "../ui";
 import { Modal } from "./NewDeck";
-import { splitLater } from "./StudyParts";
+import { splitLater } from "../written";
 
 type View = "all" | "again" | "long" | "multi";
 

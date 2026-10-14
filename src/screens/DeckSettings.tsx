@@ -65,6 +65,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
         today_new: d.today_new_override,
         paused: d.paused,
         paused_until: d.paused_until,
+        write_mode: d.write_mode,
       };
       setDeck(d);
       setSaved(c);
@@ -236,6 +237,19 @@ export function DeckSettings({ deckId }: { deckId: number }) {
               onMinus={() => set({ today_new: step(todayShown, -1, 0) })}
               onPlus={() => set({ today_new: step(todayShown, 1, 0) })}
             />
+          </div>
+
+          {/* J1 노트: 서술형 = 카드 유형 "서술형" 또는 이 설정. 카드마다 정한 스위치가 먼저다 */}
+          <div className="settings__row">
+            <span className="settings__label">
+              <span className="t-body-m-strong">이 덱은 써서 답하기</span>
+              <span className="t-body-s c-secondary">
+                {!edit.write_mode && deck.write_from
+                  ? `상위 덱 「${deck.write_from}」 설정을 따라 써서 답해요. 카드마다 따로 정한 것이 먼저예요.`
+                  : "카드마다 답을 쓰는 칸이 열려요. 쓰기는 선택이라 비워 두고 답을 봐도 돼요. 카드마다 따로 정한 것이 먼저예요."}
+              </span>
+            </span>
+            <Toggle on={!!edit.write_mode} label="이 덱은 써서 답하기" onChange={(v) => set({ write_mode: v })} />
           </div>
 
           <div className="settings__row settings__row--last settings__pause">

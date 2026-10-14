@@ -1,5 +1,6 @@
 mod commands;
 mod cram;
+mod written;
 mod db;
 mod embed;
 mod export;
@@ -100,7 +101,9 @@ pub fn run() {
             export::export_preview,
             export::reveal_file,
             export::export_csv,
-            // H3 압축 회독 (학습 화면)
+            // J 서술형 · G3 신호 · H3 압축 회독 (학습 화면)
+            written::written_card, written::save_written_answer, written::compare_written, written::written_note, written::save_written_note,
+            written::suggest_keywords, written::add_written_card, written::split_signal,
             cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
             source::source_list, source::source_add, source::source_delete, source::source_bytes, source::source_save_pdf,
@@ -112,7 +115,6 @@ pub fn run() {
             quality::split_apply,
             quality::undo_change,
             quality::recent_changes,
-            quality::split_signal,
             plan::study_plan,
             plan::set_study_time,
             plan::pull_plan,

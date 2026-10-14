@@ -575,20 +575,6 @@ pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow
     rows.collect::<Result<_, _>>().map_err(err)
 }
 
-// ------------------------------------------------------------------ G3 학습 중 신호
-
-/// 두 번째 Again 으로 접힐 때 토스트 둘째 줄에 붙일 이유 ("답이 10항목이라"). 카드 모양 문제(G1 규칙)가 없으면 없다.
-/// 하루 한 번만 보이는 것은 화면이 정한다 (이 기기의 신호라 DB 에 남기지 않는다)
-#[tauri::command]
-pub fn split_signal(state: State<AppState>, card_id: i64) -> Res<Option<String>> {
-    let con = state.db.lock().map_err(err)?;
-    Ok(card_flags(&con, card_id)?.into_iter().find(|f| f.is_shape()).map(|f| match f.kind {
-        "items" => format!("답이 {}항목이라", f.n),
-        "lines" => format!("답이 {}줄이라", f.n),
-        _ => format!("한 카드에 물음이 {}개라", f.n),
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
