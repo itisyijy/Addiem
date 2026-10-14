@@ -265,17 +265,14 @@ struct Tokens {
     expires: i64,
     refresh: Option<String>,
     id_token: Option<String>,
-    /// 받은 권한. 응답에 없으면 접근 토큰의 scope (RFC 6749: 요청과 같으면 뺄 수 있다)
+    /// 받은 권한. 실제 응답(교환 · 새로 고치기)에는 늘 있어서, 없으면 아무 권한도 받지 않은 것으로 본다
     scope: String,
 }
 
 fn parse_tokens(body: &[u8]) -> Result<Tokens, AiError> {
     let v: J = serde_json::from_slice(body).map_err(|_| AiError::Other("토큰 응답을 읽지 못했어요.".into()))?;
     let access = v["access_token"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| AiError::Other("토큰을 받지 못했어요.".into()))?.to_string();
-    let scope = match v["scope"].as_str() {
-        Some(s) => s.to_string(),
-        None => split_jwt(&access).ok().and_then(|(_, c, _, _)| c["scope"].as_str().map(String::from)).unwrap_or_else(|| SCOPE.into()),
-    };
+    let scope = v["scope"].as_str().unwrap_or_default().to_string();
     Ok(Tokens {
         expires: crate::db::now_ms() + (v["expires_in"].as_i64().unwrap_or(3600) - 60) * 1000,
         refresh: v["refresh_token"].as_str().map(String::from),
@@ -752,15 +749,6 @@ fn connect_blocking(
     nonce: &str,
 ) -> Result<(String, bool), (&'static str, String)> {
     let st = app.state::<AiState>();
-    let fail = |e: AiError| -> (&'static str, String) {
-        let reason = match e {
-            AiError::Scope => "scope",
-            AiError::NotEligible => "not_eligible",
-            AiError::Offline(_) => "offline",
-            _ => "error",
-        };
-        (reason, e.to_string())
-    };
     let q = auth::wait_callback(listener, CALLBACK, &p.state, "ChatGPT 연결을 마쳤어요", &st.auth_cancel).map_err(|e| match e {
         auth::WaitError::Timeout => ("timeout", "5분 안에 로그인을 마치지 않아 기다리기를 멈췄어요.".to_string()),
         auth::WaitError::Cancelled => ("cancelled", String::new()),
@@ -773,33 +761,58 @@ fn connect_blocking(
         // invalid_grant: 코드를 버리고 처음부터 (다시 시도)
         return Err(("error", format!("ChatGPT가 로그인을 받아 주지 않았어요 ({}). 다시 시도해 주세요.", r.status)));
     }
-    // 등록은 이제 서버에 있다. 다음 로그인은 이 client_id 로 (dynamic_agent_client 는 다시 쓰지 않는다)
-    with_db(app, |c| set_meta(c, META_CLIENT, Some(&client))).map_err(fail)?;
     let t = parse_tokens(&r.body).map_err(fail)?;
-    let revoke = |t: &Tokens| {
-        if let Some(rt) = &t.refresh {
-            let _ = store::send(&st.agent, revoke_req(&client, rt));
-        }
+    let res = save_connection(app, &st, &client, &t, nonce);
+    // 저장하지 못했으면 방금 받은 토큰을 폐기한다 (최선 노력)
+    if res.is_err()
+        && let Some(rt) = &t.refresh
+    {
+        let _ = store::send(&st.agent, revoke_req(&client, rt));
+    }
+    res
+}
+
+fn fail(e: AiError) -> (&'static str, String) {
+    let reason = match e {
+        AiError::Scope => "scope",
+        AiError::NotEligible => "not_eligible",
+        AiError::Offline(_) => "offline",
+        _ => "error",
     };
+    (reason, e.to_string())
+}
+
+/// ID 토큰 · 권한 · 요금제를 확인하고 저장한다. 실패하면 부른 쪽이 새 토큰을 폐기한다
+fn save_connection(app: &AppHandle, st: &AiState, client: &str, t: &Tokens, nonce: &str) -> Result<(String, bool), (&'static str, String)> {
     let id = t.id_token.as_deref().ok_or_else(|| ("error", "ID 토큰을 받지 못했어요. 다시 시도해 주세요.".to_string()))?;
-    let who = verify_id_token(&st.agent, id, &client, nonce).map_err(fail)?;
+    let who = verify_id_token(&st.agent, id, client, nonce).map_err(fail)?;
+    // 이 기기에 있던 연결 (아래에서 새 토큰으로 바꾼다)
+    let (old_client, old_sub) = with_db(app, |c| Ok((get_meta(c, META_CLIENT), get_meta(c, META_SUB)))).map_err(fail)?;
+    let old_refresh = auth::load_secret(REFRESH);
+    // 등록은 검증한 ID 토큰의 aud 와 같을 때만 저장한다. 사용량 권한이 빠져도 저장: [다시 연결]은 같은 client_id 로 (errors-and-recovery).
+    // 다음 로그인은 이 client_id 로 (dynamic_agent_client 는 다시 쓰지 않는다)
+    with_db(app, |c| set_meta(c, META_CLIENT, Some(client))).map_err(fail)?;
     // 저장하기 전에 권한부터. 사용량 권한이 없으면 요금제로 쓸 수 없다
     if !has_use_scope(&t.scope) {
-        revoke(&t);
         return Err(fail(AiError::Scope));
     }
-    let refresh = t.refresh.clone().ok_or_else(|| ("error", "로그인을 유지할 토큰을 받지 못했어요. 다시 시도해 주세요.".to_string()))?;
+    let refresh = t.refresh.as_deref().ok_or_else(|| ("error", "로그인을 유지할 토큰을 받지 못했어요. 다시 시도해 주세요.".to_string()))?;
     // 모델 목록: 쓸 수 없는 요금제면 여기서 알 수 있다 (연결하지 않는다). 네트워크 오류면 처음 묶을 때 다시 받는다
     let model = match list_models(&st.agent, &t.access) {
-        Err(Reject::Fail(AiError::NotEligible)) => {
-            revoke(&t);
-            return Err(fail(AiError::NotEligible));
-        }
+        Err(Reject::Fail(AiError::NotEligible)) => return Err(fail(AiError::NotEligible)),
         Ok(m) => m.into_iter().next(),
         Err(_) => None,
     };
-    auth::save_secret(REFRESH, &refresh).map_err(|m| ("error", m))?;
-    *st.token.lock().map_err(|_| ("error", "토큰을 잠그지 못했어요".to_string()))? = Some((t.access, t.expires));
+    auth::save_secret(REFRESH, refresh).map_err(|m| ("error", m))?;
+    // 덮어쓴 이전 토큰: 등록이나 계정이 다르면 폐기한다 ([다른 계정으로]).
+    // 같은 등록 · 같은 계정(권한 다시 허락)이면 두는데, 폐기가 그 권한 부여 전체에 걸리면 새 토큰도 끊기기 때문이다
+    if let (Some(rt), Some(oc)) = (old_refresh, old_client)
+        && rt != refresh
+        && (oc != client || old_sub.as_deref() != Some(who.sub.as_str()))
+    {
+        let _ = store::send(&st.agent, revoke_req(&oc, &rt));
+    }
+    *st.token.lock().map_err(|_| ("error", "토큰을 잠그지 못했어요".to_string()))? = Some((t.access.clone(), t.expires));
     with_db(app, |c| {
         set_meta(c, META_SUB, Some(&who.sub))?;
         set_meta(c, META_EMAIL, Some(&who.email))?;
@@ -1123,6 +1136,8 @@ mod tests {
         let t = parse_tokens(br#"{"access_token":"a","refresh_token":"r","id_token":"i","expires_in":3600,"scope":"openid email"}"#).unwrap();
         assert_eq!((t.refresh.as_deref(), t.id_token.as_deref(), t.scope.as_str()), (Some("r"), Some("i"), "openid email"));
         assert!(t.expires > crate::db::now_ms() + 3_000_000);
+        let t = parse_tokens(br#"{"access_token":"a","refresh_token":"r"}"#).unwrap();
+        assert!(!has_use_scope(&t.scope), "scope 가 없으면 사용량 권한도 없다");
         assert!(parse_tokens(br#"{"error":"invalid_grant"}"#).is_err());
         assert_eq!(refresh_error(400, br#"{"error":"refresh_token_reused"}"#), AiError::Expired);
         assert_eq!(refresh_error(400, br#"{"error":{"code":"invalid_grant"}}"#), AiError::Expired);
