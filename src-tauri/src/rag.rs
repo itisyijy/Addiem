@@ -6,7 +6,7 @@
 use crate::ai::{self, AiError};
 use crate::commands::{self, AppState, NewCard};
 use crate::db::now_ms;
-use crate::{embed, quality, render, source};
+use crate::{embed, quality, render, source, written};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as J};
@@ -60,12 +60,12 @@ pub struct Sent {
     pub how: String,
 }
 
-fn clip(text: &str) -> String {
+fn clip(text: &str, max: usize) -> String {
     let t = text.trim();
-    if t.chars().count() <= CLIP {
+    if t.chars().count() <= max {
         return t.to_string();
     }
-    format!("{}{CUT}", t.chars().take(CLIP).collect::<String>().trim_end())
+    format!("{}{CUT}", t.chars().take(max).collect::<String>().trim_end())
 }
 
 /// 구간들을 보내는 모양으로 (ids 순서대로). 없는 구간은 빠진다
@@ -87,7 +87,7 @@ pub(crate) fn sent_of(con: &Connection, ids: &[(i64, &str)]) -> Res<Vec<Sent>> {
                 kind: r.get(2)?,
                 page: r.get(3)?,
                 signals: signals.split(',').filter(|s| !s.is_empty()).map(String::from).collect(),
-                text: clip(&r.get::<_, String>(5)?),
+                text: clip(&r.get::<_, String>(5)?, CLIP),
                 how: how.to_string(),
             })
         });
@@ -421,6 +421,184 @@ fn apply_drafts(con: &mut Connection, deck_id: i64, cloze: bool, cards: &[Approv
     Ok(id)
 }
 
+// ---------------------------------------------------------------- R2 서술형 채점 보조
+
+/// 내 답 · 모범 답안을 보내는 최대 글자 (넘으면 자르고 "…(잘림)")
+const ANSWER_CLIP: usize = 1500;
+/// 함께 보내는 자료 구간 (R2 · R3): 연결된 것 먼저, 최대 3개
+pub const MAX_CONTEXT: usize = 3;
+/// R2 연결이 없을 때 보낼 비슷한 구간의 최소 유사도 (질문 + 모범 답안과)
+const SIMILAR_SEGMENT: f32 = 0.8;
+
+/// 이 카드에 연결된 구간: 직접 연결 > 자동 연결(유사도 순), 최대 3개
+pub(crate) fn linked_segments(con: &Connection, card_id: i64) -> Res<Vec<(i64, &'static str)>> {
+    let mut st = con
+        .prepare("SELECT segment_id, method FROM source_link WHERE card_id = ?1 AND method != 'rejected' ORDER BY method = 'manual' DESC, score DESC, id LIMIT ?2")
+        .map_err(err)?;
+    let rows = st.query_map(params![card_id, MAX_CONTEXT as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?;
+    rows.map(|r| r.map(|(id, m)| (id, if m == "manual" { "manual" } else { "auto" })).map_err(err)).collect()
+}
+
+/// 연결이 없을 때: 카드 뿌리 덱에 붙은 자료의 구간 중 query 와 0.8 이상인 위 3개. 분석 모델이 없으면 Err (구간 없이 보낸다)
+fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<i64>> {
+    let state = app.state::<AppState>();
+    let model = embed::load(&state.data_dir)?;
+    let items: Vec<(i64, String)> = {
+        let con = state.db.lock().map_err(err)?;
+        let deck: i64 = con.query_row("SELECT deck_id FROM card WHERE id = ?1", [card_id], |r| r.get(0)).map_err(err)?;
+        let ids = source::subtree(&con, root_of(&con, deck)?)?;
+        let mut st = con
+            .prepare(&format!(
+                "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready'"
+            ))
+            .map_err(err)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)?
+    };
+    let vecs = source::embed_cached(app, "segment", &items, |_| {})?;
+    let q = model.embed(&[query.to_string()])?.remove(0);
+    let mut hits: Vec<(i64, f32)> = vecs.iter().map(|(id, v)| (*id, dot(&q, v))).filter(|h| h.1 >= SIMILAR_SEGMENT).collect();
+    hits.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    Ok(hits.into_iter().take(MAX_CONTEXT).map(|h| h.0).collect())
+}
+
+/// (질문, 모범 답안, 내 답) 보내는 글자 그대로
+fn grade_texts(con: &Connection, card_id: i64, answer: &str) -> Res<(String, String, String)> {
+    let question = quality::suggest(con, card_id, None)?.question;
+    let model = written::model_answer(con, card_id)?;
+    Ok((clip(&question, CLIP), clip(&model, ANSWER_CLIP), clip(answer, ANSWER_CLIP)))
+}
+
+#[derive(Serialize)]
+pub struct GradeScope {
+    /// 보내는 질문 · 내 답 · 모범 답안 (보내는 글자 그대로)
+    question: String,
+    mine: String,
+    model: String,
+    /// 연결된 구간(직접 > 자동), 없으면 비슷한 구간
+    segments: Vec<Sent>,
+}
+
+/// R2 보내는 범위 (버튼 아래 한 줄 · 첫 확인 목록). 아무것도 보내지 않는다
+#[tauri::command]
+pub async fn rag_grade_scope(app: AppHandle, card_id: i64, answer: String) -> Result<GradeScope, AiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (question, model, mine, linked) = with_db(&app, |c| {
+            let (q, model, mine) = grade_texts(c, card_id, &answer)?;
+            Ok((q, model, mine, linked_segments(c, card_id)?))
+        })?;
+        let picks: Vec<(i64, &str)> = if linked.is_empty() {
+            // 모델이 없으면 비슷한 구간 없이 (답 둘만) 보낸다
+            similar_segments(&app, card_id, &format!("{question} {model}")).unwrap_or_default().into_iter().map(|id| (id, "similar")).collect()
+        } else {
+            linked
+        };
+        let segments = with_db(&app, |c| sent_of(c, &picks))?;
+        Ok(GradeScope { question, mine, model, segments })
+    })
+    .await
+    .map_err(|e| AiError::Other(e.to_string()))?
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Missing {
+    text: String,
+    segments: Vec<i64>,
+}
+
+#[derive(Serialize)]
+pub struct Grade {
+    right: Vec<String>,
+    missing: Vec<Missing>,
+    /// ChatGPT 추천: 1 Again · 2 Hard · 3 Good (핵심어 검사처럼 Easy 는 없다)
+    rating: u8,
+    /// 실제로 보낸 구간 (결과 머리 "보낸 것")
+    sent: Vec<Sent>,
+}
+
+const GRADE_INSTRUCTIONS: &str = "서술형 답을 스스로 채점하는 학습자를 도와요. 사용자가 질문, 모범 답안, 학습자가 쓴 답, 번호 붙인 자료 구간을 보내요.
+- 학습자 답에서 모범 답안과 맞는 점(right)과 빠지거나 틀린 점(missing)을 학습자에게 말하듯 짧은 문장으로 쓰세요. 각각 4개까지.
+- 빠진 점마다 근거가 되는 자료 구간 번호를 segments 에 쓰세요. 없으면 빈 배열.
+- 모범 답안과 자료 구간에 없는 기준으로 채점하지 마세요.
+- rating 은 again(핵심을 거의 못 씀) · hard(일부만 씀) · good(필요한 내용을 다 씀) 중 하나.
+- 답은 {\"right\": [문장, …], \"missing\": [{\"text\": 문장, \"segments\": [번호, …]}], \"rating\": …} 모양의 JSON 하나만.";
+
+fn grade_schema() -> J {
+    let ints = json!({ "type": "array", "items": { "type": "integer" } });
+    let missing = ai::object(json!({ "text": { "type": "string" }, "segments": ints }));
+    ai::object(json!({
+        "right": { "type": "array", "items": { "type": "string" } },
+        "missing": { "type": "array", "items": missing },
+        "rating": { "type": "string", "enum": ["again", "hard", "good"] },
+    }))
+}
+
+fn grade_input(question: &str, model: &str, mine: &str, sent: &[Sent]) -> String {
+    let segs = if sent.is_empty() { "없음\n".to_string() } else { segments_input(sent) };
+    format!("질문: {question}\n모범 답안:\n{model}\n학습자 답:\n{mine}\n자료 구간:\n{segs}")
+}
+
+/// 모델 출력 → 맞은 점 · 빠진 점 · 추천. 하나라도 어긋나면 BadOutput (일부도 쓰지 않는다)
+fn parse_grade(text: &str, sent: &[Sent]) -> Result<(Vec<String>, Vec<Missing>, u8), AiError> {
+    let bad = |m: &str| AiError::BadOutput(m.to_string());
+    let v = ai::parse_json(text)?;
+    let line = |x: &J| x.as_str().map(str::trim).filter(|t| !t.is_empty() && t.chars().count() <= 300).map(String::from);
+    let right: Vec<String> =
+        v["right"].as_array().ok_or_else(|| bad("right 가 없어요"))?.iter().map(line).collect::<Option<_>>().ok_or_else(|| bad("빈 문장이 있어요"))?;
+    let mut missing = vec![];
+    for m in v["missing"].as_array().ok_or_else(|| bad("missing 이 없어요"))? {
+        let text = line(&m["text"]).ok_or_else(|| bad("빈 문장이 있어요"))?;
+        let segments = m["segments"].as_array().ok_or_else(|| bad("segments 가 없어요"))?.iter().map(|n| segment_at(sent, n)).collect::<Option<Vec<_>>>();
+        missing.push(Missing { text, segments: segments.ok_or_else(|| bad("보내지 않은 구간 번호예요"))? });
+    }
+    if (right.is_empty() && missing.is_empty()) || right.len() > 8 || missing.len() > 8 {
+        return Err(bad("맞은 점 · 빠진 점 수가 맞지 않아요"));
+    }
+    let rating = match v["rating"].as_str() {
+        Some("again") => 1,
+        Some("hard") => 2,
+        Some("good") => 3,
+        _ => return Err(bad("추천이 again · hard · good 이 아니에요")),
+    };
+    Ok((right, missing, rating))
+}
+
+fn fake_grade(sent: &[Sent]) -> String {
+    let cite: Vec<usize> = if sent.is_empty() { vec![] } else { vec![1] };
+    json!({
+        "right": ["핵심 개념을 모범 답안과 같은 뜻으로 정의했어요", "판단 기준을 정확히 썼어요"],
+        "missing": [{ "text": "모범 답안의 해결 방법이 빠졌어요", "segments": cite }],
+        "rating": "hard",
+    })
+    .to_string()
+}
+
+/// R2 [ChatGPT로 채점 보조]: 내 답 · 모범 답안 · 확인한 구간을 보내 맞은 점 · 빠진 점 · 추천을 받는다. 아무것도 바꾸지 않는다
+#[tauri::command]
+pub async fn rag_grade(app: AppHandle, card_id: i64, answer: String, segment_ids: Vec<i64>) -> Result<Grade, AiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if answer.trim().is_empty() {
+            return Err(AiError::Other("쓴 답이 없어 채점 보조를 받을 수 없어요.".into()));
+        }
+        if segment_ids.len() > MAX_CONTEXT {
+            return Err(AiError::Other(format!("자료 구간은 {MAX_CONTEXT}개까지 보낼 수 있어요.")));
+        }
+        let (question, model, mine, sent) = with_db(&app, |c| {
+            let (q, model, mine) = grade_texts(c, card_id, &answer)?;
+            let linked = linked_segments(c, card_id)?;
+            let how = |id: i64| linked.iter().find(|l| l.0 == id).map_or("similar", |l| l.1);
+            Ok((q, model, mine, sent_of(c, &segment_ids.iter().map(|id| (*id, how(*id))).collect::<Vec<_>>())?))
+        })?;
+        let input = grade_input(&question, &model, &mine, &sent);
+        let schema = grade_schema();
+        let text = ai::generate(&app, &|m, f| ai::request_body(m, GRADE_INSTRUCTIONS, &input, f.then_some(("grade", &schema))), || fake_grade(&sent))?;
+        let (right, missing, rating) = parse_grade(&text, &sent)?;
+        Ok(Grade { right, missing, rating, sent })
+    })
+    .await
+    .map_err(|e| AiError::Other(e.to_string()))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,10 +621,10 @@ mod tests {
     #[test]
     fn clipping_and_input_carry_no_names() {
         let long = "가".repeat(700);
-        let c = clip(&long);
+        let c = clip(&long, CLIP);
         assert_eq!(c.chars().count(), 600 + CUT.chars().count());
         assert!(c.ends_with("…(잘림)"));
-        assert_eq!(clip(" 짧은 글 "), "짧은 글");
+        assert_eq!(clip(" 짧은 글 ", CLIP), "짧은 글");
         let s = sent(2);
         let input = segments_input(&s);
         assert_eq!(input, "[1] 구간 1의 글. 둘째 문장.\n[2] 구간 2의 글. 둘째 문장.\n");
@@ -495,6 +673,39 @@ mod tests {
         assert_eq!(sentences("VIF 10 이상 또는 공차한계 0.1 이하"), vec!["VIF 10 이상 또는 공차한계 0.1 이하"]);
         assert_eq!(plain_cloze("{{c1::잔차}} 분석으로 {{c2::등분산성::가정}}을 본다"), "잔차 분석으로 등분산성을 본다");
         assert_eq!(plain_cloze("빈칸 없음"), "빈칸 없음");
+    }
+
+    #[test]
+    fn grades_are_validated_whole() {
+        let s = sent(2);
+        let ok = r#"{"right":["정의를 맞게 썼어요"],"missing":[{"text":"공차한계 기준이 빠졌어요","segments":[2]},{"text":"해결 방법이 없어요","segments":[]}],"rating":"hard"}"#;
+        let (right, missing, rating) = parse_grade(ok, &s).unwrap();
+        assert_eq!((right.len(), rating), (1, 2));
+        assert_eq!(missing[0], Missing { text: "공차한계 기준이 빠졌어요".into(), segments: vec![102] }, "구간 번호는 기기 안에서 구간 id 로");
+        let bad = |t: &str| matches!(parse_grade(t, &s), Err(AiError::BadOutput(_)));
+        assert!(bad(r#"{"right":[],"missing":[],"rating":"good"}"#), "둘 다 비었다");
+        assert!(bad(r#"{"right":["a"],"missing":[],"rating":"easy"}"#), "Easy 는 없다");
+        assert!(bad(r#"{"right":[" "],"missing":[],"rating":"good"}"#), "빈 문장");
+        assert!(bad(r#"{"right":["a"],"missing":[{"text":"b","segments":[3]}],"rating":"good"}"#), "보내지 않은 구간");
+        assert!(bad(r#"{"right":["a"],"rating":"good"}"#), "missing 없음");
+        assert!(parse_grade(&fake_grade(&s), &s).is_ok() && parse_grade(&fake_grade(&[]), &[]).is_ok());
+        let input = grade_input("다중공선성이란?", "독립변수 간 상관이 높아…", "변수끼리 상관", &[]);
+        assert!(input.ends_with("자료 구간:\n없음\n"));
+        assert!(!grade_input("q", "m", "a", &s).contains("a.pdf"), "자료 이름은 보내지 않는다");
+    }
+
+    #[test]
+    fn linked_segments_prefer_manual_and_cap_at_three() {
+        let con = setup();
+        crate::commands::insert_note(&con, &NewCard { deck_id: 3, kind: "basic".into(), front: "q".into(), back: "a".into(), importance: None }, "", None).unwrap();
+        let card: i64 = con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap();
+        con.execute_batch(&format!(
+            "INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight) VALUES (21, 1, 21, 0, 'x', 'bold', 1), (22, 1, 22, 0, 'y', 'bold', 1);
+             INSERT INTO source_link (segment_id, card_id, method, score, created_at) VALUES (11, {card}, 'auto', 0.90, 0), (13, {card}, 'auto', 0.95, 0),
+               (20, {card}, 'manual', NULL, 0), (21, {card}, 'rejected', 0.99, 0), (22, {card}, 'auto', 0.89, 0);"
+        ))
+        .unwrap();
+        assert_eq!(linked_segments(&con, card).unwrap(), vec![(20, "manual"), (13, "auto"), (11, "auto")]);
     }
 
     fn setup() -> Connection {

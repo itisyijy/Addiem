@@ -110,3 +110,20 @@
   white-space: nowrap;
 }
 .src-chip:hover { border-color: var(--accent-default); }
+
+/* ---------------------------------------------------------------- R2 서술형 채점 보조 (J2 카드 안, Figma 81:9865 · 81:10044) */
+.cmp__kw > .grade__btn { margin-left: auto; }
+.grade__scope { display: flex; justify-content: flex-end; }
+.grade { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1.5px solid var(--accent-subtle); border-radius: 16px; background: var(--bg-surface); }
+.grade--wait { flex-direction: row; align-items: center; }
+.grade--wait > .t-label-m { flex: 1; }
+.grade__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.grade__title { display: inline-flex; align-items: center; gap: 8px; }
+.grade__cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.grade__col { display: flex; flex-direction: column; gap: 8px; }
+.grade__col-head { display: inline-flex; align-items: center; gap: 6px; }
+.grade__miss { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+/* 세션의 첫 전송: 보낼 목록을 펼친 채로 확인. 카드 안 스크롤에 갇히지 않게 화면 위에 뜬다 (평가 줄은 그대로 보인다) */
+.grade__confirm { position: fixed; top: 132px; left: 50%; z-index: 20; width: 520px; transform: translateX(-50%); border-radius: 18px; box-shadow: 0 12px 16px rgb(23 23 28 / 0.14); }
+.grade__confirm-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px 12px 16px; }
+.grade__actions { display: flex; gap: 8px; }

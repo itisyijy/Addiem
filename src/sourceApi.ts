@@ -28,6 +28,10 @@ export type DraftCard = {
 };
 export type Draft = { cards: DraftCard[]; sent: Sent[]; missing: number[]; deck_id: number; root_deck_id: number; checked: boolean };
 export type DraftAmount = "few" | "normal" | "many";
+/** R2 보내는 범위. 글자는 보내는 그대로 (질문 600자 · 답 1500자에서 자른다) */
+export type GradeScope = { question: string; mine: string; model: string; segments: Sent[] };
+/** R2 결과. rating: 1 Again · 2 Hard · 3 Good. missing.segments 는 구간 id (기기 안에서 되돌린 것) */
+export type Grade = { right: string[]; missing: { text: string; segments: number[] }[]; rating: 1 | 2 | 3; sent: Sent[] };
 export const MAX_PICK = 10;
 
 export const ragApi = {
@@ -37,6 +41,10 @@ export const ragApi = {
   /** R1-c 승인. 되돌리기는 qualityApi.undo(변경 id) */
   apply: (deckId: number, cloze: boolean, cards: { front: string; back: string; segment_id: number; importance: number }[]) =>
     invoke<number>("rag_draft_apply", { deckId, cloze, cards }),
+  /** R2 버튼 아래 한 줄 · 첫 확인 목록. 아무것도 보내지 않는다 */
+  gradeScope: (cardId: number, answer: string) => invoke<GradeScope>("rag_grade_scope", { cardId, answer }),
+  /** R2 채점 보조. 오류는 AiError */
+  grade: (cardId: number, answer: string, segmentIds: number[]) => invoke<Grade>("rag_grade", { cardId, answer, segmentIds }),
 };
 
 /** "3장_빅데이터분석.pdf · p.13" */
