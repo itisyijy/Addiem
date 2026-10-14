@@ -113,7 +113,7 @@ pub fn run() {
             // J 서술형 · G3 신호 · H3 압축 회독 (학습 화면)
             written::written_card, written::save_written_answer, written::compare_written, written::written_note, written::save_written_note,
             written::suggest_keywords, written::add_written_card, written::split_signal,
-            cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo,
+            cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo, cram::mix_start, cram::mix_restart, cram::mix_summary,
             // 8.4 기출 이력
             exam::mark_exam, exam::set_exam,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)

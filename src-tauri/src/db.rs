@@ -55,6 +55,9 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("note", "exam_names", "TEXT"),
         ("source_segment", "exam_hits", "INTEGER"),
         ("source_segment", "exam_names", "TEXT"),
+        // 8.5 시험 전 회독 · 혼합 (cram.rs): 'mix' 세션의 평가는 일정에 반영하고 회독 진행으로 센다. [처음부터 다시] 를 누른 시각
+        ("study_session", "mode", "TEXT"),
+        ("deck_config", "mix_since", "INTEGER"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),

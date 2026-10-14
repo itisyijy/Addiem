@@ -1616,7 +1616,7 @@ pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     let day = db::date_from_day(today);
     let resumed: Option<i64> = con
         .query_row(
-            "SELECT id FROM study_session WHERE study_day = ?1 AND end_reason IN ('user_exit','app_exit') ORDER BY started_at DESC LIMIT 1",
+            "SELECT id FROM study_session WHERE study_day = ?1 AND end_reason IN ('user_exit','app_exit') AND mode IS NULL ORDER BY started_at DESC LIMIT 1",
             [&day],
             |r| r.get(0),
         )
@@ -1729,6 +1729,8 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
         .query_row("SELECT again_count FROM session_card_state WHERE session_id = ?1 AND card_id = ?2", params![session_id, card_id], |r| r.get(0))
         .map_err(err)?;
     let (action, feed) = queue::on_rating(again_count, rating);
+    // P9 혼합 회독: 그 카드의 오늘 첫 일정 반영 평가(또는 학습 단계를 잇는 평가)만 일정에 반영한다
+    let feed = feed && crate::cram::mix_feeds(&tx, session_id, card_id, &prev.state, today)?;
     tx.execute(
         "UPDATE session_card_state SET shown_count = shown_count + 1, again_count = again_count + ?3 WHERE session_id = ?1 AND card_id = ?2",
         params![session_id, card_id, (rating == 1) as i64],
@@ -2268,7 +2270,7 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
         let mut st = con
             .prepare(
                 "SELECT s.end_reason = 'completed' FROM study_session s
-                 WHERE s.ended_at IS NOT NULL
+                 WHERE s.ended_at IS NOT NULL AND s.mode IS NULL
                    AND EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id AND x.buried_at IS NOT NULL)
                  ORDER BY s.started_at DESC LIMIT 20",
             )
@@ -2280,7 +2282,7 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
         .query_row(
             "SELECT count(*), coalesce(sum(s.end_reason = 'completed'), 0) FROM study_session s
              WHERE EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id AND x.buried_at IS NOT NULL)
-               AND s.ended_at IS NOT NULL",
+               AND s.ended_at IS NOT NULL AND s.mode IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
