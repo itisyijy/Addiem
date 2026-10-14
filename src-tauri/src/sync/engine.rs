@@ -8,6 +8,7 @@
 //!   - 같은 것을 가리키는 두 행(같은 이름 경로의 덱, 같은 파일 이름의 그림, 기본 노트 유형 …)은 uid 가 작은 쪽으로 합친다 (sync_alias)
 
 use super::crypto;
+use crate::commands::{safe_media_name, safe_rel_path};
 use super::store::{SRes, Store, SyncError, other};
 use crate::db::{self, SYNC_TABLES};
 use crate::srs::{self, SrsState};
@@ -399,11 +400,28 @@ pub fn seal_opt(data: Vec<u8>, key: Option<&[u8; 32]>) -> Vec<u8> {
     }
 }
 
+/// 잠갔으면(키가 있으면) 암호문만 받는다. 평문은 누가 써 넣었는지 알 수 없다
 pub fn open_opt(data: Vec<u8>, key: Option<&[u8; 32]>) -> SRes<Vec<u8>> {
-    if !crypto::is_sealed(&data) {
-        return Ok(data);
+    match key {
+        None if !crypto::is_sealed(&data) => Ok(data),
+        None => Err(SyncError::Locked),
+        Some(k) => crypto::unseal(k, &data).map_err(|_| SyncError::Locked),
     }
-    crypto::unseal(key.ok_or(SyncError::Locked)?, &data).map_err(|_| SyncError::Locked)
+}
+
+/// 풀었을 때 크기 한도 (gzip · zip 폭탄). 스냅샷은 통째로 메모리에 읽는다
+/// ponytail: 복습 기록이 수백만 건이면 스냅샷이 1 GiB 에 닿는다. 그때는 줄 단위로 읽어 합친다
+const MAX_UNPACKED: u64 = 1 << 30;
+
+/// 받은 HLC 의 형식: hlc() 가 만든 값이거나 "0" (시계가 없던 행). INF("~") 보다 큰 값이 남으면 그 행은 다시는 고칠 수 없다
+fn valid_hlc(h: &str) -> bool {
+    let mut it = h.splitn(3, '-');
+    let (phys, counter, dev) = (it.next().unwrap_or(""), it.next(), it.next());
+    h == "0"
+        || (phys.len() >= 13
+            && phys.bytes().all(|b| b.is_ascii_digit())
+            && counter.is_some_and(|c| c.len() == 8 && c.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+            && dev.is_some_and(|d| d.bytes().all(|b| b.is_ascii_alphanumeric())))
 }
 
 fn encode(header: &J, recs: &[Rec], key: Option<&[u8; 32]>) -> SRes<Vec<u8>> {
@@ -419,14 +437,30 @@ fn encode(header: &J, recs: &[Rec], key: Option<&[u8; 32]>) -> SRes<Vec<u8>> {
 pub fn decode(data: Vec<u8>, key: Option<&[u8; 32]>) -> SRes<(J, Vec<Rec>)> {
     let plain = open_opt(data, key)?;
     let mut text = String::new();
-    flate2::read::GzDecoder::new(&plain[..]).read_to_string(&mut text).map_err(|e| other(format!("변경 파일을 읽지 못했어요: {e}")))?;
+    flate2::read::GzDecoder::new(&plain[..]).take(MAX_UNPACKED + 1).read_to_string(&mut text).map_err(|e| other(format!("변경 파일을 읽지 못했어요: {e}")))?;
+    if text.len() as u64 > MAX_UNPACKED {
+        return Err(other("변경 파일이 너무 커요"));
+    }
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header: J = serde_json::from_str(lines.next().unwrap_or("{}")).map_err(other)?;
     if header["v"].as_i64().unwrap_or(0) > FORMAT {
         return Err(SyncError::NewerSchema);
     }
-    let recs = lines.map(serde_json::from_str).collect::<Result<_, _>>().map_err(other)?;
+    let recs: Vec<Rec> = lines.map(serde_json::from_str).collect::<Result<_, _>>().map_err(other)?;
+    if recs.iter().any(|r| !valid_hlc(&r.h) || r.k.iter().flatten().any(|(_, h)| !valid_hlc(h)) || r.b.as_deref().is_some_and(|b| !valid_hlc(b))) {
+        return Err(other("변경 파일을 읽지 못했어요: 시각 값이 올바르지 않아요"));
+    }
     Ok((header, recs))
+}
+
+/// 다른 기기의 변경 파일 하나. 잠근 Drive 의 평문 파일은 받지 않고 건너뛴다 (None):
+/// 잠그기 전 세대의 기기가 늦게 올렸거나 누가 써 넣은 파일이다. 오류로 멈추면 그 파일이 지워질 때까지 아무것도 받지 못한다
+fn read_change(cx: &Ctx, path: &str) -> SRes<Option<(J, Vec<Rec>)>> {
+    let data = cx.store.get(path)?;
+    if cx.key.is_some() && !crypto::is_sealed(&data) {
+        return Ok(None);
+    }
+    decode(data, cx.key()).map(Some)
 }
 
 /// changes/<기기>/<번호>.jsonl.gz -> (기기, 번호)
@@ -503,7 +537,7 @@ fn fix_media_hashes(con: &mut Connection, media_dir: &Path) -> SRes<()> {
     }
     let tx = con.transaction().map_err(dbe)?;
     applying(&tx, true)?;
-    for (id, name) in rows {
+    for (id, name) in rows.into_iter().filter(|(_, n)| safe_media_name(n).is_ok()) {
         if let Ok(bytes) = std::fs::read(media_dir.join(&name)) {
             tx.execute("UPDATE media SET sha256 = ?2 WHERE id = ?1", params![id, crypto::hex(&crypto::sha256(&bytes))]).map_err(dbe)?;
         }
@@ -587,6 +621,7 @@ pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
                 if t == "media"
                     && let (Some(sha), Some(name)) = (r.get("sha256").and_then(|v| v.as_str()), r.get("filename").and_then(|v| v.as_str()))
                     && sha.len() == 64
+                    && safe_media_name(name).is_ok()
                 {
                     media.push((media_path(sha, name, cx.key()), cx.media_dir.join(name)));
                 }
@@ -782,8 +817,10 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
     }
     if r.generation() > generation {
         let snap = r.newest(r.generation()).expect("세대가 있으면 스냅샷도 있다");
-        // 다른 기기가 잠갔으면 머리도 못 읽는다. 고르는 창이 암호를 묻는다
-        let header = match decode(cx.store.get(&snap.path)?, cx.key()) {
+        // 다른 기기가 잠갔으면 머리도 못 읽는다. 고르는 창이 암호를 묻는다. 잠금을 풀었으면 평문이라 키 없이 머리만 읽는다
+        let data = cx.store.get(&snap.path)?;
+        let key = cx.key().filter(|_| crypto::is_sealed(&data));
+        let header = match decode(data, key) {
             Ok((h, _)) => h,
             Err(SyncError::Locked) => json!({ "gen": r.generation(), "device": snap.device, "reason": { "kind": "lock" } }),
             Err(e) => return Err(e),
@@ -815,7 +852,10 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         .collect();
     for (i, (dev, seq, path)) in todo.iter().enumerate() {
         (cx.progress)("pull", i as u64, todo.len() as u64);
-        let (header, file_recs) = decode(cx.store.get(path)?, cx.key())?;
+        let Some((header, file_recs)) = read_change(cx, path)? else {
+            new_pos.insert(dev.clone(), *seq);
+            continue;
+        };
         let file_gen = header["gen"].as_i64().unwrap_or(0);
         if file_gen > generation {
             return Ok(Pulled::Choice(Choice { generation: file_gen, header }));
@@ -857,7 +897,7 @@ pub fn fetch_media(db: &Mutex<Connection>, cx: &Ctx, have_remote: &HashSet<Strin
     };
     let todo: Vec<_> = rows
         .into_iter()
-        .filter(|(name, sha)| crate::commands::safe_media_name(name).is_ok() && !cx.media_dir.join(name).exists() && have_remote.contains(&media_path(sha, name, cx.key())))
+        .filter(|(name, sha)| safe_media_name(name).is_ok() && !cx.media_dir.join(name).exists() && have_remote.contains(&media_path(sha, name, cx.key())))
         .collect();
     if todo.is_empty() {
         return Ok(0);
@@ -1010,6 +1050,19 @@ fn rename_uid(con: &Connection, t: &str, old: &str, new: &str) -> SRes<()> {
     Ok(())
 }
 
+/// 이 기기 파일 경로를 정하는 값 (그림 이름 · 자료 복사본 경로). 변조된 변경 파일이 다른 파일을 가리키면 행을 받지 않는다
+fn safe_paths(t: &str, f: &Fold) -> bool {
+    let row = f.row.iter().flat_map(|(_, r)| r.iter());
+    row.chain(f.cols.iter().map(|(c, (v, _))| (c, v))).all(|(c, v)| match (t, c.as_str()) {
+        ("media", "filename") => v.as_str().is_some_and(|n| safe_media_name(n).is_ok()),
+        // 동기화 전에 생긴 그림은 비어 있다. 64자리만 경로에 쓰지만 hex 가 아닌 글자는 받지 않는다
+        ("media", "sha256") => v.as_str().is_some_and(|s| s.bytes().all(|b| b.is_ascii_hexdigit())),
+        ("media", "rel_path") => v.as_str().is_some_and(|p| safe_rel_path(p, "media")),
+        ("source_material", "rel_path") => v.as_str().is_some_and(|p| safe_rel_path(p, "sources")),
+        _ => true,
+    })
+}
+
 /// uid 참조 -> 이 기기 rowid. 대상이 없으면 Err(()) (CASCADE 참조면 행을 건너뛴다)
 fn resolve_fk(con: &Connection, aliases: &HashMap<(String, String), String>, target: &str, v: &J) -> SRes<Option<Option<i64>>> {
     match v.as_str() {
@@ -1071,6 +1124,9 @@ impl Applier<'_> {
 
     fn row(&mut self, table: &Table, uid: String, f: &Fold) -> SRes<Step> {
         let t = table.name;
+        if !safe_paths(t, f) {
+            return Ok(self.skip());
+        }
         match rowid_of(self.tx, t, &uid)? {
             Some(rowid) => self.update(table, &uid, rowid, f),
             None => self.insert(table, uid, f),
@@ -1481,6 +1537,7 @@ pub fn write_snapshot(db: &Mutex<Connection>, cx: &Ctx, generation: i64, reason:
             st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .map_err(dbe)?
                 .filter_map(Result::ok)
+                .filter(|(name, _)| safe_media_name(name).is_ok())
                 .map(|(name, sha)| (media_path(&sha, &name, cx.key()), cx.media_dir.join(&name)))
                 .collect()
         };
@@ -1570,8 +1627,9 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
             for (d, files) in &r.changes {
                 for (s, p) in files {
                     if *s > pos.get(d).copied().unwrap_or(0) {
-                        let (h, file_recs) = decode(cx.store.get(p)?, cx.key())?;
-                        if h["gen"].as_i64().unwrap_or(0) == generation {
+                        if let Some((h, file_recs)) = read_change(cx, p)?
+                            && h["gen"].as_i64().unwrap_or(0) == generation
+                        {
                             recs.extend(file_recs);
                         }
                         pos.insert(d.clone(), *s);
@@ -1744,8 +1802,13 @@ pub fn adopt_restored(current: &Connection, restored: &Connection) -> SRes<()> {
 /// zip 안의 neoanki.sqlite 를 파일로 꺼낸다
 pub fn unzip_db(zip_bytes: &[u8], to: &Path) -> SRes<()> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(|_| other("백업 파일을 읽을 수 없어요"))?;
-    let mut f = zip.by_name("neoanki.sqlite").map_err(|_| other("백업 파일에 학습 데이터가 없어요"))?;
-    let mut buf = vec![];
-    f.read_to_end(&mut buf).map_err(other)?;
-    std::fs::write(to, buf).map_err(other)
+    let f = zip.by_name("neoanki.sqlite").map_err(|_| other("백업 파일에 학습 데이터가 없어요"))?;
+    let mut out = std::fs::File::create(to).map_err(other)?;
+    let n = std::io::copy(&mut f.take(MAX_UNPACKED + 1), &mut out).map_err(other)?;
+    if n > MAX_UNPACKED {
+        drop(out);
+        let _ = std::fs::remove_file(to);
+        return Err(other("백업 파일이 너무 커요"));
+    }
+    Ok(())
 }
