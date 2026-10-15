@@ -139,6 +139,9 @@
   background: var(--bg-surface);
 }
 .checkbox__box.is-on { border: 0; background: var(--accent-default); color: var(--text-inverse); }
+.checkbox.is-disabled { cursor: default; opacity: 0.4; }
+.segment__item:disabled { cursor: default; opacity: 0.5; }
+.u-line { text-decoration: underline; text-underline-offset: 2px; } /* 강조 신호 "밑줄" 배지 */
 .checkbox input:focus-visible + .checkbox__box { outline: 2px solid var(--accent-default); outline-offset: 2px; }
 
 /* Toggle. 트랙과 손잡이를 CSS 로 그려 다크 모드 토큰을 따른다 (ui.tsx 의 <img> 를 빼면 이것만 보인다) */

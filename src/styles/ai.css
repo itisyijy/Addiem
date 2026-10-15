@@ -73,3 +73,69 @@
 .ai-error__title { display: flex; align-items: center; gap: 8px; color: var(--status-warn-fg); }
 .ai-error.is-grey .ai-error__title { color: var(--text-primary); }
 .ai-error__actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; }
+
+/* ---------------------------------------------------------------- Row R 자료 근거 AI 공통 (Figma 78:9376) */
+
+/* "OpenAI로 보낼 내용" (R1-b · R2-s · R3-s). 이 칸이 곧 확인이다 */
+.ai-send { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-default); border-radius: 18px; background: var(--bg-surface); }
+.ai-send__head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 12px 16px; border-bottom: 1px solid var(--border-default); background: var(--bg-canvas); }
+.ai-send__head > .t-caption { margin-left: auto; }
+.ai-send__row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border-default); }
+.ai-send__row > .icon { flex-shrink: 0; margin-top: 2px; }
+.ai-send__row > .src-icon-btn { margin-top: -2px; color: var(--text-tertiary); }
+.ai-send__row > .src-icon-btn:disabled { opacity: 0.35; }
+.ai-send__rows { display: flex; flex-direction: column; }
+.ai-send__text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+.ai-send__meta { display: flex; align-items: center; gap: 8px; }
+.ai-send__meta .badge { padding: 2px 8px; }
+.ai-send__body { color: var(--text-primary); overflow-wrap: anywhere; }
+.ai-send__foot { display: flex; align-items: flex-start; gap: 8px; padding: 10px 16px; }
+.ai-send__foot > .icon { flex-shrink: 0; margin-top: 1px; }
+.ai-send.is-compact .ai-send__row { gap: 10px; padding: 9px 12px 9px 16px; }
+.ai-send.is-compact .ai-send__text { gap: 2px; }
+.ai-send.is-compact .ai-send__body { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 보내는 범위 한 줄 "… N구간을 보내요 · 보기 ▾" */
+.ai-scope .ai-link { gap: 2px; }
+
+/* 근거 구간 칩 (누르면 I2 원자료 패널). R3 는 바탕이 있다 */
+.src-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+.src-chip:hover { border-color: var(--accent-default); }
+.src-chip--surface { background: var(--bg-surface); }
+
+/* ---------------------------------------------------------------- R3 묶기 + 근거 (Figma 82:9900 · 82:10071) */
+.split__evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ai-confirm.ai-confirm--list { width: 520px; padding: 0; overflow: hidden; }
+.ai-confirm--list .ai-send { border: 0; }
+/* 근거 칩을 누르면 창 오른쪽에 I2 패널(420): 창은 왼쪽으로 비켜서 좁아진다 */
+/* 좁아진 창은 화면 안에 두고 가운데 두 열만 스크롤한다 (머리말 · 푸터 고정, R1-e 와 같은 규칙) */
+.modal.split.has-panel { top: 24px; left: 24px; width: calc(100vw - 492px); max-height: calc(100vh - 48px); overflow: hidden; transform: none; }
+.split.has-panel .split__cols { flex: 1; min-height: 0; align-items: stretch; }
+.split.has-panel .split__orig, .split.has-panel .split__parts { max-height: none; min-height: 0; }
+.split__source { position: fixed; top: 24px; right: 24px; z-index: 30; width: 420px; max-height: calc(100vh - 48px); overflow-y: auto; }
+
+/* ---------------------------------------------------------------- R2 서술형 채점 보조 (J2 카드 안, Figma 81:9865 · 81:10044) */
+.cmp__kw > .grade__btn { margin-left: auto; }
+.grade__scope { display: flex; justify-content: flex-end; }
+.grade { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1.5px solid var(--accent-subtle); border-radius: 16px; background: var(--bg-surface); }
+.grade--wait { flex-direction: row; align-items: center; }
+.grade--wait > .t-label-m { flex: 1; }
+.grade__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.grade__title { display: inline-flex; align-items: center; gap: 8px; }
+.grade__cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.grade__col { display: flex; flex-direction: column; gap: 8px; }
+.grade__col-head { display: inline-flex; align-items: center; gap: 6px; }
+.grade__miss { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+/* 세션의 첫 전송: 보낼 목록을 펼친 채로 확인. 카드 안 스크롤에 갇히지 않게 화면 위에 뜬다 (평가 줄은 그대로 보인다) */
+.grade__confirm { position: fixed; top: 132px; left: 50%; z-index: 20; width: 520px; transform: translateX(-50%); border-radius: 18px; box-shadow: 0 12px 16px rgb(23 23 28 / 0.14); }
+.grade__confirm-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px 12px 16px; }
+.grade__actions { display: flex; gap: 8px; }

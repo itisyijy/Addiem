@@ -1,12 +1,13 @@
 // G2 성격별로 묶기 · ChatGPT 요금제 (Figma Row L: L1–L4). 일은 Rust(src-tauri/src/ai.rs)가 하고, 로그인 결과는 "ai-auth" 이벤트로 온다.
 // 이 파일: 상태 공유(useAiStatus) · 설정 칸(L1 · L1-c) · 연결 창(L2 · L2-w · L2-x · L3) · 나누기 창의 오류 상자(L4-e)
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { aiApi, errorText, type AiAuthEvent, type AiError, type AiStatus } from "./api";
-import { Button, Icon, Spinner, type IconName } from "./ui";
+import { Badge, Button, Icon, Spinner, type BadgeTone, type IconName } from "./ui";
 import { useToast } from "./toast";
 import { n } from "./nav";
 import { Head, Sheet, when } from "./sync";
+import { placeOf, SIGNAL_LABEL, SIGNAL_TONE, type Sent } from "./sourceApi";
 // OpenAI 공식 로그인 버튼 로고 (developers.openai.com/assets/siwc/sign-in-buttons, 고치지 않고 쓴다)
 import logoWhite from "./assets/brand/chatgpt-logo-white.svg";
 import logoBlack from "./assets/brand/chatgpt-logo-black.svg";
@@ -35,19 +36,28 @@ export function useAiStatus() {
   return s;
 }
 
-/** 처음 보낼 때 한 번만 묻는다 (L4-s). 연결을 끊으면 지워서 다시 연결한 뒤 다시 묻는다 */
+/**
+ * 처음 보낼 때 한 번만 묻는다 (L4-s). 연결을 끊으면 지워서 다시 연결한 뒤 다시 묻는다.
+ * R3-s: 자료 구간을 함께 보낼 때는 확인한 구간 수가 바뀌면 다시 묻는다
+ */
 const SEND_OK = "neoanki.ai.sendConfirmed";
-export const sendConfirmed = () => {
+const SEND_SEGS = "neoanki.ai.sendSegments";
+export const sendConfirmed = (segs = 0) => {
   try {
-    return localStorage.getItem(SEND_OK) === "1";
+    return localStorage.getItem(SEND_OK) === "1" && (segs === 0 || localStorage.getItem(SEND_SEGS) === String(segs));
   } catch {
     return false;
   }
 };
-export const setSendConfirmed = (on: boolean) => {
+export const setSendConfirmed = (on: boolean, segs = 0) => {
   try {
-    if (on) localStorage.setItem(SEND_OK, "1");
-    else localStorage.removeItem(SEND_OK);
+    if (on) {
+      localStorage.setItem(SEND_OK, "1");
+      if (segs) localStorage.setItem(SEND_SEGS, String(segs));
+    } else {
+      localStorage.removeItem(SEND_OK);
+      localStorage.removeItem(SEND_SEGS);
+    }
   } catch {
     /* 저장하지 못하면 다음에 다시 묻는다 */
   }
@@ -116,28 +126,29 @@ export function AiConnect({ start = "intro", reconsent = false, onDone }: { star
 function Intro({ onClose, onGo }: { onClose: () => void; onGo: () => void }) {
   return (
     <Sheet label="ChatGPT를 연결할까요?" onClose={onClose} className="ai-l2">
-      <Head title="ChatGPT를 연결할까요?" sub="카드를 성격별로 묶어 나눌 때만 써요. 내 ChatGPT 요금제로 요청하고, Neo-Anki에는 추가 요금이 없어요." onClose={onClose} />
+      <Head title="ChatGPT를 연결할까요?" sub="카드 초안 만들기 · 채점 보조 · 성격별로 묶기를 직접 누를 때만 써요. 내 ChatGPT 요금제로 요청하고, Neo-Anki에는 추가 요금이 없어요." onClose={onClose} />
       <div className="ai-two">
         <div className="ai-two__col">
           <span className="ai-two__head">
             <Icon name="send" size={16} className="c-accent" />
             <span className="t-label-m">OpenAI로 보내는 것</span>
           </span>
-          <span className="t-body-s c-secondary">나누기 창에서 직접 누른 카드 한 장의 앞·뒷면 글자</span>
+          <span className="t-body-s c-secondary">직접 고른 카드와 자료 구간의 글자</span>
+          <span className="t-caption c-tertiary">보내기 전에 보낼 내용을 목록으로 보여줘요</span>
         </div>
         <div className="ai-two__col">
           <span className="ai-two__head">
             <Icon name="lock" size={16} className="c-secondary" />
             <span className="t-label-m">보내지 않는 것</span>
           </span>
-          <span className="t-body-s c-secondary">덱 전체 · 다른 카드</span>
+          <span className="t-body-s c-secondary">덱 이름 · 다른 카드</span>
           <span className="t-body-s c-secondary">복습 기록 · 일정</span>
-          <span className="t-body-s c-secondary">원자료 파일 · 그림</span>
+          <span className="t-body-s c-secondary">자료 파일 통째 · 그림</span>
         </div>
       </div>
       <div className="ai-notes">
         <Note icon="gauge" title="ChatGPT 요금제 사용량이 Codex와 함께 줄어요" text="ChatGPT 설정의 사용량 관리에서 이 앱의 한도를 정할 수 있어요" />
-        <Note icon="link-off" title="연결을 끊으면 바로 멈춰요" text="이미 나눈 카드는 그대로예요" />
+        <Note icon="link-off" title="연결을 끊으면 바로 멈춰요" text="이미 만든 카드는 그대로예요" />
         <Note icon="info" title="ChatGPT Plus · Pro 같은 대상 요금제에서 쓸 수 있어요" />
       </div>
       <div className="sync-foot sync-foot--end">
@@ -257,7 +268,7 @@ function Fail({ ev, onClose, onRetry }: { ev: AiAuthEvent; onClose: () => void; 
         {head}
       </h2>
       <p className="t-body-s c-secondary">{text}</p>
-      <p className="t-caption c-tertiary">연결하지 않았어요. 규칙 나누기는 그대로 쓸 수 있어요.</p>
+      <p className="t-caption c-tertiary">연결하지 않았어요. 빠진 범위 · 규칙 나누기 · 핵심어 검사는 그대로 쓸 수 있어요.</p>
       <div className="sync-foot sync-foot--end">
         {ev.reason === "not_eligible" ? (
           <>
@@ -283,7 +294,7 @@ function Welcome({ onClose }: { onClose: () => void }) {
       <img className="ai-mark is-white" src={logoWhite} alt="ChatGPT" width={40} height={40} />
       <h2 className="t-title-m">내 ChatGPT 요금제를 쓰고 있어요</h2>
       <p className="t-body-s c-secondary sync-center">
-        카드를 성격별로 묶을 때마다 ChatGPT 요금제 사용량에서 줄어요.
+        ChatGPT에 보낼 때마다 요금제 사용량에서 줄어요.
         <br />
         Neo-Anki에는 추가 요금이 없어요.
       </p>
@@ -312,7 +323,7 @@ export function AiSection() {
       const revoked = await aiApi.disconnect();
       setSendConfirmed(false);
       await refreshAi();
-      toast({ title: "ChatGPT 연결을 끊었어요", text: revoked ? "이미 나눈 카드는 그대로예요." : "ChatGPT 설정에서도 이 앱의 연결을 끊을 수 있어요." });
+      toast({ title: "ChatGPT 연결을 끊었어요", text: revoked ? "이미 만든 카드는 그대로예요." : "ChatGPT 설정에서도 이 앱의 연결을 끊을 수 있어요." });
     } catch (e) {
       toast({ title: "연결을 끊지 못했어요", text: errorText(e), tone: "error" });
     } finally {
@@ -335,12 +346,12 @@ export function AiSection() {
             <Button variant="secondary" size="M" icon="external" label="사용량 관리" onClick={openUsage} />
           </div>
           <div className="ai-rows">
-            <Row label="쓰는 곳" value="카드 나누기 · 성격별로 묶기" />
-            <Row label="보내는 것" value="직접 누른 카드 한 장의 앞·뒷면 글자" />
-            <Row label="보낸 카드" value={`이번 달 ${n(s.sent_month)}장${s.sent_at ? ` · 마지막 ${when(s.sent_at)}` : ""}`} />
+            <Row label="쓰는 곳" value="자료에서 카드 초안 · 서술형 채점 보조 · 성격별로 묶기" />
+            <Row label="보내는 것" value="직접 고른 카드와 자료 구간의 글자" />
+            <Row label="보낸 횟수" value={`이번 달 ${n(s.sent_month)}번${s.sent_at ? ` · 마지막 ${when(s.sent_at)}` : ""}`} />
           </div>
           <div className="ai-foot">
-            <span className="t-caption c-tertiary">끊으면 바로 멈춰요. 이미 나눈 카드는 그대로예요.</span>
+            <span className="t-caption c-tertiary">끊으면 바로 멈춰요. 이미 만든 카드는 그대로예요.</span>
             <Button variant="danger" size="M" icon="link-off" label="연결 끊기" busy={busy} onClick={disconnect} />
           </div>
         </>
@@ -351,23 +362,23 @@ export function AiSection() {
               <Icon name="sparkles" size={22} className="c-secondary" />
             </span>
             <span className="prefs__text">
-              <span className="t-body-m-strong">ChatGPT로 카드를 성격별로 묶어 나누기</span>
-              <span className="t-caption c-tertiary">카드 나누기에서 "성격별로 묶기"를 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
+              <span className="t-body-m-strong">ChatGPT로 카드 만들기 · 고치기 돕기</span>
+              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 성격별로 묶기를 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
             </span>
             <ChatGptButton onClick={() => setConnecting(true)} />
           </div>
           <div className="sync-facts">
             <span>
               <Icon name="send" size={16} className="c-secondary" />
-              <span className="t-caption c-secondary">직접 누른 카드 한 장만 OpenAI로 보내요</span>
+              <span className="t-caption c-secondary">직접 고른 카드와 자료 구간만 OpenAI로 보내요</span>
             </span>
             <span>
               <Icon name="lock" size={16} className="c-secondary" />
-              <span className="t-caption c-secondary">덱·기록·원자료·그림은 안 보내요</span>
+              <span className="t-caption c-secondary">자료 파일·덱 이름·기록·그림은 안 보내요</span>
             </span>
             <span>
               <Icon name="layers" size={16} className="c-secondary" />
-              <span className="t-caption c-secondary">연결하지 않아도 규칙 나누기는 그대로</span>
+              <span className="t-caption c-secondary">연결하지 않아도 빠진 범위·규칙 나누기는 그대로</span>
             </span>
           </div>
         </>
@@ -386,27 +397,39 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-// ---------------------------------------------------------------- L4-e 나누기 창 오른쪽 목록 칸의 오류
+// ---------------------------------------------------------------- L4-e · R1-e 오류 (토스트가 아니라 결과 자리에 머문다)
 
-/** 어떤 오류든 [규칙으로 나누기]로 돌아갈 수 있다 (깨진 응답이면 아래에 규칙 제안이 이미 보인다) */
-export function AiErrorBox({ e, onRule, onRetry, onReconnect }: {
+type Copy = Partial<Record<AiError["kind"], [string, string]>>;
+
+/**
+ * 어떤 오류든 다른 길로 돌아갈 수 있다: L4 는 [규칙으로 나누기](onRule), R1 은 [닫기](onClose).
+ * 사용량 한도는 [사용량 관리]가 주 버튼. 깨진 응답은 한 조각도 쓰지 않고 [다시 …]만 (L4 는 아래에 규칙 제안이 이미 보인다).
+ * copy: 기능마다 다른 제목 · 본문 (R1-e)
+ */
+export function AiErrorBox({ e, onRule, onClose, onRetry, onReconnect, copy = {}, retryLabel = "다시 묶기" }: {
   e: AiError;
-  onRule: () => void;
+  onRule?: () => void;
+  onClose?: () => void;
   onRetry: () => void;
   /** 다시 로그인 · 사용량 권한 다시 허락 */
   onReconnect: (reconsent: boolean) => void;
+  copy?: Copy;
+  /** 깨진 응답의 다시 보내기 */
+  retryLabel?: string;
 }) {
   const grey = e.kind === "offline" || e.kind === "unavailable";
-  const [icon, title, text]: [IconName, string, string] =
-    e.kind === "limit" ? ["gauge", "사용량 한도에 도달했어요", "ChatGPT 설정에서 요금제나 이 앱의 한도를 확인해 주세요."]
-    : e.kind === "expired" ? ["alert", "ChatGPT 로그인이 만료됐어요", "다시 로그인하면 이어서 쓸 수 있어요. 이 카드는 아직 보내지 않았어요."]
-    : e.kind === "offline" ? ["wifi-off", "인터넷에 연결되어 있지 않아요", "규칙으로 나눈 제안은 인터넷 없이도 그대로 쓸 수 있어요."]
-    : e.kind === "bad_output" ? ["alert", "ChatGPT 답을 카드로 바꾸지 못했어요", "형식이 맞지 않아 쓰지 않았어요. 아래는 규칙으로 나눈 제안이에요."]
-    : e.kind === "scope" ? ["alert", "사용량 권한이 필요해요", `Neo-Anki는 내 ChatGPT 요금제로만 요청해요. 다시 연결할 때 "사용량" 권한을 허락해 주세요.`]
-    : e.kind === "not_eligible" ? ["alert", "이 요금제에서는 쓸 수 없어요", "지금 계정의 ChatGPT 요금제는 다른 앱에서 요금제로 요청하는 기능을 지원하지 않아요."]
-    : e.kind === "unavailable" ? ["alert", "지금은 ChatGPT 요금제를 쓸 수 없어요", "잠시 뒤 다시 해 보세요. 규칙으로 나눈 제안은 그대로 쓸 수 있어요."]
-    : ["alert", "ChatGPT로 묶지 못했어요", e.message];
-  const rule = <Button variant="ghost" size="M" label="규칙으로 나누기" onClick={onRule} />;
+  const icon: IconName = e.kind === "limit" ? "gauge" : e.kind === "offline" ? "wifi-off" : "alert";
+  const [title, text] =
+    copy[e.kind] ??
+    (e.kind === "limit" ? ["사용량 한도에 도달했어요", "ChatGPT 설정에서 요금제나 이 앱의 한도를 확인해 주세요."]
+    : e.kind === "expired" ? ["ChatGPT 로그인이 만료됐어요", "다시 로그인하면 이어서 쓸 수 있어요. 이 카드는 아직 보내지 않았어요."]
+    : e.kind === "offline" ? ["인터넷에 연결되어 있지 않아요", "규칙으로 나눈 제안은 인터넷 없이도 그대로 쓸 수 있어요."]
+    : e.kind === "bad_output" ? ["ChatGPT 답을 카드로 바꾸지 못했어요", "형식이 맞지 않아 쓰지 않았어요. 아래는 규칙으로 나눈 제안이에요."]
+    : e.kind === "scope" ? ["사용량 권한이 필요해요", `Neo-Anki는 내 ChatGPT 요금제로만 요청해요. 다시 연결할 때 "사용량" 권한을 허락해 주세요.`]
+    : e.kind === "not_eligible" ? ["이 요금제에서는 쓸 수 없어요", "지금 계정의 ChatGPT 요금제는 다른 앱에서 요금제로 요청하는 기능을 지원하지 않아요."]
+    : e.kind === "unavailable" ? ["지금은 ChatGPT 요금제를 쓸 수 없어요", "잠시 뒤 다시 해 보세요. 규칙으로 나눈 제안은 그대로 쓸 수 있어요."]
+    : ["ChatGPT로 묶지 못했어요", e.message]);
+  const back = onRule ? <Button variant="ghost" size="M" label="규칙으로 나누기" onClick={onRule} /> : onClose && <Button variant="ghost" size="M" label="닫기" onClick={onClose} />;
   return (
     <div className={`ai-error ${grey ? "is-grey" : ""}`} role="alert">
       <span className="ai-error__title">
@@ -418,24 +441,117 @@ export function AiErrorBox({ e, onRule, onRetry, onReconnect }: {
         {e.kind === "limit" ? (
           <>
             <Button size="M" icon="external" label="사용량 관리" onClick={openUsage} />
-            {rule}
+            {back}
           </>
         ) : e.kind === "expired" || e.kind === "scope" ? (
           <>
             <Button size="M" icon="external" label={e.kind === "scope" ? "다시 연결" : "다시 로그인"} onClick={() => onReconnect(e.kind === "scope")} />
-            {rule}
+            {back}
           </>
         ) : e.kind === "bad_output" ? (
-          <Button variant="secondary" size="M" icon="rotate" label="다시 묶기" onClick={onRetry} />
+          <>
+            <Button variant="secondary" size="M" icon="rotate" label={retryLabel} onClick={onRetry} />
+            {!onRule && back}
+          </>
         ) : e.kind === "not_eligible" ? (
-          rule
+          back
         ) : (
           <>
             <Button variant="secondary" size="M" icon="rotate" label="다시 시도" onClick={onRetry} />
-            {rule}
+            {back}
           </>
         )}
       </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Row R 공통: 보내는 범위 한 줄 · "OpenAI로 보낼 내용"
+
+/** "카드 + 자료 2구간을 보내요 · 보기 ▾" (R2-s · R3-s). 실행 버튼 가까이에 늘 보인다 */
+export function ScopeLine({ text, open, onToggle }: { text: string; open?: boolean; onToggle: () => void }) {
+  return (
+    <span className="ai-hint ai-scope t-caption c-tertiary">
+      <Icon name="send" size={12} />
+      {text} ·
+      <button type="button" className="ai-link t-label-s" aria-expanded={!!open} onClick={onToggle}>
+        보기
+        <Icon name="chevron-down" size={12} className={open ? "is-flipped" : ""} />
+      </button>
+    </span>
+  );
+}
+
+/** 보낼 내용 한 행. remove 가 있으면 ✕ 로 뺄 수 있고, 없으면 "필수" */
+export type SendRow = { key: string | number; icon: IconName; meta: ReactNode; text: string; remove?: () => void };
+
+/** 자료 구간 행 (자료 이름 · 쪽 · 연결 방식 · 신호 칩). 구간 글은 보내는 글자 그대로 */
+export const sentRows = (sent: Sent[], remove: (id: number) => void, how = false): SendRow[] =>
+  sent.map((s) => ({
+    key: s.id,
+    icon: "file",
+    meta: (
+      <>
+        <span className="t-label-s c-secondary">
+          {placeOf(s)}
+          {how && s.how !== "picked" ? ` · ${HOW[s.how]}` : ""}
+        </span>
+        {s.signals[0] && (
+          <Badge tone={SIGNAL_TONE[s.signals[0]] as BadgeTone}>
+            <span className={s.signals[0] === "underline" ? "u-line" : undefined}>{SIGNAL_LABEL[s.signals[0]]}</span>
+          </Badge>
+        )}
+      </>
+    ),
+    text: s.text,
+    remove: () => remove(s.id),
+  }));
+const HOW: Record<Sent["how"], string> = { manual: "직접 연결", auto: "자동 연결", similar: "비슷한 구간", picked: "" };
+
+/**
+ * "OpenAI로 보낼 내용" (Row R 공통). 머리 오른쪽 "자료 N구간 · 약 N자", 행마다 ✕, 아래 한 줄 안내.
+ * compact: 첫 전송 확인 팝오버처럼 발췌를 한 줄로 줄인다
+ */
+export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foot, locked }: {
+  title?: string;
+  rows: SendRow[];
+  compact?: boolean;
+  foot?: ReactNode;
+  /** 보내는 중: ✕ 를 끈다 */
+  locked?: boolean;
+}) {
+  const segs = rows.filter((r) => r.icon === "file");
+  const chars = rows.reduce((t, r) => t + r.text.length, 0);
+  return (
+    <div className={`ai-send ${compact ? "is-compact" : ""}`}>
+      <div className="ai-send__head">
+        <Icon name="send" size={16} />
+        <span className="t-label-m">{title}</span>
+        {!compact && (
+          <span className="t-caption c-tertiary">
+            자료 {n(segs.length)}구간 · 약 {n(chars)}자
+          </span>
+        )}
+      </div>
+      <div className="ai-send__rows">
+      {rows.map((r) => (
+        <div key={r.key} className="ai-send__row">
+          <Icon name={r.icon} size={compact ? 14 : 16} className="c-secondary" />
+          <span className="ai-send__text">
+            <span className="ai-send__meta">{r.meta}</span>
+            <span className="ai-send__body t-body-s">{r.text}</span>
+          </span>
+          {r.remove ? (
+            <button type="button" className="src-icon-btn" aria-label="이 구간 빼기" disabled={locked} onClick={r.remove}>
+              <Icon name="x" size={compact ? 14 : 16} />
+            </button>
+          ) : (
+            <span className="t-caption c-tertiary">필수</span>
+          )}
+        </div>
+      ))}
+      </div>
+      {foot}
     </div>
   );
 }

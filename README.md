@@ -103,10 +103,10 @@ $env:NEOANKI_SYNC_FOLDER = "C:\temp\neoanki-drive"; $env:NEOANKI_DATA_DIR = "C:\
 
 ### ChatGPT 연결 (개발)
 
-환경 변수가 필요 없다 (Sign in with ChatGPT 의 직접 흐름은 클라이언트 비밀이 없다). 실제 계정 없이 화면 상태를 보려면 debug 빌드에서 가짜 응답을 켠다. 네트워크와 키체인을 쓰지 않는다.
+환경 변수가 필요 없다 (Sign in with ChatGPT 의 직접 흐름은 클라이언트 비밀이 없다). 실제 계정 없이 화면 상태를 보려면 debug 빌드에서 가짜 응답을 켠다. 성격별로 묶기(L4)와 자료 근거 AI(R1 초안 · R2 채점 보조 · R3 근거)가 같이 쓴다. 네트워크와 키체인을 쓰지 않고, 켜 둔 동안에는 [다시 로그인] 등을 눌러도 로그인 창을 열지 않는다. 빠진 범위 · 비슷한 카드 같은 기기 안 검사는 가짜가 아니라 실제로 돈다 (비슷한 카드 · 근거 검사는 분석 모델이 있을 때만).
 
 ```powershell
-# ok | slow | limit | expired | offline | unavailable | malformed
+# ok | slow | usage_limit(= limit) | expired | offline | unavailable | malformed
 $env:NEOANKI_AI_FAKE = "ok"; $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm run tauri dev
 ```
 

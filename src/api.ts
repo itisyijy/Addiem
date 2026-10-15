@@ -1,4 +1,5 @@
 // Rust 명령(src-tauri/src/commands.rs)의 타입과 호출. 필드 이름은 Rust 와 같다
+import type { Sent } from "./sourceApi";
 import { invoke } from "@tauri-apps/api/core";
 
 export type Level = 0 | 1 | 2;
@@ -430,6 +431,9 @@ export type SplitProposal = {
   flags: QualityFlag[];
   /** questions 면 한 장 항목 수를 바꿔도 같은 제안이다. nature = ChatGPT 성격별로 묶기 (aiApi.regroup) */
   kind: "items" | "lines" | "questions" | "nature";
+  /** R3: 함께 보낸 자료 구간 · 그중 ChatGPT 가 인용한 구간 (근거 칩). 규칙 제안은 비어 있다 */
+  sent: Sent[];
+  evidence: Sent[];
 };
 export type CardChange = { id: number; summary: string; card_id: number | null; created_at: number; undone: boolean };
 
@@ -473,8 +477,8 @@ export const aiApi = {
   disconnect: () => invoke<boolean>("ai_disconnect"),
   openUsage: () => invoke<void>("ai_open_usage"),
   /** 카드 한 장을 보내 같은 모양의 제안을 받는다. 아무것도 바꾸지 않는다 (승인은 qualityApi.apply). 오류는 AiError */
-  regroup: (cardId: number) => invoke<SplitProposal>("ai_regroup", { cardId }),
-  cancelRegroup: () => invoke<void>("ai_regroup_cancel"),
+  regroup: (cardId: number, segmentIds: number[] = []) => invoke<SplitProposal>("ai_regroup", { cardId, segmentIds }),
+  cancel: () => invoke<void>("ai_cancel"),
 };
 /** ai_regroup 오류는 { kind, message }. 다른 오류(글자)도 받는다 */
 export const aiError = (e: unknown): AiError =>
