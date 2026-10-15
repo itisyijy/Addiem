@@ -13,7 +13,8 @@ export type ChoiceDraft = { options: string[]; correct: number[]; shuffle: boole
 export const EMPTY_LIST: ListDraft = { items: [""], ordered: true };
 export const EMPTY_CHOICE: ChoiceDraft = { options: ["", ""], correct: [], shuffle: true };
 
-type Common = { deck_id: number; question: string; extra: string; importance: Level | null };
+type Edit = { question: string; extra: string };
+type Common = Edit & { deck_id: number; importance: Level | null };
 
 export const recall = {
   addList: (card: Common & ListDraft) => invoke<number>("add_list_card", { card }),
@@ -22,7 +23,16 @@ export const recall = {
   /** marks: 목록은 빠뜨린 항목 번호, 선택형은 고른 보기 번호 (1부터). 1 Again · 2 Hard · 3 Good */
   suggest: (cardId: number, marks: number[]) => invoke<1 | 2 | 3 | null>("recall_suggest", { cardId, marks }),
   saveMarks: (cardId: number, marks: number[]) => invoke<void>("save_recall_marks", { cardId, marks }),
+  /** Q24 전용 편집기. 추가와 같은 검사 · 같은 값으로 저장한다 */
+  updateList: (noteId: number, card: Edit & ListDraft) => invoke<void>("update_list_note", { noteId, ...card }),
+  updateChoice: (noteId: number, card: Edit & ChoiceDraft) => invoke<void>("update_choice_note", { noteId, ...card }),
 };
+
+/** Q24 편집기를 채울 값. 보기 필드 번호(빈 보기는 빠져 있다)를 편집기의 0부터 번호로 */
+export function choiceDraft(s: ChoiceSpecial): ChoiceDraft {
+  const options = s.options.map((o) => o[1]);
+  return { options: [...options, "", ""].slice(0, Math.max(2, options.length)), correct: s.options.flatMap(([num], i) => (s.correct.includes(num) ? [i] : [])), shuffle: s.shuffle };
+}
 
 /** 보기 순서 (필드 번호). 섞기가 켜져 있으면 볼 때마다 섞는다 (Q5) */
 export function optionOrder(s: ChoiceSpecial): number[] {

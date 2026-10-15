@@ -20,8 +20,8 @@ import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
 import { ExamField, examHint } from "./Exam";
 import { cardSource } from "../sourceApi";
-import { RecallFace, recallTip } from "./Recall";
-import { choiceLabel, listLabel, optionOrder, recall } from "../recall";
+import { ChoiceEditor, ListEditor, RecallFace, recallTip } from "./Recall";
+import { choiceDraft, choiceLabel, listLabel, optionOrder, recall, type ChoiceDraft, type ListDraft } from "../recall";
 import "../styles/study.css";
 
 /*
@@ -257,6 +257,13 @@ function marked(text: string, hits: [number, number][], misses: [number, number]
     i = j;
   }
   return out;
+}
+
+/** AU J2 비교 화면은 정답 HTML 대신 비교 글자라, 정답의 소리 칩만 뽑아 글자 뒤에 둔다 */
+function soundChips(html: string) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  return Array.from(tpl.content.querySelectorAll("button.snd"), (c) => c.outerHTML).join("");
 }
 
 const daysAgo = (at: number) => {
@@ -886,7 +893,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const playSide = useCallback(
     (auto: boolean) => {
       const el = scroller.current;
-      if (el) playSounds(el.querySelectorAll(phase === "q" ? ".study__q .snd" : auto ? ".study__a-body .snd" : ".study__a .snd"));
+      if (el) playSounds(el.querySelectorAll(phase === "q" ? ".study__q .snd" : auto ? ".study__a-body .snd, .cmp__snd .snd" : ".study__a .snd"));
     },
     [phase],
   );
@@ -1143,7 +1150,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                           </div>
                           <div className="cmp__col">
                             <span className="t-caption c-tertiary">정답</span>
-                            <p className="cmp__text">{marked(compare.correct, compare.correct_hits, compare.correct_misses)}</p>
+                            <p className="cmp__text">
+                              {marked(compare.correct, compare.correct_hits, compare.correct_misses)}
+                              {card.answer.includes('class="snd') && <span className="cmp__snd card-html" dangerouslySetInnerHTML={{ __html: soundChips(card.answer) }} />}
+                            </p>
                           </div>
                         </div>
                         {grade.slot}
@@ -1477,6 +1487,9 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   const [answerHtml, setAnswerHtml] = useState("");
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [exam, setExam] = useState<ExamState | null>(null); // N1 기출 줄 (저장할 때 쓴다)
+  // Q24 목록 · 선택형은 카드 추가(Q0)와 같은 편집기. 질문 · 추가 설명은 첫 칸 · 마지막 칸
+  const [list, setList] = useState<ListDraft | null>(null);
+  const [choice, setChoice] = useState<ChoiceDraft | null>(null);
 
   useEffect(() => {
     Promise.all([api.noteEdit(noteId), writtenApi.note(noteId).catch(() => null)]).then(([n, w]) => {
@@ -1485,6 +1498,8 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
       if (w?.native) roles.splice(0, 3, "front", "rich", "rich"); // 질문 · 모범 답안 · 채점 메모
       else if (w?.capable && w.answer_field !== null) roles[w.answer_field] = "rich"; // 제안 칩을 뽑는 칸
       setNote({ ...n, roles });
+      if (n.special?.kind === "list") setList({ items: n.special.items.length ? n.special.items : [""], ordered: n.special.ordered });
+      else if (n.special?.kind === "choice") setChoice(choiceDraft(n.special));
       if (w?.capable) {
         setWn(w);
         setKws(w.keywords);
@@ -1540,9 +1555,12 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
       const html = fields.current[i]?.html() ?? "";
       return cloze ? toCloze(html, firstFree) : toStoredHtml(html);
     });
+    const edit = () => ({ question: toStoredHtml(fields.current[0]?.html() ?? ""), extra: toStoredHtml(fields.current[note.names.length - 1]?.html() ?? "") });
     setSaving(true);
     try {
-      await api.updateNote(note.note_id, values);
+      if (list) await recall.updateList(note.note_id, { ...edit(), ...list });
+      else if (choice) await recall.updateChoice(note.note_id, { ...edit(), ...choice });
+      else await api.updateNote(note.note_id, values);
       if (wn) await writtenApi.saveNote(note.note_id, write, kws, dismissed);
       if (exam && JSON.stringify(exam) !== JSON.stringify(note.exam)) await examApi.set("note", [exam]);
       if (card && target && target.id !== here?.id) await api.moveCard(card.id, target.id);
@@ -1573,6 +1591,21 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   // M 그림 가리기: 카드 편집(E)은 가리기 편집기로 연다
   if (note?.kind === "image_occlusion") return <OcclusionEdit noteId={noteId} focus={card?.occlusion?.ordinal} onClose={onClose} onSaved={onSaved} />;
   const preview = note && [note.kind === "basic" ? plainText(note.values[1] ?? "") : "", here?.label ?? ""].filter(Boolean).join(" · ");
+  // Q24 질문 · 추가 설명 칸 (카드 추가 Q0 처럼 툴바 없이)
+  const recallField = (i: number, name: string) => (
+    <div className="edit__item edit__item--wide">
+      <span className="t-label-m">{name}</span>
+      <RichField
+        ref={(h) => {
+          fields.current[i] = h;
+        }}
+        initial={note?.values[i]}
+        minHeight={44}
+        toolbar={false}
+        onInput={() => {}}
+      />
+    </div>
+  );
 
   return (
     <>
@@ -1583,14 +1616,14 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
           wn?.native
             ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
             : note?.kind === "list" || note?.kind === "choice"
-              ? `${note.kind === "list" ? "목록 회상" : "선택형"} · 필드 ${note.names.length}개 · `
+              ? `${note.kind === "list" ? "목록 회상" : "선택형"} · `
               : note?.kind === "other"
               ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
               : reversed
                 ? "앞뒤 둘 다 · 카드 2장 · "
                 : ""
         }저장해도 복습 일정은 그대로예요`}
-        className={`modal--edit ${wn ? "modal--written" : ""}`}
+        className={`modal--edit ${wn || list || choice ? "modal--written" : ""}`}
         onClose={() => (confirming ? setConfirming(false) : onClose())}
       >
         <div
@@ -1607,7 +1640,15 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
           }}
         >
           <div className="edit__fields">
-            {note?.names.map((_, i) =>
+            {note && (list || choice) ? (
+              <>
+                {recallField(0, "질문")}
+                <div className="edit__item edit__item--wide">
+                  {list ? <ListEditor value={list} onChange={setList} /> : choice && <ChoiceEditor value={choice} onChange={setChoice} />}
+                </div>
+                {recallField(note.names.length - 1, "추가 설명")}
+              </>
+            ) : note?.names.map((_, i) =>
               note.roles[i] === "line" ? (
                 <label key={i} className="edit__item">
                   <span className="t-label-m">{label(i)}</span>

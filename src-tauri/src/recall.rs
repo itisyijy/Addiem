@@ -239,7 +239,7 @@ pub(crate) fn choice_fields(c: &ChoiceNew) -> Res<Vec<String>> {
     Ok(f)
 }
 
-/// Q23 일반 필드 편집(E)의 안전망. 전용 편집기 전까지 정답 · 순서 · 섞기 칸이 앱이 읽을 수 있는 값인지 본다 (commands::save_note_fields)
+/// Q23 필드 저장의 안전망. 전용 편집기(Q24)를 거치지 않은 값도 정답 · 순서 · 섞기 칸이 앱이 읽을 수 있는 값인지 본다 (commands::save_note_fields)
 pub(crate) fn check_fields(nt: &str, names: &[String], values: &[String]) -> Res<()> {
     if !is_special(nt, names) {
         return Ok(());
@@ -297,6 +297,30 @@ pub fn add_choice_card(state: State<AppState>, card: ChoiceNew) -> Res<i64> {
     insert(&con, CHOICE, card.deck_id, &fields, card.importance)
 }
 
+// ------------------------------------------------------------------ 명령: 전용 편집기 (Q24)
+
+/// 추가와 같은 검사 · 같은 값으로 다시 만들고, 저장은 일반 편집과 같은 길 (update_note → save_note_fields)
+/// ponytail: 항목 · 보기는 글자로 다시 쓴다 (Anki 에서 넣은 서식은 빠진다). 지켜야 하면 고치지 않은 칸은 원래 HTML 을 둔다
+#[tauri::command]
+pub fn update_list_note(state: State<AppState>, note_id: i64, question: String, items: Vec<String>, ordered: bool, extra: String) -> Res<()> {
+    let fields = list_fields(&ListNew { deck_id: 0, question, items, ordered, extra, importance: None })?;
+    crate::commands::update_note(state, note_id, fields)
+}
+
+#[tauri::command]
+pub fn update_choice_note(
+    state: State<AppState>,
+    note_id: i64,
+    question: String,
+    options: Vec<String>,
+    correct: Vec<usize>,
+    shuffle: bool,
+    extra: String,
+) -> Res<()> {
+    let fields = choice_fields(&ChoiceNew { deck_id: 0, question, options, correct, shuffle, extra, importance: None })?;
+    crate::commands::update_note(state, note_id, fields)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +364,33 @@ mod tests {
         }
         assert!(check_fields(CHOICE, &choice, &c("2", "네")).is_err());
         assert!(check_fields("Basic", &["Front".into(), "Back".into()], &["4".into(), "x".into()]).is_ok(), "다른 유형은 보지 않는다");
+    }
+
+    #[test]
+    fn editor_round_trip_q24() {
+        // 전용 편집기: 필드 → special(채우기) → 추가와 같은 값(저장). 앱이 만든 노트는 그대로 돌아온다
+        let names = LIST_FIELDS.map(String::from);
+        let new = |items: Vec<String>, ordered, question, extra| ListNew { deck_id: 0, question, items, ordered, extra, importance: None };
+        let f = list_fields(&new(vec!["a<b".into(), " c & d ".into()], false, "Q".into(), "<b>x</b>".into())).unwrap();
+        let Some(Special::List { question, items, ordered, extra }) = special(LIST, &names, &serde_json::to_string(&f).unwrap()) else { panic!() };
+        assert_eq!(list_fields(&new(items, ordered, question, extra)).unwrap(), f);
+
+        // 선택형: 빈 보기(보기2)는 당기고 정답 번호도 따라간다. 화면은 보기 필드 번호 → 0부터 번호로 바꾼다 (Study.tsx EditNote)
+        let names = CHOICE_FIELDS.map(String::from);
+        let f = ["Q", "SYN", "", "ACK &amp; FIN", "", "", "", "3", "섞지 않음", ""].map(String::from);
+        let Some(Special::Choice { question, options, correct, shuffle, extra }) = special(CHOICE, &names, &serde_json::to_string(&f).unwrap()) else { panic!() };
+        let c = ChoiceNew {
+            deck_id: 0,
+            question,
+            correct: options.iter().enumerate().filter(|(_, o)| correct.contains(&o.0)).map(|(i, _)| i).collect(),
+            options: options.into_iter().map(|o| o.1).collect(),
+            shuffle,
+            extra,
+            importance: None,
+        };
+        let g = choice_fields(&c).unwrap();
+        assert_eq!((&g[1..4], g[7].as_str(), g[8].as_str()), (&["SYN".to_string(), "ACK &amp; FIN".into(), String::new()][..], "2", "섞지 않음"));
+        assert!(check_fields(CHOICE, &names, &g).is_ok());
     }
 
     #[test]

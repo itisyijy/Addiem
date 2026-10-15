@@ -327,7 +327,7 @@
 .kw__syn { display: flex; flex-direction: column; gap: 6px; }
 .kw__syn .field__input { height: 36px; padding: 0 12px; border-radius: 10px; }
 .edit__written { order: 2; display: flex; flex-direction: column; gap: 16px; }
-/* 서술형 편집 창은 필드 셋 + 키워드 + 스위치라 길다. 창 아래 32px 까지 쓴다 (Figma J3: 위 64 · 아래 여백) */
+/* 서술형 편집 창은 필드 셋 + 키워드 + 스위치라 길다 (목록 · 선택형 Q24 도 같다). 창 아래 32px 까지 쓴다 (Figma J3: 위 64 · 아래 여백) */
 .modal.modal--edit.modal--written { max-height: calc(100vh - 96px); }
 .edit__write { display: inline-flex; align-items: center; gap: 10px; align-self: flex-start; cursor: pointer; }
 

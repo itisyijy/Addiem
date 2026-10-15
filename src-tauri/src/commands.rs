@@ -928,6 +928,8 @@ pub struct NoteEdit {
     front: Vec<bool>,
     /// 8.4 N1 기출 줄
     exam: crate::exam::ExamState,
+    /// Q24 목록 · 선택형 전용 편집기를 채운다 (학습 화면과 같은 읽기)
+    special: Option<crate::recall::Special>,
 }
 
 fn note_is_cloze(con: &Connection, note_id: i64) -> Res<bool> {
@@ -961,7 +963,7 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let kind = if crate::occlusion::is_note(&con, note_id)? && names.len() >= 4 {
         "image_occlusion"
     } else if crate::recall::is_special(&type_name, &names) {
-        // Q 목록 · 선택형. 전용 편집기 전까지 필드 편집 그대로 (Q23)
+        // Q 목록 · 선택형. 화면은 전용 편집기(Q24)로 연다
         if type_name.starts_with(crate::recall::LIST) { "list" } else { "choice" }
     } else if note_is_cloze(&con, note_id)? {
         "cloze"
@@ -975,7 +977,8 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
         .iter()
         .map(|n| [format!("{{{{{n}}}}}"), format!(":{n}}}}}"), format!("{{{{#{n}}}}}"), format!("{{{{^{n}}}}}")].iter().any(|t| qfmt.contains(t)))
         .collect();
-    Ok(NoteEdit { note_id, kind: kind.into(), type_name, names, values, front, exam })
+    let special = crate::recall::special(&type_name, &names, &fields);
+    Ok(NoteEdit { note_id, kind: kind.into(), type_name, names, values, front, exam, special })
 }
 
 /// 필드를 고친다. 빈칸 노트면 빈칸 번호에 맞춰 카드를 만들거나 지운다 (지운 카드의 기록은 review_log 에 남는다)
