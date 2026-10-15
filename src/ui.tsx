@@ -3,7 +3,6 @@
  * 스타일은 styles/components.css.
  */
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
-import backdropSvg from "./assets/backdrop.svg";
 
 // ---------------------------------------------------------------- Icon
 
@@ -328,5 +327,16 @@ export function TopNav({ onImport, onNewDeck, onSettings, onHome, sync }: {
 }
 
 export function Backdrop() {
-  return <img className="backdrop" src={backdropSvg} width={1280} height={800} alt="" aria-hidden />;
+  // 창이 가려지면(최소화 등) 배경 움직임을 멈춘다
+  const [hidden, setHidden] = useState(document.hidden);
+  useEffect(() => {
+    const onChange = () => setHidden(document.hidden);
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  return (
+    <div className={hidden ? "backdrop is-paused" : "backdrop"} aria-hidden>
+      <i /><i /><i /><i /><i />
+    </div>
+  );
 }

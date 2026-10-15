@@ -218,16 +218,46 @@
   background: var(--bg-subtle);
 }
 
-/* Backdrop. 1280x800 원본 크기 그대로 왼쪽 위에 둔다. 창이 더 크면 바깥은 bg-canvas 가 이어진다 */
+/* Backdrop: 아주 느리게 떠다니는 배경 블롭. 1·2 가 Figma 의 두 타원 자리(흐림 σ90 을 그라데이션으로 옮김), 3–5 는 위쪽 띠에서만 옅게 오간다.
+   transform · filter 애니메이션만 써서 합성기(GPU)에서 돈다. 매 프레임 다시 칠하지 않는다 (blur 금지).
+   steps(): 한 칸이 1px 안팎이라 끊김은 보이지 않고, 화면을 초당 7번 정도만 다시 그린다 (매끈한 easing 은 화면 주사율마다(165Hz 모니터면 초당 165번) 다시 그려 CPU 를 4배 쓴다).
+   주기는 서로소라 반복이 티 나지 않는다. 가운데 · 아래 글자 자리는 비워 둔다 (본문 4.5:1, 큰 제목 3:1 유지).
+   그라데이션은 Chromium 이 디더링해 띠가 생기지 않으므로 노이즈 층은 두지 않는다.
+   배경색을 깔지 않아 블롭 하나인 곳은 Figma 와 같은 보통 합성, 겹친 곳만 multiply(다크 screen) 로 섞인다 */
 .backdrop {
   position: fixed;
-  left: 0;
-  top: 0;
+  inset: 0;
   z-index: -1;
+  overflow: hidden;
   pointer-events: none;
+  animation: backdrop-hue 163s steps(40) -81.5s infinite alternate; /* 색 흐름. 가운데(0°, Figma 색)에서 시작 */
 }
-/* 다크 배경 블롭 (Figma Dark 프레임의 Backdrop). img 의 src 를 바꾸지 않고 CSS 로 갈아 끼운다 */
-:root[data-theme="dark"] .backdrop { content: url("../assets/backdrop-dark.svg"); }
+.backdrop > i {
+  position: absolute;
+  background: radial-gradient(closest-side, var(--c) 35%, color-mix(in srgb, var(--c) 50%, transparent) 64%,
+    color-mix(in srgb, var(--c) 12%, transparent) 84%, transparent);
+  opacity: var(--o);
+  mix-blend-mode: multiply;
+  animation: 61s steps(120) infinite alternate;
+}
+.backdrop > i:nth-child(1) { --c: var(--blob-lilac); --o: 0.85; left: -400px; top: -440px; width: 1060px; height: 920px; animation-name: backdrop-1; }
+.backdrop > i:nth-child(2) { --c: var(--blob-apricot); --o: 0.7; right: -400px; top: -420px; width: 980px; height: 880px; animation-name: backdrop-2; animation-duration: 73s; }
+.backdrop > i:nth-child(3) { --c: var(--blob-lilac); --o: 0.45; left: 110px; top: -450px; width: 820px; height: 620px; animation-name: backdrop-3; animation-duration: 89s; }
+.backdrop > i:nth-child(4) { --c: var(--blob-apricot); --o: 0.4; right: 100px; top: -420px; width: 760px; height: 600px; animation-name: backdrop-4; animation-duration: 97s; }
+.backdrop > i:nth-child(5) { --c: var(--blob-apricot); --o: 0.3; left: 50px; top: -230px; width: 560px; height: 460px; animation-name: backdrop-5; animation-duration: 113s; }
+@keyframes backdrop-1 { from { transform: translate(-50px, -40px) rotate(-5deg) scale(0.94); } to { transform: translate(60px, 5px) rotate(5deg) scale(1.03); } }
+@keyframes backdrop-2 { from { transform: translate(40px, -30px) rotate(4deg) scale(1.05); } to { transform: translate(-60px, 45px) rotate(-6deg) scale(0.94); } }
+@keyframes backdrop-3 { from { transform: translate(-60px, 10px) rotate(-7deg) scale(0.94); } to { transform: translate(70px, -20px) rotate(6deg) scale(1.07); } }
+@keyframes backdrop-4 { from { transform: translate(55px, 20px) rotate(6deg) scale(1.06); } to { transform: translate(-45px, -25px) rotate(-6deg) scale(0.93); } }
+@keyframes backdrop-5 { from { transform: translate(-35px, -30px) rotate(-4deg) scale(0.96); } to { transform: translate(45px, 35px) rotate(5deg) scale(1.08); } }
+/* CSS hue-rotate ±8° = OKLCH 색상 ±12° 안쪽 (라일락이 파랑 · 분홍으로 넘어가지 않는다) */
+@keyframes backdrop-hue { from { filter: hue-rotate(-8deg); } to { filter: hue-rotate(8deg); } }
+:root[data-theme="dark"] .backdrop > i { mix-blend-mode: screen; opacity: calc(var(--o) * 0.9); }
+/* 창이 가려지면 멈추고(ui.tsx Backdrop), 동작 줄이기 설정이면 처음부터 멈춘 그림 */
+.backdrop.is-paused, .backdrop.is-paused > i { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .backdrop, .backdrop > i:nth-child(n) { animation: none; } /* 블롭별 animation-name 보다 세게 */
+}
 
 /* 점 (상태·범례·평가). assets/dots 의 SVG 는 색이 박혀 있어 다크 모드를 못 따라가므로 이것을 쓴다 */
 .dot { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; border-radius: 999px; background: currentColor; }
