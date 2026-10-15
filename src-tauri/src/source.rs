@@ -9,7 +9,7 @@ use quick_xml::events::Event;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -22,9 +22,11 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 }
 
 /// 신호와 가중치 (post-mvp 5장). 하이라이트·밑줄·색은 사용자가 일부러 남긴 것이라 높고,
-/// 볼드는 원본 서식일 수 있어 낮다. 배열 순서가 곧 신뢰도 순이다 (I1 배지 순서)
-pub const SIGNALS: [(&str, f64); 5] = [("highlight", 3.0), ("underline", 3.0), ("red", 3.0), ("star", 2.0), ("bold", 1.0)];
-const SIGNAL_LABEL: [&str; 5] = ["하이라이트", "밑줄", "붉은 글씨", "★", "볼드"];
+/// 볼드는 원본 서식일 수 있어 낮다. 배열 순서가 곧 신뢰도 순이다 (I1 배지 순서).
+/// figure · table: 8.4 그림 · 표로 만든 카드의 영역 (IT9). 강조가 아니라 가중치 0, 빠진 범위 · 분석에서 뺀다
+pub const SIGNALS: [(&str, f64); 7] =
+    [("highlight", 3.0), ("underline", 3.0), ("red", 3.0), ("star", 2.0), ("bold", 1.0), ("figure", 0.0), ("table", 0.0)];
+const SIGNAL_LABEL: [&str; 7] = ["하이라이트", "밑줄", "붉은 글씨", "★", "볼드", "그림", "표"];
 
 /// 자동 연결 기준 (multilingual-e5-small 코사인 유사도). 이보다 낮으면 잇지 않고 비워 둔다 (억지 연결 금지, post-mvp 6장).
 /// 실측 (2026-10-14, 한국어 카드 20장 · 강조 구간 12곳): 맞는 짝 0.89~0.99, 틀린 짝 0.85~0.875 (짧은 제목에 끌림).
@@ -34,6 +36,11 @@ pub const AUTO_LINK: f32 = 0.88;
 /// 알려진 신호만 신뢰도 순으로
 fn sorted_signals<S: AsRef<str>>(signals: &[S]) -> Vec<&'static str> {
     SIGNALS.iter().map(|s| s.0).filter(|s| signals.iter().any(|x| x.as_ref() == *s)).collect()
+}
+
+/// 8.4 그림 · 표 영역 구간인가
+fn is_region<S: AsRef<str>>(signals: &[S]) -> bool {
+    signals.iter().any(|s| matches!(s.as_ref(), "figure" | "table"))
 }
 
 fn weight_of(signals: &[&str]) -> f64 {
@@ -62,7 +69,7 @@ const MATERIAL_SQL: &str = "SELECT m.id, m.deck_id, m.file_name, m.kind, m.pages
         (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id),
         (SELECT count(DISTINCT s.id) FROM source_segment s JOIN source_link l ON l.segment_id = s.id
          WHERE s.material_id = m.id AND l.method != 'rejected'),
-        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id
+        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals NOT IN ('figure','table')
          AND NOT EXISTS (SELECT 1 FROM source_link l WHERE l.segment_id = s.id AND l.method != 'rejected'))
      FROM source_material m";
 
@@ -323,6 +330,124 @@ fn unlink(con: &Connection, segment_id: i64, card_id: i64) -> Res<()> {
     Ok(())
 }
 
+// ------------------------------------------------------------------ 8.4 그림 · 표 영역 (IT9)
+
+/// 그림 · 표 카드가 나온 곳. kind: figure | table. text: 대체 글 · "그림 · p.N" · 표 글자 (I2 패널 · 검색)
+#[derive(Deserialize)]
+pub struct Region {
+    material_id: i64,
+    page: i64,
+    rects: Vec<[f64; 4]>,
+    kind: String,
+    text: String,
+}
+
+/// 영역 구간. 같은 쪽 · 같은 영역 · 같은 종류면 그 구간을 다시 쓰고 글자만 바꾼다 (같은 표에서 두 번 만들어도 구간 하나)
+fn region_segment(con: &Connection, r: &Region) -> Res<i64> {
+    if !matches!(r.kind.as_str(), "figure" | "table") {
+        return Err("그림이나 표만 이을 수 있어요.".into());
+    }
+    let rects = serde_json::to_string(&r.rects).map_err(err)?;
+    let text = if r.text.trim().is_empty() { format!("{} · p.{}", if r.kind == "table" { "표" } else { "그림" }, r.page) } else { r.text.trim().to_string() };
+    let hit: Option<i64> = con
+        .query_row(
+            "SELECT id FROM source_segment WHERE material_id = ?1 AND page = ?2 AND signals = ?3 AND rects = ?4",
+            params![r.material_id, r.page, r.kind, rects],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(err)?;
+    if let Some(id) = hit {
+        con.execute("UPDATE source_segment SET text = ?2 WHERE id = ?1", params![id, text]).map_err(err)?;
+        return Ok(id);
+    }
+    // 쪽 안 순서는 그 쪽의 강조 구간 뒤
+    con.execute(
+        "INSERT INTO source_segment (material_id, page, ord, text, signals, weight, rects)
+         SELECT ?1, ?2, coalesce(max(ord), -1) + 1, ?3, ?4, 0, ?5 FROM source_segment WHERE material_id = ?1 AND page = ?2",
+        params![r.material_id, r.page, text, r.kind, rects],
+    )
+    .map_err(err)?;
+    Ok(con.last_insert_rowid())
+}
+
+/// 노트의 카드를 모두 그 구간에 직접 연결로 (빈칸 노트는 카드가 여럿일 수 있다)
+fn link_notes(con: &Connection, segment_id: i64, note_ids: &[i64]) -> Res<()> {
+    for nid in note_ids {
+        con.execute(
+            "INSERT INTO source_link (segment_id, card_id, method, created_at) SELECT ?1, id, 'manual', ?2 FROM card WHERE note_id = ?3
+             ON CONFLICT (segment_id, card_id) DO UPDATE SET method = 'manual', score = NULL",
+            params![segment_id, now_ms(), nid],
+        )
+        .map_err(err)?;
+    }
+    Ok(())
+}
+
+/// 다른 경로로 만든 노트(M 그림 가리기 · Q 목록)를 영역에 잇는다. 구간 id 를 돌려준다
+#[tauri::command]
+pub fn source_region_link(state: State<AppState>, material_id: i64, page: i64, rects: Vec<[f64; 4]>, kind: String, text: String, note_ids: Vec<i64>) -> Res<i64> {
+    let mut con = state.db.lock().map_err(err)?;
+    let tx = con.transaction().map_err(err)?;
+    let seg = region_segment(&tx, &Region { material_id, page, rects, kind, text })?;
+    link_notes(&tx, seg, &note_ids)?;
+    tx.commit().map_err(err)?;
+    Ok(seg)
+}
+
+/// IT3 [카드 N장 만들기] · 그림을 앞면에 둔 카드: 초안(table::drafts 또는 화면이 만든 HTML)을 저장하고 영역에 잇는다.
+/// 한 번의 변경(card_change 'draft')이라 되돌리기(qualityApi.undo)로 노트를 지운다. 영역 구간은 남는다 (연결만 사라진다)
+#[tauri::command]
+pub fn source_region_cards(state: State<AppState>, deck_id: i64, region: Region, cards: Vec<crate::table::Draft>) -> Res<i64> {
+    let mut con = state.db.lock().map_err(err)?;
+    region_cards(&mut con, deck_id, &region, &cards)
+}
+
+fn region_cards(con: &mut Connection, deck_id: i64, region: &Region, cards: &[crate::table::Draft]) -> Res<i64> {
+    if cards.is_empty() {
+        return Err("만들 카드가 없어요.".into());
+    }
+    let tx = con.transaction().map_err(err)?;
+    let mut notes = vec![];
+    for c in cards {
+        if render::is_blank(&c.front) || (c.kind != "cloze" && render::is_blank(&c.back)) {
+            return Err("앞면과 뒷면을 채워 주세요.".into());
+        }
+        let nid = if c.kind == "list" {
+            crate::recall::insert(&tx, crate::recall::LIST, deck_id, &[c.front.clone(), c.back.clone(), "순서대로".into(), String::new()], None, "", None)?
+        } else {
+            let card = crate::commands::NewCard { deck_id, kind: c.kind.clone(), front: c.front.clone(), back: c.back.clone(), importance: None };
+            crate::commands::insert_note(&tx, &card, "", None)?;
+            tx.query_row("SELECT note_id FROM card WHERE id = last_insert_rowid()", [], |r| r.get(0)).map_err(err)?
+        };
+        notes.push(nid);
+    }
+    let seg = region_segment(&tx, region)?;
+    link_notes(&tx, seg, &notes)?;
+    let file: String = tx.query_row("SELECT file_name FROM source_material WHERE id = ?1", [region.material_id], |r| r.get(0)).map_err(err)?;
+    let what = if region.kind == "table" { "표" } else { "그림" };
+    tx.execute(
+        "INSERT INTO card_change (kind, deck_id, card_id, summary, payload, created_at) VALUES ('draft', ?1, NULL, ?2, ?3, ?4)",
+        params![deck_id, format!("「{file}」 {what}에서 카드 {}장 만들기", notes.len()), serde_json::json!({ "prev_state": null, "new_notes": notes }).to_string(), now_ms()],
+    )
+    .map_err(err)?;
+    let id = tx.last_insert_rowid();
+    tx.commit().map_err(err)?;
+    Ok(id)
+}
+
+/// R8 넣을 곳: 같은 자료에서 쪽이 가장 가까운 "카드가 있는 구간"의 카드 덱 (rag 초안 · IT 그림 · 표)
+pub(crate) fn nearest_deck(con: &Connection, material_id: i64, page: i64) -> Res<Option<i64>> {
+    con.query_row(
+        "SELECT c.deck_id FROM source_segment s JOIN source_link l ON l.segment_id = s.id AND l.method != 'rejected'
+         JOIN card c ON c.id = l.card_id WHERE s.material_id = ?1 ORDER BY abs(s.page - ?2), s.page, s.ord LIMIT 1",
+        params![material_id, page],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(err)
+}
+
 #[derive(Serialize)]
 pub struct CardSource {
     material: Material,
@@ -390,34 +515,70 @@ pub struct Para {
     pub signals: Vec<&'static str>,
 }
 
-/// 슬라이드별 문단과 강조 신호. 순서는 presentation.xml 의 sldIdLst (파일 이름 순서와 다를 수 있다)
-pub fn pptx_slides(bytes: &[u8]) -> Res<Vec<Vec<Para>>> {
-    let bad = || "PPTX 파일을 열 수 없어요.".to_string();
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| bad())?;
-    let names: Vec<String> = zip.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
-    let mut read = |name: &str| -> Option<String> {
-        let mut s = String::new();
-        zip.by_name(name).ok()?.read_to_string(&mut s).ok()?;
-        Some(s)
-    };
-    let rels = read("ppt/_rels/presentation.xml.rels").ok_or_else(bad)?;
-    let pres = read("ppt/presentation.xml").ok_or_else(bad)?;
-    let mut targets = HashMap::new();
-    for (id, target) in xml_attrs(&rels, "Relationship", &["Id", "Target"]).into_iter().map(|mut v| (v.remove(0), v.remove(0))) {
-        let path = match target.strip_prefix('/') {
-            Some(abs) => abs.to_string(),
-            None => format!("ppt/{target}"),
-        };
-        targets.insert(id, path);
+/// 열어 둔 PPTX: 슬라이드 경로 (presentation.xml 의 sldIdLst 순서, 파일 이름 순서와 다를 수 있다) · 슬라이드 크기 (EMU)
+struct Pptx<R> {
+    zip: zip::ZipArchive<R>,
+    slides: Vec<String>,
+    size: (f64, f64),
+}
+
+fn zip_text<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Option<String> {
+    let mut s = String::new();
+    zip.by_name(name).ok()?.read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
+/// rels 의 Target 을 zip 안 경로로 ("../media/a.png" 는 dir 기준, "/ppt/.." 는 그대로)
+fn resolve(dir: &str, target: &str) -> String {
+    let mut parts: Vec<&str> = if target.starts_with('/') { vec![] } else { dir.split('/').filter(|p| !p.is_empty()).collect() };
+    for p in target.split('/') {
+        match p {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
     }
-    let mut order: Vec<String> = xml_attrs_ns(&pres, "sldId", "id").into_iter().filter_map(|rid| targets.get(&rid).cloned()).collect();
-    if order.is_empty() {
+    parts.join("/")
+}
+
+/// rels 의 Id → zip 안 경로. 외부 링크(TargetMode="External")는 뺀다
+fn rels_map(xml: &str, dir: &str) -> HashMap<String, String> {
+    xml_attrs(xml, "Relationship", &["Id", "Target", "TargetMode"])
+        .into_iter()
+        .filter(|v| v[2] != "External")
+        .map(|v| (v[0].clone(), resolve(dir, &v[1])))
+        .collect()
+}
+
+fn pptx_open<R: Read + Seek>(r: R) -> Res<Pptx<R>> {
+    let bad = || "PPTX 파일을 열 수 없어요.".to_string();
+    let mut zip = zip::ZipArchive::new(r).map_err(|_| bad())?;
+    let names: Vec<String> = zip.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
+    let rels = zip_text(&mut zip, "ppt/_rels/presentation.xml.rels").ok_or_else(bad)?;
+    let pres = zip_text(&mut zip, "ppt/presentation.xml").ok_or_else(bad)?;
+    let targets = rels_map(&rels, "ppt");
+    let mut slides: Vec<String> = xml_attrs_ns(&pres, "sldId", "id").into_iter().filter_map(|rid| targets.get(&rid).cloned()).collect();
+    if slides.is_empty() {
         // 목록이 없으면 slideN.xml 의 N 순서로
         let num = |n: &str| n.strip_prefix("ppt/slides/slide")?.strip_suffix(".xml")?.parse::<u32>().ok();
-        order = names.into_iter().filter(|n| num(n).is_some()).collect();
-        order.sort_by_key(|n| num(n));
+        slides = names.into_iter().filter(|n| num(n).is_some()).collect();
+        slides.sort_by_key(|n| num(n));
     }
-    Ok(order.iter().map(|p| read(p).map(|x| parse_slide(&x)).unwrap_or_default()).collect())
+    let size = xml_attrs(&pres, "sldSz", &["cx", "cy"])
+        .first()
+        .and_then(|v| Some((v[0].parse::<f64>().ok()?, v[1].parse::<f64>().ok()?)))
+        .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+        .unwrap_or((9144000.0, 6858000.0));
+    Ok(Pptx { zip, slides, size })
+}
+
+/// 슬라이드별 문단과 강조 신호
+pub fn pptx_slides(bytes: &[u8]) -> Res<Vec<Vec<Para>>> {
+    let mut p = pptx_open(std::io::Cursor::new(bytes))?;
+    let slides = std::mem::take(&mut p.slides);
+    Ok(slides.iter().map(|s| zip_text(&mut p.zip, s).map(|x| parse_slide(&x)).unwrap_or_default()).collect())
 }
 
 fn attr_value(a: &quick_xml::events::attributes::Attribute) -> Option<String> {
@@ -622,6 +783,272 @@ pub fn source_slide(state: State<AppState>, material_id: i64, page: i64) -> Res<
     Ok(if i < slides.len() { slides.swap_remove(i) } else { vec![] })
 }
 
+// ------------------------------------------------------------------ 8.4 PPTX 그림 · 표 (IT1-p)
+
+/// 슬라이드 그림 (p:pic). rect 는 슬라이드 대비 [x, y, w, h] 0~1 (그룹 안이면 그룹 변환을 거친 값).
+/// supported: 앱이 그릴 수 있는 형식 (EMF · WMF · TIFF 는 아니다, IT11)
+#[derive(Serialize, Debug, PartialEq)]
+pub struct SlideImage {
+    index: usize,
+    /// 도형 이름 · 대체 글 (cNvPr name · descr)
+    name: String,
+    descr: String,
+    rect: [f64; 4],
+    ext: String,
+    supported: bool,
+    #[serde(skip)]
+    path: String,
+}
+
+/// 슬라이드 표 (a:tbl). 합친 칸은 table::Cell 그대로
+#[derive(Serialize, Debug, PartialEq)]
+pub struct SlideTable {
+    name: String,
+    rect: [f64; 4],
+    rows: Vec<Vec<crate::table::Cell>>,
+}
+
+#[derive(Serialize)]
+pub struct SlideObjects {
+    page: i64,
+    /// 첫 문단 (보통 제목)
+    title: String,
+    /// R8 넣을 곳 기본값
+    deck_id: i64,
+    images: Vec<SlideImage>,
+    tables: Vec<SlideTable>,
+}
+
+const NO_TF: [f64; 4] = [1.0, 0.0, 1.0, 0.0];
+
+/// 그림 · 표와 위치. 그룹(grpSp)은 chOff · chExt 로 바꿔 슬라이드 좌표로. mc:Fallback 은 Choice 와 같은 것이라 건너뛴다
+fn parse_objects(xml: &str, rels: &HashMap<String, String>, size: (f64, f64)) -> (Vec<SlideImage>, Vec<SlideTable>) {
+    use crate::table::Cell;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut path: Vec<String> = vec![];
+    // 그룹 변환 x' = a·x + b, y' = c·y + d (바깥 그룹부터 합성)
+    let mut tf: Vec<[f64; 4]> = vec![NO_TF];
+    let mut grp = [0.0f64; 8]; // off x y · ext cx cy · chOff x y · chExt cx cy
+    let mut xfrm = [0.0f64; 4];
+    let (mut images, mut tables) = (vec![], vec![]);
+    let mut pic: Option<[String; 3]> = None; // name · descr · r:embed
+    let mut frame_name = String::new();
+    let mut tbl: Option<Vec<Vec<Cell>>> = None;
+    let mut cell: Option<Cell> = None;
+    let mut fallback = 0usize;
+    let round = |v: f64| (v * 10000.0).round() / 10000.0;
+    loop {
+        let ev = match reader.read_event() {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(ev) => ev,
+        };
+        match ev {
+            Event::Start(ref e) | Event::Empty(ref e) => {
+                let open = matches!(ev, Event::Start(_));
+                let name = e.local_name().as_ref().to_string();
+                let attr = |k: &str| e.attributes().flatten().find(|a| a.key.as_ref() == k).and_then(|a| attr_value(&a)).unwrap_or_default();
+                let num = |k: &str| attr(k).parse::<f64>().unwrap_or(0.0);
+                if name == "Fallback" && open {
+                    fallback += 1;
+                }
+                if fallback == 0 {
+                    let parent = path.last().map_or("", String::as_str);
+                    let grand = path.len().checked_sub(2).and_then(|i| path.get(i)).map_or("", String::as_str);
+                    match name.as_str() {
+                        "grpSp" if open => tf.push(*tf.last().unwrap_or(&NO_TF)),
+                        "pic" if open => {
+                            pic = Some(Default::default());
+                            // OLE 개체의 대체 그림은 graphicFrame 의 위치를 쓴다
+                            if !path.iter().any(|p| p == "graphicFrame") {
+                                xfrm = [0.0; 4];
+                            }
+                        }
+                        "graphicFrame" if open => {
+                            frame_name.clear();
+                            xfrm = [0.0; 4];
+                        }
+                        "cNvPr" => match pic.as_mut() {
+                            Some(p) => (p[0], p[1]) = (attr("name"), attr("descr")),
+                            None => frame_name = attr("name"),
+                        },
+                        "blip" => {
+                            if let Some(p) = pic.as_mut() {
+                                p[2] = e
+                                    .attributes()
+                                    .flatten()
+                                    .find(|a| a.key.as_ref().contains(':') && a.key.local_name().as_ref() == "embed")
+                                    .and_then(|a| attr_value(&a))
+                                    .unwrap_or_default();
+                            }
+                        }
+                        "off" | "ext" | "chOff" | "chExt" if parent == "xfrm" => {
+                            let (x, y) = if name.ends_with("ff") { (num("x"), num("y")) } else { (num("cx"), num("cy")) };
+                            let i = ["off", "ext", "chOff", "chExt"].iter().position(|n| *n == name).unwrap_or(0);
+                            if grand == "grpSpPr" {
+                                (grp[i * 2], grp[i * 2 + 1]) = (x, y);
+                            } else if i < 2 && matches!(grand, "spPr" | "graphicFrame") {
+                                (xfrm[i * 2], xfrm[i * 2 + 1]) = (x, y);
+                            }
+                        }
+                        "tbl" if open => tbl = Some(vec![]),
+                        "tr" if open => {
+                            if let Some(t) = tbl.as_mut() {
+                                t.push(vec![]);
+                            }
+                        }
+                        "tc" => {
+                            let on = |k: &str| matches!(attr(k).as_str(), "1" | "true");
+                            let span = |k: &str| attr(k).parse::<usize>().unwrap_or(1).max(1);
+                            let c = Cell { text: String::new(), row_span: span("rowSpan"), col_span: span("gridSpan"), merged: on("hMerge") || on("vMerge") };
+                            match (open, tbl.as_mut().and_then(|t| t.last_mut())) {
+                                (true, _) => cell = Some(c),
+                                (false, Some(row)) => row.push(c),
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if open {
+                    path.push(name);
+                }
+            }
+            Event::End(_) => {
+                let Some(name) = path.pop() else { continue };
+                if name == "Fallback" {
+                    fallback = fallback.saturating_sub(1);
+                    continue;
+                }
+                if fallback > 0 {
+                    continue;
+                }
+                let t = *tf.last().unwrap_or(&NO_TF);
+                let rect = || {
+                    let (x, y, w, h) = (t[0] * xfrm[0] + t[1], t[2] * xfrm[1] + t[3], t[0] * xfrm[2], t[2] * xfrm[3]);
+                    [round(x / size.0), round(y / size.1), round(w / size.0), round(h / size.1)]
+                };
+                match name.as_str() {
+                    "grpSpPr" if path.last().is_some_and(|p| p == "grpSp") => {
+                        let a = if grp[6] > 0.0 { grp[2] / grp[6] } else { 1.0 };
+                        let c = if grp[7] > 0.0 { grp[3] / grp[7] } else { 1.0 };
+                        let (b, d) = (grp[0] - grp[4] * a, grp[1] - grp[5] * c);
+                        let p = tf.len().checked_sub(2).and_then(|i| tf.get(i)).copied().unwrap_or(NO_TF);
+                        if let Some(last) = tf.last_mut() {
+                            *last = [p[0] * a, p[0] * b + p[1], p[2] * c, p[2] * d + p[3]];
+                        }
+                        grp = [0.0; 8];
+                    }
+                    "grpSp" if tf.len() > 1 => {
+                        tf.pop();
+                    }
+                    "pic" => {
+                        if let Some([name, descr, embed]) = pic.take()
+                            && let Some(target) = rels.get(&embed)
+                        {
+                            let ext = target.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+                            let supported = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp");
+                            images.push(SlideImage { index: images.len(), name, descr, rect: rect(), ext, supported, path: target.clone() });
+                        }
+                    }
+                    "tc" => {
+                        if let (Some(mut c), Some(row)) = (cell.take(), tbl.as_mut().and_then(|t| t.last_mut())) {
+                            c.text = c.text.trim().to_string();
+                            row.push(c);
+                        }
+                    }
+                    // 칸 안 문단은 줄로 나눈다
+                    "p" => {
+                        if let Some(c) = cell.as_mut() {
+                            c.text.push('\n');
+                        }
+                    }
+                    "graphicFrame" => {
+                        if let Some(rows) = tbl.take().filter(|r| r.iter().any(|row| !row.is_empty())) {
+                            tables.push(SlideTable { name: std::mem::take(&mut frame_name), rect: rect(), rows });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Text(t) if fallback == 0 && path.last().is_some_and(|p| p == "t") => {
+                if let Some(c) = cell.as_mut() {
+                    c.text.push_str(&t.xml10_content());
+                }
+            }
+            Event::GeneralRef(r) if fallback == 0 && path.last().is_some_and(|p| p == "t") => {
+                if let Some(c) = cell.as_mut() {
+                    let name = r.xml10_content();
+                    match r.resolve_char_ref() {
+                        Ok(Some(ch)) => c.text.push(ch),
+                        _ => c.text.push_str(quick_xml::escape::resolve_predefined_entity(&name).unwrap_or("")),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (images, tables)
+}
+
+/// 자료 복사본 (PPTX). 전체를 읽지 않고 zip 에서 필요한 것만 꺼낸다
+fn open_pptx(state: &AppState, material_id: i64) -> Res<Pptx<std::fs::File>> {
+    let rel: String = {
+        let con = state.db.lock().map_err(err)?;
+        con.query_row("SELECT rel_path FROM source_material WHERE id = ?1 AND kind = 'pptx'", [material_id], |r| r.get(0)).map_err(err)?
+    };
+    let file = Some(rel)
+        .filter(|r| crate::commands::safe_rel_path(r, "sources"))
+        .and_then(|r| std::fs::File::open(state.data_dir.join(r)).ok())
+        .ok_or_else(|| "이 기기에는 자료 파일이 없어요.".to_string())?;
+    pptx_open(file)
+}
+
+/// 슬라이드 하나의 XML · 그림 · 표 (rels 로 그림 파일을 찾는다)
+fn slide_objects<R: Read + Seek>(p: &mut Pptx<R>, i: usize) -> Option<(String, Vec<SlideImage>, Vec<SlideTable>)> {
+    let slide = p.slides.get(i)?.clone();
+    let xml = zip_text(&mut p.zip, &slide)?;
+    let (dir, file) = slide.rsplit_once('/').unwrap_or(("", &slide));
+    let rels = rels_map(&zip_text(&mut p.zip, &format!("{dir}/_rels/{file}.rels")).unwrap_or_default(), dir);
+    let (images, tables) = parse_objects(&xml, &rels, p.size);
+    Some((xml, images, tables))
+}
+
+/// IT1-p. page 를 주면 그 슬라이드만, 없으면 그림 · 표가 있는 슬라이드 전부
+#[tauri::command]
+pub fn source_slide_objects(state: State<AppState>, material_id: i64, page: Option<i64>) -> Res<Vec<SlideObjects>> {
+    let mut p = open_pptx(&state, material_id)?;
+    let mut out = vec![];
+    for i in 0..p.slides.len() {
+        if page.is_some_and(|pg| pg != i as i64 + 1) {
+            continue;
+        }
+        let Some((xml, images, tables)) = slide_objects(&mut p, i) else { continue };
+        if page.is_none() && images.is_empty() && tables.is_empty() {
+            continue;
+        }
+        let title = parse_slide(&xml).into_iter().next().map(|p| p.text).unwrap_or_default();
+        out.push(SlideObjects { page: i as i64 + 1, title, deck_id: 0, images, tables });
+    }
+    let con = state.db.lock().map_err(err)?;
+    let own: i64 = con.query_row("SELECT deck_id FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).map_err(err)?;
+    for o in &mut out {
+        o.deck_id = nearest_deck(&con, material_id, o.page)?.unwrap_or(own);
+    }
+    Ok(out)
+}
+
+/// 그림 원본 바이트 (썸네일 · 가리기 편집기). 미디어 폴더에는 카드를 만들 때 화면이 save_media 로 넣는다
+#[tauri::command]
+pub fn source_slide_image(state: State<AppState>, material_id: i64, page: i64, index: usize) -> Res<tauri::ipc::Response> {
+    let mut p = open_pptx(&state, material_id)?;
+    let i = usize::try_from(page - 1).map_err(err)?;
+    let (_, images, _) = slide_objects(&mut p, i).ok_or("슬라이드를 찾을 수 없어요.")?;
+    let img = images.get(index).ok_or("그림을 찾을 수 없어요.")?;
+    let mut bytes = vec![];
+    p.zip.by_name(&img.path).map_err(|_| "그림을 찾을 수 없어요.".to_string())?.read_to_end(&mut bytes).map_err(err)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 // ------------------------------------------------------------------ I3 분석: 임베딩 → 자동 연결 → 중요도 제안
 
 static ANALYZING: AtomicBool = AtomicBool::new(false);
@@ -811,7 +1238,8 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
         let mut segs = vec![];
         for (m, _) in &materials {
-            segs.push(segments_of(&con, *m)?);
+            // 그림 · 표 영역은 강조가 아니라 자동 연결 · 중요도 제안에 넣지 않는다
+            segs.push(segments_of(&con, *m)?.into_iter().filter(|s| !is_region(&s.signals)).collect::<Vec<_>>());
         }
         (ids, cards, materials, segs)
     };
@@ -859,13 +1287,13 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
 
 /// 하위 덱 중요도 제안. 제안을 붙인 덱 수
 fn suggest(con: &Connection, ids: &str) -> Res<usize> {
-    // 하위 덱 점수: 카드마다 이어진 구간 가중치 합의 평균. 근거 문장에 쓸 자료 이름과 신호도 모은다
+    // 하위 덱 점수: 카드마다 이어진 구간 가중치 합의 평균. 근거 문장에 쓸 자료 이름과 신호도 모은다 (그림 · 표 영역은 강조가 아니라 뺀다)
     let mut st = con
         .prepare(&format!(
             "SELECT c.deck_id, c.id, s.weight, m.file_name, s.signals FROM card c
              JOIN source_link l ON l.card_id = c.id AND l.method != 'rejected'
              JOIN source_segment s ON s.id = l.segment_id JOIN source_material m ON m.id = s.material_id
-             WHERE c.deck_id IN ({ids}) AND m.deck_id IN ({ids})"
+             WHERE c.deck_id IN ({ids}) AND m.deck_id IN ({ids}) AND s.signals NOT IN ('figure','table')"
         ))
         .map_err(err)?;
     #[derive(Default)]
@@ -947,7 +1375,7 @@ mod tests {
         let files = [
             (
                 "ppt/presentation.xml",
-                r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="rId3"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>"#,
+                r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="rId3"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst><p:sldSz cx="10000000" cy="5000000"/></p:presentation>"#,
             ),
             (
                 "ppt/_rels/presentation.xml.rels",
@@ -961,8 +1389,34 @@ mod tests {
                   <a:p><a:r><a:rPr><a:solidFill><a:srgbClr val="C00000"/></a:solidFill></a:rPr><a:t>다중공선성 주의</a:t></a:r></a:p>
                   <a:p><a:r><a:rPr><a:highlight><a:srgbClr val="FFFF00"/></a:highlight></a:rPr><a:t>잔차 분석</a:t></a:r></a:p>
                   <a:p><a:r><a:rPr><a:solidFill><a:srgbClr val="1F4E79"/></a:solidFill></a:rPr><a:t>파란 글씨는 강조가 아님</a:t></a:r></a:p>
-                </p:txBody></p:sld>"#,
+                </p:txBody>
+                <p:pic><p:nvPicPr><p:cNvPr id="4" name="그림 3" descr="잔차 산점도"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"><a:extLst><a:ext uri="x"><x:svgBlip r:embed="rId9"/></a:ext></a:extLst></a:blip></p:blipFill>
+                  <p:spPr><a:xfrm><a:off x="1000000" y="500000"/><a:ext cx="2000000" cy="1000000"/></a:xfrm></p:spPr></p:pic>
+                <p:grpSp><p:nvGrpSpPr><p:cNvPr id="5" name="묶음"/></p:nvGrpSpPr>
+                  <p:grpSpPr><a:xfrm><a:off x="5000000" y="2500000"/><a:ext cx="2000000" cy="1000000"/><a:chOff x="0" y="0"/><a:chExt cx="4000000" cy="2000000"/></a:xfrm></p:grpSpPr>
+                  <p:pic><p:nvPicPr><p:cNvPr id="6" name="chart"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId3"/></p:blipFill>
+                    <p:spPr><a:xfrm><a:off x="2000000" y="0"/><a:ext cx="2000000" cy="2000000"/></a:xfrm></p:spPr></p:pic>
+                </p:grpSp>
+                <mc:AlternateContent><mc:Choice Requires="x"><p:sp/></mc:Choice><mc:Fallback>
+                  <p:pic><p:nvPicPr><p:cNvPr id="8" name="대체"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic>
+                </mc:Fallback></mc:AlternateContent>
+                <p:pic><p:nvPicPr><p:cNvPr id="9" name="링크"/></p:nvPicPr><p:blipFill><a:blip r:link="rId4"/></p:blipFill></p:pic>
+                <p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="7" name="표 1"/></p:nvGraphicFramePr>
+                  <p:xfrm><a:off x="0" y="2500000"/><a:ext cx="5000000" cy="2500000"/></p:xfrm>
+                  <a:graphic><a:graphicData><a:tbl><a:tblGrid><a:gridCol w="1"/><a:gridCol w="1"/></a:tblGrid>
+                    <a:tr><a:tc gridSpan="2"><a:txBody><a:p><a:r><a:t>구분</a:t></a:r></a:p></a:txBody></a:tc><a:tc hMerge="1"><a:txBody><a:p/></a:txBody></a:tc></a:tr>
+                    <a:tr><a:tc rowSpan="2"><a:txBody><a:p><a:r><a:t>회귀</a:t></a:r></a:p></a:txBody></a:tc>
+                      <a:tc><a:txBody><a:p><a:r><a:t>선형 &amp; 직선</a:t></a:r></a:p><a:p><a:r><a:t>둘째 줄</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+                    <a:tr><a:tc vMerge="1"><a:txBody><a:p/></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>로지스틱</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+                  </a:tbl></a:graphicData></a:graphic></p:graphicFrame>
+                </p:sld>"#,
             ),
+            (
+                "ppt/slides/_rels/slide1.xml.rels",
+                r#"<Relationships><Relationship Id="rId2" Target="../media/image1.png"/><Relationship Id="rId3" Target="../media/image2.EMF"/>
+                   <Relationship Id="rId4" Target="https://example.com/a.png" TargetMode="External"/></Relationships>"#,
+            ),
+            ("ppt/media/image1.png", "PNG!"),
             (
                 "ppt/slides/slide2.xml",
                 r#"<p:sld xmlns:p="p" xmlns:a="a"><p:txBody><a:p><a:r><a:rPr u="sng"/><a:t>★ 기출 &amp; 핵심</a:t></a:r></a:p></p:txBody></p:sld>"#,
@@ -988,11 +1442,117 @@ mod tests {
         assert_eq!(s[2].signals, vec!["red"]);
         assert_eq!(s[3].signals, vec!["highlight"]);
         assert_eq!(s[4].signals, Vec::<&str>::new());
+        assert_eq!(s[5].text, "구분");
         let segs = pptx_segments(&slides);
         assert_eq!(segs.len(), 4);
         assert_eq!((segs[1].page, segs[1].before.as_deref(), segs[1].after.as_deref()), (2, Some("평범한 문장"), Some("다중공선성 주의")));
         assert_eq!(weight_of(&sorted_signals(&segs[0].signals)), 5.0);
         assert!(pptx_slides(b"not a zip").is_err());
+    }
+
+    #[test]
+    fn pptx_objects() {
+        let mut p = pptx_open(std::io::Cursor::new(tiny_pptx())).unwrap();
+        assert_eq!(p.size, (10000000.0, 5000000.0));
+        // presentation.xml 순서: slide1 이 2쪽. 1쪽(slide2)에는 그림 · 표가 없다
+        let (_, images, tables) = slide_objects(&mut p, 0).unwrap();
+        assert!(images.is_empty() && tables.is_empty());
+        let (_, images, tables) = slide_objects(&mut p, 1).unwrap();
+        // Fallback 안 그림 · 외부 링크 그림은 빼고 둘. 둘째는 그룹 변환(반으로 줄이고 옮김)을 거친다
+        let img = |index, name: &str, descr: &str, rect, ext: &str, supported, path: &str| SlideImage {
+            index,
+            name: name.into(),
+            descr: descr.into(),
+            rect,
+            ext: ext.into(),
+            supported,
+            path: path.into(),
+        };
+        assert_eq!(
+            images,
+            vec![
+                img(0, "그림 3", "잔차 산점도", [0.1, 0.1, 0.2, 0.2], "png", true, "ppt/media/image1.png"),
+                img(1, "chart", "", [0.6, 0.5, 0.1, 0.2], "emf", false, "ppt/media/image2.EMF"),
+            ]
+        );
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+        assert_eq!((t.name.as_str(), t.rect), ("표 1", [0.0, 0.5, 0.5, 0.5]));
+        let cell = |text: &str, row_span, col_span, merged| crate::table::Cell { text: text.into(), row_span, col_span, merged };
+        assert_eq!(
+            t.rows,
+            vec![
+                vec![cell("구분", 1, 2, false), cell("", 1, 1, true)],
+                vec![cell("회귀", 2, 1, false), cell("선형 & 직선\n둘째 줄", 1, 1, false)],
+                vec![cell("", 1, 1, true), cell("로지스틱", 1, 1, false)],
+            ]
+        );
+        // 그림 바이트는 zip 에서 그대로
+        let mut bytes = vec![];
+        p.zip.by_name(&images[0].path).unwrap().read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"PNG!");
+        assert_eq!(resolve("ppt/slides", "../media/a.png"), "ppt/media/a.png");
+        assert_eq!(resolve("ppt", "/ppt/slides/slide1.xml"), "ppt/slides/slide1.xml");
+    }
+
+    #[test]
+    fn region_cards_link_and_undo() {
+        use crate::table::{drafts, Draft, TableSpec};
+        let mut con = crate::db::open_in_memory().unwrap();
+        con.execute_batch(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'D', 0, 0), (2, '하위', 0, 0);
+             UPDATE deck SET parent_id = 1 WHERE id = 2;
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, created_at, updated_at) VALUES (1, 1, '강의.pptx', 'sources/1.pptx', 'pptx', 0, 0);
+             INSERT INTO source_segment (material_id, page, ord, text, signals, weight) VALUES (1, 3, 0, '강조', 'star', 2);",
+        )
+        .unwrap();
+        let region = |kind: &str, rect: [f64; 4]| Region { material_id: 1, page: 3, rects: vec![rect], kind: kind.into(), text: String::new() };
+        let spec = TableSpec {
+            rows: vec![
+                vec!["검정", "귀무가설"].into_iter().map(|t| crate::table::Cell { text: t.into(), row_span: 1, col_span: 1, merged: false }).collect(),
+                vec!["t", "평균이 같다"].into_iter().map(|t| crate::table::Cell { text: t.into(), row_span: 1, col_span: 1, merged: false }).collect(),
+                vec!["F", "분산이 같다"].into_iter().map(|t| crate::table::Cell { text: t.into(), row_span: 1, col_span: 1, merged: false }).collect(),
+            ],
+            header: true,
+            method: "cloze".into(),
+            cols: vec![1],
+            hide_same_col: true,
+            source: "강의.pptx · 슬라이드 3".into(),
+        };
+        let mut cards = drafts(&spec);
+        cards.push(Draft { kind: "list".into(), front: "검정 2가지".into(), back: "t<br>F".into() });
+        let change = region_cards(&mut con, 2, &region("table", [0.0, 0.5, 0.5, 0.5]), &cards).unwrap();
+        let count = |con: &Connection, sql: &str| -> i64 { con.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count(&con, "SELECT count(*) FROM card WHERE deck_id = 2"), 3);
+        assert_eq!(count(&con, "SELECT count(*) FROM note n JOIN note_type t ON t.id = n.note_type_id WHERE t.name = 'Neo-Anki 목록 회상'"), 1);
+        let segs = segments_of(&con, 1).unwrap();
+        // 영역 구간은 그 쪽 강조 구간 뒤, 가중치 0, 글자가 없으면 "표 · p.3"
+        let t = segs.iter().find(|s| s.signals == ["table"]).unwrap();
+        assert_eq!((t.ord, t.weight, t.text.as_str(), t.links.len(), t.rects.clone()), (1, 0.0, "표 · p.3", 3, Some(vec![[0.0, 0.5, 0.5, 0.5]])));
+        // 빠진 범위에는 강조 구간만 (영역은 세지 않는다). R8 은 이 쪽에서 가장 가까운 카드의 덱
+        let m = material(&con, 1).unwrap();
+        assert_eq!((m.segments, m.linked, m.gaps), (2, 1, 1));
+        assert_eq!(nearest_deck(&con, 1, 9).unwrap(), Some(2));
+        let summary: String = con.query_row("SELECT summary FROM card_change WHERE id = ?1", [change], |r| r.get(0)).unwrap();
+        assert_eq!(summary, "「강의.pptx」 표에서 카드 3장 만들기");
+        // 같은 영역을 다시 이으면 구간 하나 (글자만 새로)
+        let note: i64 = con.query_row("SELECT max(note_id) FROM card", [], |r| r.get(0)).unwrap();
+        let mut again = region("table", [0.0, 0.5, 0.5, 0.5]);
+        again.text = "검정 · 귀무가설".into();
+        let seg = region_segment(&con, &again).unwrap();
+        link_notes(&con, seg, &[note]).unwrap();
+        assert_eq!((seg, count(&con, "SELECT count(*) FROM source_segment")), (t.id, 2));
+        assert_eq!(segments_of(&con, 1).unwrap()[1].text, "검정 · 귀무가설");
+        // 다른 영역 · 다른 종류는 새 구간. 모르는 종류는 받지 않는다
+        assert_ne!(region_segment(&con, &region("figure", [0.0, 0.5, 0.5, 0.5])).unwrap(), t.id);
+        assert!(region_segment(&con, &region("star", [0.0, 0.0, 1.0, 1.0])).is_err());
+        assert!(region_cards(&mut con, 2, &region("figure", [0.1, 0.1, 0.2, 0.2]), &[]).is_err());
+        assert!(region_cards(&mut con, 2, &region("figure", [0.1, 0.1, 0.2, 0.2]), &[Draft { kind: "basic".into(), front: "<img src=\"neo-a.png\">".into(), back: " ".into() }]).is_err());
+        // 되돌리면 노트와 연결이 사라지고 구간은 남는다
+        crate::quality::undo(&mut con, change).unwrap();
+        assert_eq!(count(&con, "SELECT count(*) FROM card"), 0);
+        assert_eq!(count(&con, "SELECT count(*) FROM source_link"), 0);
+        assert_eq!(count(&con, "SELECT count(*) FROM source_segment WHERE signals = 'table'"), 1);
     }
 
     #[test]

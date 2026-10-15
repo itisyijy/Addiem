@@ -15,6 +15,7 @@ mod recall;
 mod queue;
 mod render;
 mod source;
+mod table;
 mod srs;
 mod sync;
 
@@ -127,7 +128,8 @@ pub fn run() {
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
             source::source_list, source::source_add, source::source_delete, source::source_bytes, source::source_save_pdf,
             source::source_segments, source::source_slide, source::source_link, source::source_unlink, source::source_for_card,
-            source::source_analyze, source::source_unanalyzed, source::source_segment, rag::rag_preview, rag::rag_draft, rag::rag_draft_apply, rag::rag_grade_scope, rag::rag_grade, rag::rag_linked, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
+            source::source_analyze, source::source_unanalyzed, source::source_segment, source::source_region_link, source::source_region_cards,
+            source::source_slide_objects, source::source_slide_image, table::source_table_cards, rag::rag_preview, rag::rag_draft, rag::rag_draft_apply, rag::rag_grade_scope, rag::rag_grade, rag::rag_linked, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
             quality::quality_check,
             quality::hide_quality,
             quality::split_suggest,
