@@ -220,6 +220,33 @@ pub fn from_tags(tags: &str) -> Option<(i64, Vec<String>)> {
     found.then(|| ((names.len() as i64).max(1), names))
 }
 
+/// 내보내기: 기출 표시 → 노트 태그 (from_tags 의 거꾸로, N20). NULL(정하지 않음)이면 태그 그대로, 0 이면 기출 태그를 뺀다.
+/// 이름마다 "기출::이름"(띄어쓰기는 _), 이름 없이 표시만 했으면 "기출". 기출 아닌 태그와 표시와 맞는 기출 태그("과목::기출::2023" 처럼
+/// 앞 단계가 있는 것도)는 그대로 둔다. 맞는지는 가져오기와 같은 exam_tag 로 본다
+pub fn to_tags(tags: &str, hits: Option<i64>, names: Option<String>) -> String {
+    let tags: Vec<&str> = tags.split_whitespace().collect();
+    let Some(hits) = hits else { return tags.join(" ") };
+    let names = names_of(names);
+    let mut want: Vec<String> = match (hits > 0, names.is_empty()) {
+        (false, _) => vec![],
+        (true, true) => vec!["기출".into()],
+        (true, false) => names.iter().map(|n| format!("기출::{}", n.split_whitespace().collect::<Vec<_>>().join("_"))).collect(),
+    };
+    let mut out: Vec<String> = vec![];
+    for t in tags {
+        let Some(name) = exam_tag(t) else {
+            out.push(t.into());
+            continue;
+        };
+        if let Some(i) = want.iter().position(|w| exam_tag(w).as_ref() == Some(&name)) {
+            want.remove(i);
+            out.push(t.into());
+        }
+    }
+    out.extend(want);
+    out.join(" ")
+}
+
 /// 아직 정하지 않은(NULL) 노트의 기출 태그를 표시로 옮긴다. 가져온 직후와 앱을 열 때 (이 기능보다 먼저 가져온 노트, 다른 기기에서 받은 노트).
 /// 사용자가 고친 값(0 포함)은 덮지 않는다. 어느 기기든 같은 태그로 같은 값을 만들므로 동기화 변경 기록은 남기지 않는다
 /// (applying, 동기화 엔진의 apply 와 같은 방식). 호출하는 쪽이 트랜잭션 안에서 부른다: 실패하면 플래그도 함께 되돌아간다

@@ -304,14 +304,22 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
     while let Some(r) = rows.next().map_err(err)? {
         let fields: Vec<String> = serde_json::from_str(&r.get::<_, String>(0).map_err(err)?).map_err(err)?;
         let (ntname, native): (String, bool) = (r.get(2).map_err(err)?, r.get(4).map_err(err)?);
-        let (front, back) = if native && NATIVE.contains(&ntname.as_str()) {
-            (fields.first().cloned().unwrap_or_default(), fields.get(1).cloned().unwrap_or_default())
+        let (q, a): (Option<String>, Option<String>) = (r.get(9).map_err(err)?, r.get(10).map_err(err)?);
+        let q = q.unwrap_or_default();
+        let names: Vec<String> = serde_json::from_str(&r.get::<_, String>(3).map_err(err)?).unwrap_or_default();
+        let field = |i: usize| fields.get(i).cloned().unwrap_or_default();
+        // 가져온 빈칸 유형(.apkg 왕복 포함)도 앱 Cloze 처럼 빈칸 원문을 한 번 쓴다. 카드 한 장의 화면이면 c2 부터의 빈칸 표시가 사라진다
+        let cloze = crate::occlusion::cloze_field(&q).and_then(|f| names.iter().position(|n| n == f));
+        let (front, back) = if crate::occlusion::is_template(&q) {
+            crate::occlusion::csv_cells(&fields)
+        } else if native && NATIVE.contains(&ntname.as_str()) {
+            (field(0), field(1))
+        } else if let Some(i) = cloze {
+            (field(i), field(usize::from(i == 0))) // 뒷면 = 빈칸 필드가 아닌 첫 필드 (Back Extra)
         } else {
-            let names: Vec<String> = serde_json::from_str(&r.get::<_, String>(3).map_err(err)?).unwrap_or_default();
             let map: HashMap<String, String> = names.into_iter().zip(fields.iter().cloned()).collect();
-            let (q, a): (Option<String>, Option<String>) = (r.get(9).map_err(err)?, r.get(10).map_err(err)?);
             let ord: i64 = r.get(11).map_err(err)?;
-            let shown = render_card(&q.unwrap_or_default(), &a.unwrap_or_default(), &map, ord as u32);
+            let shown = render_card(&q, &a.unwrap_or_default(), &map, ord as u32);
             (shown.front, crate::commands::answer_part(&shown.back).to_string())
         };
         let text = |s: String| if plain_text { strip_tags(&s) } else { s };
@@ -414,6 +422,8 @@ struct Note {
     updated_at: i64,
     anki_note_id: Option<i64>,
     anki_guid: Option<String>,
+    exam_hits: Option<i64>,
+    exam_names: Option<String>,
 }
 
 struct Card {
@@ -512,7 +522,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let notes: Vec<Note> = {
         let mut st = con
             .prepare(&format!(
-                "SELECT id, note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid FROM note
+                "SELECT id, note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid, exam_hits, exam_names FROM note
                  WHERE id IN (SELECT note_id FROM card WHERE deck_id IN ({in_decks})) ORDER BY id"
             ))
             .map_err(err)?;
@@ -527,6 +537,8 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
                     updated_at: r.get(5)?,
                     anki_note_id: r.get(6)?,
                     anki_guid: r.get(7)?,
+                    exam_hits: r.get(8)?,
+                    exam_names: r.get(9)?,
                 })
             })
             .map_err(err)?;
@@ -568,7 +580,8 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         }
         let id = unique(&mut used, n.anki_note_id.unwrap_or(n.created_at));
         note_ids.insert(n.id, id);
-        let tags = n.tags.split_whitespace().collect::<Vec<_>>().join(" ");
+        // 기출 표시를 태그로 (N20). Anki 에서 보이고, 다시 가져오면 같은 표시가 된다
+        let tags = crate::exam::to_tags(&n.tags, n.exam_hits, n.exam_names.clone());
         let guid = match &n.anki_guid {
             Some(g) => g.clone(),
             None => {
@@ -1329,6 +1342,86 @@ mod tests {
             serde_json::from_str(&Connection::open(&col).unwrap().query_row("SELECT models FROM col", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
         let basic = models.as_object().unwrap().values().find(|m| m["name"] == "Basic").unwrap();
         assert_eq!(basic["originalStockKind"], 1, "가져온 기본 유형의 표시가 다시 내보낼 때도 남아야 한다");
+    }
+
+    /// N20: 기출 표시가 Anki 태그로 나가고, 새 DB 로 다시 가져오면 같은 표시가 된다. 지운 표시(0)는 태그도 뺀다
+    #[test]
+    fn exam_marks_survive_round_trip() {
+        use crate::exam::{self, ExamState};
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-exam-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('QA', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let add = |front: &str, tags: &str| -> i64 {
+            insert_note(&con, &NewCard { deck_id: root, kind: "basic".into(), front: front.into(), back: "b".into(), importance: None }, tags, None).unwrap();
+            con.query_row("SELECT max(id) FROM note", [], |r| r.get(0)).unwrap()
+        };
+        let (named, removed, plain) = (add("1", "과목::1 과목::기출::2023"), add("2", "기출 중요"), add("3", ""));
+        add("4", "과목::1");
+        // 앱처럼: 열 때 태그에서 채우고, 화면에서 표시 · 지우기
+        exam::fill_from_tags(&con).unwrap();
+        exam::mark(&con, "note", &[named], Some("2024 기말")).unwrap();
+        exam::mark(&con, "note", &[plain], None).unwrap();
+        exam::set(&con, "note", &[ExamState { id: removed, hits: None, names: vec![] }]).unwrap();
+        let out = tmp.0.join("exam.apkg");
+        export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+
+        let b = state(&tmp.0.join("b"));
+        crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let bc = b.db.lock().unwrap();
+        let rows = |c: &Connection| -> Vec<(String, ExamState)> {
+            let mut st = c.prepare("SELECT tags, exam_hits, exam_names FROM note ORDER BY fields").unwrap();
+            st.query_map([], |r| Ok((r.get(0)?, ExamState::of(0, r.get(1)?, r.get(2)?)))).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        let (before, after) = (rows(&con), rows(&bc));
+        let tags: Vec<&str> = after.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(tags, ["과목::1 과목::기출::2023 기출::2024_기말", "중요", "기출", "과목::1"], "앞 단계가 있는 기출 태그는 그대로, 정하지 않은 노트는 손대지 않는다");
+        assert_eq!(after.into_iter().map(|r| r.1).collect::<Vec<_>>(), before.into_iter().map(|r| r.1).collect::<Vec<_>>());
+    }
+
+    /// 릴리스 QA: 그림 가리기 노트는 CSV 에 겹침 HTML(io-mask · canvas) 대신 질문 · 그림 파일 · 칸 이름을 쓴다
+    #[test]
+    fn csv_occlusion_is_plain_text() {
+        let con = db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('해부학', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let ntid: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Image Occlusion'", [], |r| r.get(0)).unwrap();
+        let occ = "{{c1::image-occlusion:rect:left=.1:top=.2:width=.25:height=.1:label=좌심실:oi=1}}<br>\
+                   {{c2::image-occlusion:rect:left=.5:top=.5:width=.1:height=.1:oi=1}}<br>";
+        let fields = serde_json::to_string(&[occ, "<img src=\"heart.png\">", "<b>심장</b>", "", ""]).unwrap();
+        con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 1, 1)", params![ntid, fields]).unwrap();
+        let nid = con.last_insert_rowid();
+        for ord in [0, 1] {
+            con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, ?3, 1, 1)", params![nid, root, ord])
+                .unwrap();
+        }
+        for plain in [true, false] {
+            let (text, _) = csv_text(&con, root, &["front", "back"].map(String::from), plain).unwrap();
+            assert_eq!(text.split("\r\n").nth(1), Some(r#""심장 (heart.png)","1 · 좌심실, 2""#), "plain_text {plain}");
+        }
+    }
+
+    /// 릴리스 QA: .apkg 왕복으로 가져온 빈칸 유형도 앱 Cloze 처럼 빈칸 원문을 한 번 쓴다 (c1 카드 화면만 쓰면 c2 부터 빈칸이 빠진다)
+    #[test]
+    fn csv_imported_cloze_keeps_every_cloze() {
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-csv-cloze-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('QA', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let card = NewCard { deck_id: root, kind: "cloze".into(), front: "{{c1::서울}}은 {{c2::한국}}의 수도".into(), back: "덧붙임".into(), importance: None };
+        insert_note(&con, &card, "", None).unwrap();
+        let out = tmp.0.join("cloze.apkg");
+        export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+        let b = state(&tmp.0.join("b"));
+        crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let bc = b.db.lock().unwrap();
+        let broot: i64 = bc.query_row("SELECT id FROM deck WHERE name = 'QA'", [], |r| r.get(0)).unwrap();
+        let cols = ["front", "back"].map(String::from);
+        let (text, _) = csv_text(&bc, broot, &cols, false).unwrap();
+        assert_eq!(text, csv_text(&con, root, &cols, false).unwrap().0);
+        assert!(text.contains(r#""{{c1::서울}}은 {{c2::한국}}의 수도","덧붙임""#), "{text}");
     }
 
     /// 실제 Anki 가 만든 .apkg · .colpkg 를 복습 기록과 함께 가져와 요약을 찍고, 맨 위 덱을 기록과 함께 다시 내보낸다 (손으로 돌리는 QA).

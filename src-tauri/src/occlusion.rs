@@ -313,8 +313,8 @@ pub fn place(html: &str, caption: Option<String>) -> String {
 
 pub const DEFAULT_QUESTION: &str = "가린 곳에 들어갈 말은?";
 
-/// 템플릿이 칸을 읽는 필드 ({{cloze:이름}})
-fn cloze_field(qfmt: &str) -> Option<&str> {
+/// 템플릿이 칸을 읽는 필드 ({{cloze:이름}}). 일반 빈칸 유형도 같다 (CSV 내보내기)
+pub(crate) fn cloze_field(qfmt: &str) -> Option<&str> {
     let i = qfmt.find("{{cloze:")? + "{{cloze:".len();
     Some(qfmt[i..].split("}}").next()?.trim())
 }
@@ -473,6 +473,24 @@ pub fn save_occlusion(state: State<AppState>, note: OcclusionInput) -> Res<i64> 
 /// 이름이 있는 칸 수 (C1-xr "칸 이름 N개는 Anki에서 보이지 않아요")
 pub fn label_count(field: &str) -> usize {
     parse(field).0.iter().filter(|s| !clean_label(&s.label).is_empty()).count()
+}
+
+/// CSV 한 줄 (C1-xc): 앞면 "질문 (그림 파일)", 뒷면 칸마다 "번호 · 이름"(이름 없으면 번호). 겹침 HTML 은 표에서 쓸모가 없다
+pub fn csv_cells(fields: &[String]) -> (String, String) {
+    let get = |i: usize| fields.get(i).map_or("", String::as_str);
+    let header = crate::render::strip_tags(get(2));
+    let question = if header.is_empty() { DEFAULT_QUESTION.to_string() } else { header };
+    let image = image_name(get(1));
+    let front = if image.is_empty() { question } else { format!("{question} ({image})") };
+    let shapes = parse(get(0)).0;
+    let regions: Vec<String> = ordinals(&shapes)
+        .into_iter()
+        .map(|n| match shapes.iter().filter(|s| s.ordinal == n).map(|s| clean_label(&s.label)).find(|l| !l.is_empty()) {
+            Some(l) => format!("{n} · {l}"),
+            None => n.to_string(),
+        })
+        .collect();
+    (front, regions.join(", "))
 }
 
 #[cfg(test)]

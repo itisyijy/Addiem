@@ -635,7 +635,7 @@ fn degraded_features(body: &str) -> Vec<&'static str> {
     }
     // type-in 은 J 서술형이 입력칸 · 정답 · 비교로 받는다 (I69). 빈칸 type-in 만 정답이 그 빈칸이 아니라 본문 전체로 잡힌다
     if body.contains("{{type:cloze:") {
-        out.push("빈칸 type-in 입력");
+        out.push("빈칸 입력칸");
     }
     if body.contains("{{tts") {
         out.push("읽어주기(TTS)");
@@ -1425,7 +1425,7 @@ fn run_import_selected(
     for d in &degraded {
         result.check_cards += d.cards;
         let what = match d.feature.as_str() {
-            "빈칸 type-in 입력" => "직접 써서 답할 때 그 빈칸이 아니라 본문 전체와 견줘요.",
+            "빈칸 입력칸" => "써 넣은 답을 그 빈칸이 아니라 본문 전체와 비교해요. 맞게 써도 틀린 것처럼 보일 수 있어요.",
             "스크립트" => "스크립트는 실행하지 않아요. 스크립트로 바뀌는 부분은 보이지 않아요.",
             _ => "소리 없이 글자만 보여요.",
         };
