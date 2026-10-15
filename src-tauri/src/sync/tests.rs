@@ -287,12 +287,51 @@ fn same_card_reviewed_on_both_devices_recomputes_fsrs() {
     assert_eq!(b.srs(card_b), expected, "공통 시점부터 합친 기록을 시간 순으로");
     assert_eq!(a.srs(card_a), expected, "두 기기의 일정이 같다");
     assert_eq!(a.dump(), b.dump());
-    // 한 기기에서만 복습하면 그 기기 상태를 그대로
+    // 데스크톱은 노트북이 자기 복습을 받았는지 노트북의 다음 파일을 받고서야 안다 (K27): 한 번 더 다시 계산하지만 결과는 같다
     a.review(&env.fsrs, card_a, 3, t2 + 86_400_000);
+    env.sync(&a);
+    let rb = env.sync(&b);
+    assert_eq!(rb.recomputed, 1);
+    assert_eq!(b.srs(card_b), a.srs(card_a));
+    assert_eq!(b.n("SELECT count(*) FROM sync_anchor"), 0, "서로 받은 것을 확인하면 앵커를 놓는다");
+    // 그 뒤로 한 기기에서만 복습하면 그 기기 상태를 그대로
+    a.review(&env.fsrs, card_a, 1, t2 + 2 * 86_400_000);
     env.sync(&a);
     let rb = env.sync(&b);
     assert_eq!(rb.recomputed, 0);
     assert_eq!(b.srs(card_b), a.srs(card_a));
+}
+
+#[test]
+fn reviews_pushed_before_seeing_each_other_are_replayed() {
+    // K12 빈틈: 두 기기가 받기를 마친 뒤 서로의 파일이 아직 없을 때 복습을 올렸다 (엇갈린 올리기).
+    // 올리면서 앵커를 지우면 나중에 서로의 기록을 받아도 다시 계산하지 않고 한쪽 상태만 남는다.
+    // 데스크톱은 받기 전에 한 번 더 복습한다. 복습하지 않은 세 번째 기기도 같은 상태가 돼야 한다
+    let env = Env::new();
+    let (a, b, card_a) = pair(&env);
+    let c = Dev::new("태블릿");
+    engine::join(&c.db, &env.cx(&c), Join::Take, json!({})).unwrap();
+    let uid = a.uid("card", card_a);
+    let card_b = b.id("card", &uid).unwrap();
+    let s0 = a.srs(card_a);
+    let (t1, t2, t3) = (1_800_000_000_000, 1_800_000_060_000, 1_800_000_120_000);
+    a.review(&env.fsrs, card_a, 3, t1);
+    b.review(&env.fsrs, card_b, 1, t2);
+    engine::push(&a.db, &env.cx(&a)).unwrap();
+    engine::push(&b.db, &env.cx(&b)).unwrap();
+    b.review(&env.fsrs, card_b, 3, t3);
+    for _ in 0..3 {
+        for d in [&a, &b, &c] {
+            env.sync(d);
+        }
+    }
+    let expected = [(3, t1), (1, t2), (3, t3)].iter().fold(s0, |s, (r, t)| srs::review(&env.fsrs, &s, *r, *t));
+    for d in [&a, &b, &c] {
+        assert_eq!(d.srs(d.id("card", &uid).unwrap()), expected, "{}: 세 기록을 시간 순으로", d.n("SELECT count(*) FROM review_log"));
+    }
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(a.dump(), c.dump());
+    assert_eq!(a.n("SELECT count(*) FROM sync_anchor") + b.n("SELECT count(*) FROM sync_anchor"), 0, "모두 받은 뒤에는 앵커를 놓는다");
 }
 
 #[test]
@@ -907,4 +946,57 @@ fn folder_store_rejects_paths_outside_root() {
     for bad in [r"changes\..\..\x", "C:/Windows/win.ini", "media/../x", "/etc/passwd"] {
         assert!(matches!(env.store.get(bad), Err(SyncError::Other(_))), "{bad}");
     }
+}
+
+#[test]
+#[ignore]
+fn bench_merge_copy() {
+    // 측정: 데이터가 있는 복사본이 합류할 때 단계별 시간. cargo test bench_merge_copy -- --ignored --nocapture
+    // BENCH_N (노트 수, 기본 3000) · BENCH_OLD (uid 가 다른 옛 복사본) · BENCH_DIFF (이 기기에만 있는 노트)
+    use std::time::Instant;
+    let n: i64 = std::env::var("BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let deck = a.deck("큰 덱", None);
+    {
+        let mut con = a.con();
+        let tx = con.transaction().unwrap();
+        let nt: i64 = tx.query_row("SELECT id FROM note_type WHERE name = 'Basic' AND anki_model_id IS NULL", [], |r| r.get(0)).unwrap();
+        for i in 0..n {
+            tx.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)", params![nt, json!([format!("질문 {i}"), "답"]).to_string(), 1000 + i]).unwrap();
+            let note = tx.last_insert_rowid();
+            tx.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, 0, 1000, 1000)", params![note, deck]).unwrap();
+            let card = tx.last_insert_rowid();
+            for j in 0..5 {
+                tx.execute("INSERT INTO review_log (card_id, reviewed_at, rating, fed_to_scheduler) VALUES (?1, ?2, 3, 1)", params![card, 5000 + i * 10 + j]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+    let copy_dir = tmp("bench-copy");
+    std::fs::create_dir_all(copy_dir.join("media")).unwrap();
+    a.con().execute("VACUUM INTO ?1", [copy_dir.join("neoanki.sqlite").to_string_lossy()]).unwrap();
+    let b = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("neoanki.sqlite")).unwrap()) };
+    if std::env::var("BENCH_DIFF").is_ok() {
+        // 이 기기에만 있는 노트 (내용이 달라 같은 것으로 보지 않는다): 합친 뒤 모두 올린다
+        b.con().execute("UPDATE note SET fields = json_array('B ' || id, '답')", []).unwrap();
+    }
+    if std::env::var("BENCH_OLD").is_ok() {
+        for t in db::SYNC_TABLES {
+            b.con().execute(&format!("UPDATE {t} SET uid = lower(hex(randomblob(16)))"), []).unwrap();
+        }
+    }
+    let t = Instant::now();
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    println!("A join New          {:>8.2?}", t.elapsed());
+    env.sync(&a);
+    let t = Instant::now();
+    engine::join(&b.db, &env.cx(&b), Join::Merge, json!({})).unwrap();
+    println!("B join Merge        {:>8.2?}  outbox {}", t.elapsed(), b.outbox());
+    let t = Instant::now();
+    engine::push(&b.db, &env.cx(&b)).unwrap();
+    println!("B push              {:>8.2?}", t.elapsed());
+    let t = Instant::now();
+    env.sync(&a);
+    println!("A sync              {:>8.2?}", t.elapsed());
 }

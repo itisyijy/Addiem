@@ -74,7 +74,9 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
          CREATE TABLE IF NOT EXISTS sync_row (table_name TEXT NOT NULL, uid TEXT NOT NULL, hlc TEXT NOT NULL, cols TEXT, deleted TEXT, PRIMARY KEY (table_name, uid));
          -- 같은 것을 가리키는 두 uid. 작은 쪽이 남는다
          CREATE TABLE IF NOT EXISTS sync_alias (table_name TEXT NOT NULL, from_uid TEXT NOT NULL, to_uid TEXT NOT NULL, PRIMARY KEY (table_name, from_uid));
-         -- 아직 올리지 않은 복습 전의 카드 상태 (마지막 공통 시점). log_id 이후의 기록을 다시 돌린다
+         -- uid 를 바꿀 때 그 uid 로 가던 별칭을 찾는다 (없으면 처음 합칠 때 행마다 표 전체를 훑는다)
+         CREATE INDEX IF NOT EXISTS idx_sync_alias_to ON sync_alias (table_name, to_uid);
+         -- 다른 기기가 받았다고 확인하지 못한 첫 복습 전의 카드 상태 (마지막 공통 시점, K27). log_id 이후의 기록을 다시 돌린다. 올리면 [10] 에 번호
          CREATE TABLE IF NOT EXISTS sync_anchor (card_id INTEGER PRIMARY KEY, srs TEXT NOT NULL);
          -- K7 두 기기에서 고친 카드. 진 쪽 내용을 남긴다 (30일)
          CREATE TABLE IF NOT EXISTS sync_conflict (
@@ -673,7 +675,9 @@ pub fn finish_push(con: &mut Connection, b: &Batch) -> SRes<()> {
         }
         save_clock(&tx, t, u, &c)?;
         if t == "card" {
-            tx.execute("DELETE FROM sync_anchor WHERE card_id = (SELECT id FROM card WHERE uid = ?1)", [u]).map_err(dbe)?;
+            // 앵커는 다른 기기가 이 번호를 받았다고 알 때까지 둔다 (K27). 그 사이 엇갈려 온 기록도 이 앵커부터 다시 돌린다
+            tx.execute("UPDATE sync_anchor SET srs = json_set(srs, '$[10]', ?2) WHERE card_id = (SELECT id FROM card WHERE uid = ?1)", params![u, b.seq])
+                .map_err(dbe)?;
         }
     }
     tx.execute("DELETE FROM sync_outbox WHERE seq <= ?1", [b.max_outbox]).map_err(dbe)?;
@@ -880,12 +884,36 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         }
         set_local(&tx, "pos", &serde_json::to_string(&pos).map_err(other)?)?;
         set_local(&tx, "devices", &serde_json::to_string(&devices).map_err(other)?)?;
+        release_anchors(&tx, &me, generation, &devices)?;
         applying(&tx, false)?;
         tx.commit().map_err(dbe)?;
         report
     };
     fetch_media(db, cx, &r.media)?;
     Ok(Pulled::Done(report))
+}
+
+/// 앵커를 놓아도 되는가 (K27): 이 기기가 올린 복습을 활성 기기가 모두 받았고, 이 기기도 그 기기가 그 뒤 올린 것까지 받았다.
+/// 그러면 엇갈려 올린 기록은 모두 여기 와서 다시 계산을 마쳤다. 아직 올리지 않은 변경이 있는 카드는 그대로 둔다
+fn release_anchors(tx: &Transaction, me: &str, generation: i64, devices: &[J]) -> SRes<()> {
+    let pos = positions(tx)?;
+    let now = db::now_ms();
+    let seen = devices
+        .iter()
+        .filter(|d| d["uid"].as_str().is_some_and(|u| u != me) && d["gen"].as_i64() == Some(generation) && now - d["at"].as_i64().unwrap_or(0) < STALE_MS)
+        .map(|d| {
+            let caught_up = pos.get(d["uid"].as_str().unwrap_or_default()).copied().unwrap_or(0) >= d["seq"].as_i64().unwrap_or(0);
+            if caught_up { d["pos"][me].as_i64().unwrap_or(0) } else { 0 }
+        })
+        .min()
+        .unwrap_or(i64::MAX);
+    tx.execute(
+        "DELETE FROM sync_anchor WHERE json_extract(srs, '$[10]') <= ?1
+           AND NOT EXISTS (SELECT 1 FROM sync_outbox o JOIN card c ON o.table_name = 'card' AND o.uid = c.uid WHERE c.id = sync_anchor.card_id)",
+        [seen],
+    )
+    .map(|_| ())
+    .map_err(dbe)
 }
 
 /// 이 기기에 없는 그림을 받는다. 데이터를 먼저 합치고 그림은 뒤에서 (K6-f)
@@ -1041,12 +1069,14 @@ fn natural_match(con: &Connection, table: &Table, vals: &HashMap<String, Value>,
 
 /// 이 기기 행의 uid 를 바꾼다 (더 작은 uid 로 합칠 때). 흔적 · 올릴 변경 · 별칭도 따라간다
 fn rename_uid(con: &Connection, t: &str, old: &str, new: &str) -> SRes<()> {
-    con.execute(&format!("UPDATE {t} SET uid = ?2 WHERE uid = ?1"), [old, new]).map_err(dbe)?;
-    con.execute("DELETE FROM sync_row WHERE table_name = ?1 AND uid = ?2", [t, new]).map_err(dbe)?;
-    con.execute("UPDATE sync_row SET uid = ?3 WHERE table_name = ?1 AND uid = ?2", [t, old, new]).map_err(dbe)?;
-    con.execute("UPDATE sync_outbox SET uid = ?3 WHERE table_name = ?1 AND uid = ?2", [t, old, new]).map_err(dbe)?;
-    con.execute("UPDATE sync_alias SET to_uid = ?3 WHERE table_name = ?1 AND to_uid = ?2", [t, old, new]).map_err(dbe)?;
-    con.execute("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES (?1, ?2, ?3)", [t, old, new]).map_err(dbe)?;
+    // 처음 합칠 때는 행마다 부른다: 문장을 매번 다시 만들지 않는다
+    let run = |sql: &str, args: &[&str]| con.prepare_cached(sql).and_then(|mut st| st.execute(rusqlite::params_from_iter(args))).map_err(dbe);
+    run(&format!("UPDATE {t} SET uid = ?2 WHERE uid = ?1"), &[old, new])?;
+    run("DELETE FROM sync_row WHERE table_name = ?1 AND uid = ?2", &[t, new])?;
+    run("UPDATE sync_row SET uid = ?3 WHERE table_name = ?1 AND uid = ?2", &[t, old, new])?;
+    run("UPDATE sync_outbox SET uid = ?3 WHERE table_name = ?1 AND uid = ?2", &[t, old, new])?;
+    run("UPDATE sync_alias SET to_uid = ?3 WHERE table_name = ?1 AND to_uid = ?2", &[t, old, new])?;
+    run("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES (?1, ?2, ?3)", &[t, old, new])?;
     Ok(())
 }
 
@@ -1341,7 +1371,7 @@ impl Applier<'_> {
     fn recompute(&mut self, fsrs: &fsrs::FSRS) -> SRes<()> {
         for card in std::mem::take(&mut self.new_logs) {
             let anchor: Option<String> = self.tx.query_row("SELECT srs FROM sync_anchor WHERE card_id = ?1", [card], |r| r.get(0)).optional().map_err(dbe)?;
-            // 앵커가 없으면 이 기기는 그 사이 복습하지 않았다: 받은 상태가 그대로 맞다
+            // 앵커가 없으면 이 기기의 복습은 다른 기기가 모두 받았다: 받은 상태가 그대로 맞다
             let Some(anchor) = anchor.and_then(|a| serde_json::from_str::<Vec<J>>(&a).ok()) else { continue };
             let mut s = SrsState {
                 state: anchor[0].as_str().unwrap_or("new").into(),
@@ -1365,6 +1395,12 @@ impl Applier<'_> {
             for (at, rating) in logs {
                 s = srs::review(fsrs, &s, rating, at);
             }
+            self.report.recomputed += 1;
+            if crate::commands::load_srs(self.tx, card).map_err(other)? == s {
+                continue;
+            }
+            // 바뀐 상태는 이 기기의 변경으로 올린다 (트리거가 바뀐 열만 쌓는다): 복습하지 않은 기기도 같은 상태가 되게
+            applying(self.tx, false)?;
             self.tx
                 .execute(
                     "UPDATE card SET state = ?2, srs_step = ?3, stability = ?4, difficulty = ?5, due_at = ?6, interval_days = ?7,
@@ -1372,7 +1408,7 @@ impl Applier<'_> {
                     params![card, s.state, s.step, s.stability, s.difficulty, s.due_at, s.interval_days, s.last_reviewed_at, s.reps, s.lapses],
                 )
                 .map_err(dbe)?;
-            self.report.recomputed += 1;
+            applying(self.tx, true)?;
         }
         Ok(())
     }
