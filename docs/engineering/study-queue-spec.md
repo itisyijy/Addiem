@@ -5,7 +5,7 @@
 - 버전: v0.2
 - 상태: **결정 완료.** 실행 가능한 형태가 `tools/queue_reference.py` 에 있다
 - 선행 문서: [MVP 범위](../product/mvp-scope.md) 6.6 / 6.8, [ADR 0001](../adr/0001-tech-stack.md)
-- 검증: 참조 구현의 테스트 46건. 실제 컬렉션 4,694장으로 통합 확인
+- 검증: 참조 구현의 테스트 47건. 실제 컬렉션 4,694장으로 통합 확인
 
 > **이 문서와 코드가 다르면 코드가 맞다.** 명세는 설명이고 `tools/queue_reference.py` 가 정본이다.
 > 코드를 바꾸면 이 문서도 바꾼다.
@@ -317,7 +317,7 @@ ADR 0001 7장의 경계와 일치해야 한다. **아직 ADR에서 정식 승인
 
 ## 9. 검증 시나리오
 
-`tools/queue_reference.py` 의 `test()` 가 이 시나리오를 포함해 **46건**을 검사한다.
+`tools/queue_reference.py` 의 `test()` 가 이 시나리오를 포함해 **47건**을 검사한다.
 
 ```bash
 python tools/queue_reference.py                      # 테스트만
