@@ -346,6 +346,7 @@ export type AppInfo = {
   last_backup: number | null;
   cutoff_hour: number;
   db_bytes: number;
+  media_bytes: number;
   cards: number;
   decks: number;
   reviews: number;
