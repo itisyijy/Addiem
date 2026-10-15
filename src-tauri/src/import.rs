@@ -14,8 +14,9 @@ use crate::{recall, srs};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
@@ -675,40 +676,76 @@ struct AType {
 }
 
 struct Package {
+    // 필드는 적은 순서대로 닫힌다. Windows 는 열린 파일을 지우지 못하므로 연결(col)이 임시 파일(_tmp)보다 먼저다
     col: Connection,
-    tmp: PathBuf,
     zip: zip::ZipArchive<std::fs::File>,
     decks: HashMap<i64, ADeck>,
     types: HashMap<i64, AType>,
+    _tmp: TmpFile,
 }
 
-impl Drop for Package {
+/// 임시 컬렉션 (import-<pid>.sqlite). 어디서 실패해도 지운다: Package 를 만들기 전(열기 · 첫 쿼리)에 실패해도 (T7-05)
+struct TmpFile(PathBuf);
+
+impl Drop for TmpFile {
     fn drop(&mut self) {
-        // Windows 는 열린 파일을 지우지 못한다. 연결을 먼저 닫는다
-        if let Ok(mem) = Connection::open_in_memory() {
-            drop(std::mem::replace(&mut self.col, mem));
-        }
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", self.tmp.display()));
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", self.0.display()));
         }
     }
 }
 
-fn unzstd(raw: Vec<u8>, limit: usize) -> Res<Vec<u8>> {
-    if raw.starts_with(&ZSTD_MAGIC) {
-        let mut out = vec![];
-        zstd::stream::read::Decoder::new(&raw[..]).map_err(err)?.take(limit as u64).read_to_end(&mut out).map_err(err)?;
-        Ok(out)
+/// 지난 실행이 남긴 임시 컬렉션 (가져오는 중 강제 종료 · 충돌). 앱을 열 때 지운다 (T7-05)
+pub fn clean_stale(data_dir: &Path) {
+    for e in std::fs::read_dir(data_dir).into_iter().flatten().flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("import-") && name.contains(".sqlite") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+// 압축을 푼 크기 상한 (T7-04 압축 폭탄). 컬렉션 · 미디어 목록 · 미디어 파일 하나 · 패키지 전체
+const MAX_COLLECTION: u64 = 2 << 30;
+const MAX_MEDIA_LIST: u64 = 64 << 20;
+const MAX_MEDIA_FILE: u64 = 512 << 20;
+const MAX_TOTAL: u64 = 10 << 30;
+/// 이만큼 푼 뒤에도 압축 크기의 MAX_RATIO 배를 넘으면 폭탄으로 보고 멈춘다. 작은 파일은 압축률이 높아도 괜찮다
+const RATIO_FROM: u64 = 64 << 20;
+const MAX_RATIO: u64 = 100;
+
+fn mb(bytes: u64) -> String {
+    n((bytes >> 20) as usize)
+}
+
+/// zip 항목을 out 에 푼다. 최신 Anki 처럼 zstd 로 한 번 더 압축한 항목도 푼다. 상한이나 압축률을 넘으면 그 자리에서 멈춘다
+fn unpack(zip: &mut zip::ZipArchive<std::fs::File>, entry: &str, label: &str, limit: u64, out: &mut impl Write) -> Res<u64> {
+    let mut f = zip.by_name(entry).map_err(err)?;
+    let packed = f.compressed_size().max(1);
+    let mut head = vec![];
+    (&mut f).take(4).read_to_end(&mut head).map_err(err)?;
+    let mut src: Box<dyn Read + '_> = if head.starts_with(&ZSTD_MAGIC) {
+        Box::new(zstd::stream::read::Decoder::new(head.as_slice().chain(f)).map_err(err)?)
     } else {
-        Ok(raw)
+        Box::new(head.as_slice().chain(f))
+    };
+    let mut buf = vec![0; 1 << 16];
+    let mut total = 0u64;
+    loop {
+        let got = src.read(&mut buf).map_err(err)?;
+        if got == 0 {
+            return Ok(total);
+        }
+        total += got as u64;
+        if total > limit || (total > RATIO_FROM && total / packed > MAX_RATIO) {
+            return Err(format!(
+                "{label}의 압축을 풀면 너무 커져서 멈췄어요 (최대 {} MB · 압축 크기의 {MAX_RATIO}배). 손상됐거나 안전하지 않은 파일일 수 있어요.",
+                mb(limit)
+            ));
+        }
+        out.write_all(&buf[..got]).map_err(err)?;
     }
-}
-
-fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Res<Vec<u8>> {
-    let mut f = zip.by_name(name).map_err(err)?;
-    let mut buf = vec![];
-    f.read_to_end(&mut buf).map_err(err)?;
-    Ok(buf)
 }
 
 fn degraded_features(body: &str) -> Vec<&'static str> {
@@ -737,14 +774,16 @@ fn open_package(path: &Path, work: &Path) -> Res<Package> {
         .into_iter()
         .find(|e| names.contains(*e))
         .ok_or("패키지 안에 컬렉션이 없어요.")?;
-    let raw = unzstd(read_entry(&mut zip, entry)?, 4 << 30)?;
-    if !raw.starts_with(b"SQLite format 3") {
+    std::fs::create_dir_all(work).map_err(err)?;
+    // 메모리에 올리지 않고 임시 파일로 바로 푼다. 이 뒤 어디서 실패해도 tmp 가 지운다
+    let tmp = TmpFile(work.join(format!("import-{}.sqlite", std::process::id())));
+    unpack(&mut zip, entry, "컬렉션", MAX_COLLECTION, &mut std::fs::File::create(&tmp.0).map_err(err)?)?;
+    let mut magic = vec![];
+    std::fs::File::open(&tmp.0).map_err(err)?.take(15).read_to_end(&mut magic).map_err(err)?;
+    if magic != b"SQLite format 3" {
         return Err("컬렉션이 SQLite 파일이 아니에요.".into());
     }
-    std::fs::create_dir_all(work).map_err(err)?;
-    let tmp = work.join(format!("import-{}.sqlite", std::process::id()));
-    std::fs::write(&tmp, &raw).map_err(err)?;
-    let col = Connection::open_with_flags(&tmp, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(err)?;
+    let col = Connection::open_with_flags(&tmp.0, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(err)?;
     // Anki 가 실행 중에 등록하는 콜레이션이라 파일에 정의가 없다. 읽기만 하므로 대소문자 무시 비교면 된다
     col.create_collation("unicase", |a: &str, b: &str| a.to_lowercase().cmp(&b.to_lowercase())).map_err(err)?;
 
@@ -753,7 +792,7 @@ fn open_package(path: &Path, work: &Path) -> Res<Package> {
         .map_err(err)?
         > 0;
     let (decks, types) = if modern { read_modern(&col)? } else { read_legacy(&col)? };
-    Ok(Package { col, tmp, zip, decks, types })
+    Ok(Package { col, zip, decks, types, _tmp: tmp })
 }
 
 /// 스키마 18 (Anki 2.1.50+). 덱 이름은 \x1f 로 계층을 나눈다
@@ -861,7 +900,8 @@ fn media_names(pkg: &mut Package) -> Res<Vec<(String, String)>> {
     if !names.contains("media") {
         return Ok(vec![]);
     }
-    let raw = unzstd(read_entry(&mut pkg.zip, "media")?, 64 << 20)?;
+    let mut raw = vec![];
+    unpack(&mut pkg.zip, "media", "미디어 목록", MAX_MEDIA_LIST, &mut raw)?;
     let mut out = vec![];
     if raw.first() == Some(&b'{') {
         // 구버전: {"0": "a.png", ...}
@@ -880,6 +920,85 @@ fn media_names(pkg: &mut Package) -> Res<Vec<(String, String)>> {
     }
     out.retain(|(k, _)| names.contains(k));
     Ok(out)
+}
+
+/// 미디어 이름의 상한 (UTF-16 글자 수. Windows 이름 한 칸은 255)
+const MAX_NAME: usize = 200;
+
+/// 이름의 확장자 앞에 suffix 를 붙인다 (a.png -> a-suffix.png). 전체가 MAX_NAME 을 넘으면 확장자 앞을 줄인다
+fn fit_name(name: &str, suffix: &str) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && !e.is_empty() && e.len() <= 10 => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    let tail = format!("{suffix}{ext}");
+    let mut room = MAX_NAME.saturating_sub(tail.encode_utf16().count());
+    let mut out = String::new();
+    for c in stem.chars() {
+        if c.len_utf16() > room {
+            break;
+        }
+        room -= c.len_utf16();
+        out.push(c);
+    }
+    out + &tail
+}
+
+/// Windows 에 그대로 저장할 수 없는 미디어 이름을 저장할 수 있는 이름으로 (T7-06 · T7-09). safe_media_name 을 지난 이름만 온다.
+/// 금지 글자 `<>:"/\|?*` · 제어 문자 · 방향 제어 문자는 `_`, 끝의 점 · 공백은 떼고, 장치 이름(CON · NUL · COM1 …)은 앞에 `_`, 길면 줄인다
+fn storable_name(name: &str) -> Cow<'_, str> {
+    let bad = |c: char| c.is_control() || "<>:\"/\\|?*\u{61c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}".contains(c);
+    let mut out: String = name.chars().map(|c| if bad(c) { '_' } else { c }).collect();
+    if out.encode_utf16().count() > MAX_NAME {
+        out = fit_name(&out, "");
+    }
+    out.truncate(out.trim_end_matches(['.', ' ']).len());
+    let base = out.split('.').next().unwrap_or_default().trim_end_matches(' ').to_uppercase();
+    let device = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&base.as_str())
+        || ["COM", "LPT"].iter().any(|p| base.strip_prefix(p).is_some_and(|d| d.chars().count() == 1 && d.chars().all(|c| c.is_ascii_digit() || "¹²³".contains(c))));
+    if device || out.is_empty() {
+        out.insert(0, '_');
+    }
+    if out == name { Cow::Borrowed(name) } else { Cow::Owned(out) }
+}
+
+/// 그 이름의 파일이 없거나 내용이 같은가 (같으면 그대로 쓴다). Windows 는 이름의 대소문자를 가리지 않아 A.png 도 a.png 로 보인다
+fn same_or_absent(path: &Path, blob: &[u8]) -> bool {
+    match std::fs::metadata(path) {
+        Err(_) => true,
+        Ok(m) => m.len() == blob.len() as u64 && std::fs::read(path).is_ok_and(|b| b == blob),
+    }
+}
+
+/// 필드의 미디어 참조(<img src> · [sound:])를 바꾼 이름으로 고친다. 이름은 HTML 엔티티를 푼 값으로 찾고,
+/// 원문이 엔티티로 적혀 있었으면 새 이름도 엔티티로 쓴다 (Anki 의 replace_media_refs 와 같다)
+fn rename_refs(html: &str, renamed: &HashMap<String, String>) -> String {
+    let unescape = |s: &str| s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&");
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    loop {
+        // 다음 참조의 값 범위 [a, b)
+        let src = rest.find("src=").map(|i| {
+            let v = i + 4;
+            match rest[v..].chars().next() {
+                Some(q @ ('"' | '\'')) => (v + 1, rest[v + 1..].find(q).map_or(rest.len(), |e| v + 1 + e)),
+                _ => (v, rest[v..].find([' ', '>']).map_or(rest.len(), |e| v + e)),
+            }
+        });
+        let sound = rest.find("[sound:").and_then(|i| rest[i + 7..].find(']').map(|e| (i + 7, i + 7 + e)));
+        let Some((a, b)) = [src, sound].into_iter().flatten().min() else { break };
+        let old = &rest[a..b];
+        let plain = unescape(old);
+        out.push_str(&rest[..a]);
+        match renamed.get(&plain) {
+            Some(new) if plain != old => out.push_str(&crate::occlusion::escape(new)),
+            Some(new) => out.push_str(new),
+            None => out.push_str(old),
+        }
+        rest = &rest[b..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 카드의 실제 덱. 필터 덱에 올라간 카드는 odid 가 원래 덱이다
@@ -1457,6 +1576,9 @@ fn run_import_selected(
             .collect();
         names.retain(|(_, n)| refs.contains(n) || (n.starts_with('_') && type_text.contains(n.as_str())));
     }
+    // 패키지의 이름 -> 저장한 이름. 이번에 넣은 노트의 참조를 고친다 (Anki 와 같다)
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    let (mut clashes, mut fixed, mut unpacked) = (0, 0, 0u64);
     for (i, (key, name)) in names.iter().enumerate() {
         if i.is_multiple_of(20) {
             if cancelled() {
@@ -1468,26 +1590,68 @@ fn run_import_selected(
             result.issues.push(issue("skipped", "media_name", format!("미디어 '{name}' 는 이름이 올바르지 않아 건너뛰었어요")));
             continue;
         }
-        let blob = match read_entry(&mut pkg.zip, key).and_then(|b| unzstd(b, 512 << 20)) {
-            Ok(b) => b,
-            Err(e) => {
-                result.issues.push(issue("warning", "media", format!("미디어 '{name}' 를 읽지 못했어요: {e}")));
+        let mut blob = vec![];
+        if let Err(e) = unpack(&mut pkg.zip, key, &format!("미디어 '{name}'"), MAX_MEDIA_FILE, &mut blob) {
+            result.issues.push(issue("warning", "media", format!("미디어 '{name}' 를 읽지 못했어요: {e}")));
+            continue;
+        }
+        unpacked += blob.len() as u64;
+        if unpacked > MAX_TOTAL {
+            return Err(format!("패키지의 미디어를 모두 풀면 {} MB를 넘어서 멈췄어요. 손상됐거나 안전하지 않은 파일일 수 있어요.", mb(MAX_TOTAL)));
+        }
+        // Windows 에 저장할 수 없는 이름은 바꾼다 (T7-06 · T7-09). 같은 이름에 내용이 다른 파일이 있으면 그 파일은 두고
+        // 내용 해시를 붙인 새 이름으로 저장한다 (T2-01 · T7-02). 내용이 같으면 그대로 쓴다
+        let storable = storable_name(name);
+        let mut target = storable.to_string();
+        if !same_or_absent(&dir.join(&target), &blob) {
+            use sha2::{Digest, Sha256};
+            target = fit_name(&storable, &format!("-{}", &format!("{:x}", Sha256::digest(&blob))[..8]));
+            if !same_or_absent(&dir.join(&target), &blob) {
+                result.issues.push(issue("warning", "media", format!("미디어 '{name}' 를 저장할 이름을 찾지 못해 건너뛰었어요")));
                 continue;
             }
-        };
-        let file = dir.join(name);
+        }
+        if target != *name {
+            renamed.insert(name.clone(), target.clone());
+        }
+        let file = dir.join(&target);
         if !file.exists() {
+            written.push(file.clone()); // 쓰다가 실패해도 지우게 먼저 남긴다
             std::fs::write(&file, &blob).map_err(err)?;
-            written.push(file);
+            result.media += 1; // 이번에 새로 저장한 파일만 센다 (이미 있던 같은 파일은 세지 않는다)
+            if target != storable {
+                clashes += 1;
+            } else if target != *name {
+                fixed += 1;
+            }
         }
         tx.execute(
             "INSERT OR IGNORE INTO media (filename, rel_path, sha256, byte_size, mime_type, created_at, anki_media_key) VALUES (?1, ?2, '', ?3, ?4, ?5, ?6)",
-            params![name, format!("media/{name}"), blob.len() as i64, mime_of(name), now, key],
+            params![target, format!("media/{target}"), blob.len() as i64, mime_of(&target), now, key],
         )
         .map_err(err)?;
-        result.media += 1;
     }
     emit("media", names.len(), names.len());
+    if !renamed.is_empty() {
+        let notes: Vec<(i64, String)> = {
+            let mut st = tx.prepare("SELECT id, fields FROM note WHERE import_batch_id = ?1").map_err(err)?;
+            let rows = st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+            rows.collect::<Result<_, _>>().map_err(err)?
+        };
+        for (id, fields) in notes {
+            let old: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
+            let new: Vec<String> = old.iter().map(|f| rename_refs(f, &renamed)).collect();
+            if new != old {
+                tx.execute("UPDATE note SET fields = ?2 WHERE id = ?1", params![id, serde_json::to_string(&new).map_err(err)?]).map_err(err)?;
+            }
+        }
+    }
+    if clashes > 0 {
+        result.issues.push(issue("info", "media_renamed", format!("이름은 같은데 내용이 다른 미디어 {}개는 기존 파일을 그대로 두고 새 이름으로 저장했어요", n(clashes))));
+    }
+    if fixed > 0 {
+        result.issues.push(issue("info", "media_renamed", format!("Windows 에서 쓸 수 없는 이름의 미디어 {}개는 이름을 바꿔 저장했어요", n(fixed))));
+    }
 
     let roots = roots_of(&tx, &used)?;
     result.decks = roots.len();
@@ -1495,7 +1659,7 @@ fn run_import_selected(
     let missing_sound = {
         let mut st = pkg.col.prepare("SELECT id, flds FROM notes WHERE flds LIKE '%[sound:%'").map_err(err)?;
         let notes = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
-        let gone = |s: &str| safe_media_name(s).is_err() || !dir.join(s).exists();
+        let gone = |s: &str| safe_media_name(s).is_err() || !dir.join(renamed.get(s).map_or(s, String::as_str)).exists();
         notes.iter().filter(|(id, flds)| picked_note(*id) && crate::render::sound_names(flds).any(gone)).count()
     };
     if missing_sound > 0 {
@@ -1524,7 +1688,13 @@ fn run_import_selected(
         result.issues.push(issue(
             "warning",
             "degraded_template",
-            format!("노트타입 '{}'이 {}을 써요. {what} ({}장)", d.note_types.join("', '"), d.feature, n(d.cards)),
+            format!(
+                "노트타입 '{}'이 {}{} 써요. {what} ({}장)",
+                d.note_types.join("', '"),
+                d.feature,
+                if crate::quality::has_batchim(&d.feature) { "을" } else { "를" },
+                n(d.cards)
+            ),
         ));
     }
     if cancelled() {
@@ -1662,7 +1832,9 @@ pub fn read_json_file(path: String) -> Res<String> {
     if std::fs::metadata(p).map_err(err)?.len() > 20 * 1024 * 1024 {
         return Err("20MB가 넘는 파일은 나눠서 가져와 주세요.".into());
     }
-    std::fs::read_to_string(p).map_err(|_| "UTF-8 텍스트로 읽을 수 없는 파일이에요.".into())
+    let text = std::fs::read_to_string(p).map_err(|_| "UTF-8 텍스트로 읽을 수 없는 파일이에요.".to_string())?;
+    // 메모장 · PowerShell 이 붙이는 UTF-8 BOM 을 뗀다 (T2-09). 화면도 이 글자를 JSON.parse 한다 (건너뛴 항목 복사)
+    Ok(text.strip_prefix('\u{feff}').map(String::from).unwrap_or(text))
 }
 
 /// B2-c CSV 끌어놓기. 인코딩(UTF-8 / EUC-KR)은 화면이 고르므로 바이트 그대로 준다. .csv .tsv .txt 만, 20MB 까지
@@ -1869,23 +2041,56 @@ mod tests {
         }
     }
 
+    const LEGACY_TABLES: &str = "CREATE TABLE col (id integer primary key, crt integer, mod integer, scm integer, ver integer, dty integer, usn integer, ls integer,
+                           conf text, models text, decks text, dconf text, tags text);
+         CREATE TABLE notes (id integer primary key, guid text, mid integer, mod integer, usn integer, tags text, flds text, sfld text,
+                             csum integer, flags integer, data text);
+         CREATE TABLE cards (id integer primary key, nid integer, did integer, ord integer, mod integer, usn integer, type integer,
+                             queue integer, due integer, ivl integer, factor integer, reps integer, lapses integer, left integer,
+                             odue integer, odid integer, flags integer, data text);
+         CREATE TABLE revlog (id integer primary key, cid integer, usn integer, ease integer, ivl integer, lastIvl integer,
+                              factor integer, time integer, type integer);";
+
+    fn write_zip(path: &Path, entries: &[(String, Vec<u8>)]) {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, data) in entries {
+            zip.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// 구버전 .apkg: 덱 D 에 Basic 노트 (guid, 앞면) 마다 카드 한 장 (노트 · 카드 id 는 first_id 부터). 미디어는 (이름, 내용)
+    fn media_package(path: &Path, first_id: i64, notes: &[(&str, &str)], media: &[(&str, &[u8])]) {
+        let db = path.with_extension("anki2");
+        let _ = std::fs::remove_file(&db);
+        let col = Connection::open(&db).unwrap();
+        col.execute_batch(LEGACY_TABLES).unwrap();
+        let models = r#"{"7": {"name": "Basic", "css": "", "flds": [{"name": "Front"}, {"name": "Back"}],
+                         "tmpls": [{"ord": 0, "name": "Card 1", "qfmt": "{{Front}}", "afmt": "{{Back}}"}]}}"#;
+        let decks = r#"{"1": {"name": "D", "dyn": 0}}"#;
+        col.execute("INSERT INTO col VALUES (1, 0, 0, 0, 11, 0, 0, 0, '{}', ?1, ?2, '{}', '{}')", [models, decks]).unwrap();
+        col.execute_batch("BEGIN").unwrap();
+        for (i, (guid, front)) in notes.iter().enumerate() {
+            let id = first_id + i as i64;
+            col.execute("INSERT INTO notes VALUES (?1, ?2, 7, 0, 0, '', ?3, '', 0, 0, '')", params![id, guid, format!("{front}\x1f")]).unwrap();
+            col.execute("INSERT INTO cards VALUES (?1, ?1, 1, 0, 0, 0, 0, 0, ?1, 0, 0, 0, 0, 0, 0, 0, 0, '')", [id]).unwrap();
+        }
+        col.execute_batch("COMMIT").unwrap();
+        drop(col);
+        let list: serde_json::Map<String, Value> = media.iter().enumerate().map(|(i, (n, _))| (i.to_string(), Value::from(*n))).collect();
+        let mut entries = vec![("collection.anki2".to_string(), std::fs::read(&db).unwrap()), ("media".into(), serde_json::to_vec(&list).unwrap())];
+        entries.extend(media.iter().enumerate().map(|(i, (_, b))| (i.to_string(), b.to_vec())));
+        write_zip(path, &entries);
+        let _ = std::fs::remove_file(db);
+    }
+
     /// 구버전(스키마 11) .apkg. 덱 A::1 · A::2 · B 와 필터 덱 F (A::1 의 카드 하나가 올라가 있다).
     /// 노트마다 카드 한 장 · 미디어 하나 · 기록 하나
     fn two_deck_package(path: &Path) {
         let db = path.with_extension("anki2");
         let col = Connection::open(&db).unwrap();
-        col.execute_batch(
-            "CREATE TABLE col (id integer primary key, crt integer, mod integer, scm integer, ver integer, dty integer, usn integer, ls integer,
-                               conf text, models text, decks text, dconf text, tags text);
-             CREATE TABLE notes (id integer primary key, guid text, mid integer, mod integer, usn integer, tags text, flds text, sfld text,
-                                 csum integer, flags integer, data text);
-             CREATE TABLE cards (id integer primary key, nid integer, did integer, ord integer, mod integer, usn integer, type integer,
-                                 queue integer, due integer, ivl integer, factor integer, reps integer, lapses integer, left integer,
-                                 odue integer, odid integer, flags integer, data text);
-             CREATE TABLE revlog (id integer primary key, cid integer, usn integer, ease integer, ivl integer, lastIvl integer,
-                                  factor integer, time integer, type integer);",
-        )
-        .unwrap();
+        col.execute_batch(LEGACY_TABLES).unwrap();
         let models = r#"{"7": {"name": "Basic", "css": ".card {}", "flds": [{"name": "Front"}, {"name": "Back"}],
                          "tmpls": [{"ord": 0, "name": "Card 1", "qfmt": "{{Front}}", "afmt": "{{FrontSide}}<hr id=answer>{{Back}}"}]}}"#;
         let decks = r#"{"1": {"name": "Default", "dyn": 0}, "11": {"name": "A::1", "dyn": 0}, "12": {"name": "A::2", "dyn": 0},
@@ -1991,5 +2196,233 @@ mod tests {
         let r = run_import_selected(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), false, Some(&HashSet::from([11, 20])), &mut vec![]).unwrap();
         assert_eq!((r.notes, r.cards, r.media), (1, 1, 1));
         assert!(r.issues.iter().any(|i| i.kind == "duplicate"));
+    }
+
+    fn files(dir: &Path) -> BTreeSet<String> {
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect()
+    }
+
+    #[test]
+    fn media_name_clash_keeps_both_files() {
+        // T2-01 · T7-02: 같은 이름 다른 내용이면 기존 파일은 두고 내용 해시를 붙인 새 이름으로 저장, 새 노트의 참조를 고친다 (Anki 와 같다)
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-clash-{}-{}", std::process::id(), now_ms())));
+        let s = state(&tmp.0.join("data"));
+        let import = |file: &str, id: i64, notes: &[(&str, &str)], media: &[(&str, &[u8])]| {
+            let p = tmp.0.join(file);
+            media_package(&p, id, notes, media);
+            run_import_anki(&|_, _, _| {}, &s, p.to_str().unwrap(), false, &mut vec![]).unwrap()
+        };
+        let fields = |guid: &str| -> String { s.db.lock().unwrap().query_row("SELECT fields FROM note WHERE anki_guid = ?1", [guid], |r| r.get(0)).unwrap() };
+        let renamed = |r: &ImportResult| r.issues.iter().filter(|i| i.kind == "media_renamed").map(|i| i.detail.clone()).collect::<Vec<_>>();
+        let media = s.data_dir.join("media");
+
+        let r = import("a.apkg", 1, &[("ga", r#"<img src="heart.png">"#)], &[("heart.png", b"AAAA")]);
+        assert_eq!(r.media, 1);
+        let b = [("gb", r#"<img src="heart.png"> [sound:heart.png] <img src='heart.png'>"#)];
+        let r = import("b.apkg", 100, &b, &[("heart.png", b"BBBBBB")]);
+        let new = files(&media).into_iter().find(|n| n != "heart.png").unwrap();
+        assert!(new.starts_with("heart-") && new.ends_with(".png") && new.len() == "heart-12345678.png".len(), "{new}");
+        assert_eq!(std::fs::read(media.join("heart.png")).unwrap(), b"AAAA", "다른 덱의 그림을 덮어 보이지 않는다");
+        assert_eq!(std::fs::read(media.join(&new)).unwrap(), b"BBBBBB", "가져온 그림이 저장된다");
+        assert_eq!(fields("ga"), r#"["<img src=\"heart.png\">",""]"#, "이미 있던 노트는 그대로");
+        assert_eq!(fields("gb"), format!(r#"["<img src=\"{new}\"> [sound:{new}] <img src='{new}'>",""]"#));
+        assert_eq!(r.media, 1);
+        assert_eq!(renamed(&r), ["이름은 같은데 내용이 다른 미디어 1개는 기존 파일을 그대로 두고 새 이름으로 저장했어요"]);
+        assert!(!r.issues.iter().any(|i| i.kind == "missing_sound"), "바꾼 이름으로 소리 파일을 찾는다");
+        let rows: Vec<String> = {
+            let con = s.db.lock().unwrap();
+            con.prepare("SELECT filename FROM media ORDER BY filename").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(rows, [new.clone(), "heart.png".into()]);
+
+        // 같은 파일을 다시: 새로 쓰는 것도, 세는 것도 없다 (T2-17)
+        let r = import("b.apkg", 100, &b, &[("heart.png", b"BBBBBB")]);
+        assert_eq!((r.notes, r.media, renamed(&r).len(), files(&media).len()), (0, 0, 0, 2));
+        // 내용이 같으면 그 파일을 그대로 쓴다
+        let r = import("c.apkg", 200, &[("gc", r#"<img src="heart.png">"#)], &[("heart.png", b"AAAA")]);
+        assert_eq!((r.notes, r.media, renamed(&r).len(), files(&media).len()), (1, 0, 0, 2));
+        assert_eq!(fields("gc"), r#"["<img src=\"heart.png\">",""]"#);
+    }
+
+    #[test]
+    fn windows_unsafe_media_names_are_renamed() {
+        // T7-06 · T7-09: Windows 가 저장하지 못하는 이름 하나로 덱 전체가 실패하지 않는다. 안전한 이름으로 바꾸고 참조를 고친다
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-winname-{}-{}", std::process::id(), now_ms())));
+        let s = state(&tmp.0.join("data"));
+        let long = format!("{}.png", "가".repeat(300));
+        let media: [(&str, &[u8]); 10] = [
+            ("q?.png", b"1"),
+            ("a<b>.png", b"2"),
+            ("bell\u{7}.mp3", b"3"),
+            ("con.png", b"4"),
+            ("COM1", b"5"),
+            ("dot. ", b"6"),
+            (&long, b"7"),
+            ("nul\0.png", b"8"),
+            ("x:ads.png", b"9"),
+            ("ok.png", b"10"),
+        ];
+        let front = format!(
+            r#"<img src="q?.png"><img src="a&lt;b&gt;.png">[sound:bell{}.mp3]<img src="con.png">[sound:COM1]<img src="{long}"><img src="ok.png">"#,
+            '\u{7}'
+        );
+        let p = tmp.0.join("w.apkg");
+        media_package(&p, 1, &[("g", &front)], &media);
+        let r = run_import_anki(&|_, _, _| {}, &s, p.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let short = format!("{}.png", "가".repeat(196));
+        let want: BTreeSet<String> =
+            ["_COM1", "_con.png", "a_b_.png", "bell_.mp3", "dot", "nul_.png", "ok.png", "q_.png", short.as_str()].into_iter().map(String::from).collect();
+        assert_eq!(files(&s.data_dir.join("media")), want);
+        assert_eq!(r.media, 9, "x:ads.png 만 건너뛴다 (경로 · ADS 이름은 지금처럼)");
+        assert!(r.issues.iter().any(|i| i.kind == "media_name" && i.detail.contains("x:ads.png")));
+        assert!(
+            r.issues.iter().any(|i| i.detail == "Windows 에서 쓸 수 없는 이름의 미디어 8개는 이름을 바꿔 저장했어요"),
+            "{:?}",
+            r.issues.iter().map(|i| &i.detail).collect::<Vec<_>>()
+        );
+        let fields: String = s.db.lock().unwrap().query_row("SELECT fields FROM note", [], |r| r.get(0)).unwrap();
+        let fields: Vec<String> = serde_json::from_str(&fields).unwrap();
+        assert_eq!(
+            fields[0],
+            format!(r#"<img src="q_.png"><img src="a_b_.png">[sound:bell_.mp3]<img src="_con.png">[sound:_COM1]<img src="{short}"><img src="ok.png">"#)
+        );
+    }
+
+    #[test]
+    fn storable_media_names() {
+        for (name, want) in [
+            ("ok.png", "ok.png"),
+            ("q?.png", "q_.png"),
+            ("a<b>|*\".png", "a_b____.png"),
+            ("bell\u{7}.mp3", "bell_.mp3"),
+            ("n\0.png", "n_.png"),
+            ("\u{202e}gnp.exe", "_gnp.exe"),
+            ("con.png", "_con.png"),
+            ("CON", "_CON"),
+            ("Lpt9.txt.gz", "_Lpt9.txt.gz"),
+            ("com¹.png", "_com¹.png"),
+            ("conout$", "_conout$"),
+            ("nul .txt", "_nul .txt"),
+            ("COM10.png", "COM10.png"),
+            ("console.png", "console.png"),
+            ("dot.", "dot"),
+            ("sp . ", "sp"),
+            ("   ", "_"),
+        ] {
+            let got = storable_name(name);
+            assert_eq!(got, want, "{name:?}");
+            assert!(safe_media_name(&got).is_ok());
+        }
+        assert!(matches!(storable_name("ok.png"), Cow::Borrowed(_)));
+        let long = format!("{}.png", "가".repeat(300));
+        assert_eq!(storable_name(&long), format!("{}.png", "가".repeat(196)), "확장자는 지키고 앞을 줄인다");
+        assert_eq!(storable_name(&"😀".repeat(150)).encode_utf16().count(), MAX_NAME, "Windows 는 UTF-16 으로 센다");
+        assert_eq!(fit_name("a.png", "-1234abcd"), "a-1234abcd.png");
+        assert_eq!(fit_name("noext", "-1234abcd"), "noext-1234abcd");
+        assert_eq!(fit_name(&long, "-1234abcd"), format!("{}-1234abcd.png", "가".repeat(187)));
+    }
+
+    #[test]
+    fn rename_media_refs() {
+        let map = HashMap::from([("a b.png".to_string(), "x.png".to_string()), ("q&<.mp3".into(), "q__.mp3".into()), ("t&.png".into(), "t&-1.png".into())]);
+        assert_eq!(
+            rename_refs(r#"<img src="a b.png"><img src='a b.png'>[sound:q&amp;&lt;.mp3]<img src=other.png><img src=a b.png>"#, &map),
+            r#"<img src="x.png"><img src='x.png'>[sound:q__.mp3]<img src=other.png><img src=a b.png>"#
+        );
+        assert_eq!(
+            rename_refs(r#"<img src="t&amp;.png"><img src="t&.png">"#, &map),
+            r#"<img src="t&amp;-1.png"><img src="t&-1.png">"#,
+            "엔티티로 적힌 이름은 새 이름도 엔티티로"
+        );
+        assert_eq!(rename_refs("a b.png 는 글자 그대로 [sound:a b.png", &map), "a b.png 는 글자 그대로 [sound:a b.png");
+    }
+
+    #[test]
+    fn broken_or_huge_package_leaves_no_temp_file() {
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-bomb-{}-{}", std::process::id(), now_ms())));
+        let work = tmp.0.join("data");
+        std::fs::create_dir_all(&work).unwrap();
+        let temps = || files(&work).iter().filter(|n| n.starts_with("import-")).count();
+        let p = tmp.0.join("x.apkg");
+        // T7-05: SQLite 머리만 맞고 나머지가 깨진 컬렉션. 연결 · 첫 쿼리에서 실패해도 임시 컬렉션을 지운다
+        let mut bad = b"SQLite format 3\0".to_vec();
+        bad.extend([7u8; 4096]);
+        write_zip(&p, &[("collection.anki2".into(), bad)]);
+        assert!(open_package(&p, &work).is_err());
+        assert_eq!(temps(), 0);
+        // T7-04: zstd 압축 폭탄 (QA: 99KB -> 3GB). 상한까지 가지 않고 압축률에서 멈추고, 쓰던 임시 파일도 지운다
+        let zeros = zstd::stream::encode_all(std::io::repeat(0).take(RATIO_FROM + (1 << 20)), 1).unwrap();
+        write_zip(&p, &[("collection.anki21b".into(), zeros)]);
+        let e = open_package(&p, &work).err().unwrap();
+        assert!(e.starts_with("컬렉션의 압축을 풀면 너무 커져서 멈췄어요"), "{e}");
+        assert_eq!(temps(), 0);
+        // 항목 하나의 상한
+        write_zip(&p, &[("m".into(), vec![1u8; 3 << 20])]);
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&p).unwrap()).unwrap();
+        assert!(unpack(&mut zip, "m", "미디어", 2 << 20, &mut vec![]).unwrap_err().contains("최대 2 MB"));
+        assert_eq!(unpack(&mut zip, "m", "미디어", 3 << 20, &mut vec![]).unwrap(), 3 << 20);
+        // 지난 실행이 남긴 임시 컬렉션은 앱을 열 때 지운다
+        for f in ["import-1.sqlite", "import-1.sqlite-wal", "neoanki.sqlite"] {
+            std::fs::write(work.join(f), b"x").unwrap();
+        }
+        clean_stale(&work);
+        assert_eq!(files(&work).into_iter().collect::<Vec<_>>(), ["neoanki.sqlite"]);
+    }
+
+    #[test]
+    fn guid_lookup_uses_index_and_bom_json_parses() {
+        // T2-11 · T7-08: 노트마다 하는 guid 조회가 표 전체를 훑지 않는다
+        let con = db::open_in_memory().unwrap();
+        for sql in [
+            "SELECT count(*) FROM note WHERE anki_guid = 'g'",
+            "SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = 'g' AND c.template_ord = 0",
+        ] {
+            let plan: Vec<String> =
+                con.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap().query_map([], |r| r.get(3)).unwrap().map(Result::unwrap).collect();
+            assert!(plan.iter().any(|p| p.contains("idx_note_guid")), "{plan:?}");
+        }
+        // T2-09: BOM 이 붙은 JSON 파일 (메모장 · PowerShell)
+        let p = std::env::temp_dir().join(format!("neoanki-bom-{}-{}.json", std::process::id(), now_ms()));
+        std::fs::write(&p, "\u{feff}[{\"front\":\"a\",\"back\":\"b\"}]").unwrap();
+        let text = read_json_file(p.to_string_lossy().into_owned()).unwrap();
+        let _ = std::fs::remove_file(&p);
+        assert!(text.starts_with('[') && parse_json(&text).2.is_none());
+    }
+
+    /// T2-11 · T7-08 측정: 노트 2만 개를 빈 DB 에, 2만 개가 있는 DB 에 다른 2만 개, 같은 파일 다시. 색인을 지운 DB(before)와 비교한다.
+    /// cargo test --lib bench_import_20k -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_import_20k() {
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-bench-{}-{}", std::process::id(), now_ms())));
+        std::fs::create_dir_all(&tmp.0).unwrap();
+        let pkg = |tag: &str, first: i64| {
+            let notes: Vec<(String, String)> = (0..20_000).map(|i| (format!("{tag}{i}"), format!("{tag} 앞면 {i}"))).collect();
+            let refs: Vec<(&str, &str)> = notes.iter().map(|(g, f)| (g.as_str(), f.as_str())).collect();
+            let p = tmp.0.join(format!("{tag}.apkg"));
+            media_package(&p, first, &refs, &[]);
+            p
+        };
+        let (a, b) = (pkg("a", 1_000_000), pkg("b", 2_000_000));
+        for index in [false, true] {
+            let s = state(&tmp.0.join(format!("data-{index}")));
+            if !index {
+                s.db.lock().unwrap().execute_batch("DROP INDEX idx_note_guid").unwrap();
+            }
+            let run = |p: &Path| {
+                let t = std::time::Instant::now();
+                let r = run_import_anki(&|_, _, _| {}, &s, p.to_str().unwrap(), true, &mut vec![]).unwrap();
+                (t.elapsed().as_secs_f64(), r.notes)
+            };
+            let (first, second, again) = (run(&a), run(&b), run(&a));
+            eprintln!(
+                "색인 {}: 빈 DB 에 2만 {:.2}초 · 2만 있는 DB 에 다른 2만 {:.2}초 · 같은 파일 다시(전부 중복) {:.2}초",
+                if index { "있음(after)" } else { "없음(before)" },
+                first.0,
+                second.0,
+                again.0
+            );
+            assert_eq!((first.1, second.1, again.1), (20_000, 20_000, 0));
+        }
     }
 }

@@ -356,7 +356,7 @@ pub struct SplitProposal {
 }
 
 /// 받침이 있는가 (조사 고르기)
-fn has_batchim(s: &str) -> bool {
+pub(crate) fn has_batchim(s: &str) -> bool {
     s.chars().last().is_some_and(|c| ('가'..='힣').contains(&c) && !(c as u32 - '가' as u32).is_multiple_of(28))
 }
 
