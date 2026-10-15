@@ -141,6 +141,8 @@ export const sourceApi = {
     invoke<number>("source_region_link", { materialId: r.material_id, page: r.page, rects: r.rects, kind: r.kind, text: r.text, noteIds }),
   /** 초안을 저장하고 영역에 잇는다. 되돌리기는 qualityApi.undo(변경 id) */
   regionCards: (deckId: number, region: Region, cards: RegionCard[]) => invoke<number>("source_region_cards", { deckId, region, cards }),
+  /** PDF 그림 · 표의 넣을 곳 기본값 (R8). PPTX 는 SlideObjects.deck_id */
+  regionDeck: (materialId: number, page: number) => invoke<number>("source_region_deck", { materialId, page }),
   /** IT3 미리보기 · 카드 수 (저장하지 않는다) */
   tableCards: (table: TableSpec) => invoke<RegionCard[]>("source_table_cards", { table }),
   analyze: (deckId: number) => invoke<{ linked: number; suggested: number }>("source_analyze", { deckId }),

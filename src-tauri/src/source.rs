@@ -449,6 +449,16 @@ pub(crate) fn nearest_deck(con: &Connection, material_id: i64, page: i64) -> Res
     .map_err(err)
 }
 
+/// PDF 그림 · 표의 넣을 곳 기본값 (R8, PPTX 는 source_slide_objects 의 deck_id). 없으면 자료의 덱
+#[tauri::command]
+pub fn source_region_deck(state: State<AppState>, material_id: i64, page: i64) -> Res<i64> {
+    let con = state.db.lock().map_err(err)?;
+    match nearest_deck(&con, material_id, page)? {
+        Some(d) => Ok(d),
+        None => con.query_row("SELECT deck_id FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).map_err(err),
+    }
+}
+
 #[derive(Serialize)]
 pub struct CardSource {
     material: Material,
