@@ -21,7 +21,7 @@ const PER: Record<DraftAmount, string> = { few: "1장", normal: "1–2장", many
 const COPY = (e: AiError) => ({
   limit: ["사용량 한도에 도달했어요", "ChatGPT 설정에서 요금제나 이 앱의 한도를 확인해 주세요. 고른 구간은 그대로 있어요."] as [string, string],
   expired: ["ChatGPT 로그인이 만료됐어요", "다시 로그인하면 이어서 만들 수 있어요. 아직 아무것도 보내지 않았어요."] as [string, string],
-  offline: ["인터넷에 연결되어 있지 않아요", "빠진 범위 보기와 [카드 잇기]는 인터넷 없이도 돼요."] as [string, string],
+  offline: ["인터넷에 연결되어 있지 않아요", "미연결 강조 구간 보기와 [기존 카드 연결]은 인터넷 없이도 돼요."] as [string, string],
   unavailable: ["지금은 ChatGPT 요금제를 쓸 수 없어요", "잠시 뒤 다시 해 보세요. 고른 구간은 그대로 있어요."] as [string, string],
   bad_output: ["초안을 만들지 못했어요", "ChatGPT 답의 형식이 맞지 않아 쓰지 않았어요. 고른 구간은 그대로 있어요."] as [string, string],
   error: ["초안을 만들지 못했어요", e.message] as [string, string],
@@ -240,7 +240,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
     <main className={`drafts ${panel ? "has-panel" : ""}`}>
       <button className="backlink t-label-m c-secondary" onClick={leave}>
         <Icon name="chevron-left" size={18} />
-        자료 · 빠진 범위
+        학습 자료 · 미연결 강조 구간
       </button>
       <div className="deck__head">
         <div className="deck__title">
@@ -267,7 +267,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
       {draft.missing.length > 0 && (
         <p className="drafts__note t-body-s c-secondary">
           <Icon name="info" size={16} />
-          초안이 안 나온 구간 {n(draft.missing.length)} · {draft.missing.map((id) => seg(id)).filter(Boolean).map((s) => `p.${s!.page}`).join(", ")} · 다시 만들거나 [카드 잇기]로 직접 이어 주세요.
+          초안이 안 나온 구간 {n(draft.missing.length)} · {draft.missing.map((id) => seg(id)).filter(Boolean).map((s) => `p.${s!.page}`).join(", ")} · 다시 만들거나 [기존 카드 연결]로 직접 연결해 주세요.
         </p>
       )}
       {!draft.checked && <p className="t-caption c-tertiary">분석 모델이 없어 비슷한 카드·근거 검사는 하지 않았어요. 중요도 화면에서 모델을 받을 수 있어요.</p>}

@@ -1,5 +1,5 @@
 // I2 학습 중 원자료 보기 (Figma 53:6730, 노트 53:6869). 카드 오른쪽 420px 패널: 연결 구간을 앞뒤 문단과 함께,
-// 신호 배지와 연결 방식, 쪽 축소 미리보기, [자료에서 열기] [연결 바꾸기].
+// 신호 배지와 연결 방식, 쪽 축소 미리보기, [학습 자료에서 열기] [연결 바꾸기].
 // 학습 화면(Study.tsx)이 답을 본 뒤(D3)에만 연다. [원자료] 버튼은 useCardSource(cardId) 가 null 이 아닐 때만
 import "../styles/sources.css";
 import { Button, Icon } from "../ui";
@@ -66,7 +66,7 @@ function SourceView({ src, cardId, onClose }: { src: CardSource; cardId?: number
       {/* 근거 칩으로 연 패널은 화면을 떠나지 않는다 (초안 · 채점 결과가 사라지지 않게) */}
       {method && (
         <span className="src-panel__actions">
-          <Button variant="ghost" size="M" icon="file" label="자료에서 열기" onClick={() => open(false)} />
+          <Button variant="ghost" size="M" icon="file" label="학습 자료에서 열기" onClick={() => open(false)} />
           <Button variant="ghost" size="M" icon="pencil" label="연결 바꾸기" onClick={() => open(true)} />
         </span>
       )}

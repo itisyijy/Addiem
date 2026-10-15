@@ -268,7 +268,7 @@ function Fail({ ev, onClose, onRetry }: { ev: AiAuthEvent; onClose: () => void; 
         {head}
       </h2>
       <p className="t-body-s c-secondary">{text}</p>
-      <p className="t-caption c-tertiary">연결하지 않았어요. 빠진 범위 · 규칙 나누기 · 핵심어 검사는 그대로 쓸 수 있어요.</p>
+      <p className="t-caption c-tertiary">연결하지 않았어요. 미연결 강조 구간 · 규칙 나누기 · 핵심어 검사는 그대로 쓸 수 있어요.</p>
       <div className="sync-foot sync-foot--end">
         {ev.reason === "not_eligible" ? (
           <>
@@ -378,7 +378,7 @@ export function AiSection() {
             </span>
             <span>
               <Icon name="layers" size={16} className="c-secondary" />
-              <span className="t-caption c-secondary">연결하지 않아도 빠진 범위·규칙 나누기는 그대로</span>
+              <span className="t-caption c-secondary">연결하지 않아도 미연결 강조 구간·규칙 나누기는 그대로</span>
             </span>
           </div>
         </>
