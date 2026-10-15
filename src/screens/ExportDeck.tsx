@@ -83,10 +83,10 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
           action: { label: "폴더에서 보기", onClick: () => reveal(r.path) },
         });
       }
-    } catch {
+    } catch (e) {
       // 멈추면 백엔드가 만들던 파일만 지운다. 실패도 확인 단계로 돌아가 다른 위치를 고르게 한다
       if (cancelled.current) toast({ title: "내보내기를 멈췄어요", text: "덱은 그대로예요" });
-      else toast({ tone: "error", title: "저장하지 못했어요", text: "다른 위치를 골라 주세요" });
+      else toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e)} · 다른 위치를 골라 다시 시도해 주세요` });
     } finally {
       clearTimeout(timer);
       unlisten();
@@ -107,8 +107,8 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
         title: `${name}${eul(name)} 내보냈어요 · ${n(r.rows)}줄`,
         action: { label: "폴더에서 보기", onClick: () => reveal(r.path) },
       });
-    } catch {
-      toast({ tone: "error", title: "저장하지 못했어요", text: "다른 위치를 골라 주세요" });
+    } catch (e) {
+      toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e)} · 다른 위치를 골라 다시 시도해 주세요` });
       setFile(null);
     }
   };
@@ -129,7 +129,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     const tiles: [string, number][] = [["노트", r.notes], ["카드", r.cards], ["미디어", r.media]];
     if (history) tiles.push(["복습 기록", r.reviews]); // 끈 경우 복습 기록 칸 없음
     return (
-      <Modal title="내보냈어요" variant="confirm" icon="check" className="modal--export is-result" onClose={onClose}>
+      <Modal title={`내보냈지만 미디어 파일 ${n(r.missing_media)}개가 빠졌어요`} variant="confirm" icon="check" className="modal--export is-result" onClose={onClose}>
         <p className="export__path c-tertiary" title={r.path}>
           {shortPath(r.path)}
         </p>
@@ -146,7 +146,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
           <span className="export__warn-text">
             <span className="t-body-m-strong c-warn">미디어 {n(r.missing_media)}개를 찾지 못했어요</span>
             <span className="t-body-s c-secondary">
-              카드 {n(r.missing_cards.length)}장은 그림 없이 들어갔어요. 덱 안의 원래 파일이 지워졌거나 옮겨진 경우예요.
+              저장한 .apkg 파일에서 카드 {n(r.missing_cards.length)}장의 그림이나 소리가 나오지 않아요. 이 앱의 카드는 그대로예요. 덱 안의 원래 파일이 지워졌거나 옮겨진 경우예요.
             </span>
           </span>
           <Button variant="ghost" size="M" label="카드 보기" onClick={() => nav({ name: "cards", deckId, cardIds: r.missing_cards })} />
@@ -250,6 +250,14 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
             <Icon name="info" size={16} className="c-tertiary" />
             <span className="t-body-s c-secondary">이 파일을 Neo-Anki로 다시 가져오면 이미 있는 노트는 건너뛰어요. 백업은 설정 &gt; 백업을 쓰세요.</span>
           </div>
+          {info.recall_cards > 0 && (
+            <div className="export__note">
+              <Icon name="info" size={16} className="c-tertiary" />
+              <span className="t-body-s c-secondary">
+                목록·선택형 카드 {n(info.recall_cards)}장 · Anki에서는 목록을 하나씩 공개하거나 보기를 선택할 수 없어요. 질문·정답은 볼 수 있어요.
+              </span>
+            </div>
+          )}
         </>
       )}
       <p className="export__file c-tertiary">

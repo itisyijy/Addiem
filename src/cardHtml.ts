@@ -66,8 +66,8 @@ async function soundChip(mark: Element) {
   if (len === null) {
     chip.disabled = true;
     chip.classList.add("is-missing");
-    chip.dataset.label = chip.title = `파일 없음 · ${name}`;
-    chip.setAttribute("aria-label", `소리 파일 없음: ${name}`);
+    chip.dataset.label = chip.title = `소리 파일을 찾을 수 없어요 · ${name}`;
+    chip.setAttribute("aria-label", `소리 파일을 찾을 수 없어요: ${name}`);
   } else {
     chip.dataset.len = chip.dataset.label = clock(Math.max(1, Math.round(len)));
     chip.setAttribute("aria-label", `소리 듣기 · ${chip.dataset.len}`);

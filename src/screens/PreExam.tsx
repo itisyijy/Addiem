@@ -7,12 +7,12 @@ import { useToast } from "../toast";
 import { cram as cramApi, type CramPlan, type MixCard, type MixRun, type MixStats, type MixSummary } from "../written";
 import "../styles/study.css";
 
-const CRAM_SCOPES = ["핵심만", "핵심 + 약한 챕터", "불안한 카드 전부"];
-/** P2 취약 비율: 전체 몇 장마다 취약 1장 (1/5 · 1/3 · 1/2) */
+const CRAM_SCOPES = ["핵심만", "핵심 + 취약 챕터", "불안한 카드 전부"];
+/** P2 취약 비율: 일반 몇 장마다 취약 1장 (전체의 1/5 · 1/3 · 1/2) */
 const RATIOS = [
-  { label: "적게", every: 4 },
-  { label: "보통", every: 2 },
-  { label: "많이", every: 1 },
+  { label: "20%", every: 4 },
+  { label: "약 33%", every: 2 },
+  { label: "50%", every: 1 },
 ];
 const SIZES = [60, 120, 200];
 const MAX_SIZE = 500; // mix_cards 상한
@@ -101,8 +101,8 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
     {
       key: "weak",
       dot: "danger",
-      title: "약한 챕터",
-      desc: weakNames.length === 0 ? "약한 챕터로 정한 곳이 없어요" : weakNames.length === 1 ? weakNames[0] : `${weakNames[0]} 외 ${n(weakNames.length - 1)}개`,
+      title: "취약 챕터",
+      desc: weakNames.length === 0 ? "취약 챕터로 지정한 곳이 없어요" : weakNames.length === 1 ? weakNames[0] : `${weakNames[0]} 외 ${n(weakNames.length - 1)}개`,
       count: plan.weak,
     },
     { key: "again", dot: "accent", title: "최근 2주에 틀린 카드", desc: "Again 1번 이상", count: plan.again },
@@ -123,12 +123,21 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
         {plan ? (
           <>
             <div className="cram__mode">
-              <Segment boxed label="방식" options={[{ label: "압축", value: "cram" as const }, { label: "혼합", value: "mix" as const }]} value={mode} onChange={setMode} />
+              <Segment
+                boxed
+                label="방식"
+                options={[
+                  { label: "압축 · 일정 유지", value: "cram" as const },
+                  { label: "혼합 · 일정 반영", value: "mix" as const },
+                ]}
+                value={mode}
+                onChange={setMode}
+              />
             </div>
             <p className="cram__lead t-body-s c-secondary">
               {isMix
-                ? "혼합: 범위 전체를 한 번 돌며 불안한 카드를 사이사이에 끼워요. 평가가 복습 일정에 반영돼요 (압축은 기록만)."
-                : "압축: 범위 전체를 한 번 훑되, 이미 잘 외운 카드는 빼고 불안한 카드만 모았어요."}
+                ? "혼합: 이미 학습한 카드 전체를 한 번 돌며 취약 카드를 사이사이에 끼워요. 평가가 복습 일정에 반영돼요."
+                : "압축: 고른 범위에서 불안한 카드만 모아 훑어요. 잘 외운 카드는 빼고, 복습 일정은 그대로예요."}
             </p>
             <p className="summary__count">
               <span className="cram__num">{n(count)}</span>
@@ -137,7 +146,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
             {isMix && (
               <div className="cram__round">
                 <span className="cram__round-head t-caption">
-                  <span className="c-secondary">이번 회독</span>
+                  <span className="c-secondary">이번 회독에서 확인한 배운 카드</span>
                   <span className="t-label-s">{n(plan.round_seen)} / {n(plan.learned)}장 · {pct}%</span>
                 </span>
                 <span className="cram__bar"><span style={{ width: `${pct}%` }} /></span>
@@ -170,22 +179,22 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           <header className="summary__order-head">
             <h2 className="t-title-s">이번 {n(count)}장은</h2>
             <p className="t-caption c-tertiary">
-              취약 카드를 전체 사이에 고르게 끼워요 · 전체 {every === 1 ? "1장" : `${every}장`}마다 취약 1장 · 같은 카드는 한 번만
+              취약 카드를 배운 카드 사이에 고르게 끼워요 · 같은 카드는 한 번만
             </p>
           </header>
           <div className="summary__row">
             <span className="dot dot--accent" />
             <span className="summary__row-text">
-              <span className="t-body-m-strong">전체 범위</span>
-              <span className="t-caption c-tertiary">이번 회독에서 아직 안 본 배운 카드 · 신규는 오늘의 학습으로</span>
+              <span className="t-body-m-strong">이미 학습한 카드 전체</span>
+              <span className="t-caption c-tertiary">이번 회독에서 아직 안 본 배운 카드 · 신규 카드는 오늘의 학습에서 배워요</span>
             </span>
             <span className="t-title-m">{n(count - weakCount)}</span>
           </div>
           <div className="summary__row">
             <span className="dot dot--danger" />
             <span className="summary__row-text">
-              <span className="t-body-m-strong">취약 끼워 넣기</span>
-              <span className="t-caption c-tertiary">약한 챕터 · 최근 2주 Again · 아직 불안한 핵심</span>
+              <span className="t-body-m-strong">끼워 넣는 취약 카드</span>
+              <span className="t-caption c-tertiary">취약 챕터 · 최근 2주 Again · 아직 불안한 핵심</span>
             </span>
             <span className="t-title-m">{n(weakCount)}</span>
           </div>
@@ -200,16 +209,16 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           </div>
           <div className="cram__scope">
             <span className="summary__row-text">
-              <span className="t-body-m-strong">취약 비율</span>
-              <span className="t-caption c-tertiary">1/5 · 1/3 · 1/2</span>
+              <span className="t-body-m-strong">취약 카드 비율</span>
+              <span className="t-caption c-tertiary">일반 {every === 1 ? "1장" : `${every}장`}마다 취약 1장</span>
             </span>
-            <Segment boxed label="취약 비율" options={RATIOS.map((r) => ({ label: r.label, value: r.every }))} value={every} onChange={setEvery} />
+            <Segment boxed label="취약 카드 비율" options={RATIOS.map((r) => ({ label: r.label, value: r.every }))} value={every} onChange={setEvery} />
           </div>
           <div className="cram__scope">
             <span className="summary__row-text">
               <span className="t-body-m-strong">한 번에</span>
               <span className="t-caption c-tertiary">
-                카드당 평균 {n(Math.round(plan.sec_per_card))}초 기준{plan.today_seen > 0 && ` · 오늘 이미 본 ${n(plan.today_seen)}장은 빼요`}
+                카드당 보통 약 {n(Math.round(plan.sec_per_card))}초 기준{plan.today_seen > 0 && ` · 오늘 이미 본 ${n(plan.today_seen)}장은 빼요`}
               </span>
             </span>
             <Segment boxed label="한 번에" options={sizes} value={pickedSize} onChange={setSize} />
@@ -274,7 +283,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
     if (!sum?.hot) return;
     await api.setDeckWeak(sum.hot.deck_id, true);
     setWeakSet(true);
-    notify({ title: `${sum.hot.name}${eul(sum.hot.name)} 약한 챕터로 정했어요`, text: "복습에서 이 챕터 카드를 먼저 보여드려요." });
+    notify({ title: `${sum.hot.name}${eul(sum.hot.name)} 취약 챕터로 지정했어요`, text: "복습에서 이 챕터 카드를 먼저 보여드려요." });
   };
   const roundDone = !!sum && sum.learned > 0 && sum.round_seen >= sum.learned;
   const goOn = () => beginMix(nav, [run.deckId], run.deckId, run.name, run.every, run.size).catch((e) => setError(errorText(e)));
@@ -299,7 +308,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
         {sum && (
           <div className="cram__round">
             <span className="cram__round-head t-caption">
-              <span className="c-secondary">이번 회독</span>
+              <span className="c-secondary">이번 회독에서 확인한 배운 카드</span>
               <span className="t-label-s">
                 {pct(run.before.seen, run.before.learned)}% → {pct(sum.round_seen, sum.learned)}% · {n(sum.round_seen)} / {n(sum.learned)}장
               </span>
@@ -309,7 +318,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
             </span>
           </div>
         )}
-        {roundDone && <p className="cram__done t-title-s">전체 범위를 한 번 다 봤어요</p>}
+        {roundDone && <p className="cram__done t-title-s">이미 학습한 카드를 한 번 다 봤어요</p>}
         <div className="cram__cta">
           {roundDone ? (
             <Button icon="rotate" label="처음부터 다시" shortcut="Enter" onClick={restart} />
@@ -335,7 +344,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
         </header>
         <div className="summary__row">
           <span className="summary__row-text">
-            <span className="t-body-m-strong">전체 범위</span>
+            <span className="t-body-m-strong">이미 학습한 카드</span>
             <span className="t-caption c-tertiary">{againLine(stats.again[0], stats.full[0])}</span>
           </span>
           <span className="t-title-m">{n(stats.full[0])}</span>
@@ -350,12 +359,12 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
         {sum?.hot && (
           <div className="summary__row">
             <span className="summary__row-text">
-              <span className="t-body-m-strong c-warn">약해 보이는 챕터 1</span>
+              <span className="t-body-m-strong c-warn">취약 챕터 제안 1</span>
               <span className="t-caption c-tertiary">
                 {sum.hot.name} — 이번 회독 Again {n(sum.hot.again)}장
               </span>
             </span>
-            <Button variant="secondary" size="M" label={weakSet ? "정했어요" : "약한 챕터로"} disabled={weakSet} onClick={markWeak} />
+            <Button variant="secondary" size="M" label={weakSet ? "지정했어요" : "취약 챕터로 지정"} disabled={weakSet} onClick={markWeak} />
           </div>
         )}
       </section>

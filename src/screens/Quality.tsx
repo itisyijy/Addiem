@@ -47,8 +47,8 @@ function useSplitActions(reload: () => void) {
       if (!hide) return;
       splitLater.remove(cardId);
       toast({
-        title: "점검 목록에서 뺐어요",
-        text: "30일 동안 다시 올리지 않아요. 카드는 그대로예요.",
+        title: "30일간 점검에서 숨겼어요",
+        text: "카드 내용과 학습은 그대로예요.",
         tone: "undo",
         action: { label: "되돌리기", onClick: () => keep(cardId, false) },
       });
@@ -56,14 +56,14 @@ function useSplitActions(reload: () => void) {
   const undo = (changeId: number) =>
     qualityApi.undo(changeId).then(() => {
       reload();
-      toast({ title: "나누기를 되돌렸어요", text: "새 카드를 지우고 원래 카드를 되살렸어요." });
+      toast({ title: "나누기를 되돌렸어요", text: "새 카드를 지우고 원래 카드를 나누기 전 상태로 되돌렸어요." });
     }, fail);
   const done = (cardId: number, changeId: number, count: number, archived: boolean) => {
     splitLater.remove(cardId);
     reload();
     toast({
       title: `${count}장으로 나눴어요`,
-      text: archived ? "원래 카드는 보관했어요. 복습 기록은 그대로예요." : "원래 카드도 그대로 학습해요.",
+      text: archived ? "원래 카드는 학습을 중지했어요. 내용과 복습 기록은 남아요." : "원래 카드도 그대로 학습해요.",
       tone: "undo",
       action: { label: "되돌리기", onClick: () => undo(changeId) },
     });
@@ -142,7 +142,7 @@ export function Quality({ deckId }: { deckId: number }) {
         <Button variant="ghost" size="M" label="다시 올리기" onClick={() => keep(c.id, false)} />
       ) : (
         <>
-          <Button variant="ghost" size="M" label="그대로 두기" onClick={() => keep(c.id)} />
+          <Button variant="ghost" size="M" label="30일간 점검에서 숨기기" onClick={() => keep(c.id)} />
           <Button variant="secondary" size="M" icon="layers" label="나누기 제안" onClick={() => setSplitting(c.id)} />
         </>
       )}
@@ -159,7 +159,7 @@ export function Quality({ deckId }: { deckId: number }) {
       <div className="deck__head">
         <div className="deck__title">
           <h1 className="t-title-l">카드 점검</h1>
-          <p className="t-body-s c-secondary">답이 길거나 질문이 여러 개인 카드를 찾았어요. 고칠지는 직접 정해요.</p>
+          <p className="t-body-s c-secondary">답이 길거나 질문이 여러 개인 카드를 찾았어요. 고칠지는 직접 정해요. 점검에서 숨겨도 카드와 학습은 그대로예요.</p>
         </div>
         <Badge>기기 안에서 검사 · 규칙 기반</Badge>
       </div>
@@ -249,7 +249,7 @@ function lostInSplit(fields: string[]) {
 function lostLine(lost: { images: number; formatted: boolean }, archive: boolean) {
   const what = lost.images && lost.formatted ? `그림 ${lost.images}개와 서식은` : lost.images ? `그림 ${lost.images}개는` : lost.formatted ? "서식은" : null;
   if (!what) return null;
-  return `원래 카드의 ${what} 옮기지 않아요 · ${archive ? "원래 카드는 보관돼요" : "원래 카드를 지우면 함께 사라져요"}`;
+  return `원래 카드의 ${what} 옮기지 않아요 · ${archive ? "학습을 중지한 원래 카드에 남아요" : "원래 카드를 지우면 함께 사라져요"}`;
 }
 
 /** 다른 제안: 한 장에 담는 항목 수를 3 → 2 → 4 → 1 순으로 바꾼다 (규칙 분할) */
@@ -437,7 +437,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
     <>
     <Modal
       title="카드 나누기 제안"
-      sub={fromAi ? "ChatGPT가 묶은 제안이에요. 그대로 쓰기 전에 확인하고 고쳐 주세요." : "규칙으로 나눈 제안이에요. 고쳐서 써도 되고, 그대로 두어도 돼요."}
+      sub={fromAi ? "ChatGPT가 비슷한 내용끼리 나눈 제안이에요. 그대로 쓰기 전에 확인하고 고쳐 주세요." : "규칙으로 나눈 제안이에요. 고쳐서 써도 되고, 나누지 않아도 돼요."}
       onClose={onClose}
       className={`split ${panelSeg !== null ? "has-panel" : ""}`}
     >
@@ -474,7 +474,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
             <>
               <span className="ai-busy">
                 <Spinner size={16} />
-                <span className="t-label-m c-secondary">ChatGPT가 묶는 중…</span>
+                <span className="t-label-m c-secondary">ChatGPT가 나누는 중…</span>
                 <button type="button" className="ai-link t-label-s" onClick={toRule}>
                   취소
                 </button>
@@ -499,7 +499,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
               {listed && (
                 <>
                   <span className="t-label-s c-tertiary">
-                    나눈 카드 {n(ready.length)}장{fromAi ? " · ChatGPT 제안" : ""}
+                    나눈 카드 {n(ready.length)}장{fromAi ? " · ChatGPT 제안" : p.kind !== "questions" ? " · 질문만 읽고 답할 수 있는지 확인해 주세요" : ""}
                   </span>
                   {parts.map((x, i) => {
                     const items = lines(x.back);
@@ -574,10 +574,10 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
         </section>
       </div>
       <div className="split__keep">
-        <Checkbox checked={archive} onChange={setArchive} label="원래 카드는 보관해요 (학습에서 빠지고, 복습 기록은 그대로 남아요)" />
+        <Checkbox checked={archive} onChange={setArchive} label="원래 카드의 학습을 중지해요 (내용과 복습 기록은 남아요)" />
         {lost && lostLine(lost, archive) && <p className="split__lost t-caption">{lostLine(lost, archive)}</p>}
         <p className="t-caption c-tertiary">
-          새 카드{listed ? ` ${n(ready.length)}장` : ""}은 새 카드로 시작하고, 중요도·하위 덱은 원래 카드를 따라요. 카드 점검의 "최근 나눈 카드"에서 언제든 되돌릴 수 있어요.
+          나눈 카드{listed ? ` ${n(ready.length)}장` : ""}은 신규 카드로 시작하고, 중요도·하위 덱은 원래 카드를 따라요. 카드 점검의 "최근 나눈 카드"에서 되돌리면 원래 상태로 돌아가요.
         </p>
       </div>
       {error && <p className="t-body-s c-danger">{error}</p>}
@@ -590,7 +590,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
                 <Icon name="send" size={16} className="c-accent" />
                 <span className="t-body-m-strong">이 카드 한 장을 ChatGPT로 보내요</span>
               </span>
-              <span className="t-caption c-tertiary">앞·뒷면 글자만 보내요 · ChatGPT 요금제 사용량에서 줄어요</span>
+              <span className="t-caption c-tertiary">질문과 답 항목 글자만 보내요 · ChatGPT 요금제 사용량에서 줄어요</span>
               <span className="ai-confirm__actions">
                 <Button variant="ghost" size="M" label="취소" onClick={() => setAsking(false)} />
                 <Button size="M" icon="send" label="보내기" autoFocus onClick={send} />
@@ -637,7 +637,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
               규칙으로 나누기
             </button>
             <button role="radio" aria-checked={aiSel} className={`segment__item t-label-m ${aiSel ? "is-selected" : ""}`} onClick={pickAi}>
-              성격별로 묶기
+              비슷한 내용끼리 나누기
             </button>
           </span>
           <span className="ai-side">
@@ -653,7 +653,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
             ) : !ai?.connected ? (
               <span className="ai-hint t-caption c-tertiary">
                 <Icon name="lock" size={14} />
-                "성격별로 묶기"는 ChatGPT 연결이 필요해요
+                ChatGPT 연결이 필요해요
               </span>
             ) : null}
             {aiSel ? (
@@ -662,7 +662,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
               !asking && (
                 <button type="button" className="ai-mini t-label-s" onClick={send}>
                   <Icon name="rotate" size={14} />
-                  다시 묶기
+                  다시 나누기
                 </button>
               )
             ) : (
@@ -674,7 +674,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
           </span>
         </span>
         <span className="split__actions">
-          <Button variant="ghost" size="M" label="그대로 두기" onClick={onKeep} />
+          <Button variant="ghost" size="M" label="나누지 않고 30일 숨기기" onClick={onKeep} />
           <Button size="M" icon="check" label={listed ? `${n(ready.length)}장으로 나누기` : "나누기"} disabled={ready.length < 2} busy={busy} busyLabel="나누는 중…" onClick={apply} />
         </span>
       </div>

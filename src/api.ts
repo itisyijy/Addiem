@@ -59,7 +59,11 @@ export type DeckDetail = {
   path: string[];
   total: number;
   unseen: number;
+  /** 접어둔 카드. 그중 hard_auto 는 두 번 막혀 자동으로, 나머지는 직접 접었다 */
   hard: number;
+  hard_auto: number;
+  /** 가장 먼저 돌아오는 날 'YYYY-MM-DD' (접어둔 카드가 없으면 null) */
+  hard_next: string | null;
   backlog: number;
   today_review: number;
   today_new: number;
@@ -307,7 +311,8 @@ export type ExportResult = {
   missing_cards: number[];
 };
 /** C1-xe 덱 상자 */
-export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number };
+/** recall_cards: 목록 회상 · 선택형 카드 수 (Anki 에서는 보기만 해요) */
+export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number; recall_cards: number };
 /** export_apkg 가 보내는 "export-progress" 이벤트 (C1-xp) */
 export type ExportProgress = { step: "notes" | "reviews" | "media" | "zip"; done: number; total: number };
 export type BoardDeck ={ id: number; label: string; path: string[]; cards: number; importance: Level; source: string; reason: string | null };

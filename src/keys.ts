@@ -16,7 +16,7 @@ export const ACTIONS: { id: ActionId; label: string; scope: Scope; keys: string[
   { id: "bury", label: "접어두기", scope: "study", keys: ["Minus"] },
   { id: "undo", label: "평가 되돌리기", scope: "study", keys: ["Ctrl+KeyZ"] },
   // I2: 연결된 자료가 있는 카드의 답 화면에서 원자료 패널을 열고 닫는다. 학습 화면 · 앱 범위 키와 겹치지 않음 확인 (2026-10-14)
-  { id: "source", label: "원자료 보기", scope: "study", keys: ["KeyS"] },
+  { id: "source", label: "연결 자료 보기", scope: "study", keys: ["KeyS"] },
   // R2: 서술형 비교 화면(J2)에서 ChatGPT 채점 보조. 학습 화면 키(Space · 1–4 · E · − · Ctrl Z · S)와 고정 키(Esc · B), 앱 범위 키(N · I · A)와 겹치지 않음 확인 (2026-10-15)
   { id: "grade", label: "ChatGPT 채점 보조", scope: "study", keys: ["KeyG"] },
   // AU3: 지금 면의 소리 다시 듣기 (Anki 와 같은 R). 학습 화면 키(Space · 1–4 · E · − · Ctrl Z · S · G) · 고정 키(Esc · B) · 앱 범위 키(N · I · A)와 겹치지 않음 확인.
@@ -45,7 +45,7 @@ export const FIXED_ROWS: { label: string; caption: string; scope: Scope; key: st
   { label: "다음 칸 · 칸 이름", caption: "Shift Tab 이전 칸", scope: "occlusion", key: "Tab · Enter" },
   { label: "실행 취소 · 다시", caption: "50단계", scope: "occlusion", key: "Ctrl Z · Ctrl Shift Z" },
   { label: "화면 이동 · 확대", caption: "Ctrl = / − 로도 확대", scope: "occlusion", key: "Space+끌기 · Ctrl+휠" },
-  { label: "완료", caption: "Esc 를 두 번 누르면 마칠지 물어요", scope: "occlusion", key: "Ctrl Enter" },
+  { label: "가리기 적용 · 변경 저장", caption: "Esc 를 두 번 누르면 마칠지 물어요", scope: "occlusion", key: "Ctrl Enter" },
 ];
 
 /** 바꿀 수 없는 키 (E4): Esc 그만하기 · 닫기, Enter 확인, Tab 초점 이동. 조합 없이 누른 경우만 */

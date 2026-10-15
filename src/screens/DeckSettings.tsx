@@ -119,7 +119,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
     ? [
         ["하루 신규 상한", saved.daily_new_limit === null ? "없음" : `${n(saved.daily_new_limit)}장`, `${n(edit.daily_new_limit ?? 0)}장`],
         ["하루 신규 필요", before.needed_per_day === null ? "—" : `${n(before.needed_per_day)}장`, `${n(after.needed_per_day ?? 0)}장`],
-        ["목표 완료 예상", before.finish_date ? shortDate(before.finish_date) : "—", after.finish_date ? shortDate(after.finish_date) : "—"],
+        ["신규 첫 학습 완료 예상", before.finish_date ? shortDate(before.finish_date) : "—", after.finish_date ? shortDate(after.finish_date) : "—"],
       ]
     : [
         ["학습 가능 일수", days(before), days(after)],
@@ -151,7 +151,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
       </button>
       <div className="deck__title">
         <h1 className="t-title-l">목표 및 학습 설정</h1>
-        <p className="t-body-s c-secondary">이 덱에만 적용돼요. 바꾸면 다음 학습부터 계획을 다시 계산해요.</p>
+        <p className="t-body-s c-secondary">이 덱과 이 설정을 따르는 하위 덱에 적용돼요. 저장하면 이후에 시작하는 학습부터 새 계획을 써요.</p>
       </div>
 
       <div className="settings">
@@ -213,7 +213,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
           <div className="settings__row">
             <span className="settings__label">
               <span className="t-body-m-strong">하루 신규 카드 상한</span>
-              <span className="t-body-s c-secondary">하위 덱은 이 상한을 나눠 써요. 권장량보다 작으면 경고해요.</span>
+              <span className="t-body-s c-secondary">별도 설정이 없는 하위 덱은 이 상한을 함께 나눠 써요. 권장량보다 작으면 경고해요.</span>
             </span>
             <Stepper
               value={limitShown === null ? "없음" : n(limitShown)}
@@ -228,7 +228,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
           <div className="settings__row">
             <span className="settings__label">
               <span className="t-body-m-strong">오늘만 신규 분량 조정</span>
-              <span className="t-body-s c-secondary">오늘 계획에만 적용돼요. 예정된 복습은 줄이지 않아요.</span>
+              <span className="t-body-s c-secondary">오늘 시작하는 학습의 신규 분량만 바꿔요. 예정된 복습은 줄이지 않아요.</span>
             </span>
             <Stepper
               value={n(todayShown)}
@@ -347,7 +347,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
                 <Icon name="alert" size={20} className="c-warn" />
                 <span className="recalc__warn-text">
                   <span className="t-body-m-strong c-warn">
-                    {after.never_finish ? "이대로면 목표일까지 끝낼 수 없어요" : `이대로면 목표일을 ${n(after.overflow_days ?? 0)}일 넘겨요`}
+                    {after.never_finish ? "이대로면 목표일까지 끝낼 수 없어요" : `이대로면 목표일을 ${n(after.overflow_days ?? 0)}일 미뤄야 끝나요`}
                   </span>
                   <span className="t-body-s c-secondary">목표는 그대로 두고 상한만 낮췄어요. 둘 중 하나를 고르거나, 알고 있다면 이대로 저장해도 돼요.</span>
                 </span>
@@ -363,6 +363,12 @@ export function DeckSettings({ deckId }: { deckId: number }) {
                   <Button variant="secondary" size="M" label={`목표일 ${shortDate(suggested)}로`} onClick={() => set({ target_date: suggested })} />
                 )}
               </div>
+              {/* 목표일 당일을 빼면 마지막 학습일 다음 날을 제안한다. 두 날짜가 다른 이유를 같이 적는다 */}
+              {suggested && after.finish_date && !edit.include_target_day && (
+                <p className="t-caption c-tertiary">
+                  {shortDate(after.finish_date)}까지 학습 · 당일 제외 기준 목표일 {shortDate(suggested)}
+                </p>
+              )}
             </div>
           )}
           {paused && (
@@ -378,8 +384,8 @@ export function DeckSettings({ deckId }: { deckId: number }) {
                         : `${n(pausedDays)}일 동안 새 카드가 들어오지 않아요`}
                   </span>
                   <span className="t-body-s c-secondary">
-                    그동안 예정된 복습{after.paused_reviews === null ? "은" : ` 약 ${n(after.paused_reviews)}장은`} 다시 시작하는 날 밀린 복습으로 올라와요 (하루
-                    200장까지).
+                    그동안 예정된 복습{after.paused_reviews === null ? "은" : ` 약 ${n(after.paused_reviews)}장은`} 다시 시작하는 날 밀린 복습으로 올라와요 (앱 전체에서
+                    하루 200장까지).
                   </span>
                 </span>
               </div>

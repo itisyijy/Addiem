@@ -121,6 +121,9 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   onReplaceImage?: () => void;
 }) {
   useOverlayScope();
+  // 이미 있는 노트(texts 가 있다)는 [변경 저장]이 바로 저장한다. 새 카드는 [가리기 적용] 뒤 카드 추가 화면에서 저장한다 (X4-05)
+  const existing = !!texts;
+  const doneLabel = existing ? "변경 저장" : "가리기 적용";
   const seq = useRef(0);
   const [shapes, setShapes] = useState<EShape[]>(() => initial.map((s) => ({ ...s, key: ++seq.current })));
   const [hideAll, setHideAll] = useState(initialHideAll);
@@ -415,7 +418,7 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
         <span className="ioe__right">
           <Button variant="ghost" size="M" icon="rotate" label="실행 취소" onClick={undo} disabled={!past.current.length} />
           <span className="t-label-m c-secondary">{Math.round(zoom * 100)}%</span>
-          <Button icon="check" size="M" label="완료" shortcut="Ctrl Enter" disabled={!groups.length} onClick={() => finish()} />
+          <Button icon="check" size="M" label={doneLabel} shortcut="Ctrl Enter" disabled={!groups.length} onClick={() => finish()} />
         </span>
       </header>
 
@@ -484,8 +487,13 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
         <p className="t-title-s">
           칸 {n(boxes)}개 · 카드 {n(groups.length)}장
         </p>
+        {groups.length > 0 && (
+          <p className="t-caption c-secondary">
+            {existing ? "같은 그림에서 만든 카드에 함께 반영돼요." : "카드 추가 화면으로 돌아가 저장해야 카드가 생겨요."}
+          </p>
+        )}
         {small && <p className="t-caption c-secondary ioe__warn">그림이 작아요 (짧은 변 {Math.min(picture.width, picture.height)}px). 글자가 흐릴 수 있어요.</p>}
-        {boxes > 40 && <p className="t-caption c-secondary ioe__warn">칸이 {n(boxes)}개예요. 한 그림에 너무 많으면 복습이 길어져요.</p>}
+        {boxes > 40 && <p className="t-caption c-secondary ioe__warn">칸 {n(boxes)}개 · 만들 카드 {n(groups.length)}장이에요. 한 그림에 너무 많으면 복습이 길어져요.</p>}
         <span className="t-label-s c-secondary">묻는 방식</span>
         <div className="segment segment--boxed">
           {(
@@ -548,7 +556,9 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
             })}
           </ul>
         ) : (
-          <p className="t-body-s c-tertiary ioe__empty">그림 위를 끌어서 가릴 곳을 그려요. 칸마다 카드가 한 장 생겨요.</p>
+          <p className="t-body-s c-tertiary ioe__empty">
+            그림 위를 끌어서 가릴 곳을 하나 이상 그려야 {existing ? "저장" : "적용"}할 수 있어요. 칸마다 카드가 한 장, 묶은 칸은 한 장으로 생겨요.
+          </p>
         )}
         <div className="ioe__group">
           <Button variant="secondary" size="M" icon="layers" label="묶기" shortcut="Ctrl G" disabled={selectedOrdinals.length < 2} onClick={group} />
@@ -589,11 +599,13 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
       {ask === "leave" && (
         <Modal title="편집을 마칠까요?" onClose={() => setAsk(null)}>
           <div className="modal__body">
-            <p className="t-body-m c-secondary">완료를 누르면 지금 칸으로 카드를 만들어요.</p>
+            <p className="t-body-m c-secondary">
+              {existing ? "변경 저장을 누르면 같은 그림의 카드에 바로 반영돼요." : "가리기 적용을 누르면 카드 추가 화면으로 돌아가요. 저장해야 카드가 생겨요."}
+            </p>
             <div className="modal__actions">
               <Button variant="ghost" size="M" label="계속 편집" shortcut="Esc" onClick={() => setAsk(null)} />
               <Button variant="danger" size="M" label="바꾼 것 버리기" onClick={onCancel} />
-              <Button size="M" label="완료" disabled={!groups.length} onClick={() => (setAsk(null), finish())} />
+              <Button size="M" label={doneLabel} disabled={!groups.length} onClick={() => (setAsk(null), finish())} />
             </div>
           </div>
         </Modal>
@@ -606,7 +618,7 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
             </p>
             <div className="modal__actions">
               <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={() => setAsk(null)} />
-              <Button variant="danger" size="M" label="지우고 완료" onClick={() => (setAsk(null), finish(true))} />
+              <Button variant="danger" size="M" label="지우고 저장" onClick={() => (setAsk(null), finish(true))} />
             </div>
           </div>
         </Modal>

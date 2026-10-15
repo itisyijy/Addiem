@@ -17,6 +17,14 @@ export function dateWithDay(iso: string) {
   const [y, m, d] = iso.split("-").map(Number);
   return `${m}월 ${d}일 (${WEEKDAY[new Date(y, m - 1, d).getDay()]})`;
 }
+/** queue.rs BURY_RETURN_DAYS. 접어둔 카드는 학습일 기준 3일 뒤 오늘의 학습에 돌아온다 */
+export const BURY_DAYS = 3;
+/** 지금 접으면 돌아오는 날 "10월 18일 (토)" */
+export function buryReturnDay() {
+  const d = studyDate();
+  d.setDate(d.getDate() + BURY_DAYS);
+  return dateWithDay(d.toLocaleDateString("sv-SE"));
+}
 export const ddayLabel = (dd: number) => (dd === 0 ? "D-day" : dd > 0 ? `D-${dd}` : `D+${-dd}`);
 /** "10월 16일(금)". 쉬기 배너·메뉴는 괄호 앞을 띄우지 않는다 (C1-p, C1-r) */
 const dayTight = (iso: string) => dateWithDay(iso).replace(" (", "(");
@@ -297,7 +305,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
                 <span className="deck__done-count">
                   <span className="t-body-m c-tertiary">오늘 완료</span>
                   <span className="t-title-s">{n(d.done_today)}</span>
-                  <span className="t-body-s c-tertiary">/ {n(planned)}</span>
+                  <span className="t-body-s c-tertiary">/ 계획 {n(planned)}</span>
                 </span>
                 <span className="t-body-s c-tertiary">남은 {n(today)}장</span>
               </div>
@@ -337,17 +345,20 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
                 {goal.dday < 0 ? (
                   <Badge tone="warn">목표일이 지났어요</Badge>
                 ) : d.on_track === null ? null : d.on_track ? (
-                  <Badge tone="success">목표일까지 완주 가능</Badge>
+                  <Badge tone="success">신규 첫 학습 완료 예상</Badge>
                 ) : (
-                  <Badge tone="warn">이대로면 목표일을 넘겨요</Badge>
+                  <Badge tone="warn">신규 첫 학습이 목표일을 넘겨요</Badge>
                 )}
               </div>
-              <Progress label="본 카드" value={seen} total={d.total} pct={d.seen_pct} color="ink" />
+              <Progress label="학습을 시작한 카드" value={seen} total={d.total} pct={d.seen_pct} color="ink" />
               {d.core_total > 0 ? (
-                <Progress label="핵심 카드 학습률" value={d.core_seen} total={d.core_total} pct={d.core_learned_pct} color="core" />
+                <Progress label="학습을 시작한 핵심 카드" value={d.core_seen} total={d.core_total} pct={d.core_learned_pct} color="core" />
               ) : (
                 <p className="t-body-s c-tertiary">핵심 카드 없음 · 중요도 조정에서 정할 수 있어요</p>
               )}
+              <p className="t-caption c-tertiary">
+                신규 상태를 벗어난 카드의 비율이에요. 정답률이나 숙달도가 아니고, 완료 예상은 지금 분량 기준 추정이에요.
+              </p>
               {/* H1. 날짜별 분량과 쓸 수 있는 시간 */}
               <Button variant="ghost" size="M" icon="calendar" label="계획 보기" className="deck__plan" onClick={() => nav({ name: "plan", deckId: d.id })} />
               {/* P0 시험 전 회독 입구 (목표일 14일 전부터) */}
@@ -377,8 +388,18 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
               value={n(d.unseen)}
               sub={d.finish_days ? `하루 ${n(d.per_day)}장씩 ${n(d.finish_days)}일` : d.unseen ? "오늘은 신규를 넣지 않아요" : "모두 한 번씩 봤어요"}
             />
-            <StatTile label="어려운 카드" value={n(d.hard)} sub="접어둔 카드 · 3일 뒤 복귀" />
-            <StatTile label="밀린 복습" value={n(d.backlog)} sub="쌓이면 하루 200장까지" />
+            <StatTile
+              label="접어둔 카드"
+              value={n(d.hard)}
+              sub={
+                d.hard === 0
+                  ? "두 번 막히거나 직접 접은 카드"
+                  : `자동 ${n(d.hard_auto)} · 직접 ${n(d.hard - d.hard_auto)} · ${
+                      d.hard_next && d.hard_next > studyDate().toLocaleDateString("sv-SE") ? `${+d.hard_next.slice(5, 7)}/${+d.hard_next.slice(8, 10)}` : "오늘"
+                    } 복귀`
+              }
+            />
+            <StatTile label="밀린 복습" value={n(d.backlog)} sub="앱 전체 하루 200장까지" />
           </div>
         </div>
       </div>
@@ -433,10 +454,10 @@ const pct = (r: number) => `${Math.round(r * 100)}%`;
 /** 기준을 넘었는가 (빨간 글자·막대). 백엔드 제안 기준과 같다: 복습 20번 이상 + 25% 이상 또는 덱 평균의 1.5배 이상 */
 const overAgain = (s: Subdeck, avg: number | null) =>
   s.reviews14 >= 20 && s.again_rate !== null && (s.again_rate >= 0.25 || (avg !== null && s.again_rate >= 1.5 * avg));
-/** 제안 근거 한 줄. "최근 14일 Again 31% (덱 평균 17%) · 복습 48번 · 3번 이상 틀린 카드 6장" */
+/** 제안 근거 한 줄. "최근 14일 기억 못함(Again) 31% (덱 평균 17%) · 복습 48번 · 3번 이상 틀린 카드 6장" */
 const evidence = (s: Subdeck, avg: number | null) =>
   [
-    `최근 14일 Again ${pct(s.again_rate ?? 0)}${avg !== null ? ` (덱 평균 ${pct(avg)})` : ""}`,
+    `최근 14일 기억 못함(Again) ${pct(s.again_rate ?? 0)}${avg !== null ? ` (덱 평균 ${pct(avg)})` : ""}`,
     `복습 ${n(s.reviews14)}번`,
     s.lapsed > 0 && `3번 이상 틀린 카드 ${n(s.lapsed)}장`,
   ]
@@ -449,16 +470,16 @@ function WeakBadge({ s, avg }: { s: Subdeck; avg: number | null }) {
     return (
       <span className="weak weak--on t-label-s">
         <Icon name="alert" size={12} />
-        약함
+        취약
       </span>
     );
   const tip = `weak-tip-${s.id}`;
   return (
     <span className="weak weak--suggested t-label-s" tabIndex={0} aria-describedby={tip} onClick={(e) => e.stopPropagation()}>
       <Icon name="alert" size={12} />
-      약해 보여요?
+      취약 챕터 제안
       <span className="weak__tip t-caption" role="tooltip" id={tip}>
-        <span className="t-label-s">왜 약해 보이나요?</span>
+        <span className="t-label-s">왜 제안했나요?</span>
         <span>{evidence(s, avg)}</span>
       </span>
     </span>
@@ -474,10 +495,10 @@ function useWeak(reload: Reload) {
       (e) => toast({ title: "바꾸지 못했어요", text: errorText(e), tone: "error" }),
     );
   return {
-    mark: (s: Subdeck) => run(api.setDeckWeak(s.id, true), { title: "약한 챕터로 표시했어요", text: "이 챕터의 예정 복습이 먼저 나와요" }),
-    unmark: (s: Subdeck) => run(api.setDeckWeak(s.id, false), { title: "약함 표시를 풀었어요", text: s.name }),
-    dismiss: (s: Subdeck) => run(api.dismissWeak(s.id), { title: "14일 동안 다시 묻지 않을게요", text: s.name }),
-    keep: (s: Subdeck) => run(api.dismissWeak(s.id, true), { title: "약함 표시를 그대로 둘게요", text: s.name }),
+    mark: (s: Subdeck) => run(api.setDeckWeak(s.id, true), { title: "취약 챕터로 지정했어요", text: "이 챕터의 예정 복습이 먼저 나와요" }),
+    unmark: (s: Subdeck) => run(api.setDeckWeak(s.id, false), { title: "취약 챕터 지정을 풀었어요", text: s.name }),
+    dismiss: (s: Subdeck) => run(api.dismissWeak(s.id), { title: "14일 동안 이 제안을 숨길게요", text: s.name }),
+    keep: (s: Subdeck) => run(api.dismissWeak(s.id, true), { title: "취약 챕터 지정을 그대로 둘게요", text: s.name }),
   };
 }
 
@@ -497,13 +518,13 @@ function WeakStrip({ d }: { d: DeckDetail }) {
   // 줄이 한 줄이라 하위 덱 이름만. 전체 경로는 title 로
   const label = relLabels(d);
   return (
-    <section className="deck__weak" aria-label="약한 챕터">
-      <span className="t-label-m">약한 챕터</span>
+    <section className="deck__weak" aria-label="취약 챕터">
+      <span className="t-label-m">취약 챕터</span>
       {weak.length > 0 && (
         <>
           <span className="weak weak--on t-label-s">
             <Icon name="alert" size={12} />
-            약함
+            지정
           </span>
           <span className="deck__weak-names t-body-s c-secondary" title={weak.map((s) => label(s.id)).join(", ")}>
             {weak.map((s) => `${s.name} · ${n(s.cards)}장`).join(", ")}
@@ -514,7 +535,7 @@ function WeakStrip({ d }: { d: DeckDetail }) {
         <>
           <span className="weak weak--suggested t-label-s">
             <Icon name="alert" size={12} />
-            약해 보여요?
+            제안
           </span>
           <span className="deck__weak-names t-body-s c-secondary" title={suggested.map((s) => label(s.id)).join(", ")}>
             {suggested.map((s) => `${s.name} · 확인 전`).join(", ")}
@@ -527,7 +548,7 @@ function WeakStrip({ d }: { d: DeckDetail }) {
           variant="ghost"
           size="M"
           icon="chevron-right"
-          label="약한 챕터 카드 보기"
+          label="취약 챕터 카드 보기"
           onClick={() => nav({ name: "cards", deckId: d.id, weakOnly: true })}
         />
       )}
@@ -580,7 +601,7 @@ function SubdeckList({ d, reload }: { d: DeckDetail; reload: Reload }) {
       <div className="subdecks__row subdecks__row--head t-label-s c-tertiary">
         <span>이름</span>
         <span>중요도</span>
-        <span>최근 14일 Again</span>
+        <span>최근 14일 Again 비율</span>
         <span>{d.done_today > 0 ? "오늘 남은" : "오늘"}</span>
         <span />
       </div>
@@ -598,7 +619,7 @@ function SubdeckList({ d, reload }: { d: DeckDetail; reload: Reload }) {
             style={{ paddingLeft: 24 * s.depth }}
             role="button"
             tabIndex={0}
-            aria-label={`${s.name}${s.weak ? " · 약함" : suggested ? " · 약해 보여요" : ""} · 하위 덱 열기`}
+            aria-label={`${s.name}${s.weak ? " · 취약 챕터" : suggested ? " · 취약 챕터 제안" : ""} · 하위 덱 열기`}
             onClick={go}
             onKeyDown={(e) => {
               // preventDefault: 화면의 Enter(학습 시작)가 같은 키를 또 받지 않게
@@ -636,7 +657,7 @@ function SubdeckList({ d, reload }: { d: DeckDetail; reload: Reload }) {
                 </span>
               )}
             </span>
-            <span>{s.mixed ? <Badge>나뉨</Badge> : <Importance level={level.get(s.id)!} />}</span>
+            <span>{s.mixed ? <Badge>혼합</Badge> : <Importance level={level.get(s.id)!} />}</span>
             {s.again_rate === null || s.reviews14 < 20 ? (
               <span className="t-caption c-tertiary">기록 적음</span>
             ) : (
@@ -651,21 +672,21 @@ function SubdeckList({ d, reload }: { d: DeckDetail; reload: Reload }) {
             <span className="subdecks__go">
               {suggested ? (
                 <>
-                  <Button variant="secondary" size="M" icon="alert" label="약함으로" aria-label={`${s.name} 약함으로`} onClick={stop(() => weakAct.mark(s))} />
-                  <Button variant="ghost" size="M" label="아니에요" aria-label={`${s.name} 약하지 않아요`} onClick={stop(() => weakAct.dismiss(s))} />
+                  <Button variant="secondary" size="M" icon="alert" label="취약 챕터로 지정" aria-label={`${s.name} 취약 챕터로 지정`} onClick={stop(() => weakAct.mark(s))} />
+                  <Button variant="ghost" size="M" label="제안 숨기기" aria-label={`${s.name} 취약 챕터 제안 숨기기`} onClick={stop(() => weakAct.dismiss(s))} />
                 </>
               ) : (
                 <>
                   {s.weak ? (
-                    <Button variant="ghost" size="M" label="해제" aria-label={`${s.name} 약함 해제`} onClick={stop(() => weakAct.unmark(s))} />
+                    <Button variant="ghost" size="M" label="해제" aria-label={`${s.name} 취약 챕터 해제`} onClick={stop(() => weakAct.unmark(s))} />
                   ) : (
                     // 아무 행에나 마우스를 올리면 직접 표시할 수 있다 (키보드는 초점이 오면 보인다)
                     <Button
                       className="subdecks__mark"
                       variant="ghost"
                       size="M"
-                      label="약함 표시"
-                      aria-label={`${s.name} 약함 표시`}
+                      label="취약 지정"
+                      aria-label={`${s.name} 취약 챕터로 지정`}
                       onClick={stop(() => weakAct.mark(s))}
                     />
                   )}

@@ -128,12 +128,12 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
     q.backlog > 0 && `밀린 ${n(q.backlog)}${q.backlog_deferred > 0 ? ` (나머지 ${n(q.backlog_deferred)}장은 차차)` : ""}`,
     "오늘 보지 않으면 일정이 밀려요",
     // C1-w: 복습 묶음 안에서 약한 챕터의 예정 복습을 먼저 (큐가 이미 그 순서로 준다)
-    q.weak_first > 0 && `약한 챕터 먼저 · ${n(q.weak_first)}장`,
+    q.weak_first > 0 && `취약 챕터 먼저 · ${n(q.weak_first)}장`,
   ]
     .filter(Boolean)
     .join(" · ");
   const rows = [
-    { key: "buried", dot: "warm", title: "접어둔 카드 다시 보기", desc: "지난 학습에서 두 번 막혔던 카드 · 집중력이 좋을 때 먼저", count: q.returning },
+    { key: "buried", dot: "warm", title: "접어둔 카드 다시 보기", desc: "접어둔 뒤 3일이 지나 돌아온 카드 · 집중력이 좋을 때 먼저", count: q.returning },
     { key: "review", dot: "ink", title: "복습", desc: reviewDesc, count: reviewCount },
     {
       key: "core",
@@ -953,17 +953,17 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const both = kwSuggest !== null && gptSuggest !== null;
   const recLine = both
     ? kwSuggest === gptSuggest
-      ? `${RATING_NAME[kwSuggest]} 추천 · 핵심어 ${missing.length ? `${n(missing.length)}/${n(compare!.keywords.length)} 빠짐` : "모두 씀"} · ChatGPT도 ${RATING_NAME[gptSuggest]} · 따르지 않아도 돼요`
-      : `핵심어는 ${RATING_NAME[kwSuggest]} · ChatGPT는 ${RATING_NAME[gptSuggest]} · 따르지 않아도 돼요`
+      ? `${RATING_NAME[kwSuggest]} 추천 · 핵심어 검사 ${missing.length ? `${n(missing.length)}/${n(compare!.keywords.length)} 빠짐` : "모두 씀"} · ChatGPT 검토도 ${RATING_NAME[gptSuggest]} · 직접 평가해 주세요`
+      : `핵심어 검사는 ${RATING_NAME[kwSuggest]} · ChatGPT 검토는 ${RATING_NAME[gptSuggest]} · 직접 평가해 주세요`
     : gptSuggest !== null
-      ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT · 따르지 않아도 돼요`
+      ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT 검토 · 직접 평가해 주세요`
       : null;
   const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip === card.view.id);
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
   const replayHint = (html = "") => html.includes('class="snd') && `${actionKey("replay")} 다시 듣기`;
   const keysQ = special
     ? special.kind === "list"
-      ? [`${actionKey("reveal")} 다음 항목`, "X 방금 연 항목 빠뜨림", "Enter 남은 항목 모두 열기", "Esc 그만하기"]
+      ? [`${actionKey("reveal")} 다음 항목`, "X 방금 연 항목 기억 못함", "Enter 남은 항목 모두 열기", "Esc 그만하기"]
       : [`1–${n(order.length)} 고르기`, `${actionKey("reveal")} 확인`, `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, "Esc 그만하기"]
     : writing
     ? [`${actionKey("save")} 비교하기`, `Esc 입력 칸 나가기 (그다음 ${actionKey("reveal")}로 바로 답 보기)`]
@@ -971,11 +971,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
     replayHint(card?.view.back),
-    special?.kind === "list" && "항목 누르기 · X 빠뜨림 고치기",
+    special?.kind === "list" && "항목 누르기 · X 기억 여부 바꾸기",
     mix && "평가가 복습 일정에 반영돼요",
     grade.ready && `${actionKey("grade")} ChatGPT 채점 보조`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
-    card?.source && `${actionKey("source")} 원자료`,
+    card?.source && `${actionKey("source")} 연결 자료`,
     `${actionKey("edit")} 편집`,
     last && `${actionKey("undo")} 되돌리기`,
   ];
@@ -1075,13 +1075,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 {phase === "a" && card.source && (
                   <button
                     className={`study__tool study__tool--source ${panel ? "is-on" : ""}`}
-                    aria-label="원자료 보기"
+                    aria-label="연결 자료 보기"
                     aria-pressed={panel}
                     aria-keyshortcuts={actionKey("source")}
                     onClick={() => setSrcOpen((v) => !v)}
                   >
                     <Icon name="file" size={16} />
-                    <span className="t-label-s">원자료</span>
+                    <span className="t-label-s">연결 자료</span>
                     {!panel && <Kbd k={actionKey("source")} />}
                   </button>
                 )}
@@ -1129,7 +1129,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                           <div className="cmp__kw">
                             {compare.keywords.length > 0 && (
                               <span className="t-label-m">
-                                핵심어 {n(compare.keywords.length)}개 중 {n(compare.hits)}개
+                                등록 핵심어 {n(compare.keywords.length)}개 중 {n(compare.hits)}개 확인
                               </span>
                             )}
                             {compare.keywords.map((k) => (
@@ -1149,7 +1149,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                             <p className="cmp__text">{marked(typed, compare.mine_hits)}</p>
                           </div>
                           <div className="cmp__col">
-                            <span className="t-caption c-tertiary">정답</span>
+                            <span className="t-caption c-tertiary">모범 답안</span>
                             <p className="cmp__text">
                               {marked(compare.correct, compare.correct_hits, compare.correct_misses)}
                               {card.answer.includes('class="snd') && <span className="cmp__snd card-html" dangerouslySetInnerHTML={{ __html: soundChips(card.answer) }} />}
@@ -1260,11 +1260,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   <span className="study__tip study__tip--warn">
                     <Icon name="info" size={16} />
                     <span className="t-label-s">
-                      {RATING_NAME[suggest]} 추천 ·{" "}
+                      핵심어 기준 {RATING_NAME[suggest]} 추천 ·{" "}
                       {missing.length
                         ? `핵심어 ${n(missing.length)}개가 빠졌어요 (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " 등" : ""}).`
                         : "핵심어를 모두 썼어요."}{" "}
-                      추천은 따르지 않아도 돼요.
+                      답의 의미를 확인하고 직접 평가해 주세요.
                     </span>
                   </span>
                 ) : soundTip === card.view.id ? (
@@ -1282,7 +1282,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   hints && (
                     <span className="study__tip">
                       <Icon name="info" size={16} className="c-accent" />
-                      <span className="t-label-s c-accent">처음이라 평가 기준을 함께 보여드려요. 다음 학습부터는 숨겨요.</span>
+                      <span className="t-label-s c-accent">기억한 정도를 고르면 다음 복습 일정을 정해요 · 기준은 처음에만 함께 보여요</span>
                       <button
                         className="study__tip-x c-accent"
                         aria-label="평가 기준 숨기기"
@@ -1359,7 +1359,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           {toast.source && (
             <button className="study__toast-btn t-label-m" onClick={() => openSourceOf(toast.id)}>
               <Icon name="file" size={14} />
-              원자료 보기
+              연결 자료 보기
             </button>
           )}
           <button className="study__toast-btn t-label-m" onClick={() => unfold([toast.id], true)}>
@@ -1620,7 +1620,7 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
               : note?.kind === "other"
               ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
               : reversed
-                ? "앞뒤 둘 다 · 카드 2장 · "
+                ? "양방향 · 카드 2장 · "
                 : ""
         }저장해도 복습 일정은 그대로예요`}
         className={`modal--edit ${wn || list || choice ? "modal--written" : ""}`}

@@ -8,7 +8,7 @@ import { aiApi, aiError, api, errorText, qualityApi, type AiError, type CardView
 import { AiConnect, AiErrorBox, SendList, UsingPlan, refreshAi, sentRows } from "../ai";
 import { ragApi, SIGNAL_LABEL, type Draft, type DraftAmount, type DraftCard, type Sent } from "../sourceApi";
 import { renderCardHtml } from "../cardHtml";
-import { n, useKey, useNav } from "../nav";
+import { eul, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { Button, Checkbox, Icon, LEVEL_LABEL, Segment, Spinner, type Level } from "../ui";
 import { Modal } from "./NewDeck";
@@ -258,7 +258,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
             ...(draft.checked
               ? [
                   { value: "similar" as const, label: `비슷한 카드 있음 ${n(similar)}` },
-                  { value: "ungrounded" as const, label: `근거와 다름 ${n(ungrounded)}` },
+                  { value: "ungrounded" as const, label: `근거 미확인 ${n(ungrounded)}` },
                 ]
               : []),
           ]}
@@ -333,7 +333,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
                     {x.ungrounded.length > 0 && (
                       <button type="button" className="warn-chip t-label-s" title={x.ungrounded.join("\n")} onClick={() => setPanel({ seg: x.segment_id })}>
                         <Icon name="alert" size={12} />
-                        근거 구간에 없는 말이 있어요 · "{short(x.ungrounded[0])}"
+                        선택한 자료 구간에서 "{short(x.ungrounded[0])}"{eul(short(x.ungrounded[0]))} 확인하지 못했어요. 내용을 검토해 주세요.
                       </button>
                     )}
                   </span>
