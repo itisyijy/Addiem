@@ -193,10 +193,8 @@ fn key_of(sh: &Shared) -> Option<[u8; 32]> {
 fn with_ctx<T>(sh: &Arc<Shared>, f: impl FnOnce(&Ctx) -> Result<T, SyncError>) -> Result<T, SyncError> {
     let store = store_of(sh)?;
     let locked = sh.with_db(|c| Ok(engine::local(c, "lock")?.as_deref() == Some("1")))?;
-    let key = key_of(sh);
-    if locked && key.is_none() {
-        return Err(SyncError::Locked);
-    }
+    // 잠갔을 때만 키를 쓴다. 다른 기기가 잠금을 푼 Drive 를 옛 키로 읽거나 잠그면 서로 읽지 못한다
+    let key = if locked { Some(key_of(sh).ok_or(SyncError::Locked)?) } else { None };
     let progress = |phase: &str, done: u64, total: u64| {
         let phase = phase.to_string();
         sh.set(|s| {
@@ -213,7 +211,8 @@ fn with_ctx<T>(sh: &Arc<Shared>, f: impl FnOnce(&Ctx) -> Result<T, SyncError>) -
 
 /// lib.rs setup 에서 AppState 다음에 부른다
 pub fn setup(app: &AppHandle) {
-    let folder = std::env::var_os("NEOANKI_SYNC_FOLDER").filter(|v| !v.is_empty()).map(PathBuf::from);
+    // 개발 빌드에서만. 배포 빌드에서 켜지면 연결 끊기가 실제 Google 토큰과 잠금 키를 지운다
+    let folder = std::env::var_os("NEOANKI_SYNC_FOLDER").filter(|v| !v.is_empty() && cfg!(debug_assertions)).map(PathBuf::from);
     let (tx, rx) = mpsc::channel();
     let sh = Arc::new(Shared {
         app: app.clone(),
@@ -602,7 +601,7 @@ pub fn sync_connect(state: State<SyncState>) -> Res<Option<String>> {
         return Ok(None);
     }
     let client = auth::client().ok_or(NO_CLIENT)?;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(err)?;
+    let listener = auth::loopback().map_err(err)?;
     let redirect = format!("http://127.0.0.1:{}", listener.local_addr().map_err(err)?.port());
     let p = auth::pkce();
     let url = auth::auth_url(client.0, &redirect, &p);
@@ -617,10 +616,8 @@ pub fn sync_connect(state: State<SyncState>) -> Res<Option<String>> {
             Err(auth::WaitError::Other(e)) => fail("error", e),
             Ok(code) => match auth::exchange(&sh.agent, client, &code, &p.verifier, &redirect) {
                 Err(e) => fail("error", e.to_string()),
-                Ok(t) if !auth::granted_all(&t.scope) => {
-                    auth::revoke(&sh.agent, &t.access);
-                    fail("scopes", "권한 2개가 모두 필요해요".into())
-                }
+                // 받은 토큰은 쓰지 않고 버린다. 폐기(revoke)하면 이 계정의 다른 기기 로그인까지 끊긴다 (others_active)
+                Ok(t) if !auth::granted_all(&t.scope) => fail("scopes", "권한 2개가 모두 필요해요".into()),
                 Ok(t) => {
                     if let Some(r) = &t.refresh {
                         let _ = auth::save_secret(auth::REFRESH, r);
@@ -734,6 +731,11 @@ fn local_backup(sh: &Shared, suffix: &str) -> Result<Option<PathBuf>, SyncError>
 
 fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
     let _g = sh.run.lock().map_err(store::other)?;
+    join_locked(sh, o, "fresh")
+}
+
+/// run 잠금을 쥔 채로 부른다. fresh_kind: 새로 시작할 때 다른 기기 고르는 창에 보일 이유 (fresh · lock · unlock)
+fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), SyncError> {
     let store = store_of(sh)?;
     let account = match sh.account.lock().ok().and_then(|a| a.clone()) {
         Some(a) => a,
@@ -783,7 +785,12 @@ fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
             }
             sh.with_db(|c| engine::set_local(c, "lock", "1"))?;
         }
+        // 잠기지 않은 Drive 에 합류한다 (다른 기기가 잠금을 풀었을 수도 있다): 남은 잠금 키는 지운다
         _ => {
+            auth::delete_secret(auth::KEY);
+            if let Ok(mut k) = sh.key.lock() {
+                *k = None;
+            }
             sh.with_db(|c| engine::set_local(c, "lock", "0"))?;
         }
     }
@@ -791,7 +798,7 @@ fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
         local_backup(sh, "before-sync")?;
     }
     let reason = match o.mode {
-        Join::Fresh => json!({ "kind": "fresh", "device_name": sh.with_db(|c| engine::meta(c, "device_name"))? }),
+        Join::Fresh => json!({ "kind": fresh_kind, "device_name": sh.with_db(|c| engine::meta(c, "device_name"))? }),
         _ => json!({ "kind": "new" }),
     };
     drop(store);
@@ -834,7 +841,20 @@ pub fn forget_local(con: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// K10. delete_remote 면 Drive 의 백업과 동기화 데이터도 지운다
+/// 이 계정으로 맞추는 다른 기기가 있는지 (90일 안에 맞춘 기기). 모르면(오프라인 · 만료) 있다고 본다.
+/// Google 폐기는 토큰 하나가 아니라 이 계정이 앱에 준 권한 전체를 없애서, 다른 기기도 "다시 로그인"이 된다
+fn others_active(sh: &Arc<Shared>) -> bool {
+    let me = sh.with_db(engine::device_uid).unwrap_or_default();
+    store_of(sh).ok().is_none_or(|s| others_in(&*s, &me, crate::db::now_ms()))
+}
+
+fn others_in(store: &dyn Store, me: &str, now: i64) -> bool {
+    let Ok(r) = engine::remote(store) else { return true };
+    engine::read_devices(store, &r).iter().any(|d| d["uid"].as_str() != Some(me) && now - d["at"].as_i64().unwrap_or(0) < engine::STALE_MS)
+}
+
+/// K10. delete_remote 면 Drive 의 백업과 동기화 데이터도 지우고 Google 권한도 폐기한다.
+/// 남기면 다른 기기가 없을 때만 폐기하고, 있으면 이 기기 키체인의 토큰만 지운다
 #[tauri::command]
 pub async fn sync_disconnect(state: State<'_, SyncState>, delete_remote: bool) -> Res<()> {
     let sh = state.0.clone();
@@ -847,8 +867,14 @@ pub async fn sync_disconnect(state: State<'_, SyncState>, delete_remote: bool) -
                 for e in store.list("backups/")?.into_iter().chain(store.list("")?) {
                     store.delete(&e.path)?;
                 }
+            } else if let Ok(store) = store_of(&sh) {
+                // 남기더라도 이 기기 파일은 지운다. 남으면 다른 기기가 끊은 기기를 90일 동안 기다린다 (기기 목록 · 정리 · 폐기 판단).
+                // 못 지우면(오프라인) 90일 뒤 "오래 안 씀"으로 빠진다
+                let me = sh.with_db(engine::device_uid).unwrap_or_default();
+                let _ = store.delete(&format!("devices/{me}.json"));
             }
             if sh.folder.is_none()
+                && (delete_remote || !others_active(&sh))
                 && let Some(t) = auth::load_secret(auth::REFRESH)
             {
                 auth::revoke(&sh.agent, &t);
@@ -904,16 +930,21 @@ pub async fn sync_set_lock(state: State<'_, SyncState>, password: Option<String>
     let r = tauri::async_runtime::spawn_blocking({
         let sh = sh.clone();
         move || -> Result<(), SyncError> {
+            // 끝까지 run 잠금을 쥔다: 새 세대로 옮긴 뒤 이 기기가 올린 변경을 아래에서 지우지 않게
+            let _g = sh.run.lock().map_err(store::other)?;
             let old_gen = sh.with_db(engine::gen_of)?;
+            let kind = if password.as_deref().is_some_and(|p| !p.is_empty()) { "lock" } else { "unlock" };
             let opts = JoinOpts { mode: Join::Fresh, device_name: None, backup: sh.with_db(|c| engine::local(c, "backup"))?, password, later: false };
-            join_blocking(&sh, opts)?;
-            // 지난 세대의 파일(평문이거나 옛 키)은 지운다
+            // 지울 변경 파일은 새 세대를 올리기 전에 정한다. 번호만으로는 세대를 모르고 옛 키로 잠근 파일은 머리도 못 읽는다
             let store = store_of(&sh)?;
+            let before = engine::remote(&*store)?;
+            join_locked(&sh, opts, kind)?;
+            // 지난 세대의 파일(평문이거나 옛 키)은 지운다
             let r = engine::remote(&*store)?;
             for s in r.snapshots.iter().filter(|s| s.generation <= old_gen) {
                 store.delete(&s.path)?;
             }
-            for files in r.changes.values() {
+            for files in before.changes.values() {
                 for (_, p) in files {
                     store.delete(p)?;
                 }
@@ -991,7 +1022,9 @@ pub async fn sync_backups(state: State<'_, SyncState>) -> Res<Vec<DriveBackup>> 
 
 fn download_backup(sh: &Arc<Shared>, name: &str) -> Result<PathBuf, SyncError> {
     let store = store_of(sh)?;
-    let zip = engine::open_opt(store.get(&format!("backups/{name}"))?, key_of(sh).as_ref())?;
+    let data = store.get(&format!("backups/{name}"))?;
+    // 잠그기 전에 만든 백업은 평문이다 (잠가도 지우지 않는다). 사용자가 골라 되돌리는 것이라 그대로 연다
+    let zip = if crypto::is_sealed(&data) { engine::open_opt(data, key_of(sh).as_ref())? } else { data };
     let tmp = sh.state().data_dir.join("backups").join(format!(".drive-{}.sqlite", crypto::random_hex(6)));
     std::fs::create_dir_all(tmp.parent().expect("부모")).map_err(store::other)?;
     engine::unzip_db(&zip, &tmp)?;
@@ -1347,4 +1380,50 @@ pub fn sync_conflicts_seen(state: State<SyncState>) -> Res<()> {
     state.0.with_db(|c| c.execute("UPDATE sync_conflict SET seen = 1", []).map(|_| ()).map_err(store::other)).map_err(err)?;
     refresh(&state.0);
     Ok(())
+}
+
+#[cfg(test)]
+mod revoke_tests {
+    use super::*;
+    use store::{Entry, SRes};
+
+    /// 목록을 못 읽는 저장소 (오프라인 · 만료)
+    struct Down;
+    impl Store for Down {
+        fn list(&self, _: &str) -> SRes<Vec<Entry>> {
+            Err(SyncError::Offline("x".into()))
+        }
+        fn get(&self, _: &str) -> SRes<Vec<u8>> {
+            Err(SyncError::Auth)
+        }
+        fn put(&self, _: &str, _: &[u8]) -> SRes<()> {
+            Err(SyncError::Auth)
+        }
+        fn delete(&self, _: &str) -> SRes<()> {
+            Err(SyncError::Auth)
+        }
+        fn about(&self) -> SRes<(String, Option<(u64, u64)>)> {
+            Err(SyncError::Auth)
+        }
+        fn folder_link(&self) -> SRes<String> {
+            Err(SyncError::Auth)
+        }
+    }
+
+    #[test]
+    fn revoke_only_without_other_devices() {
+        let dir = std::env::temp_dir().join(format!("neoanki-revoke-{}", crypto::random_hex(6)));
+        let s = FolderStore::new(&dir);
+        let now = 1000 * crate::db::DAY_MS;
+        let dev = |uid: &str, at: i64| s.put(&format!("devices/{uid}.json"), json!({ "uid": uid, "at": at }).to_string().as_bytes()).unwrap();
+        assert!(!others_in(&s, "me", now), "Drive 에 아무도 없으면 폐기한다");
+        dev("me", now);
+        assert!(!others_in(&s, "me", now), "나만 있으면 폐기한다");
+        dev("old", now - engine::STALE_MS - 1);
+        assert!(!others_in(&s, "me", now), "90일 넘게 안 맞춘 기기는 기다리지 않는다");
+        dev("b", now - crate::db::DAY_MS);
+        assert!(others_in(&s, "me", now), "다른 기기가 쓰고 있으면 폐기하지 않는다 (그 기기도 로그아웃된다)");
+        assert!(others_in(&Down, "me", now), "모르면 있다고 본다");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

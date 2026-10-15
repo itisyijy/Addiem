@@ -142,7 +142,7 @@ pub fn source_delete(state: State<AppState>, material_id: i64) -> Res<()> {
     let rel: Option<String> =
         con.query_row("SELECT rel_path FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).optional().map_err(err)?;
     con.execute("DELETE FROM source_material WHERE id = ?1", [material_id]).map_err(err)?;
-    if let Some(rel) = rel.filter(|r| r.starts_with("sources/")) {
+    if let Some(rel) = rel.filter(|r| crate::commands::safe_rel_path(r, "sources")) {
         let _ = std::fs::remove_file(state.data_dir.join(rel));
     }
     Ok(())
@@ -155,7 +155,10 @@ pub fn source_bytes(state: State<AppState>, material_id: i64) -> Res<tauri::ipc:
         let con = state.db.lock().map_err(err)?;
         con.query_row("SELECT rel_path FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).map_err(err)?
     };
-    let bytes = std::fs::read(state.data_dir.join(rel)).map_err(|_| "이 기기에는 자료 파일이 없어요.".to_string())?;
+    let bytes = Some(rel)
+        .filter(|r| crate::commands::safe_rel_path(r, "sources"))
+        .and_then(|r| std::fs::read(state.data_dir.join(r)).ok())
+        .ok_or_else(|| "이 기기에는 자료 파일이 없어요.".to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -589,7 +592,10 @@ pub fn source_slide(state: State<AppState>, material_id: i64, page: i64) -> Res<
         let con = state.db.lock().map_err(err)?;
         con.query_row("SELECT rel_path FROM source_material WHERE id = ?1 AND kind = 'pptx'", [material_id], |r| r.get(0)).map_err(err)?
     };
-    let bytes = std::fs::read(state.data_dir.join(rel)).map_err(|_| "이 기기에는 자료 파일이 없어요.".to_string())?;
+    let bytes = Some(rel)
+        .filter(|r| crate::commands::safe_rel_path(r, "sources"))
+        .and_then(|r| std::fs::read(state.data_dir.join(r)).ok())
+        .ok_or_else(|| "이 기기에는 자료 파일이 없어요.".to_string())?;
     let mut slides = pptx_slides(&bytes)?;
     let i = usize::try_from(page - 1).map_err(err)?;
     Ok(if i < slides.len() { slides.swap_remove(i) } else { vec![] })
