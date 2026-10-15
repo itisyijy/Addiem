@@ -176,13 +176,13 @@
 .sync-device { display: flex; align-items: center; gap: 12px; padding: 10px 0; }
 .sync-device.is-stale .t-body-m { color: var(--text-tertiary); }
 .sync-device__name { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; }
-.sync-set { display: flex; align-items: center; gap: 12px; min-height: 58px; }
-.sync-set > .t-body-m { flex: 1; }
-.sync-set__edit { display: flex; align-items: center; gap: 6px; }
-.sync-set__pad { visibility: hidden; }
-.sync-set > .btn { min-width: 73px; } /* [바꾸기] 폭. [보기] 행도 값 열이 맞는다 */
-.sync-input { width: 220px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-surface); color: var(--text-primary); }
-.sync-input:focus { outline: 0; border-color: var(--accent-default); }
+/* K4-r (K20): K3 부품을 그대로 쓰는 행들 */
+.sync-rows { display: flex; flex-direction: column; border-bottom: 1px solid var(--border-default); }
+.sync-rows > * { padding: 14px 0; border-bottom: 1px solid var(--border-default); }
+.sync-rows > :last-child { border-bottom: 0; }
+.sync-rows > .sync-sub { display: flex; align-items: center; gap: 12px; padding: 16px 0; text-align: left; }
+.sync-sub > .t-body-m { flex: 1; }
+.sync-lock__end { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
 .sync-backups__head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .sync-backups { display: flex; flex-direction: column; margin-top: 10px; padding: 0 8px 0 16px; border: 1px solid var(--border-default); border-radius: 16px; }
 .sync-backups > .sync-loading, .sync-backups__empty { padding: 16px 0; }

@@ -222,9 +222,9 @@ export function Checkbox({ checked, label, onChange, quiet, disabled }: { checke
 
 // ---------------------------------------------------------------- Toggle
 
-export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+export function Toggle({ on, onChange, label, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   return (
-    <button role="switch" aria-checked={on} aria-label={label} className="toggle" onClick={() => onChange(!on)}>
+    <button role="switch" aria-checked={on} aria-label={label} className="toggle" disabled={disabled} onClick={() => onChange(!on)}>
     </button>
   );
 }
