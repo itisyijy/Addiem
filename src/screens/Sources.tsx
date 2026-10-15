@@ -228,9 +228,13 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     jumped.current = true;
     if (isRegion(s)) setObjView(true);
   }, [segs, active, figId]);
-  // 다른 자료를 고르면 첫 쪽부터. 구간에서 들어왔으면 그 쪽으로
+  // 다른 자료를 고르면 첫 쪽부터. 구간에서 들어왔으면 그 쪽으로. 카드를 만들어 구간을 다시 읽을 때는 보던 쪽 그대로
+  const placed = useRef("");
   useEffect(() => {
     const s = segs.find((x) => x.id === active);
+    const key = `${sel}:${s?.id ?? ""}`;
+    if (placed.current === key) return;
+    placed.current = key;
     setPage(s ? s.page : 1);
   }, [sel, segs, active]);
 
@@ -478,6 +482,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
 
           {current && objView && pptxId && (
             <Figures
+              key={current.id}
               m={current}
               objs={objs}
               error={objErr}
@@ -493,6 +498,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           )}
           {current && objView && pdfId && (
             <PdfFigures
+              key={current.id}
               m={current}
               items={pdfList}
               scanning={!scan || scan.list.length < current.pages}

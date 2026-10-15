@@ -198,7 +198,7 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
   const here = items.filter((x) => x.page === page);
   const dragHere = drag?.page === page ? drag.rect : null;
   const byKey = (key: string) => items.find((x) => x.key === key);
-  const label = (it: PdfItem) => (it.name ? `${labelOf(items, it)} · ${it.name}` : labelOf(items, it));
+  const label = (it: PdfItem) => it.name || labelOf(items, it);
   const where = (p: number) => `${m.file_name} · ${p}쪽`;
 
   const changed = () => {

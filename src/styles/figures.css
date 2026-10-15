@@ -63,6 +63,7 @@
 /* ---------------------------------------------------------------- IT1-p 오른쪽 목록 */
 .fig-item { border-bottom: 1px solid var(--border-default); }
 .fig-item.is-picked { background: var(--accent-subtle); }
+.fig-item.is-picked .fig-row__count { background: var(--bg-surface); }
 .fig-item.is-active:not(.is-picked) { background: var(--bg-canvas); }
 .fig-item .fig-row { cursor: default; }
 .fig-run__btns { display: flex; flex-shrink: 0; gap: 6px; }
