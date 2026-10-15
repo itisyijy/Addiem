@@ -4,10 +4,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { OcclusionEdit } from "./Occlusion";
 import { api, errorText, type CardView, type ExamState, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
-import { eul, n, useKey, useNav, useOverlayScope } from "../nav";
+import { eul, n, ro, useKey, useNav, useOverlayScope } from "../nav";
 import { actionKey, getKeys, matchAction, useKeymap } from "../keys";
 import { useToast } from "../toast";
-import { plainText, renderCardHtml, toStoredHtml } from "../cardHtml";
+import { plainText, playSounds, renderCardHtml, stopSounds, toStoredHtml } from "../cardHtml";
 import { findMath, withMath } from "../math";
 import {
   cram as cramApi, exam as examApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
@@ -31,6 +31,9 @@ const hasSource = (cardId: number) => cardSource(cardId, true).then((s) => s !==
 // 이 기기에서만 쓰는 편의 설정. 지워져도 기본 동작으로 돌아갈 뿐이다
 export const SKIP_SUMMARY = "neo.skipSummary";
 const HINTS_SEEN = "neo.ratingHintsSeen";
+/** AU4 소리 자동 재생 끔 (기본은 켬) · AU1 처음 본 소리 카드 안내 */
+export const NO_AUTOPLAY = "neo.soundAutoplayOff";
+const SOUND_TIP_SEEN = "neo.soundTipSeen";
 export function pref(key: string) {
   try {
     return localStorage.getItem(key) === "1";
@@ -487,6 +490,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [fit, setFit] = useState({ overflow: false, more: false });
   const [editing, setEditing] = useState(false);
   const [hints, setHints] = useState(() => !pref(HINTS_SEEN));
+  const [soundTip, setSoundTip] = useState<number | null>(null); // AU1 이 카드에서 한 번 안내
   const [error, setError] = useState<string>();
   // R2 채점 보조: 학습 세션마다 한 번 확인 · 근거 칩으로 연 구간 (I2 패널 자리)
   const gradeOk = useRef(false);
@@ -523,6 +527,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       renderCardHtml(parts.answer),
     ])).map(withMath);
     setCard({ view, front, question, answer, written, source });
+    if (!pref(SOUND_TIP_SEEN) && !pref(NO_AUTOPLAY) && (view.front + view.back).includes('class="snd"')) {
+      setPref(SOUND_TIP_SEEN, true);
+      setSoundTip(id);
+    }
     setPhase(at);
     setUndone(null);
     setTyped("");
@@ -827,6 +835,23 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       setSrcOpen(true);
     });
 
+  /*
+   * AU2 자동 재생은 Anki 와 같게: 질문은 카드를 열 때, 답을 열면 뒷면에만 있는 소리(정답 부분)를 차례로.
+   * Anki 도 {{FrontSide}} 로 들어온 앞면 소리는 답 면에서 다시 틀지 않는다. AU3 R 은 지금 면 (답 면은 앞면 소리부터)
+   */
+  const playSide = useCallback(
+    (auto: boolean) => {
+      const el = scroller.current;
+      if (el) playSounds(el.querySelectorAll(phase === "q" ? ".study__q .snd" : auto ? ".study__a-body .snd" : ".study__a .snd"));
+    },
+    [phase],
+  );
+  useEffect(() => {
+    stopSounds(); // 다음 카드로 넘어가면 멈춘다
+    if (card && !pref(NO_AUTOPLAY)) playSide(true);
+  }, [card, playSide]);
+  useEffect(() => stopSounds, []);
+
   // 바꿀 수 있는 단축키는 설정 > 단축키(E4) 값으로 (keys.ts). 겹침 창(D4-m 목록 · 확대 보기 · 편집 창)이 떠 있으면 화면 키는 꺼진다
   useKeymap();
   useOverlayScope(foldMenu);
@@ -839,6 +864,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   useKey({ action: "undo" }, () => undo(), keys);
   useKey({ action: "source" }, () => setSrcOpen((v) => !v), keys && phase === "a" && !!card?.source);
   useKey({ action: "grade" }, () => grade.start(), keys && phase === "a" && grade.ready);
+  useKey({ action: "replay" }, () => playSide(false), keys);
   useKey("b", () => (setFoldSel(0), setFoldMenu(true)), keys && folded.length > 0);
   useKey(["ArrowDown", "ArrowUp", "PageDown", "PageUp"], scrollCard, keys);
   // D4-m 목록 안의 키는 목록이 받는다 (B 로 닫기 · ↑↓ · Enter · Esc)
@@ -869,13 +895,15 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     : gptSuggest !== null
       ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT · 따르지 않아도 돼요`
       : null;
-  const tip = hints || undone !== null || suggest !== null || recLine !== null;
+  const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip === card.view.id);
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
+  const replayHint = (html = "") => html.includes('class="snd') && `${actionKey("replay")} 다시 듣기`;
   const keysQ = writing
     ? [`${actionKey("save")} 비교하기`, `Esc 입력 칸 나가기 (그다음 ${actionKey("reveal")}로 바로 답 보기)`]
-    : [`${actionKey("reveal")} 답 보기`, mix && "평가가 복습 일정에 반영돼요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
+    : [`${actionKey("reveal")} 답 보기`, replayHint(card?.front), mix && "평가가 복습 일정에 반영돼요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
+    replayHint(card?.view.back),
     mix && "평가가 복습 일정에 반영돼요",
     grade.ready && `${actionKey("grade")} ChatGPT 채점 보조`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
@@ -890,7 +918,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     <main
       className={`study ${panel ? "has-source" : ""}`}
       // 마우스로 누른 버튼에는 초점을 두지 않는다. 남은 초점이 Space · Enter 를 가져가 답 보기 등이 안 되는 일을 막는다 (키보드 Tab 은 그대로)
-      onMouseDown={(e) => (e.target as HTMLElement).closest(".study__tool, .study__toast-btn, .study__undo-btn, .study__more, .study__folded, .rating, .study__reveal") && e.preventDefault()}
+      onMouseDown={(e) => (e.target as HTMLElement).closest(".study__tool, .study__toast-btn, .study__undo-btn, .study__more, .study__folded, .rating, .study__reveal, .snd") && e.preventDefault()}
     >
       <div className="study__quit">
         <Button variant="ghost" size="M" icon="x" label="그만하기" shortcut="Esc" onClick={() => finish(false)} />
@@ -1001,7 +1029,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   <div className="study__q card-html" dangerouslySetInnerHTML={{ __html: card.front }} />
                 ) : (
                   <div className="study__a" ref={answerBox} tabIndex={-1} aria-label="정답">
-                    {plainText(card.question) || card.question.includes("<img") ? (
+                    {plainText(card.question) || card.question.includes("<img") || card.question.includes('class="snd') ? (
                       <>
                         <div className="study__a-q t-title-m c-tertiary card-html" dangerouslySetInnerHTML={{ __html: card.question }} />
                         <div className="study__rule" />
@@ -1140,6 +1168,17 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                         : "핵심어를 모두 썼어요."}{" "}
                       추천은 따르지 않아도 돼요.
                     </span>
+                  </span>
+                ) : soundTip === card.view.id ? (
+                  <span className="study__tip">
+                    <Icon name="volume-2" size={16} className="c-accent" />
+                    <span className="t-label-s c-accent">
+                      소리는 카드를 열 때 · 답을 볼 때 저절로 재생해요. {actionKey("replay")}
+                      {ro(actionKey("replay"))} 다시 들어요. 설정에서 끌 수 있어요.
+                    </span>
+                    <button className="study__tip-x c-accent" aria-label="소리 안내 숨기기" onClick={() => setSoundTip(null)}>
+                      <Icon name="x" size={14} />
+                    </button>
                   </span>
                 ) : (
                   hints && (

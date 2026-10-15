@@ -1050,6 +1050,8 @@ pub struct CardRow {
     exam: crate::exam::ExamState,
     /// M4 그림 가리기 카드 (축소 그림 · 편집기 칸 선택)
     occlusion: Option<IoPos>,
+    /// AU6 소리가 있는 칸 [질문, 답]. 목록은 칩 대신 스피커 아이콘만
+    sounds: [bool; 2],
 }
 
 /// 그림 가리기 카드의 자리 (M3 배지 "그림 가리기 · n/N", M4 행)
@@ -1164,6 +1166,7 @@ pub fn list_cards(
                 buried: r.get(9)?,
                 exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
                 occlusion,
+                sounds: [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK)),
             })
         })
         .map_err(err)?
@@ -2115,6 +2118,9 @@ pub(crate) fn mime_of(name: &str) -> &'static str {
         Some("bmp") => "image/bmp",
         Some("mp3") => "audio/mpeg",
         Some("ogg") => "audio/ogg",
+        Some("wav") => "audio/wav",
+        Some("m4a") => "audio/mp4",
+        Some("flac") => "audio/flac",
         _ => "application/octet-stream",
     }
 }

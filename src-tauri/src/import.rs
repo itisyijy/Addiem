@@ -1391,13 +1391,15 @@ fn run_import_selected(
 
     let roots = roots_of(&tx, &used)?;
     result.decks = roots.len();
-    let sounds = {
-        let mut st = pkg.col.prepare("SELECT id FROM notes WHERE flds LIKE '%[sound:%'").map_err(err)?;
-        let ids = st.query_map([], |r| r.get::<_, i64>(0)).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
-        ids.into_iter().filter(|id| picked_note(*id)).count()
+    // AU5 소리는 재생한다 (I28 경고는 없앴다). 쓰는 소리 파일이 미디어 폴더에 없는 노트만 알린다
+    let missing_sound = {
+        let mut st = pkg.col.prepare("SELECT id, flds FROM notes WHERE flds LIKE '%[sound:%'").map_err(err)?;
+        let notes = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
+        let gone = |s: &str| safe_media_name(s).is_err() || !dir.join(s).exists();
+        notes.iter().filter(|(id, flds)| picked_note(*id) && crate::render::sound_names(flds).any(gone)).count()
     };
-    if sounds > 0 {
-        result.issues.push(issue("warning", "sound", format!("소리가 든 노트 {}개는 소리 없이 글자만 보여요", n(sounds))));
+    if missing_sound > 0 {
+        result.issues.push(issue("warning", "missing_sound", format!("소리 파일이 빠진 노트 {}개 · 학습할 때 그 자리에 \"파일 없음\"으로 보여요", n(missing_sound))));
     }
     result.subdecks = decks.created.iter().filter(|id| !roots.contains(id)).count();
     result.root_deck_id = (roots.len() == 1).then(|| *roots.iter().next().unwrap());

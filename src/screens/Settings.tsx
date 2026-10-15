@@ -10,7 +10,7 @@ import {
 } from "../keys";
 import { Modal } from "./NewDeck";
 import { DeleteDeckConfirm } from "./Deck";
-import { SKIP_SUMMARY, pref, setPref } from "./Study";
+import { NO_AUTOPLAY, SKIP_SUMMARY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
 import { ModelRow } from "./Sources";
 import { DriveSection } from "../sync";
@@ -42,6 +42,7 @@ export function Settings({ focus }: { focus?: "archived" }) {
   const [msg, setMsg] = useState<string>();
   const [error, setError] = useState<string>();
   const [skipSummary, setSkipSummary] = useState(() => pref(SKIP_SUMMARY));
+  const [autoplay, setAutoplay] = useState(() => !pref(NO_AUTOPLAY));
   const [theme, setTheme] = useState(getThemePref);
 
   const load = useCallback(() => api.appInfo().then(setInfo), []);
@@ -162,6 +163,21 @@ export function Settings({ focus }: { focus?: "archived" }) {
             onChange={(v) => {
               setPref(SKIP_SUMMARY, v);
               setSkipSummary(v);
+            }}
+          />
+        </div>
+        {/* AU4 앱 설정 한 줄 (이 기기). 덱마다 다르게 하기 · Anki 덱 옵션 가져오기는 하지 않는다 */}
+        <div className="prefs__row">
+          <span className="prefs__text">
+            <span className="t-body-m-strong">소리 자동 재생</span>
+            <span className="t-body-s c-secondary">앞면 소리는 카드를 열 때, 뒷면 소리는 답을 볼 때 재생해요. 끄면 눌렀을 때만 들려요.</span>
+          </span>
+          <Toggle
+            on={autoplay}
+            label="소리 자동 재생"
+            onChange={(v) => {
+              setPref(NO_AUTOPLAY, !v);
+              setAutoplay(v);
             }}
           />
         </div>
