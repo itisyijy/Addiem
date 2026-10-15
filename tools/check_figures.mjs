@@ -89,7 +89,26 @@ const B = [
 const page6 =
   "0.8 w 80 712 m 400 712 l S 80 694 m 400 694 l S 80 630 m 400 630 l S\n" + B.map((row, r) => row.map((s, c) => text(90 + c * 110, 700 - r * 18 - (r ? 4 : 0), s)).join("")).join("");
 
-const bytes = pdf([page1, ruled, page3, page4, page5, page6]);
+// 7 · 8쪽 머리글 + 4행 괘선 표 (마지막 행 바로 아래가 표 아래 테두리). 7쪽은 칸마다 re S (닫는 변도 괘선),
+// 8쪽은 가는 칠한 사각형(re f, 0.6pt)으로 그린 괘선 (Word · PowerPoint 내보내기). 마지막 행까지 5행이어야 한다
+const Z = [
+  ["Test", "Null hypothesis", "Used for"],
+  ["t-test", "Means are equal", "Two groups"],
+  ["Chi-square", "Independent", "Categorical"],
+  ["F-test", "Variances equal", "ANOVA"],
+  ["Z-test", "Mean equals mu0", "Large sample"],
+];
+const zx = [72, 172, 312, 452];
+const zText = Z.map((row, r) => row.map((s, c) => text(zx[c] + 6, 690 - r * 22, s)).join("")).join("");
+let page7 = "0.6 w\n";
+Z.forEach((_, r) => zx.slice(0, -1).forEach((x, c) => (page7 += `${x} ${684 - r * 22} ${zx[c + 1] - x} 22 re S\n`)));
+page7 += zText;
+let page8 = "";
+for (let r = 0; r <= Z.length; r++) page8 += `72 ${706 - r * 22} 380 0.6 re f\n`;
+for (const x of zx) page8 += `${x} ${596} 0.6 110.6 re f\n`;
+page8 += zText;
+
+const bytes = pdf([page1, ruled, page3, page4, page5, page6, page7, page8]);
 
 async function layouts(data) {
   const task = pdfjs.getDocument({ data, useSystemFonts: false, verbosity: 0 });
@@ -141,11 +160,19 @@ assert.equal(s6.length, 1, `북탭 표 제안 1 (${JSON.stringify(tableCandidate
 assert.deepEqual([s6[0].rows, s6[0].cols, s6[0].ruled], [4, 3, true]);
 assert.deepEqual(gridIn(L[5], s6[0].box), B);
 
+// 7 · 8쪽: 마지막 행(Z-test)까지 머리글 + 4행
+for (const i of [6, 7]) {
+  const s = suggestTables(L[i]);
+  assert.equal(s.length, 1, `${i + 1}쪽 괘선 표 제안 1 (${JSON.stringify(tableCandidates(L[i]))})`);
+  assert.deepEqual([s[0].rows, s[0].cols, s[0].ruled], [5, 3, true], `${i + 1}쪽 5행 × 3열`);
+  assert.deepEqual(gridIn(L[i], s[0].box), Z, `${i + 1}쪽 마지막 행까지`);
+}
+
 // 사용자가 잡은 영역: 표 일부만 (2~3행 · 앞 두 열)
 assert.deepEqual(gridIn(L[2], [80, 150, 300, 185]), [["R2", "Explained variance"], ["RMSE", "Root mean squared error"]]);
 // 글자 없는 영역(그림) → 표로 만들 수 없다
 assert.deepEqual(gridIn(L[0], figs[0]), []);
-console.log("check_figures: 그림 · 괘선 표 · 글자 표 · 2단 본문 · 목록 · 북탭 표 모두 통과");
+console.log("check_figures: 그림 · 괘선 표(선 · 칸 사각형 · 칠한 괘선) · 글자 표 · 2단 본문 · 목록 · 북탭 표 모두 통과");
 
 // ---------------------------------------------------------------- 측정: 덧붙인 PDF
 for (const file of process.argv.slice(2)) {

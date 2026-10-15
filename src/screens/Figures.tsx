@@ -117,8 +117,9 @@ export type FigSource = {
 };
 export type TableFlow = { sub: string; how?: string; rows: Cell[][]; region: Omit<Region, "kind" | "text">; deckId: number };
 
-/** 그림 가리기 · 그림을 앞면에 둔 카드 · 표 창. onEnded: 창을 닫을 때마다 (차례로 만들기가 다음 것을 연다) */
-export function useFlows(rootDeckId: number, onChanged: () => void, onEnded: () => void) {
+/** 그림 가리기 · 그림을 앞면에 둔 카드 · 표 창. onMade: 카드를 만들었을 때 (차례로 만들기가 다음 것을 연다, 닫기만 하면 부르지 않는다).
+ * step: 차례로 만드는 중이면 창 머리 둘째 줄 ("차례로 만들기 1 / 3", 창이 아래 막대를 가린다) */
+export function useFlows(rootDeckId: number, onChanged: () => void, onMade: () => void, step?: string) {
   const toast = useToast();
   const [occl, setOccl] = useState<{ src: FigSource; pic: Picture } | null>(null);
   const [front, setFront] = useState<FigSource | null>(null);
@@ -129,7 +130,6 @@ export function useFlows(rootDeckId: number, onChanged: () => void, onEnded: () 
       setOccl({ src, pic: { name: "", url, fileName: src.fileName, ...(await naturalSize(url)) } });
     } catch (e) {
       toast({ title: "그림을 열지 못했어요", text: errorText(e), tone: "error" });
-      onEnded();
     }
   };
   const saveOcclusion = async (src: FigSource, shapes: Shape[], hideAll: boolean) => {
@@ -140,22 +140,28 @@ export function useFlows(rootDeckId: number, onChanged: () => void, onEnded: () 
       toast({ title: `그림 가리기 카드 ${n(ordinalsOf(shapes).length)}장을 만들었어요`, text: "자료의 그림과 이어 두었어요." });
       setOccl(null);
       onChanged();
-      onEnded();
+      onMade();
     } catch (e) {
       toast({ title: "카드를 만들지 못했어요", text: errorText(e), tone: "error" });
     }
   };
-  const close = (set: (v: null) => void) => () => {
-    set(null);
-    onEnded();
-  };
+  const sub = (s: string) => (step ? `${s}\n${step}` : s);
   const ui = (
     <>
       {occl && (
-        <OcclusionEditor picture={occl.pic} shapes={[]} hideAll onCancel={close(setOccl)} onDone={(shapes, hideAll) => saveOcclusion(occl.src, shapes, hideAll)} />
+        <OcclusionEditor
+          picture={step ? { ...occl.pic, fileName: `${occl.pic.fileName} · ${step}` } : occl.pic}
+          shapes={[]}
+          hideAll
+          direct
+          onCancel={() => setOccl(null)}
+          onDone={(shapes, hideAll) => saveOcclusion(occl.src, shapes, hideAll)}
+        />
       )}
-      {front && <ImageCard src={front} rootDeckId={rootDeckId} onClose={close(setFront)} onDone={onChanged} onUndone={onChanged} />}
-      {table && <TableCards sub={table.sub} how={table.how} rows={table.rows} region={table.region} rootDeckId={rootDeckId} deckId={table.deckId} onClose={close(setTable)} onDone={onChanged} />}
+      {front && <ImageCard src={front} step={step} rootDeckId={rootDeckId} onClose={() => setFront(null)} onDone={() => (onChanged(), onMade())} onUndone={onChanged} />}
+      {table && (
+        <TableCards sub={sub(table.sub)} how={table.how} rows={table.rows} region={table.region} rootDeckId={rootDeckId} deckId={table.deckId} onClose={() => setTable(null)} onDone={onChanged} onMade={onMade} />
+      )}
     </>
   );
   return { occlusion, front: setFront, table: setTable, ui };
@@ -331,7 +337,7 @@ export function FigList({ rows, head, notes, linking, onLinking, links, onOpen, 
               <span className="t-label-m">
                 차례로 만들기 {n(run.at + 1)} / {n(run.keys.length)} · {label(rows.find((r) => r.key === run.keys[run.at]))}
               </span>
-              <span className="t-caption c-tertiary">창을 닫으면 다음 것을 열어요{run.at + 1 < run.keys.length ? ` · 다음: ${label(rows.find((r) => r.key === run.keys[run.at + 1]))}` : " · 마지막이에요"}</span>
+              <span className="t-caption c-tertiary">{run.at + 1 < run.keys.length ? "카드를 만들면 다음 것을 열어요 · 건너뛰려면 [다음]" : "마지막이에요 · 카드를 만들면 끝나요"}</span>
             </span>
             <span className="fig-run__btns">
               <Button variant="ghost" size="M" label="그만하기" onClick={bulk.stop} />
@@ -394,7 +400,7 @@ export function Figures({ m, objs, error, segs, deckId, head, pill, linking, onL
     setMenu(`row:${key}`);
     document.getElementById(`fig-${key}`)?.scrollIntoView({ block: "nearest" });
   });
-  const flows = useFlows(deckId, onChanged, () => bulk.run && bulk.next());
+  const flows = useFlows(deckId, onChanged, () => bulk.run && bulk.next(), bulk.run ? `차례로 만들기 ${n(bulk.run.at + 1)} / ${n(bulk.run.keys.length)}` : undefined);
   const openTable = (it: Item) => flows.table({ sub: `표 ${it.k + 1} · ${place(it)}`, rows: it.table!.rows, region: region(it), deckId: it.o.deck_id });
   const open = (it: Item, where: string) => (it.table ? openTable(it) : setMenu(`${where}:${it.key}`));
   const src = (it: Item): FigSource => ({
@@ -646,8 +652,9 @@ export function RegionView({ m, s, cardId }: { m: Material; s: Segment; cardId?:
 
 // ---------------------------------------------------------------- IT3 그림을 앞면에 둔 카드
 
-function ImageCard({ src, rootDeckId, onClose, onDone, onUndone }: {
+function ImageCard({ src, step, rootDeckId, onClose, onDone, onUndone }: {
   src: FigSource;
+  step?: string;
   rootDeckId: number;
   onClose: () => void;
   onDone: () => void;
@@ -688,7 +695,7 @@ function ImageCard({ src, rootDeckId, onClose, onDone, onUndone }: {
     }
   };
   return (
-    <Modal title="그림을 앞면에 둔 카드" sub={src.sub} onClose={onClose} className="fig-front">
+    <Modal title="그림을 앞면에 둔 카드" sub={step ? `${src.sub}\n${step}` : src.sub} onClose={onClose} className="fig-front">
       <div className="modal__body">
         {url ? <img className="fig-front__img" src={url} alt={src.alt} /> : <span className="fig-front__img fig-front__img--wait" />}
         <Input label="질문 (앞면, 그림 위)" placeholder="비워 두면 그림만 보여요" value={question} onChange={(e) => setQuestion(e.target.value)} />
@@ -745,7 +752,7 @@ function DraftView({ d }: { d: RegionCard }) {
   );
 }
 
-export function TableCards({ title = "표로 카드 만들기", sub, how = "표 구조 그대로 가져왔어요 · 칸을 눌러 고쳐요", rows, region, rootDeckId, deckId, onClose, onDone }: {
+export function TableCards({ title = "표로 카드 만들기", sub, how = "표 구조 그대로 가져왔어요 · 칸을 눌러 고쳐요", rows, region, rootDeckId, deckId, onClose, onDone, onMade }: {
   title?: string;
   /** "표 1 · 강의.pptx · 슬라이드 7" */
   sub: string;
@@ -760,6 +767,8 @@ export function TableCards({ title = "표로 카드 만들기", sub, how = "표 
   onClose: () => void;
   /** 만들거나 되돌린 뒤 (연결 수를 다시 센다) */
   onDone: () => void;
+  /** 만든 뒤에만 (되돌리기는 아니다) */
+  onMade?: () => void;
 }) {
   const toast = useToast();
   const [cells, setCells] = useState<Cell[][]>(() => rows.map((r) => r.map((c) => ({ ...c }))));
@@ -849,6 +858,7 @@ export function TableCards({ title = "표로 카드 만들기", sub, how = "표 
         },
       });
       onDone();
+      onMade?.();
       onClose();
     } catch (e) {
       setError(errorText(e));

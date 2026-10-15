@@ -193,9 +193,11 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const figId = pptxId ?? pdfId;
   const scan = usePdfScan(pdfId ? current : undefined);
   const [hidden, hide] = useHidden(pdfId);
+  const scanned = !!pdfId && current?.status === "unsupported";
   useEffect(() => {
     if (!figId) setObjView(false);
-  }, [figId]);
+    else if (scanned) setObjView(true);
+  }, [figId, scanned]);
   useEffect(() => {
     setObjs(null);
     setObjErr(undefined);
@@ -380,8 +382,9 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           setLinking(undefined);
         }}
         options={[
-          { value: "all", label: `강조 구간 ${n(textSegs.length)}` },
-          { value: "gaps", label: `미연결 강조 구간 ${n(gapSegs.length)}` },
+          // 스캔본은 글자 강조가 없어 두 탭을 끄고 그림·표 탭으로 연다 (IT10)
+          { value: "all", label: `강조 구간 ${n(textSegs.length)}`, disabled: scanned },
+          { value: "gaps", label: `미연결 강조 구간 ${n(gapSegs.length)}`, disabled: scanned },
           ...(figId ? [{ value: "objects", label: `그림·표 ${n(objCount)}` }] : []),
         ]}
       />
@@ -389,7 +392,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
         {objView
           ? objNote
           : gapView
-            ? "기기 안에서 찾았어요 · 연결 없이 돼요"
+            ? "인터넷 없이 돼요"
             : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(textSegs.length - linkedSegs)}`}
       </span>
     </div>
@@ -890,8 +893,9 @@ export function PdfPage({
   );
 }
 
-/** PPTX 한 장. 그림은 그리지 않고 글만, 강조된 문단은 신호 색으로. cells: false 면 표 칸 문단은 뺀다 (I2 가 표를 따로 그릴 때) */
-export function SlidePage({ materialId, page, active, height, cells = true }: { materialId: number; page: number; active?: string; height?: number; cells?: boolean }) {
+/** PPTX 한 장. 그림은 그리지 않고 글만, 강조된 문단은 신호 색으로. region: 그림 · 표 구간의 I2 (연결은 위 그림 · 표가 보이므로
+ * 표 칸 문단은 빼고 강조 색 · 고른 문단 표시 없이 제목과 글만) */
+export function SlidePage({ materialId, page, active, height, region = false }: { materialId: number; page: number; active?: string; height?: number; region?: boolean }) {
   const [paras, setParas] = useState<Para[]>();
   useEffect(() => {
     sourceApi
@@ -902,10 +906,10 @@ export function SlidePage({ materialId, page, active, height, cells = true }: { 
   return (
     <div className="src-page src-page--slide" style={height ? { height } : undefined}>
       {paras?.length === 0 && <span className="t-caption c-tertiary">이 슬라이드에는 글이 없어요</span>}
-      {paras?.filter((p) => cells || !p.cell).map((p, i) => (
+      {paras?.filter((p) => !region || !p.cell).map((p, i) => (
         <p
           key={i}
-          className={`src-slide__para ${p.signals.length ? `src-mark--${topSignal(p)}` : ""} ${p.text === active ? "is-active" : ""}`}
+          className={`src-slide__para ${!region && p.signals.length ? `src-mark--${topSignal(p)}` : ""} ${!region && p.text === active ? "is-active" : ""}`}
         >
           {p.text}
         </p>

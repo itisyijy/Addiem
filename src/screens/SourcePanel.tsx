@@ -61,7 +61,7 @@ function SourceView({ src, cardId, onClose }: { src: CardSource; cardId?: number
       {m.kind === "pdf" ? (
         <PdfPage materialId={m.id} page={s.page} width={376} height={180} segs={[s]} active={s.id} />
       ) : (
-        <SlidePage materialId={m.id} page={s.page} active={s.text} height={180} cells={!region} />
+        <SlidePage materialId={m.id} page={s.page} active={s.text} height={180} region={region} />
       )}
       {/* 근거 칩으로 연 패널은 화면을 떠나지 않는다 (초안 · 채점 결과가 사라지지 않게) */}
       {method && (

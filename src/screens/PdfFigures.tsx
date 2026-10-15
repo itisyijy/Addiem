@@ -117,9 +117,12 @@ export function pdfItems(scan: Scan | null, segs: Segment[], hidden: string[]): 
   return out.sort((a, b) => a.page - b.page || a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
 }
 
-/** 쪽 안 번호 ("그림 2" · "표 1") */
+/** 쪽 안 번호 ("그림 2" · "표 1"). 이름표가 없을 때만 쓴다 */
 const numberOf = (items: PdfItem[], it: PdfItem) => items.filter((x) => x.page === it.page && x.kind === it.kind).indexOf(it) + 1;
-const labelOf = (items: PdfItem[], it: PdfItem) => `${it.kind === "figure" ? "그림" : "표"} ${numberOf(items, it)}`;
+/** 이름표 앞 번호 ("그림 3-6") */
+const CAPTION_NO = /^(그림|표|도표|사진|Fig\.?|Figure|Table)\s*[\dA-Z][\w.-]*/i;
+/** 쪽 위 이름표 · 목록 · 창 머리가 같은 이름을 쓴다: 이름표가 있으면 그 번호, 없으면 "그림 n" */
+const labelOf = (items: PdfItem[], it: PdfItem) => it.name.match(CAPTION_NO)?.[0] ?? `${it.kind === "figure" ? "그림" : "표"} ${numberOf(items, it)}`;
 
 // 무시한 제안 · 목록에서 뺀 그림은 이 기기에만 둔다 (동기화하지 않는 작은 기록)
 const HIDDEN = "neoanki.figures.hidden";
@@ -214,8 +217,8 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
     if (it.kind === "table") return openTable(it.page, it.rect, label(it));
     setSel({ key, page: it.page, menu: true });
   });
-  const ended = () => bulk.run && bulk.next();
-  const flows = useFlows(deckId, changed, ended);
+  // 차례로 만들기는 카드를 만들었을 때만 다음 것으로 (닫거나 못 열면 막대의 [다음]으로 넘긴다)
+  const flows = useFlows(deckId, changed, () => bulk.run && bulk.next(), bulk.run ? `차례로 만들기 ${n(bulk.run.at + 1)} / ${n(bulk.run.keys.length)}` : undefined);
 
   const src = async (p: number, r: Rect, name: string, title: string): Promise<FigSource> => {
     let crop: Promise<string> | undefined;
@@ -232,15 +235,13 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
   };
   const fail = (e: unknown) => {
     toast({ title: "열지 못했어요", text: errorText(e), tone: "error" });
-    ended();
   };
   const openTable = async (p: number, r: Rect, title: string) => {
     try {
       const l = await pageLayout(m.id, p);
       const g = gridIn(l, boxOf(l, r));
       if (!g.length) {
-        toast({ title: "이 영역에서 글자를 찾지 못했어요", text: "그림 카드로 만들 수 있어요." });
-        return ended();
+        return toast({ title: "이 영역에서 글자를 찾지 못했어요", text: "그림 카드로 만들 수 있어요." });
       }
       flows.table({ sub: `${title} · ${where(p)}`, how: HOW, rows: cellsOf(g), region: { material_id: m.id, page: p, rects: [r] }, deckId: await sourceApi.regionDeck(m.id, p) });
     } catch (e) {
@@ -358,7 +359,7 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
     key: it.key,
     kind: it.kind,
     where: `p.${it.page}`,
-    text: [it.name || labelOf(items, it), it.size ?? ""].filter(Boolean).join(" · "),
+    text: [label(it), it.size ?? ""].filter(Boolean).join(" · "),
     note: it.sugg ? "표일 수 있어요 · 확인 전" : undefined,
     seg: it.seg,
     act: it.sugg ? "확인" : "만들기",
