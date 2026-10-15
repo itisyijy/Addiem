@@ -64,6 +64,8 @@ export type MixRun = {
   /** P3 [이어서 N장]이 같은 비율 · 분량으로 다음 묶음을 만든다 */
   every: number;
   size: number;
+  /** 이 묶음을 시작한 시각 (P3 이 이 뒤 기록만 센다) */
+  startedAt: number;
 };
 /** P2 에서 센 것 (P3) */
 export type MixStats = { full: [number, number]; weak: [number, number]; again: [number, number]; due: number };
@@ -103,7 +105,8 @@ export const cram = {
   mixStart: (deckId: number, every: number, size: number) =>
     invoke<{ session_id: number; cards: MixCard[]; due_today: number[] }>("mix_start", { deckId, every, size }),
   mixRestart: (deckId: number) => invoke<void>("mix_restart", { deckId }),
-  mixSummary: (sessionId: number, deckId: number) => invoke<MixSummary>("mix_summary", { sessionId, deckId }),
+  /** since: 이번 묶음을 시작한 시각 (같은 날 이어 쓴 세션의 앞 묶음은 빼고 센다) */
+  mixSummary: (sessionId: number, deckId: number, since: number) => invoke<MixSummary>("mix_summary", { sessionId, deckId, since }),
 };
 
 // ---------------------------------------------------------------- G3 "나중에 볼 제안" (이 기기에서만)

@@ -401,37 +401,47 @@ pub struct HotDeck {
 
 #[derive(Serialize)]
 pub struct MixSummary {
-    /// 일정에 반영된 평가 수
+    /// 이번 묶음에서 일정에 반영된 평가 수
     fed: i64,
     learned: usize,
     round_seen: usize,
-    /// 이번 세션의 Again 이 한 하위 덱에 몰렸으면 그 덱 (P7 약한 챕터 제안. 이미 약한 챕터면 없다)
+    /// 이번 묶음의 Again 이 한 하위 덱에 몰렸으면 그 덱 (P7 약한 챕터 제안. 이미 약한 챕터면 없다)
     hot: Option<HotDeck>,
 }
 
-/// Again 이 몰렸다고 보는 기준: 세션 Again 의 절반 이상이고 3번 이상
+/// Again 이 몰렸다고 보는 기준: 묶음 Again 의 절반 이상이고 3번 이상
 const HOT_MIN: i64 = 3;
 
-/// P3 끝난 뒤 요약 (세션 닫기와 접어둔 카드는 finish_session 이 한다)
+/// P3 끝난 뒤 요약 (세션 닫기와 접어둔 카드는 finish_session 이 한다).
+/// since: 이번 묶음을 시작한 시각 (ms). 같은 날 그만둔 혼합 세션은 이어 쓰므로(P16) 세션 전체가 아니라 그 뒤 기록만 센다.
+/// 회독 진행(round_seen)은 지금 값이다
 #[tauri::command]
-pub fn mix_summary(state: State<AppState>, session_id: i64, deck_id: i64) -> Res<MixSummary> {
+pub fn mix_summary(state: State<AppState>, session_id: i64, deck_id: i64, since: i64) -> Res<MixSummary> {
     let con = state.db.lock().map_err(err)?;
     let decks = commands::load_decks(&con)?;
     let t = decks.iter().find(|d| d.id == deck_id).ok_or("덱을 찾을 수 없어요.")?;
-    summary(&con, session_id, t, &decks)
+    summary(&con, session_id, since, t, &decks)
 }
 
-fn summary(con: &Connection, session_id: i64, t: &queue::Deck, decks: &[queue::Deck]) -> Res<MixSummary> {
+fn summary(con: &Connection, session_id: i64, since: i64, t: &queue::Deck, decks: &[queue::Deck]) -> Res<MixSummary> {
     let fed: i64 = con
-        .query_row("SELECT count(*) FROM review_log WHERE session_id = ?1 AND fed_to_scheduler = 1", [session_id], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM review_log WHERE session_id = ?1 AND reviewed_at >= ?2 AND fed_to_scheduler = 1",
+            [session_id, since],
+            |r| r.get(0),
+        )
         .map_err(err)?;
     let (weak_ids, _) = weak_scope(t, decks);
     let all = items(con, &commands::descendants(t.id, decks), &weak_ids)?;
     let seen = round_seen(con, t)?;
     let mut st = con
-        .prepare("SELECT c.deck_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.session_id = ?1 AND r.rating = 1 GROUP BY c.deck_id ORDER BY 2 DESC, 1")
+        .prepare(
+            "SELECT c.deck_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id
+             WHERE r.session_id = ?1 AND r.reviewed_at >= ?2 AND r.rating = 1 GROUP BY c.deck_id ORDER BY 2 DESC, 1",
+        )
         .map_err(err)?;
-    let again: Vec<(i64, i64)> = st.query_map([session_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let again: Vec<(i64, i64)> =
+        st.query_map([session_id, since], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     let total: i64 = again.iter().map(|a| a.1).sum();
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let depth = commands::path_of(t.id, &by_id).len();
@@ -575,7 +585,17 @@ mod tests {
         for _ in 0..3 {
             con.execute("INSERT INTO review_log (card_id, session_id, reviewed_at, rating, fed_to_scheduler) VALUES (4, 7, ?1, 1, 0)", [now]).unwrap();
         }
-        let s = summary(&con, 7, t, &decks).unwrap();
+        let s = summary(&con, 7, 0, t, &decks).unwrap();
         assert_eq!((s.fed, s.learned, s.hot.as_ref().map(|h| (h.deck_id, h.name.as_str(), h.again))), (1, 4, Some((3, "5장", 3))));
+
+        // 같은 날 이어 쓴 세션: 앞 묶음(시작 전) 기록은 이번 요약에 들어가지 않는다 (P3 숫자가 이번 묶음 기준)
+        con.execute("INSERT INTO review_log (card_id, session_id, reviewed_at, rating, fed_to_scheduler) VALUES (2, 7, ?1, 1, 1)", [now - 60_000])
+            .unwrap();
+        let all = summary(&con, 7, 0, t, &decks).unwrap();
+        assert_eq!((all.fed, all.hot.as_ref().map(|h| h.again)), (2, Some(3)), "세션 전체면 앞 묶음의 반영 · Again 까지 센다");
+        let batch = summary(&con, 7, now - 1, t, &decks).unwrap();
+        assert_eq!((batch.fed, batch.hot.as_ref().map(|h| h.again)), (1, Some(3)), "이번 묶음 시작 뒤만");
+        let later = summary(&con, 7, now + 1, t, &decks).unwrap();
+        assert_eq!((later.fed, later.hot.is_none(), later.round_seen), (0, true, all.round_seen), "회독 진행은 since 와 상관없이 지금 값");
     }
 }

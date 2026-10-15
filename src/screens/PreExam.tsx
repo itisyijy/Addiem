@@ -17,17 +17,23 @@ const RATIOS = [
 const SIZES = [60, 120, 200];
 const MAX_SIZE = 500; // mix_cards 상한
 
-/** 혼합 회독 한 묶음을 열고 학습 화면으로 (P1 [혼합 회독 시작] · P3 [이어서 N장]) */
-async function beginMix(nav: (r: Route) => void, deckIds: number[] | null, t: { deckId: number; name: string; seen: number; learned: number }, every: number, size: number) {
-  const [s, today] = await Promise.all([cramApi.mixStart(t.deckId, every, size), api.queuePreview(null, 1)]);
+/**
+ * 혼합 회독 한 묶음을 열고 학습 화면으로 (P1 [혼합 회독 시작] · P3 [이어서 N장]).
+ * 시작 값(회독 진행 · 오늘의 학습 장수)은 여기서 새로 읽는다. P3 의 "a% → b%"와 "72 → 50장"이 이번 묶음만 가리키게
+ */
+async function beginMix(nav: (r: Route) => void, deckIds: number[] | null, deckId: number, name: string, every: number, size: number) {
+  const startedAt = Date.now();
+  const [plan, today] = await Promise.all([cramApi.plan([deckId]), api.queuePreview(null, 1)]);
+  const s = await cramApi.mixStart(deckId, every, size);
   const run: MixRun = {
-    deckId: t.deckId,
-    name: t.name,
+    deckId,
+    name,
     cards: s.cards,
     dueToday: s.due_today,
-    before: { seen: t.seen, learned: t.learned, today: today.total },
+    before: { seen: plan?.round_seen ?? 0, learned: plan?.learned ?? 0, today: today.total },
     every,
     size,
+    startedAt,
   };
   nav({ name: "study", deckIds, scale: 1, cardIds: s.cards.map((c) => c.id), sessionId: s.session_id, mix: run });
 }
@@ -74,7 +80,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
         const ids = await cramApi.cards(plan.deck_id, scope);
         return nav({ name: "study", deckIds, scale: 1, cardIds: ids, cram: true });
       }
-      await beginMix(nav, deckIds, { deckId: plan.deck_id, name: plan.name, seen: plan.round_seen, learned: plan.learned }, every, mix.length);
+      await beginMix(nav, deckIds, plan.deck_id, plan.name, every, mix.length);
     } catch (e) {
       setError(errorText(e));
     }
@@ -258,10 +264,10 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
   const [weakSet, setWeakSet] = useState(false);
   const [error, setError] = useState<string>();
   useEffect(() => {
-    cramApi.mixSummary(sessionId, run.deckId).then(setSum, () => {});
+    cramApi.mixSummary(sessionId, run.deckId, run.startedAt).then(setSum, () => {});
     api.queuePreview(null, 1).then((q) => setToday(q.total), () => {});
     cramApi.mixCards(run.deckId, run.every, run.size).then((c) => setNext(c.length), () => setNext(0));
-  }, [sessionId, run.deckId, run.every, run.size]);
+  }, [sessionId, run.deckId, run.every, run.size, run.startedAt]);
   const home = () => nav({ name: "home" });
   useKey("Escape", home);
   const markWeak = async () => {
@@ -271,8 +277,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
     notify({ title: `${sum.hot.name}${eul(sum.hot.name)} 약한 챕터로 정했어요`, text: "복습에서 이 챕터 카드를 먼저 보여드려요." });
   };
   const roundDone = !!sum && sum.learned > 0 && sum.round_seen >= sum.learned;
-  const goOn = () =>
-    sum && beginMix(nav, [run.deckId], { deckId: run.deckId, name: run.name, seen: sum.round_seen, learned: sum.learned }, run.every, run.size).catch((e) => setError(errorText(e)));
+  const goOn = () => beginMix(nav, [run.deckId], run.deckId, run.name, run.every, run.size).catch((e) => setError(errorText(e)));
   const restart = async () => {
     await cramApi.mixRestart(run.deckId).catch((e) => setError(errorText(e)));
     nav({ name: "summary", deckIds: [run.deckId], cram: true });
