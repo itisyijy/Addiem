@@ -605,7 +605,12 @@ pub struct DeckDetail {
     path: Vec<String>,
     total: i64,
     unseen: i64,
+    /// 접어둔 카드 (buried_until 이 있다)
     hard: i64,
+    /// 그중 같은 학습에서 두 번 막혀 자동으로 접힌 카드. 나머지는 직접 접었다 (C1 "자동 n · 직접 n")
+    hard_auto: i64,
+    /// 접어둔 카드가 가장 먼저 오늘의 학습에 돌아오는 날 'YYYY-MM-DD'
+    hard_next: Option<String>,
     backlog: usize,
     today_review: usize,
     today_new: usize,
@@ -687,6 +692,9 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
     let total = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?;
     let unseen = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND state = 'new'")?;
     let hard = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND buried_until IS NOT NULL")?;
+    let hard_auto = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND buried_until IS NOT NULL AND buried_reason = 'two_again'")?;
+    let hard_next: Option<i64> =
+        con.query_row(&format!("SELECT min(buried_until) FROM card WHERE deck_id IN ({id_list})"), [], |r| r.get(0)).map_err(err)?;
     let core_total = q("SELECT count(*) FROM card_effective WHERE deck_id IN ($IDS) AND eff_importance = 2")?;
     let core_seen = q("SELECT count(*) FROM card_effective WHERE deck_id IN ($IDS) AND eff_importance = 2 AND state <> 'new'")?;
     let imp = |lvl: i64| q(&format!("SELECT count(*) FROM card_effective WHERE deck_id IN ($IDS) AND eff_importance = {lvl}"));
@@ -805,6 +813,9 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         total,
         unseen,
         hard,
+        hard_auto,
+        // buried_until 은 ms 다 (큐는 study_day 로 읽는다)
+        hard_next: hard_next.map(|ms| db::date_from_day(study_day(ms))),
         backlog: plan.backlog.len() + plan.backlog_deferred,
         today_review: plan.ordered().len() - today_new - plan.returning.len(),
         today_new,

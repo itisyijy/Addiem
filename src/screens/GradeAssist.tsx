@@ -21,9 +21,9 @@ const COPY = (e: AiError): Partial<Record<AiError["kind"], [string, string]>> =>
   error: ["채점 보조를 받지 못했어요", e.message],
 });
 
-/** "내 답 · 모범 답 · 자료 3구간(비슷한 구간)" (연결이 없어 비슷한 구간을 보낼 때 그렇게 알린다) */
+/** "질문 · 내 답 · 모범 답안 · 자료 3구간(비슷한 구간)" (rag.rs grade_input 과 같은 항목. 연결이 없어 비슷한 구간을 보낼 때 그렇게 알린다) */
 const what = (segs: Sent[]) =>
-  `내 답 · 모범 답${segs.length ? ` · 자료 ${n(segs.length)}구간${segs.every((s) => s.how === "similar") ? "(비슷한 구간)" : ""}` : ""}`;
+  `질문 · 내 답 · 모범 답안${segs.length ? ` · 자료 ${n(segs.length)}구간${segs.every((s) => s.how === "similar") ? "(비슷한 구간)" : ""}` : ""}`;
 /** 오류 뒤에 G 로 다시 보낼 만한 것 (한도 · 만료 · 권한은 다시 보내도 같다) */
 const RETRY: AiError["kind"][] = ["offline", "unavailable", "bad_output", "error"];
 

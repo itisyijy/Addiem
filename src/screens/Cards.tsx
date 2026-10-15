@@ -7,7 +7,7 @@ import { actionKey } from "../keys";
 import { useToast, type ToastInput } from "../toast";
 import { Modal, NewDeckModal } from "./NewDeck";
 import { EditNote } from "./Study";
-import { menuKeys } from "./Deck";
+import { buryReturnDay, menuKeys } from "./Deck";
 import { DeckMenu, loadDeckChoices, type DeckChoice } from "./DeckPicker";
 import { ExamDialog } from "./Exam";
 import { OcclusionRow } from "./Occlusion";
@@ -26,7 +26,7 @@ const STATE: Record<CardRow["state"], [string, BadgeTone]> = {
   learning: ["학습 중", "neutral"],
   relearning: ["학습 중", "neutral"],
   review: ["복습", "neutral"],
-  suspended: ["보류", "neutral"],
+  suspended: ["학습 중지", "neutral"],
 };
 const key = (path: string[]) => path.join("\u0000");
 /** "…으로/로". 받침이 있으면 으로, 없거나 ㄹ 받침이면 로 */
@@ -208,14 +208,14 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
     const ids = cards.filter((c) => !c.buried).map((c) => c.id);
     if (!ids.length) return (closeMenus(), endSelection(), toast({ title: "이미 접어둔 카드예요" }));
     undoable(
-      { title: ids.length > 1 ? `${n(ids.length)}장을 접어뒀어요` : "접어뒀어요", text: "다음 학습에서 빠지고 3일 뒤 다시 나와요" },
+      { title: ids.length > 1 ? `${n(ids.length)}장을 접어뒀어요` : "접어뒀어요", text: `${buryReturnDay()}부터 오늘의 학습에 다시 포함돼요` },
       api.buryCards(ids),
       () => api.unburyCards(ids),
     );
   };
   const unbury = (c: CardRow) => {
     closeMenus();
-    act(api.unburyCards([c.id]).then(() => toast({ title: "다시 꺼냈어요", text: "다음 학습부터 나와요" })));
+    act(api.unburyCards([c.id]).then(() => toast({ title: "접어두기를 풀었어요", text: "다음에 시작하는 학습부터 다시 포함돼요" })));
   };
 
   const deckIdOf = new Map(choices.map((c) => [key(c.path), c.id]));
@@ -304,7 +304,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
         <div className="deck__title">
           <h1 className="t-title-l">{buriedOnly ? "접어둔 카드" : "카드"} {n(list?.total ?? deck.total)}장</h1>
           <p className="t-body-s c-secondary">
-            {deckId === null ? "모든 덱 · 학습 중 두 번 막혔거나 직접 접어둔 카드" : `${deck.name} · 중요도는 하위 덱에서 상속, 개별 지정 가능`}
+            {deckId === null ? "모든 덱 · 자동으로 또는 직접 접어둔 카드" : `${deck.name} · 중요도는 하위 덱 설정을 따르고, 카드마다 직접 지정할 수 있어요`}
           </p>
         </div>
         {deckId !== null && <Button size="M" icon="plus" label="카드 추가" shortcut={actionKey("addCard")} onClick={() => nav({ name: "addCard", deckId })} />}
@@ -389,7 +389,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
         )}
         {weak && (
           <span className="cards__only t-label-m">
-            약한 챕터만 보는 중
+            취약 챕터만 보는 중
             <button
               className="c-accent"
               onClick={() => {
@@ -441,7 +441,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                 cap={`고른 ${n(picked.length)}장을 바꿔요`}
                 current={sameLevel}
                 canFollow={ownCount > 0}
-                follow={ownCount > 0 ? `개별 지정한 ${n(ownCount)}장이 하위 덱 값으로` : "개별 지정한 카드가 없어요"}
+                follow={ownCount > 0 ? `직접 지정한 ${n(ownCount)}장이 하위 덱 설정으로` : "직접 지정한 카드가 없어요"}
                 onPick={(l) => setLevels(picked, l)}
               />
             )}
@@ -574,7 +574,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                 >
                   <Importance level={c.importance} />
                 </button>
-                {c.own_importance && <span className="t-caption c-accent">개별</span>}
+                {c.own_importance && <span className="t-caption c-accent">직접 지정</span>}
                 {impMenu === c.id && (
                   <ImportanceMenu
                     cap="이 카드만 바꿔요"
@@ -660,8 +660,8 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                         <button role="menuitem" className="menu__item menu__item--top" onMouseEnter={() => setRowMove(false)} onClick={() => unbury(c)}>
                           <Icon name="rotate" size={16} scaled />
                           <span className="menu__text">
-                            <span className="t-body-m">다시 꺼내기</span>
-                            <span className="t-caption c-tertiary">다음 학습부터 다시 나와요</span>
+                            <span className="t-body-m">접어두기 풀기</span>
+                            <span className="t-caption c-tertiary">다음에 시작하는 학습부터 포함</span>
                           </span>
                         </button>
                       ) : (
@@ -669,7 +669,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                           <Icon name="archive" size={16} scaled />
                           <span className="menu__text">
                             <span className="t-body-m">접어두기</span>
-                            <span className="t-caption c-tertiary">다음 학습에서 빼기 · 3일 뒤 다시</span>
+                            <span className="t-caption c-tertiary">{buryReturnDay()}부터 다시 포함</span>
                           </span>
                         </button>
                       )}

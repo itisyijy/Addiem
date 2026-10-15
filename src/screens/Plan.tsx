@@ -78,12 +78,12 @@ export function Plan({ deckId }: { deckId: number | null }) {
   const capLine = (w: number | null, e: number | null) =>
     w === null && e === null
       ? "시간을 넣으면 하루에 할 수 있는 장수를 계산해 넘치는 날을 알려 드려요."
-      : `${p.measured ? `최근 14일 동안 카드 1장에 보통 ${sec}초` : `기록이 아직 적어 카드 1장에 ${sec}초로 잡았어요`} → ${[
+      : `${p.measured ? `최근 14일 기록으로 보면 카드 1장에 보통 약 ${sec}초` : `학습 기록이 적어 카드 1장에 ${sec}초로 예상했어요`} → ${[
           w !== null && `평일 약 ${n(p.weekday_cap ?? 0)}장`,
           e !== null && `주말 약 ${n(p.weekend_cap ?? 0)}장`,
         ]
           .filter(Boolean)
-          .join(", ")}까지 할 수 있어요.`;
+          .join(", ")}까지 할 수 있을 것으로 예상해요.`;
   const todayIso = p.bars.find((b) => b.kind === "today")?.date;
   const toLabel = o?.to_date ? (o.to_date === todayIso ? "오늘" : dayNum(o.to_date)) : "";
 
@@ -154,7 +154,7 @@ export function Plan({ deckId }: { deckId: number | null }) {
             <div className="plan__warn">
               <Icon name="alert" size={16} className="c-warn" />
               <span className="plan__warn-text">
-                <span className="t-body-m-strong c-warn">{dateWithDay(o.date)} 하루가 시간을 넘겨요</span>
+                <span className="t-body-m-strong c-warn">{dateWithDay(o.date)}에 공부할 수 있는 시간을 넘길 것 같아요</span>
                 <span className="t-body-s c-secondary">
                   그날 예정 {n(o.total)}장 · {o.weekend ? "주말" : "평일"} 가능 {n(o.cap)}장.{" "}
                   {o.to_date
@@ -348,7 +348,7 @@ export function PlanConflictScreen({ back }: { back?: Route }) {
     },
     {
       value: "first",
-      title: `${c.a.name} 먼저`,
+      title: `${c.a.name} 신규 카드 먼저`,
       recommended: recommended === "first",
       text: `${dayNum(c.a.target)}까지는 ${c.a.name}만 신규를 넣고, 그 뒤 ${n(c.first_days)}일에 ${c.b.name} 신규를 몰아요. 최고 분량 ${n(c.first_peak)}장.`,
     },
@@ -393,8 +393,11 @@ export function PlanConflictScreen({ back }: { back?: Route }) {
       </div>
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="plan__actions">
+        <span className="t-body-s c-secondary">
+          {mode === "keep" ? "각 덱의 계획을 그대로 둬요. 목표일과 예정 복습도 그대로예요." : "두 덱의 신규 카드 배분만 바꿔요. 목표일과 예정 복습은 그대로예요."}
+        </span>
         <Button variant="ghost" label="나중에" onClick={leave} />
-        <Button icon="check" label={mode === "keep" ? "그대로 두기" : "이렇게 나누기"} busy={busy} onClick={save} />
+        <Button icon="check" label={mode === "keep" ? "그대로 두기" : "배분 적용"} busy={busy} onClick={save} />
       </div>
     </main>
   );

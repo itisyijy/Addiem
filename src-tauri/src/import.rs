@@ -374,19 +374,20 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
                 let cloze = note_type.eq_ignore_ascii_case("cloze") || front.and_then(Value::as_str).is_some_and(has_cloze);
                 // 빈칸 카드는 back 이 없어도 된다 (추가 설명)
                 let mut bad = None;
-                for (key, val, required) in [("front", front, true), ("back", o.get("back"), !cloze)] {
+                // 고칠 곳을 찾기 쉽게 뜻과 키를 같이 (X1-04 "답(back)이 비어 있어요")
+                for (key, name, val, required) in [("front", "질문(front)", front, true), ("back", "답(back)", o.get("back"), !cloze)] {
                     match val {
                         None | Some(Value::Null) => {
                             if required {
-                                bad = Some((key, "missing_field", format!("{key} 키가 없어요")));
+                                bad = Some((key, "missing_field", format!("{name} 항목이 없어요")));
                             }
                         }
                         Some(Value::String(s)) => {
                             if required && crate::render::is_blank(s) {
-                                bad = Some((key, "empty_field", format!("{key} 이 비어 있어요")));
+                                bad = Some((key, "empty_field", format!("{name}이 비어 있어요")));
                             }
                         }
-                        Some(_) => bad = Some((key, "bad_field", format!("{key} 가 문자열이 아니에요"))),
+                        Some(_) => bad = Some((key, "bad_field", format!("{name}이 문자열이 아니에요"))),
                     }
                     if bad.is_some() {
                         break;
@@ -427,7 +428,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
                     _ => None,
                 };
                 if level.is_none() {
-                    issues.push(at(i, "warning", "bad_importance", format!("importance 값 '{word}'를 알 수 없어 태그로 추론했어요")));
+                    issues.push(at(i, "warning", "bad_importance", format!("중요도(importance) 값 '{word}'를 읽지 못해 태그 기준으로 정했어요")));
                 }
                 level
             }
@@ -1500,7 +1501,7 @@ fn run_import_selected(
         notes.iter().filter(|(id, flds)| picked_note(*id) && crate::render::sound_names(flds).any(gone)).count()
     };
     if missing_sound > 0 {
-        result.issues.push(issue("warning", "missing_sound", format!("소리 파일이 빠진 노트 {}개 · 학습할 때 그 자리에 \"파일 없음\"으로 보여요", n(missing_sound))));
+        result.issues.push(issue("warning", "missing_sound", format!("소리 파일이 빠진 노트 {}개 · 학습할 때 그 자리에 \"소리 파일을 찾을 수 없어요\"로 보여요", n(missing_sound))));
     }
     result.subdecks = decks.created.iter().filter(|id| !roots.contains(id)).count();
     result.root_deck_id = (roots.len() == 1).then(|| *roots.iter().next().unwrap());

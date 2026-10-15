@@ -18,6 +18,7 @@ Neo-Anki는 시험 목표와 카드 품질을 함께 관리해, 사용자가 제
 - [데이터 모델](docs/engineering/data-model.md) — 정본은 [`db/schema.sql`](db/schema.sql)
 - [오늘의 학습 큐 명세](docs/engineering/study-queue-spec.md)
 - [JSON 일괄 가져오기 형식](docs/engineering/json-import-format.md)
+- [UI 문구 기준](docs/design/copy-guide.md) — 용어표와 톤·배치 규칙. 근거는 [UI 문구 이해도 검토](docs/design/ui-copy-review.md)
 
 ### 스파이크
 
@@ -79,7 +80,7 @@ $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm run tauri dev
 
 ### Google Drive 동기화 (개발)
 
-[설계](docs/engineering/drive-sync.md) · 코드는 `src-tauri/src/sync/`. Google 연결은 빌드할 때 넣는 OAuth 클라이언트가 있어야 켜진다. 없으면 설정의 Google Drive 칸이 "이 빌드에는 Google 연결이 설정되지 않았어요"로 보이고 나머지는 그대로 동작한다.
+[설계](docs/engineering/drive-sync.md) · 코드는 `src-tauri/src/sync/`. Google 연결은 빌드할 때 넣는 OAuth 클라이언트가 있어야 켜진다. 없으면 설정의 Google Drive 칸이 "이 앱 버전에서는 Google Drive 연결을 사용할 수 없어요"로 보이고 나머지는 그대로 동작한다.
 
 1. Google Cloud 콘솔에서 Drive API 를 켜고, OAuth 동의 화면에 범위 `drive.file` · `drive.appdata` 두 개만 넣는다 (테스트 단계에서는 테스트 사용자를 등록).
 2. 사용자 인증 정보 > OAuth 클라이언트 ID > **데스크톱 앱**을 만든다. 리디렉션은 `http://127.0.0.1:<임의 포트>` 루프백이라 따로 적지 않는다.

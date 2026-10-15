@@ -101,6 +101,7 @@
 /* 2px 테두리. 안쪽 여백을 1px 줄여 글자가 움직이지 않게 한다 */
 .plan__option.is-selected { padding: 15px 17px; border: 2px solid var(--accent-default); }
 .plan__option-head { display: flex; align-items: center; gap: 8px; }
-.plan__actions { display: flex; justify-content: flex-end; gap: 8px; }
+.plan__actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.plan__actions > span { margin-right: auto; } /* 버튼을 누르면 무엇이 바뀌는지 한 줄 (H2) */
 /* P0 입구: 목표일 14일 전부터 차트 아래 한 줄 */
 .plan__cram { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 4px 0 14px; }
