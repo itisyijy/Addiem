@@ -1132,7 +1132,7 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
           on={remove}
           onPick={() => setRemove(true)}
           title="Drive에서도 지우기"
-          text={`백업${count !== null ? ` ${n(count)}개` : ""}와 동기화 데이터${s?.usage ? ` ${size(s.usage)}` : ""}를 지워요.${whoText ? ` ${whoText}의 동기화도 멈춰요.` : ""}`}
+          text={`백업${count !== null ? ` ${n(count)}개와` : "과"} 동기화 데이터${s?.usage ? ` ${size(s.usage)}` : ""}를 지워요.${whoText ? ` ${whoText}의 동기화도 멈춰요.` : ""}`}
         />
       </div>
       {error && <p className="t-body-s c-danger">{error}</p>}
@@ -1167,7 +1167,7 @@ function LockModal({ on, onClose, onConfirm }: { on: boolean; onClose: () => voi
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="sync-foot sync-foot--end">
         <Button variant="ghost" size="M" label="취소" onClick={onClose} />
-        <Button size="M" icon="lock" label={on ? "잠금 풀기" : "잠그기"} onClick={run} />
+        <Button size="M" icon={on ? undefined : "lock"} label={on ? "잠금 풀기" : "잠그기"} onClick={run} />
       </div>
     </Sheet>
   );
@@ -1369,7 +1369,8 @@ function Connected({ s }: { s: SyncStatus }) {
           <Button variant="secondary" size="M" icon="rotate" label="지금 동기화" busy={busyNow} busyLabel="맞추는 중…" disabled={s.studying} onClick={() => syncApi.now().catch((e) => toast({ title: errorText(e) }))} />
         )}
       </div>
-      {s.error && s.state !== "idle" && <p className="sync-error t-caption c-tertiary">{s.error}</p>}
+      {/* 오프라인은 위 줄이 이미 말한다 (OS 원문 오류는 보이지 않는다) */}
+      {s.error && s.state !== "idle" && s.state !== "offline" && <p className="sync-error t-caption c-tertiary">{s.error}</p>}
 
       <div className="sync-block">
         <p className="t-label-s c-tertiary">기기 {n(s.devices.length)}대</p>
