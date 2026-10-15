@@ -84,7 +84,8 @@ impl FolderStore {
     }
 
     fn file(&self, path: &str) -> SRes<PathBuf> {
-        if path.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
+        // Windows 는 \ 도 경로 구분자이고 C: 같은 드라이브 경로는 root 밖이다
+        if path.contains(['\\', ':']) || path.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
             return Err(other(format!("잘못된 경로: {path}")));
         }
         Ok(match path.strip_prefix("backups/") {
@@ -405,8 +406,10 @@ impl Store for DriveStore {
             Some(name) => (name.to_string(), self.folder(true)?.ok_or_else(|| other("백업 폴더를 만들지 못했어요"))?),
             None => (path.to_string(), "appDataFolder".to_string()),
         };
-        // 바꾸는 파일(devices/<나>.json, crypto.json)은 이미 있는지 먼저 본다. Drive 는 같은 이름 파일을 여러 개 허락한다
-        let existing = match self.ids.lock().map_err(other)?.get(path).cloned() {
+        // 바꾸는 파일(devices/<나>.json, crypto.json)은 이미 있는지 먼저 본다. Drive 는 같은 이름 파일을 여러 개 허락한다.
+        // 캐시는 따로 읽는다: match 조건식에 잠금을 두면 match 가 끝날 때까지 쥐고 있어 id_of 가 같은 잠금을 기다리며 멈췄다
+        let cached = self.ids.lock().map_err(other)?.get(path).cloned();
+        let existing = match cached {
             Some(id) => Some(id),
             None if path.starts_with("devices/") || path == "crypto.json" => self.id_of(path)?,
             None => None,
