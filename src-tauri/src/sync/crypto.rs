@@ -64,12 +64,17 @@ pub fn derive_key(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result
     Ok(out)
 }
 
-/// 새 비밀번호: salt 를 만들고 키와 crypto.json 내용을 돌려준다. m = 64MiB, t = 3 (OWASP 권장 범위)
+/// 이 앱이 쓰는 KDF 매개변수 (m KiB, t, p). m = 64MiB, t = 3 (OWASP 권장 범위)
+/// Drive 의 crypto.json 은 이것만 받는다: 큰 값을 써 넣으면 비밀번호를 넣을 때마다 메모리를 다 쓰거나 멈춘다
+/// ponytail: 값을 바꾸면 옛 앱이 새 crypto.json 을 열지 못한다. 그때는 허용 목록으로
+const KDF: (u32, u32, u32) = (64 * 1024, 3, 1);
+
+/// 새 비밀번호: salt 를 만들고 키와 crypto.json 내용을 돌려준다
 pub fn new_key(password: &str) -> Result<([u8; 32], KdfParams), String> {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD;
     let salt = random_bytes::<16>();
-    let (m, t, p) = (64 * 1024, 3, 1);
+    let (m, t, p) = KDF;
     let key = derive_key(password, &salt, m, t, p)?;
     Ok((key, KdfParams { salt: b64.encode(salt), m, t, p, check: b64.encode(seal(&key, CHECK)) }))
 }
@@ -78,6 +83,9 @@ pub fn new_key(password: &str) -> Result<([u8; 32], KdfParams), String> {
 pub fn open_key(password: &str, kdf: &KdfParams) -> Result<Option<[u8; 32]>, String> {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD;
+    if (kdf.m, kdf.t, kdf.p) != KDF {
+        return Err("이 앱이 만든 잠금 설정이 아니에요".into());
+    }
     let salt = b64.decode(&kdf.salt).map_err(|e| e.to_string())?;
     let key = derive_key(password, &salt, kdf.m, kdf.t, kdf.p)?;
     let check = b64.decode(&kdf.check).map_err(|e| e.to_string())?;
@@ -138,5 +146,15 @@ mod tests {
         let mut broken = sealed.clone();
         *broken.last_mut().unwrap() ^= 1;
         assert!(unseal(&key, &broken).is_err(), "고친 파일은 열리지 않는다");
+    }
+
+    #[test]
+    fn open_key_refuses_kdf_params_from_drive() {
+        // crypto.json 의 매개변수가 이 앱이 쓰는 값이 아니면 따르지 않는다 (큰 값을 따르면 메모리를 다 쓰거나 멈춘다).
+        // 따르는 쪽이면 가벼운 값으로 키를 만들어 "암호가 틀렸다"(Ok(None))가 된다
+        for (m, t, p) in [(8, 1, 1), (64 * 1024, 3, 2)] {
+            let kdf = KdfParams { salt: "AAAAAAAAAAAAAAAAAAAAAA==".into(), m, t, p, check: String::new() };
+            assert!(open_key("비밀번호", &kdf).is_err(), "{m} {t} {p}");
+        }
     }
 }

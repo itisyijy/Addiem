@@ -949,7 +949,8 @@ fn pack(con: &Connection, data_dir: &Path, col: &Path, out: &Path, media: &BTree
         job.tick("media", i, media.len())?;
         let rel: Option<String> =
             con.query_row("SELECT rel_path FROM media WHERE filename = ?1", [name], |r| r.get(0)).optional().map_err(err)?;
-        let Ok(mut f) = File::open(data_dir.join(rel.unwrap_or_else(|| format!("media/{name}")))) else {
+        let rel = rel.filter(|r| crate::commands::safe_rel_path(r, "media")).unwrap_or_else(|| format!("media/{name}"));
+        let Ok(mut f) = File::open(data_dir.join(rel)) else {
             missing.push(name.clone());
             continue;
         };

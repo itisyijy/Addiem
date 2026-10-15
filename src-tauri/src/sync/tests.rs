@@ -756,3 +756,96 @@ fn merge_old_copy(b_uid_prefix: &str) {
     env.sync(&a);
     assert_eq!(a.dump(), b.dump(), "합치는 쪽 uid 가 {b_uid_prefix}…");
 }
+
+/// 다른 기기(zz)가 올린 것처럼 변경 파일 하나를 써 넣는다 (변조된 Drive 흉내)
+fn plant(env: &Env, seq: i64, recs: J, key: Option<[u8; 32]>) {
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    writeln!(gz, "{}", json!({ "v": engine::FORMAT, "gen": 1, "device": "zz", "seq": seq })).unwrap();
+    for r in recs.as_array().unwrap() {
+        writeln!(gz, "{r}").unwrap();
+    }
+    env.store.put(&format!("changes/zz/{seq:08}.jsonl.gz"), &engine::seal_opt(gz.finish().unwrap(), key.as_ref())).unwrap();
+}
+
+const H: &str = "9999999999999-00000000-zz";
+
+#[test]
+fn tampered_paths_are_not_applied() {
+    // 받은 그림 이름 · 자료 경로가 이 기기의 다른 파일을 가리키면 행을 받지 않는다 (올리거나 지울 때 그 파일을 건드린다)
+    let env = Env::new();
+    let (_a, b, _) = pair(&env);
+    let deck = b.uid("deck", b.n("SELECT id FROM deck WHERE parent_id IS NULL"));
+    let media = |u: &str, name: &str, rel: &str, sha: &str| json!({ "t": "media", "u": u, "op": "up", "h": H, "r": { "filename": name, "rel_path": rel, "sha256": sha, "byte_size": 1, "created_at": 1 } });
+    plant(
+        &env,
+        1,
+        json!([
+            media("m1", r"C:\Users\me\secret.kdbx", "media/x.png", ""),
+            media("m2", "ok.png", "media/../../secret.kdbx", ""),
+            media("m3", "ok2.png", "media/ok2.png", "../../../../secret"),
+            media("m4", "fine.png", "media/fine.png", ""),
+            { "t": "source_material", "u": "s1", "op": "up", "h": H, "r": { "deck_id": deck, "file_name": "a.pdf", "rel_path": "sources/../../secret.pdf", "kind": "pdf", "created_at": 1, "updated_at": 1 } },
+        ]),
+        None,
+    );
+    env.sync(&b);
+    assert_eq!(b.n("SELECT count(*) FROM media"), 1, "멀쩡한 그림만");
+    assert_eq!(b.n("SELECT count(*) FROM media WHERE filename = 'fine.png'"), 1);
+    if b.n("SELECT count(*) FROM sqlite_master WHERE name = 'source_material'") == 1 {
+        assert_eq!(b.n("SELECT count(*) FROM source_material"), 0);
+    }
+    // 이미 있는 행을 고치는 변경도 같다
+    plant(&env, 2, json!([media("m4", r"..\..\secret.kdbx", "media/fine.png", "")]), None);
+    env.sync(&b);
+    assert_eq!(b.n("SELECT count(*) FROM media WHERE filename = 'fine.png'"), 1);
+}
+
+#[test]
+fn locked_drive_ignores_plaintext_files() {
+    // 잠근 Drive 에 평문 변경 파일이 있으면 받지 않고 건너뛴다 (멈추지도 않는다). 암호문은 받는다
+    let env = Env::new();
+    let key = [7u8; 32];
+    let a = Dev::new("노트북");
+    let cx = env.cx_key(&a, Some(key));
+    engine::join(&a.db, &cx, Join::New, json!({})).unwrap();
+    let deck = |name: &str| json!([{ "t": "deck", "u": format!("d-{name}"), "op": "up", "h": H, "r": { "name": name, "created_at": 1, "updated_at": 1 } }]);
+    plant(&env, 1, deck("평문 덱"), None);
+    plant(&env, 2, deck("잠근 덱"), Some(key));
+    assert!(matches!(engine::pull(&a.db, &cx).unwrap(), Pulled::Done(_)));
+    assert_eq!(a.n("SELECT count(*) FROM deck WHERE name = '평문 덱'"), 0);
+    assert_eq!(a.n("SELECT count(*) FROM deck WHERE name = '잠근 덱'"), 1);
+    assert!(matches!(engine::open_opt(b"plain".to_vec(), Some(&key)), Err(SyncError::Locked)));
+}
+
+#[test]
+fn malformed_hlc_is_rejected() {
+    // INF("~") 보다 큰 HLC 가 남으면 그 행은 어느 기기에서도 다시 고칠 수 없다. 파일을 읽지 않는다
+    let env = Env::new();
+    let (_a, b, _) = pair(&env);
+    let rec = |h: &str| json!([{ "t": "deck", "u": "d1", "op": "up", "h": h, "r": { "name": "새 덱", "created_at": 1, "updated_at": 1 } }]);
+    plant(&env, 1, rec("~~"), None);
+    assert!(engine::pull(&b.db, &env.cx(&b)).is_err());
+    assert_eq!(b.n("SELECT count(*) FROM deck WHERE name = '새 덱'"), 0);
+    let file = |recs: J| {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        writeln!(gz, "{}", json!({ "v": 1 })).unwrap();
+        writeln!(gz, "{}", recs[0]).unwrap();
+        gz.finish().unwrap()
+    };
+    assert!(engine::decode(file(rec(H)), None).is_ok());
+    assert!(engine::decode(file(rec("0")), None).is_ok(), "시계가 없던 행");
+    assert!(engine::decode(file(rec("0000000001000-00000000-")), None).is_ok(), "동기화 전에 생긴 행");
+    for bad in ["~", "1000", "0000000001000-0000000g-a", "0000000001000-00000000-a/b"] {
+        assert!(engine::decode(file(rec(bad)), None).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn folder_store_rejects_paths_outside_root() {
+    let env = Env::new();
+    for bad in [r"changes\..\..\x", "C:/Windows/win.ini", "media/../x", "/etc/passwd"] {
+        assert!(matches!(env.store.get(bad), Err(SyncError::Other(_))), "{bad}");
+    }
+}

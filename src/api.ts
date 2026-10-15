@@ -584,7 +584,7 @@ export type SyncStatus = {
   device_name: string;
   backup: "daily" | "weekly" | "off";
   lock: boolean;
-  /** 다른 기기가 되돌리기 · 새로 시작을 했다 (K6-m). header.reason.kind: restore | fresh | lock */
+  /** 다른 기기가 되돌리기 · 새로 시작을 했다 (K6-m). header.reason.kind: restore | fresh | lock | unlock */
   choice: { gen: number; header: SyncHeader; locked: boolean } | null;
   conflicts: number;
   conflict_seq: number;
@@ -599,7 +599,7 @@ export type SyncHeader = {
   device?: string;
   device_name?: string | null;
   at?: number;
-  reason?: { kind?: "restore" | "fresh" | "lock" | "new" | "compact"; backup_at?: number | null; device_name?: string | null };
+  reason?: { kind?: "restore" | "fresh" | "lock" | "unlock" | "new" | "compact"; backup_at?: number | null; device_name?: string | null };
   counts?: SyncCounts;
 };
 export type SyncCounts = { decks: number; cards: number; reviews: number; media_bytes: number };
