@@ -65,10 +65,11 @@ pub struct Material {
     pub(crate) gaps: i64,
 }
 
+// 강조 수 · 연결 수 · 빠진 범위는 글자 강조만 센다. 그림 · 표 영역(IT13)은 [그림·표 N] 탭에서만
 const MATERIAL_SQL: &str = "SELECT m.id, m.deck_id, m.file_name, m.kind, m.pages, m.status,
-        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id),
+        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals NOT IN ('figure','table')),
         (SELECT count(DISTINCT s.id) FROM source_segment s JOIN source_link l ON l.segment_id = s.id
-         WHERE s.material_id = m.id AND l.method != 'rejected'),
+         WHERE s.material_id = m.id AND l.method != 'rejected' AND s.signals NOT IN ('figure','table')),
         (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals NOT IN ('figure','table')
          AND NOT EXISTS (SELECT 1 FROM source_link l WHERE l.segment_id = s.id AND l.method != 'rejected'))
      FROM source_material m";
@@ -513,6 +514,8 @@ fn unanalyzed(con: &Connection, deck_id: i64) -> Res<i64> {
 pub struct Para {
     pub text: String,
     pub signals: Vec<&'static str>,
+    /// 표 칸 안 문단 (I2 패널은 표를 따로 그려서 뺀다)
+    pub cell: bool,
 }
 
 /// 열어 둔 PPTX: 슬라이드 경로 (presentation.xml 의 sldIdLst 순서, 파일 이름 순서와 다를 수 있다) · 슬라이드 크기 (EMU)
@@ -659,6 +662,7 @@ fn parse_slide(xml: &str) -> Vec<Para> {
     let mut cur: Option<Para> = None;
     let mut run = Run::default();
     let (mut in_rpr, mut in_fill, mut in_hl, mut in_t) = (false, false, false, false);
+    let mut in_tbl = 0usize;
     let mark = |p: &mut Para, run: Run| {
         for (on, sig) in [(run.highlight, "highlight"), (run.underline, "underline"), (run.red, "red"), (run.bold, "bold")] {
             if on && !p.signals.contains(&sig) {
@@ -679,7 +683,8 @@ fn parse_slide(xml: &str) -> Vec<Para> {
                     e.attributes().flatten().find(|a| a.key.as_ref() == k).and_then(|a| attr_value(&a))
                 };
                 match e.local_name().as_ref() {
-                    "p" if open => cur = Some(Para::default()),
+                    "p" if open => cur = Some(Para { cell: in_tbl > 0, ..Default::default() }),
+                    "tbl" if open => in_tbl += 1,
                     "r" | "fld" => run = Run::default(),
                     "rPr" => {
                         run.bold = attr("b").is_some_and(|v| v == "1" || v == "true");
@@ -715,6 +720,7 @@ fn parse_slide(xml: &str) -> Vec<Para> {
                     }
                 }
                 "rPr" => in_rpr = false,
+                "tbl" => in_tbl = in_tbl.saturating_sub(1),
                 "solidFill" => in_fill = false,
                 "highlight" => in_hl = false,
                 "t" => in_t = false,
@@ -1435,14 +1441,14 @@ mod tests {
         let slides = pptx_slides(&tiny_pptx()).unwrap();
         assert_eq!(slides.len(), 2);
         // presentation.xml 순서: slide2 가 1쪽
-        assert_eq!(slides[0], vec![Para { text: "★ 기출 & 핵심".into(), signals: vec!["underline", "star"] }]);
+        assert_eq!(slides[0], vec![Para { text: "★ 기출 & 핵심".into(), signals: vec!["underline", "star"], cell: false }]);
         let s = &slides[1];
         assert_eq!(s[0].signals, Vec::<&str>::new());
-        assert_eq!(s[1], Para { text: "로지스틱 회귀 — 종속변수가 범주형".into(), signals: vec!["bold"] });
+        assert_eq!(s[1], Para { text: "로지스틱 회귀 — 종속변수가 범주형".into(), signals: vec!["bold"], cell: false });
         assert_eq!(s[2].signals, vec!["red"]);
         assert_eq!(s[3].signals, vec!["highlight"]);
         assert_eq!(s[4].signals, Vec::<&str>::new());
-        assert_eq!(s[5].text, "구분");
+        assert_eq!((s[5].text.as_str(), s[5].cell, s[4].cell), ("구분", true, false));
         let segs = pptx_segments(&slides);
         assert_eq!(segs.len(), 4);
         assert_eq!((segs[1].page, segs[1].before.as_deref(), segs[1].after.as_deref()), (2, Some("평범한 문장"), Some("다중공선성 주의")));
@@ -1517,7 +1523,6 @@ mod tests {
             method: "cloze".into(),
             cols: vec![1],
             hide_same_col: true,
-            source: "강의.pptx · 슬라이드 3".into(),
         };
         let mut cards = drafts(&spec);
         cards.push(Draft { kind: "list".into(), front: "검정 2가지".into(), back: "t<br>F".into() });
@@ -1529,9 +1534,9 @@ mod tests {
         // 영역 구간은 그 쪽 강조 구간 뒤, 가중치 0, 글자가 없으면 "표 · p.3"
         let t = segs.iter().find(|s| s.signals == ["table"]).unwrap();
         assert_eq!((t.ord, t.weight, t.text.as_str(), t.links.len(), t.rects.clone()), (1, 0.0, "표 · p.3", 3, Some(vec![[0.0, 0.5, 0.5, 0.5]])));
-        // 빠진 범위에는 강조 구간만 (영역은 세지 않는다). R8 은 이 쪽에서 가장 가까운 카드의 덱
+        // 강조 수 · 연결 수 · 빠진 범위는 글자 강조만 (영역은 세지 않는다, IT13). R8 은 이 쪽에서 가장 가까운 카드의 덱
         let m = material(&con, 1).unwrap();
-        assert_eq!((m.segments, m.linked, m.gaps), (2, 1, 1));
+        assert_eq!((m.segments, m.linked, m.gaps), (1, 0, 1));
         assert_eq!(nearest_deck(&con, 1, 9).unwrap(), Some(2));
         let summary: String = con.query_row("SELECT summary FROM card_change WHERE id = ?1", [change], |r| r.get(0)).unwrap();
         assert_eq!(summary, "「강의.pptx」 표에서 카드 3장 만들기");

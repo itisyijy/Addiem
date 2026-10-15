@@ -210,6 +210,13 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     setPicked([]);
     setPageOnly(null);
   }, [sel]);
+  const jumped = useRef(false);
+  useEffect(() => {
+    const s = segs.find((x) => x.id === active);
+    if (jumped.current || !s || !pptxId) return;
+    jumped.current = true;
+    if (isRegion(s)) setObjView(true);
+  }, [segs, active, pptxId]);
   // 다른 자료를 고르면 첫 쪽부터. 구간에서 들어왔으면 그 쪽으로
   useEffect(() => {
     const s = segs.find((x) => x.id === active);
@@ -288,9 +295,11 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   };
 
   if (!materials) return null;
-  const sorted = [...segs].sort((a, b) => rankOf(a) - rankOf(b) || a.page - b.page || a.ord - b.ord);
-  const linkedSegs = segs.filter((s) => s.links.length).length;
-  const gapSegs = segs.filter((s) => !s.links.length && !isRegion(s)).sort((a, b) => gapRank(a) - gapRank(b) || a.page - b.page || a.ord - b.ord);
+  // 강조 구간 · 빠진 범위는 글자 강조만. 그림 · 표 영역은 [그림·표 N] 탭에서 (IT13)
+  const textSegs = segs.filter((s) => !isRegion(s));
+  const sorted = [...textSegs].sort((a, b) => rankOf(a) - rankOf(b) || a.page - b.page || a.ord - b.ord);
+  const linkedSegs = textSegs.filter((s) => s.links.length).length;
+  const gapSegs = textSegs.filter((s) => !s.links.length).sort((a, b) => gapRank(a) - gapRank(b) || a.page - b.page || a.ord - b.ord);
   const listed = gapView ? gapSegs.filter((s) => pageOnly === null || s.page === pageOnly) : sorted;
   const pick = (id: number, on: boolean) => setPicked((p) => (on ? (p.length < MAX_PICK && !p.includes(id) ? [...p, id] : p) : p.filter((x) => x !== id)));
   const pickedChars = segs.filter((s) => picked.includes(s.id)).reduce((t, s) => t + sentChars(s), 0);
@@ -298,7 +307,6 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const startDraft = () => (ai?.connected ? setDrafting(true) : setConnecting(true));
   const objItems = objs?.flatMap((o) => [...o.images, ...o.tables]) ?? [];
   const objOff = objs?.flatMap((o) => o.images).filter((x) => !x.supported).length ?? 0;
-  const objImages = objs?.reduce((t, o) => t + o.images.length, 0) ?? 0;
   const head = (
     <div className="src-list__head">
       <SegmentControl
@@ -311,17 +319,19 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           setLinking(undefined);
         }}
         options={[
-          { value: "all", label: `강조 구간 ${n(segs.length)}` },
+          { value: "all", label: `강조 구간 ${n(textSegs.length)}` },
           { value: "gaps", label: `빠진 범위 ${n(gapSegs.length)}` },
           ...(pptxId ? [{ value: "objects", label: `그림·표 ${n(objItems.length)}` }] : []),
         ]}
       />
       <span className="t-caption c-tertiary">
         {objView
-          ? `그림 ${n(objImages)} · 표 ${n(objItems.length - objImages)}${objOff ? ` · 미리 볼 수 없음 ${n(objOff)}` : ""}`
+          ? objOff
+            ? `미리 볼 수 없음 ${n(objOff)}`
+            : ""
           : gapView
             ? "기기 안에서 찾았어요 · 연결 없이 돼요"
-            : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(segs.length - linkedSegs)}`}
+            : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(textSegs.length - linkedSegs)}`}
       </span>
     </div>
   );
@@ -409,7 +419,20 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
             {model?.ready && <p className="src-model t-caption c-tertiary">분석 모델 있음 · 설정에서 지울 수 있어요</p>}
           </div>
 
-          {current && objView && <Figures m={current} objs={objs} error={objErr} segs={segs} deckId={deckId} head={head} onChanged={changed} />}
+          {current && objView && (
+            <Figures
+              m={current}
+              objs={objs}
+              error={objErr}
+              segs={segs}
+              deckId={deckId}
+              head={head}
+              linking={linking}
+              onLinking={setLinking}
+              links={(s) => <LinkEditor deckId={deckId} seg={s} onChange={changed} />}
+              onChanged={changed}
+            />
+          )}
           {current && !objView && gapView && current.status === "ready" && <PageMap m={current} segs={segs} page={pageOnly} onPage={setPageOnly} />}
           {current && !objView && !gapView && (
             <Preview
@@ -433,7 +456,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                 이 자료에서는 글자를 읽을 수 없어요. 스캔본이나 손글씨 자료는 아직 지원하지 않아요.
               </p>
             )}
-            {current?.status === "ready" && segs.length === 0 && (
+            {current?.status === "ready" && textSegs.length === 0 && (
               <p className="src-list__note t-body-s c-secondary">하이라이트·붉은 글씨·★·볼드로 강조된 곳을 찾지 못했어요.</p>
             )}
             {gapView && current?.status === "ready" && listed.length === 0 && (
@@ -780,8 +803,8 @@ export function PdfPage({
   );
 }
 
-/** PPTX 한 장. 그림은 그리지 않고 글만, 강조된 문단은 신호 색으로 */
-export function SlidePage({ materialId, page, active, height }: { materialId: number; page: number; active?: string; height?: number }) {
+/** PPTX 한 장. 그림은 그리지 않고 글만, 강조된 문단은 신호 색으로. cells: false 면 표 칸 문단은 뺀다 (I2 가 표를 따로 그릴 때) */
+export function SlidePage({ materialId, page, active, height, cells = true }: { materialId: number; page: number; active?: string; height?: number; cells?: boolean }) {
   const [paras, setParas] = useState<Para[]>();
   useEffect(() => {
     sourceApi
@@ -792,7 +815,7 @@ export function SlidePage({ materialId, page, active, height }: { materialId: nu
   return (
     <div className="src-page src-page--slide" style={height ? { height } : undefined}>
       {paras?.length === 0 && <span className="t-caption c-tertiary">이 슬라이드에는 글이 없어요</span>}
-      {paras?.map((p, i) => (
+      {paras?.filter((p) => cells || !p.cell).map((p, i) => (
         <p
           key={i}
           className={`src-slide__para ${p.signals.length ? `src-mark--${topSignal(p)}` : ""} ${p.text === active ? "is-active" : ""}`}

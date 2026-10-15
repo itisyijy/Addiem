@@ -1,6 +1,7 @@
 //! 8.4 표 → 카드 (DECISIONS IT4 · IT5 · IT6). 표 격자 하나에서 노트 초안을 만든다 (저장하지 않는다).
 //! 저장은 source::source_region_cards 가 초안 그대로 한다 (화면이 미리보기로 본 것과 같다).
-//!   - cloze: 묻는 열의 칸마다 빈칸 노트 하나 (IT5). 노트마다 표 전체 HTML, 묻는 칸만 {{c1::…}}, "같은 열 가리기"면 그 열 다른 칸은 "…"
+//!   - cloze: 묻는 열의 칸마다 빈칸 노트 하나 (IT5). 노트마다 표 전체 HTML, 묻는 칸만 {{c1::…}}, "같은 열 가리기"면 그 열 다른 칸은 "…".
+//!     출처(파일 · 슬라이드)는 노트 글에 넣지 않는다. 구간 연결 · [원자료]가 보여준다 (답처럼 읽히지 않게)
 //!   - rows: 행마다 기본 카드 한 장. 앞면 "행 이름의 열 이름은?" (열이 여럿이면 "행 이름 — 열1? 열2?"), 뒷면 그 칸들
 //!   - list: 묻는 열마다 목록 회상 카드 한 장 (Q, 순서대로). 항목은 그 열 칸을 위에서 아래로
 //!
@@ -35,8 +36,6 @@ pub struct TableSpec {
     pub cols: Vec<usize>,
     /// cloze: 같은 열의 다른 칸도 "…"로 가린다 (IT5 기본 켬)
     pub hide_same_col: bool,
-    /// 빈칸 노트의 뒷면 추가 설명 ("강의.pptx · 슬라이드 3")
-    pub source: String,
 }
 
 /// 만들 노트 하나. kind: cloze | basic | list. 필드 HTML 그대로 (list 의 back 은 <br> 로 나눈 항목)
@@ -171,7 +170,7 @@ pub fn drafts(t: &TableSpec) -> Vec<Draft> {
                         t.hide_same_col && r2 != r && g.body().contains(&r2) && g.cell(r2, c2).is_some_and(|x| c2 <= c && c < c2 + x.col_span)
                     };
                     let front = format!("<div>{}</div>{}", esc(&g.question(r, c)), g.html(Some((r, c)), hide));
-                    out.push(Draft { kind: "cloze".into(), front, back: esc(&t.source) });
+                    out.push(Draft { kind: "cloze".into(), front, back: String::new() });
                 }
             }
         }
@@ -230,7 +229,7 @@ mod tests {
         rows.iter().map(|r| r.iter().map(|t| c(t)).collect()).collect()
     }
     fn spec(rows: Vec<Vec<Cell>>, method: &str, cols: &[usize], hide: bool) -> TableSpec {
-        TableSpec { rows, header: true, method: method.into(), cols: cols.to_vec(), hide_same_col: hide, source: "a.pptx · 슬라이드 3".into() }
+        TableSpec { rows, header: true, method: method.into(), cols: cols.to_vec(), hide_same_col: hide }
     }
 
     const HYP: &[&[&str]] = &[&["검정", "귀무가설", "쓰는 곳"], &["t-검정", "두 집단 평균이 같다", "두 집단 비교"], &["카이제곱 검정", "두 변수는 독립이다", "범주형 연관"]];
@@ -246,7 +245,7 @@ mod tests {
              <tr><td>t-검정</td><td>{{c1::두 집단 평균이 같다}}</td><td>두 집단 비교</td></tr>\
              <tr><td>카이제곱 검정</td><td>…</td><td>범주형 연관</td></tr></table>"
         );
-        assert_eq!((d[0].kind.as_str(), d[0].back.as_str()), ("cloze", "a.pptx · 슬라이드 3"));
+        assert_eq!((d[0].kind.as_str(), d[0].back.as_str()), ("cloze", ""));
         assert!(d[1].front.contains("<td>…</td><td>두 집단 비교</td>") && d[1].front.contains("{{c1::두 변수는 독립이다}}"));
         assert_eq!(crate::render::cloze_numbers(&d[1].front).len(), 1);
         // 가리지 않으면 다른 칸은 그대로

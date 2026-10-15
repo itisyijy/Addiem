@@ -5,12 +5,13 @@ import "../styles/sources.css";
 import { Button, Icon } from "../ui";
 import { n, useNav } from "../nav";
 import { useEffect, useState } from "react";
-import { sourceApi, useCardSource, type CardSource } from "../sourceApi";
+import { isRegion, sourceApi, useCardSource, type CardSource } from "../sourceApi";
 import { PdfPage, SignalBadge, SlidePage } from "./Sources";
+import { RegionView } from "./Figures";
 
 export function SourcePanel({ cardId, onClose }: { cardId: number; onClose: () => void }) {
   const src = useCardSource(cardId);
-  return src ? <SourceView src={src} onClose={onClose} /> : null;
+  return src ? <SourceView src={src} cardId={cardId} onClose={onClose} /> : null;
 }
 
 /** R 근거 칩: 그 구간을 같은 패널로 (R1-c 초안 · R2 채점 보조 · R3 묶기) */
@@ -22,9 +23,10 @@ export function SegmentPanel({ segmentId, onClose }: { segmentId: number; onClos
   return src?.segment.id === segmentId ? <SourceView src={src} onClose={onClose} /> : null;
 }
 
-function SourceView({ src, onClose }: { src: CardSource; onClose: () => void }) {
+function SourceView({ src, cardId, onClose }: { src: CardSource; cardId?: number; onClose: () => void }) {
   const nav = useNav();
   const { material: m, segment: s, method } = src;
+  const region = isRegion(s);
   // [연결 바꾸기]는 그 구간의 카드 잇기 칸을 연 채로 들어간다
   const open = (link: boolean) => nav({ name: "sources", deckId: m.deck_id, materialId: m.id, segmentId: s.id, link });
   return (
@@ -33,19 +35,23 @@ function SourceView({ src, onClose }: { src: CardSource; onClose: () => void }) 
         <span className="src-panel__title">
           <span className="t-title-s">원자료</span>
           <span className="t-caption c-tertiary">
-            {m.file_name} · {n(s.page)}
-            {m.kind === "pptx" ? "번째 슬라이드" : "쪽"}
+            {m.file_name} · {m.kind === "pptx" ? `슬라이드 ${n(s.page)}` : `${n(s.page)}쪽`}
           </span>
         </span>
         <button className="src-icon-btn" aria-label="원자료 닫기" onClick={onClose}>
           <Icon name="x" size={18} />
         </button>
       </div>
-      <div className="src-panel__text">
-        {s.before && <p className="t-body-s c-secondary">{s.before}</p>}
-        <p className="src-panel__hit t-body-s c-primary">{s.text}</p>
-        {s.after && <p className="t-body-s c-secondary">{s.after}</p>}
-      </div>
+      {/* 8.4 그림 · 표 구간은 그 그림 · 표를 그린다 (표는 이 카드의 칸 · 행을 칠한다) */}
+      {region ? (
+        <RegionView m={m} s={s} cardId={method ? cardId : undefined} />
+      ) : (
+        <div className="src-panel__text">
+          {s.before && <p className="t-body-s c-secondary">{s.before}</p>}
+          <p className="src-panel__hit t-body-s c-primary">{s.text}</p>
+          {s.after && <p className="t-body-s c-secondary">{s.after}</p>}
+        </div>
+      )}
       <span className="src-panel__meta">
         <SignalBadge signal={s.signals[0] ?? "bold"} />
         <span className="t-caption c-tertiary">
@@ -55,7 +61,7 @@ function SourceView({ src, onClose }: { src: CardSource; onClose: () => void }) 
       {m.kind === "pdf" ? (
         <PdfPage materialId={m.id} page={s.page} width={376} height={180} segs={[s]} active={s.id} />
       ) : (
-        <SlidePage materialId={m.id} page={s.page} active={s.text} height={180} />
+        <SlidePage materialId={m.id} page={s.page} active={s.text} height={180} cells={!region} />
       )}
       {/* 근거 칩으로 연 패널은 화면을 떠나지 않는다 (초안 · 채점 결과가 사라지지 않게) */}
       {method && (

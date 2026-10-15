@@ -5,7 +5,7 @@
 import "../styles/figures.css";
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { errorText, qualityApi } from "../api";
+import { api, errorText, qualityApi } from "../api";
 import { sanitize } from "../cardHtml";
 import { Badge, Button, Checkbox, Icon, Input, Segment as SegmentControl } from "../ui";
 import { n, useKey, useOverlayScope } from "../nav";
@@ -31,9 +31,9 @@ import {
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const sameRect = (a: Rect | undefined, b: Rect) => !!a && a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
-/** 이 영역 구간에 이어진 카드 수 (목록 · 타일의 "카드 N장") */
-export const linkedCards = (segs: Segment[], page: number, kind: "figure" | "table", rect: Rect) =>
-  segs.filter((s) => s.page === page && s.signals.includes(kind) && sameRect(s.rects?.[0], rect)).reduce((t, s) => t + s.links.length, 0);
+/** 이 영역의 구간 (목록 · 타일의 "카드 N장", 연결 끊기) */
+const regionSeg = (segs: Segment[], page: number, kind: "figure" | "table", rect: Rect) =>
+  segs.find((s) => s.page === page && s.signals.includes(kind) && sameRect(s.rects?.[0], rect));
 
 const width = (rows: Cell[][]) => Math.max(0, ...rows.map((r) => r.length));
 const merges = (rows: Cell[][]) => rows.flat().filter((c) => !c.merged && (c.row_span > 1 || c.col_span > 1)).length;
@@ -102,8 +102,8 @@ const itemsOf = (o: SlideObjects): Item[] => [
 ];
 const usable = (it: Item) => !it.img || it.img.supported;
 
-/** 가운데 열(슬라이드 카드)과 오른쪽 목록. head: 목록 위 탭 줄 (Sources 가 준다) */
-export function Figures({ m, objs, error, segs, deckId, head, onChanged }: {
+/** 가운데 열(슬라이드 카드)과 오른쪽 목록. head: 목록 위 탭 줄, links: 카드 잇기 칸 (Sources 가 준다) */
+export function Figures({ m, objs, error, segs, deckId, head, linking, onLinking, links, onChanged }: {
   m: Material;
   objs: SlideObjects[] | null;
   error?: string;
@@ -111,6 +111,10 @@ export function Figures({ m, objs, error, segs, deckId, head, onChanged }: {
   /** 자료 화면의 덱 (넣을 곳 고르기의 뿌리) */
   deckId: number;
   head: ReactNode;
+  /** 카드 잇기 칸을 연 구간 ("카드 N장"을 누르면 이어진 카드 · 끊기) */
+  linking?: number;
+  onLinking: (segmentId: number | undefined) => void;
+  links: (seg: Segment) => ReactNode;
   onChanged: () => void;
 }) {
   const toast = useToast();
@@ -123,7 +127,8 @@ export function Figures({ m, objs, error, segs, deckId, head, onChanged }: {
   useEffect(() => dropThumbs, [m.id]);
 
   const items = (objs ?? []).flatMap(itemsOf);
-  const linked = (it: Item) => linkedCards(segs, it.o.page, it.img ? "figure" : "table", (it.img ?? it.table)!.rect);
+  const segOf = (it: Item) => regionSeg(segs, it.o.page, it.img ? "figure" : "table", (it.img ?? it.table)!.rect);
+  const linked = (it: Item) => segOf(it)?.links.length ?? 0;
   const region = (it: Item): Omit<Region, "kind" | "text"> => ({ material_id: m.id, page: it.o.page, rects: [(it.img ?? it.table)!.rect] });
   const place = (it: Item) => `${m.file_name} · 슬라이드 ${it.o.page}`;
   const open = (it: Item, where: string) => (it.table ? setTable(it) : setMenu(`${where}:${it.key}`));
@@ -140,7 +145,7 @@ export function Figures({ m, objs, error, segs, deckId, head, onChanged }: {
   const saveOcclusion = async (it: Item, shapes: Shape[], hideAll: boolean) => {
     try {
       const image = await storeImage(m.id, it.o.page, it.img!);
-      const note = await occlusionApi.save({ note_id: null, deck_id: it.o.deck_id, image, header: "", back_extra: esc(place(it)), shapes, hide_all: hideAll, importance: null });
+      const note = await occlusionApi.save({ note_id: null, deck_id: it.o.deck_id, image, header: "", back_extra: "", shapes, hide_all: hideAll, importance: null });
       await sourceApi.regionLink({ ...region(it), kind: "figure", text: it.img!.descr.trim() }, [note]);
       toast({ title: `그림 가리기 카드 ${n(ordinalsOf(shapes).length)}장을 만들었어요`, text: "슬라이드 그림과 이어 두었어요." });
       setOccl(null);
@@ -209,37 +214,41 @@ export function Figures({ m, objs, error, segs, deckId, head, onChanged }: {
         {error && <p className="src-list__note t-body-s c-secondary">{error}</p>}
         {objs?.length === 0 && !error && <p className="src-list__note t-body-s c-secondary">이 자료에서 그림이나 표를 찾지 못했어요.</p>}
         {items.map((it) => {
-          const count = linked(it);
+          const seg = segOf(it);
+          const count = seg?.links.length ?? 0;
           return (
-            <div key={it.key} className="fig-row">
-              <span className="fig-row__thumb">
-                <Icon name={it.img ? "image" : "list"} size={18} />
-              </span>
-              <span className="fig-row__text">
-                <span className="fig-row__top">
-                  <Badge>{it.img ? "그림" : "표"}</Badge>
-                  <span className="t-caption c-tertiary">슬라이드 {it.o.page}</span>
+            <div key={it.key} className="fig-item">
+              <div className="fig-row">
+                <span className="fig-row__thumb">
+                  <Icon name={it.img ? "image" : "list"} size={18} />
                 </span>
-                <span className={`t-body-s ${usable(it) ? "c-primary" : "c-tertiary"}`}>
-                  {it.img
-                    ? `${imageLabel(it.img)}${it.img.supported ? "" : " · 미리 볼 수 없는 형식"}`
-                    : `${it.table!.name || `표 ${it.k + 1}`} · ${it.table!.rows.length}행 × ${width(it.table!.rows)}열`}
+                <span className="fig-row__text">
+                  <span className="fig-row__top">
+                    <Badge>{it.img ? "그림" : "표"}</Badge>
+                    <span className="t-caption c-tertiary">슬라이드 {it.o.page}</span>
+                  </span>
+                  <span className={`t-body-s ${usable(it) ? "c-primary" : "c-tertiary"}`}>
+                    {it.img
+                      ? `${imageLabel(it.img)}${it.img.supported ? "" : " · 미리 볼 수 없는 형식"}`
+                      : `${it.table!.name || `표 ${it.k + 1}`} · ${it.table!.rows.length}행 × ${width(it.table!.rows)}열`}
+                  </span>
                 </span>
-              </span>
-              {!usable(it) ? (
-                <span className="t-caption c-tertiary">만들 수 없어요</span>
-              ) : count ? (
-                <button className="badge badge--accent t-label-s fig-row__count" onClick={() => open(it, "row")}>
-                  카드 {n(count)}장
-                </button>
-              ) : (
-                <Button variant="ghost" size="M" icon="plus" label="만들기" onClick={() => open(it, "row")} />
-              )}
-              {imageMenu(it, "row")}
+                {!usable(it) ? (
+                  <span className="t-caption c-tertiary">만들 수 없어요</span>
+                ) : seg && count ? (
+                  <button className="badge badge--accent t-label-s fig-row__count" aria-expanded={linking === seg.id} onClick={() => onLinking(linking === seg.id ? undefined : seg.id)}>
+                    카드 {n(count)}장
+                  </button>
+                ) : (
+                  <Button variant="ghost" size="M" icon="plus" label="만들기" onClick={() => open(it, "row")} />
+                )}
+                {imageMenu(it, "row")}
+              </div>
+              {seg && linking === seg.id && links(seg)}
             </div>
           );
         })}
-        {items.length > 0 && <p className="src-list__note t-caption c-tertiary">이미 만든 것도 다시 만들 수 있어요. 같은 그림 · 표에 이어져요.</p>}
+        {items.length > 0 && <p className="src-list__note t-caption c-tertiary">타일을 누르면 더 만들 수 있어요. "카드 N장"을 누르면 이어진 카드를 보고 끊어요.</p>}
       </section>
 
       {occl && (
@@ -269,7 +278,6 @@ export function Figures({ m, objs, error, segs, deckId, head, onChanged }: {
           sub={`표 ${table.k + 1} · ${place(table)}`}
           rows={table.table!.rows}
           region={region(table)}
-          source={place(table)}
           rootDeckId={deckId}
           deckId={table.o.deck_id}
           onClose={() => setTable(null)}
@@ -327,6 +335,82 @@ function MiniGrid({ rows }: { rows: Cell[][] }) {
       </tbody>
     </table>
   );
+}
+
+// ---------------------------------------------------------------- I2 패널의 그림 · 표 구간
+
+const flat = (t: string) => t.replace(/\s+/g, " ").trim();
+/** 이 카드가 묻는 칸 ("r,c"): 빈칸 카드는 답 칸, 행 카드는 질문이 시작하는 행 이름의 행, 목록 카드는 그 열 */
+function hitsOf(rows: Cell[][], cardHtml: string) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = cardHtml;
+  const answers = [...tpl.content.querySelectorAll(".cloze")].map((e) => flat(e.textContent ?? "")).filter(Boolean);
+  const text = flat(tpl.content.textContent ?? "");
+  const hits = new Set<string>();
+  rows.forEach((row, r) => row.forEach((c, j) => !c.merged && answers.includes(flat(c.text)) && hits.add(`${r},${j}`)));
+  if (hits.size || !text) return hits;
+  const longest = (list: [string, string[]][]) => list.filter(([name]) => name && text.startsWith(name)).sort((a, b) => b[0].length - a[0].length)[0]?.[1] ?? [];
+  const byRow = longest(rows.slice(1).map((row, i): [string, string[]] => [flat(row[0]?.text ?? ""), row.map((_, j) => `${i + 1},${j}`)]));
+  const byCol = byRow.length ? [] : longest((rows[0] ?? []).map((c, j): [string, string[]] => [flat(c.text), rows.map((_, r) => `${r},${j}`)]));
+  [...byRow, ...byCol].forEach((k) => hits.add(k));
+  return hits;
+}
+
+/** 표는 카드와 같은 HTML 표로 (첫 행 머리글), 그림은 썸네일. PPTX 만 (PDF 는 2단계) */
+export function RegionView({ m, s, cardId }: { m: Material; s: Segment; cardId?: number }) {
+  const [obj, setObj] = useState<{ img?: SlideImage; table?: SlideTable } | null>();
+  const [card, setCard] = useState("");
+  useEffect(() => {
+    let live = true;
+    setObj(undefined);
+    if (m.kind !== "pptx") return setObj(null);
+    sourceApi.slideObjects(m.id, s.page).then(
+      ([o]) => {
+        const img = o?.images.find((x) => sameRect(s.rects?.[0], x.rect));
+        const table = o?.tables.find((x) => sameRect(s.rects?.[0], x.rect));
+        if (live) setObj(img || table ? { img, table } : null);
+      },
+      () => live && setObj(null),
+    );
+    if (cardId != null) api.cardView(cardId).then((v) => live && setCard(v.back), () => {});
+    return () => {
+      live = false;
+    };
+  }, [m.id, m.kind, s.page, s.rects, cardId]);
+  if (obj === undefined) return <div className="src-panel__region is-wait" />;
+  if (obj?.img) {
+    return (
+      <figure className="src-panel__region">
+        {obj.img.supported ? <ThumbImage m={m} page={s.page} img={obj.img} /> : <span className="t-caption c-tertiary">미리 볼 수 없는 형식</span>}
+        <figcaption className="t-caption c-tertiary">{s.text}</figcaption>
+      </figure>
+    );
+  }
+  if (obj?.table) {
+    const hits = hitsOf(obj.table.rows, card);
+    return (
+      <div className="card-html src-panel__table">
+        <table>
+          <tbody>
+            {obj.table.rows.map((row, r) => (
+              <tr key={r}>
+                {row.map((c, j) => {
+                  if (c.merged) return null;
+                  const Tag = r === 0 ? "th" : "td";
+                  return (
+                    <Tag key={j} rowSpan={c.row_span > 1 ? c.row_span : undefined} colSpan={c.col_span > 1 ? c.col_span : undefined} className={hits.has(`${r},${j}`) ? "is-hit" : undefined}>
+                      {c.text}
+                    </Tag>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  return <p className="src-panel__hit t-body-s c-primary">{s.text}</p>;
 }
 
 // ---------------------------------------------------------------- IT3 그림을 앞면에 둔 카드
@@ -397,6 +481,12 @@ const MODES: { value: TableMethod; label: string; hint: string }[] = [
   { value: "rows", label: "행마다 한 장", hint: "앞면은 행 이름과 고른 열 이름, 뒷면은 그 칸들" },
   { value: "list", label: "열을 목록으로", hint: "고른 열 하나 = 목록 회상 카드 한 장 · 위에서 아래 순서대로" },
 ];
+/** 미리보기 아래 한 줄: 방식마다 질문 모양 */
+const QUESTION_HINT: Record<TableMethod, string> = {
+  cloze: '질문은 "행 이름의 열 이름은?"으로 만들어요.',
+  rows: '앞면은 "행 이름의 열 이름은?", 열을 여럿 고르면 "행 이름 — 열1? 열2?"로 만들어요.',
+  list: '질문은 "열 이름 N가지를 표 순서대로"로 만들어요.',
+};
 const blank = (): Cell => ({ text: "", row_span: 1, col_span: 1, merged: false });
 /** 행 · 열을 넣거나 빼면 합친 칸은 푼다 (글자는 왼쪽 위 칸에 남는다) */
 const unmerged = (g: Cell[][]) => g.map((row) => row.map((x) => ({ text: x.merged ? "" : x.text, row_span: 1, col_span: 1, merged: false })));
@@ -420,15 +510,13 @@ function DraftView({ d }: { d: RegionCard }) {
   );
 }
 
-export function TableCards({ title = "표로 카드 만들기", sub, rows, region, source, rootDeckId, deckId, onClose, onDone }: {
+export function TableCards({ title = "표로 카드 만들기", sub, rows, region, rootDeckId, deckId, onClose, onDone }: {
   title?: string;
   /** "표 1 · 강의.pptx · 슬라이드 7" */
   sub: string;
   rows: Cell[][];
   /** 카드를 이을 곳 (자료 · 쪽 · 영역) */
   region: Omit<Region, "kind" | "text">;
-  /** 빈칸 노트의 추가 설명 ("강의.pptx · 슬라이드 7") */
-  source: string;
   rootDeckId: number;
   /** 넣을 곳 기본값 (R8) */
   deckId: number;
@@ -451,7 +539,7 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
   const [error, setError] = useState<string>();
   useEffect(() => {
     let live = true;
-    sourceApi.tableCards({ rows: cells, header, method, cols, hide_same_col: hide, source }).then(
+    sourceApi.tableCards({ rows: cells, header, method, cols, hide_same_col: hide }).then(
       (d) => {
         if (!live) return;
         setDrafts(d);
@@ -462,7 +550,7 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
     return () => {
       live = false;
     };
-  }, [cells, header, method, cols, hide, source]);
+  }, [cells, header, method, cols, hide]);
 
   const w = width(cells);
   const colName = (c: number) => {
@@ -490,21 +578,21 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
     setCols((cs) => cs.filter((c) => c !== c0).map((c) => (c > c0 ? c - 1 : c)));
     setAt(null);
   };
-  // 합친 머리글 칸은 덮는 열마다 하나씩
-  const pick = (c: number, span = 1) =>
-    Array.from({ length: span }, (_, k) => c + k).map((col) => (
-      <Checkbox
-        key={col}
-        quiet
-        label={`${colName(col)}${span > 1 ? ` ${col + 1}열` : ""} 묻기`}
-        checked={cols.includes(col)}
-        onChange={(v) => setCols((cs) => (v ? [...cs, col].sort((a, b) => a - b) : cs.filter((x) => x !== col)))}
-      />
-    ));
+  // 머리글이 없거나 합친 머리글 칸이 있으면 표 위에 열 고르기 줄을 따로 둔다 (열마다 하나, 이름은 질문에 쓰는 것)
+  const pickRow = !header || (cells[0] ?? []).some((x) => !x.merged && x.col_span > 1);
+  const pickName = (c: number) => (header ? `${c + 1}열 · ${colName(c)}` : `${c + 1}열`);
+  const pick = (c: number) => (
+    <Checkbox
+      quiet
+      label={`${pickRow ? pickName(c) : colName(c)} 묻기`}
+      checked={cols.includes(c)}
+      onChange={(v) => setCols((cs) => (v ? [...cs, c].sort((a, b) => a - b) : cs.filter((x) => x !== c)))}
+    />
+  );
   const asked = cols.map(colName).join(" · ");
   const hint =
     method === "cloze"
-      ? `머리글에서 가릴 열을 체크해요${cols.length ? ` · ${asked} 칸 ${n(drafts.length)}개 → 노트 ${n(drafts.length)}개` : ""}`
+      ? `${pickRow ? "위 줄" : "머리글"}에서 가릴 열을 체크해요${cols.length ? ` · ${asked} 칸 ${n(drafts.length)}개 → 노트 ${n(drafts.length)}개` : ""}`
       : method === "rows"
         ? "뒷면에 넣을 열을 체크해요 · 첫 열은 행 이름이라 앞면에 둬요"
         : "목록으로 만들 열을 체크해요 · 칸이 2개 이상인 열만 카드가 돼요";
@@ -547,13 +635,13 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
           <div className="tg__grid">
             <table className="tg">
               <tbody>
-                {!header && (
+                {pickRow && (
                   <tr className="tg__pick">
                     {Array.from({ length: w }, (_, c) => (
                       <td key={c}>
                         <span className="tg__cell">
                           {pick(c)}
-                          <span className="t-label-s c-secondary">{c + 1}열</span>
+                          <span className="t-label-s c-secondary">{pickName(c)}</span>
                         </span>
                       </td>
                     ))}
@@ -570,7 +658,7 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
                           className={!(header && r === 0) && cols.includes(c) ? "is-asked" : undefined}
                         >
                           <span className="tg__cell">
-                            {header && r === 0 && pick(c, Math.min(x.col_span, w - c))}
+                            {header && r === 0 && !pickRow && pick(c)}
                             <input className="tg__input t-body-s" value={x.text} aria-label={`${r + 1}행 ${c + 1}열`} onFocus={() => setAt([r, c])} onChange={(e) => edit(r, c, e.target.value)} />
                           </span>
                         </td>
@@ -584,8 +672,8 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
           <div className="tg-tools">
             <Button variant="ghost" size="M" icon="plus" label="행" onClick={addRow} />
             <Button variant="ghost" size="M" icon="plus" label="열" onClick={addCol} />
-            <Button variant="ghost" size="M" icon="x" label={`${r0 + 1}행 빼기`} disabled={cells.length <= 1} onClick={delRow} />
-            <Button variant="ghost" size="M" icon="x" label={`${c0 + 1}열 빼기`} disabled={w <= 1} onClick={delCol} />
+            <Button variant="ghost" size="M" icon="x" label={`${at ? "고른" : "마지막"} 행 빼기`} disabled={cells.length <= 1} onClick={delRow} />
+            <Button variant="ghost" size="M" icon="x" label={`${at ? "고른" : "마지막"} 열 빼기`} disabled={w <= 1} onClick={delCol} />
             {merges(cells) > 0 && <span className="t-caption c-tertiary">행 · 열을 넣거나 빼면 합친 칸은 풀려요</span>}
           </div>
           <p className="t-caption c-secondary">{hint}</p>
@@ -611,7 +699,7 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
             </span>
           </div>
           <div className="tg-card">{d ? <DraftView d={d} /> : <p className="t-body-s c-tertiary">만들 카드가 없어요. 물을 열을 골라 주세요.</p>}</div>
-          {method !== "list" && <p className="t-caption c-tertiary">질문은 "행 이름의 열 이름은?"으로 만들어요. 만든 뒤 카드 편집에서 고칠 수 있어요.</p>}
+          <p className="t-caption c-tertiary">{QUESTION_HINT[method]} 만든 뒤 카드 편집에서 고칠 수 있어요.</p>
         </div>
       </div>
       {error && <p className="t-body-s c-danger">{error}</p>}

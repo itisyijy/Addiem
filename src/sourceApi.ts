@@ -95,7 +95,8 @@ export type Segment = {
   exam: ExamState;
 };
 export type NewSegment = Omit<Segment, "id" | "weight" | "links" | "exam">;
-export type Para = { text: string; signals: Signal[] };
+/** cell: 표 칸 안 문단 */
+export type Para = { text: string; signals: Signal[]; cell: boolean };
 
 // ---------------------------------------------------------------- 8.4 그림 · 표 (source.rs · table.rs)
 
@@ -111,7 +112,7 @@ export type Region = { material_id: number; page: number; rects: Rect[]; kind: "
 /** 만들 노트 하나 (필드 HTML). list 의 back 은 <br> 로 나눈 항목 */
 export type RegionCard = { kind: "basic" | "cloze" | "list"; front: string; back: string };
 export type TableMethod = "cloze" | "rows" | "list";
-export type TableSpec = { rows: Cell[][]; header: boolean; method: TableMethod; cols: number[]; hide_same_col: boolean; source: string };
+export type TableSpec = { rows: Cell[][]; header: boolean; method: TableMethod; cols: number[]; hide_same_col: boolean };
 /** method "": 근거 칩으로 구간을 열었다 (카드 연결이 아님) */
 export type CardSource = { material: Material; segment: Segment; method: "manual" | "auto" | "" };
 /** "source-analyze" 이벤트. step 0 은 카드, 그다음 자료 하나씩 */
