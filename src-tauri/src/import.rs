@@ -1485,17 +1485,40 @@ fn schedule(c: &AnkiCard, crt_day: i64, fsrs: &fsrs::FSRS) -> Schedule {
     if c.queue == -1 { Schedule { state: "suspended", ..state } } else { state }
 }
 
-/// Anki 복습 기록을 review_log 로 옮긴다. 이미 옮긴 기록(anki_revlog_id)은 다시 넣지 않는다.
-/// 삭제된 카드의 기록도 card_id 없이 남긴다 (통계는 사실로 남아야 한다, 데이터 모델 A4)
+/// Anki 복습 기록을 review_log 로 옮긴다. 같은 기록은 다시 넣지 않는다: 이미 옮긴 기록(anki_revlog_id), 또는 같은 카드 · 같은 시각의 기록
+/// (이 앱이 내보낸 .apkg 를 다시 가져오면 revlog id 가 원래 기록의 시각이다, I79).
+/// 카드는 anki_card_id 로 찾고, 없으면 노트 guid + 카드 순서로 찾는다 (이미 있어 건너뛴 노트의 카드).
+/// 끝내 못 찾은 기록(원본에서 지운 카드)은 card_id 없이 남긴다 (통계는 사실로 남아야 한다, 데이터 모델 A4)
 fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>) -> Res<usize> {
-    let card_by_anki: HashMap<i64, i64> = {
+    let mut card_by_anki: HashMap<i64, i64> = {
         let mut st = tx.prepare("SELECT anki_card_id, id FROM card WHERE anki_card_id IS NOT NULL").map_err(err)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)?
     };
+    {
+        let mut ours = tx
+            .prepare("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = ?1 AND c.template_ord = ?2")
+            .map_err(err)?;
+        let mut st = col.prepare("SELECT c.id, c.ord, n.guid FROM cards c JOIN notes n ON n.id = c.nid").map_err(err)?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))).map_err(err)?;
+        for row in rows {
+            let (cid, ord, guid) = row.map_err(err)?;
+            if card_by_anki.contains_key(&cid) {
+                continue;
+            }
+            if let Some(id) = ours.query_row(params![guid, ord], |r| r.get(0)).optional().map_err(err)? {
+                card_by_anki.insert(cid, id);
+            }
+        }
+    }
     let done: HashSet<i64> = {
         let mut st = tx.prepare("SELECT anki_revlog_id FROM review_log WHERE anki_revlog_id IS NOT NULL").map_err(err)?;
         let rows = st.query_map([], |r| r.get(0)).map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)?
+    };
+    let seen: HashSet<(i64, i64)> = {
+        let mut st = tx.prepare("SELECT card_id, reviewed_at FROM review_log WHERE card_id IS NOT NULL").map_err(err)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)?
     };
     // 음수 간격은 초 단위다 (학습 단계)
@@ -1509,7 +1532,8 @@ fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>)
     let mut n = 0;
     for row in rows {
         let (id, cid, ease, ivl, last_ivl, time, rtype) = row.map_err(err)?;
-        if done.contains(&id) || !only.is_none_or(|c| c.contains(&cid)) {
+        let card = card_by_anki.get(&cid).copied();
+        if done.contains(&id) || card.is_some_and(|c| seen.contains(&(c, id))) || !only.is_none_or(|c| c.contains(&cid)) {
             continue;
         }
         let prev_state = match rtype {
@@ -1520,7 +1544,7 @@ fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>)
         tx.execute(
             "INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, anki_revlog_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?2)",
-            params![card_by_anki.get(&cid), id, ease, time, days(last_ivl), days(ivl), prev_state],
+            params![card, id, ease, time, days(last_ivl), days(ivl), prev_state],
         )
         .map_err(err)?;
         n += 1;
@@ -1730,6 +1754,38 @@ mod tests {
         }
         zip.finish().unwrap();
         let _ = std::fs::remove_file(db);
+    }
+
+    #[test]
+    fn reimport_keeps_review_history() {
+        // 이 앱에서 학습하고 기록을 포함해 내보낸 덱을 같은 DB 로 다시 가져온다 (I79).
+        // 내보내기가 쓰는 모양 그대로: 노트 guid 는 note.anki_guid 에 남고, 카드에는 anki_card_id 가 없고, revlog id 는 기록 시각이다
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-revlog-{}-{}", std::process::id(), now_ms())));
+        let s = state(&tmp.0.join("data"));
+        let pkg_path = tmp.0.join("two.apkg");
+        two_deck_package(&pkg_path);
+        {
+            let con = s.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('B', 0, 0)", []).unwrap();
+            let deck = con.last_insert_rowid();
+            let nt: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Basic' AND anki_model_id IS NULL", [], |r| r.get(0)).unwrap();
+            con.execute("INSERT INTO note (note_type_id, fields, anki_guid, created_at, updated_at) VALUES (?1, '[\"앞 3\",\"\"]', 'guid3', 0, 0)", [nt])
+                .unwrap();
+            con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (last_insert_rowid(), ?1, 0, 0, 0)", [deck])
+                .unwrap();
+            // 학습한 기록 (anki_revlog_id 없음). 패키지의 revlog 1003 이 이 기록이다
+            con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (last_insert_rowid(), 1003, 3)", []).unwrap();
+        }
+        let count = |s: &AppState| -> (i64, i64) {
+            let con = s.db.lock().unwrap();
+            con.query_row("SELECT count(*), count(*) - count(card_id) FROM review_log", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        let r = run_import_anki(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), true, &mut vec![]).unwrap();
+        assert_eq!(r.reviews, 3, "이미 있는 노트(guid3)의 기록은 원래 카드의 같은 기록이라 넣지 않는다");
+        assert_eq!(count(&s), (4, 0), "card_id 없는 기록이 생기지 않는다");
+        let r = run_import_anki(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), true, &mut vec![]).unwrap();
+        assert_eq!((r.notes, r.reviews), (0, 0), "다시 가져와도 기록 수가 그대로");
+        assert_eq!(count(&s), (4, 0));
     }
 
     #[test]

@@ -1763,7 +1763,7 @@ pub struct AnswerResult {
     due_in_ms: Option<i64>,
 }
 
-fn load_srs(con: &Connection, card_id: i64) -> Res<SrsState> {
+pub(crate) fn load_srs(con: &Connection, card_id: i64) -> Res<SrsState> {
     con.query_row(
         "SELECT state, srs_step, stability, difficulty, due_at, interval_days, last_reviewed_at, reps, lapses FROM card WHERE id = ?1",
         [card_id],
@@ -2179,6 +2179,8 @@ pub struct AppInfo {
     last_backup: Option<i64>,
     cutoff_hour: i64,
     db_bytes: u64,
+    /// 그림 · 미디어 합 (K4 올리는 것)
+    media_bytes: i64,
     cards: i64,
     decks: i64,
     reviews: i64,
@@ -2247,6 +2249,7 @@ pub fn app_info(state: State<AppState>) -> Res<AppInfo> {
         last_backup: last_backup(&backup_dir(&state.data_dir)),
         cutoff_hour: db::cutoff_hour(),
         db_bytes: std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0),
+        media_bytes: n("SELECT coalesce(sum(byte_size), 0) FROM media")?,
         cards: n("SELECT count(*) FROM card")?,
         decks: n("SELECT count(*) FROM deck WHERE archived_at IS NULL")?,
         reviews: n("SELECT count(*) FROM review_log")?,
