@@ -192,7 +192,7 @@ export type CardView = {
 export type NoteEdit = {
   note_id: number;
   /** image_occlusion: 가리기 편집기(M2)로 연다 */
-  kind: "basic" | "cloze" | "image_occlusion" | "other";
+  kind: "basic" | "cloze" | "image_occlusion" | "list" | "choice" | "other";
   /** 노트 유형 이름 */
   type_name: string;
   names: string[];

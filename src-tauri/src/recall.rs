@@ -28,7 +28,9 @@ const LIST_FIELDS: [&str; 4] = ["질문", "항목", "순서", "추가 설명"];
 const CHOICE_FIELDS: [&str; 10] = ["질문", "보기1", "보기2", "보기3", "보기4", "보기5", "보기6", "정답", "섞기", "추가 설명"];
 pub const LIST_FIELDS_JSON: &str = r#"["질문","항목","순서","추가 설명"]"#;
 pub const CHOICE_FIELDS_JSON: &str = r#"["질문","보기1","보기2","보기3","보기4","보기5","보기6","정답","섞기","추가 설명"]"#;
+const ORDERED: &str = "순서대로";
 const UNORDERED: &str = "순서 없이";
+const SHUFFLE: &str = "섞기";
 const NO_SHUFFLE: &str = "섞지 않음";
 const MAX_OPTIONS: usize = 6;
 
@@ -211,7 +213,7 @@ pub(crate) fn list_fields(c: &ListNew) -> Res<Vec<String>> {
     if items.len() < 2 {
         return Err("항목을 2개 이상 입력해주세요.".into());
     }
-    let order = if c.ordered { "순서대로" } else { UNORDERED };
+    let order = if c.ordered { ORDERED } else { UNORDERED };
     Ok(vec![c.question.clone(), items.join("<br>"), order.into(), c.extra.clone()])
 }
 
@@ -233,8 +235,31 @@ pub(crate) fn choice_fields(c: &ChoiceNew) -> Res<Vec<String>> {
     }
     let mut f = vec![c.question.clone()];
     f.extend((0..MAX_OPTIONS).map(|i| kept.get(i).map(|k| k.1.clone()).unwrap_or_default()));
-    f.extend([correct.join(","), (if c.shuffle { "섞기" } else { NO_SHUFFLE }).into(), c.extra.clone()]);
+    f.extend([correct.join(","), (if c.shuffle { SHUFFLE } else { NO_SHUFFLE }).into(), c.extra.clone()]);
     Ok(f)
+}
+
+/// Q23 일반 필드 편집(E)의 안전망. 전용 편집기 전까지 정답 · 순서 · 섞기 칸이 앱이 읽을 수 있는 값인지 본다 (commands::save_note_fields)
+pub(crate) fn check_fields(nt: &str, names: &[String], values: &[String]) -> Res<()> {
+    if !is_special(nt, names) {
+        return Ok(());
+    }
+    let v = |i: usize| plain(values.get(i).map_or("", String::as_str));
+    if nt.starts_with(LIST) {
+        return match v(2).as_str() {
+            ORDERED | UNORDERED => Ok(()),
+            _ => Err("순서 칸은 \"순서대로\" 또는 \"순서 없이\"로 써 주세요.".into()),
+        };
+    }
+    let answer = v(7);
+    let option = |t: &str| t.trim().parse::<usize>().is_ok_and(|n| (1..=MAX_OPTIONS).contains(&n) && values.get(n).is_some_and(|o| !render::is_blank(o)));
+    if answer.is_empty() || !answer.split(',').all(option) {
+        return Err("정답 칸은 내용이 있는 보기 번호로 써 주세요 (예: 2, 여럿이면 1,3).".into());
+    }
+    match v(8).as_str() {
+        SHUFFLE | NO_SHUFFLE => Ok(()),
+        _ => Err("섞기 칸은 \"섞기\" 또는 \"섞지 않음\"으로 써 주세요.".into()),
+    }
 }
 
 /// 노트 하나 + 카드 한 장. 노트 id 를 돌려준다
@@ -297,6 +322,24 @@ mod tests {
         assert_eq!(suggest_choice(&[1, 3], &[1, 3]), Some(3));
         assert_eq!(suggest_choice(&[1, 2], &[1, 3]), Some(1), "정답을 골라도 틀린 보기가 있으면 Again");
         assert_eq!(suggest_choice(&[], &[2]), None, "고르지 않고 넘기면 추천 없음");
+    }
+
+    #[test]
+    fn edit_check_q23() {
+        let list = LIST_FIELDS.map(String::from);
+        let choice = CHOICE_FIELDS.map(String::from);
+        let l = |order: &str| ["q", "a<br>b", order, ""].map(String::from);
+        assert!(check_fields(LIST, &list, &l("순서 없이")).is_ok());
+        assert!(check_fields(LIST, &list, &l("<b>순서대로</b>")).is_ok(), "서식은 본다");
+        assert!(check_fields(LIST, &list, &l("아무렇게나")).is_err());
+        let c = |answer: &str, shuffle: &str| ["q", "SYN", "SYN-ACK", "ACK", "", "", "", answer, shuffle, ""].map(String::from);
+        assert!(check_fields(CHOICE, &choice, &c("2", "섞기")).is_ok());
+        assert!(check_fields(CHOICE, &choice, &c("1, 3", "섞지 않음")).is_ok());
+        for bad in ["", "4", "7", "0", "둘", "2,x", "2,,3"] {
+            assert!(check_fields(CHOICE, &choice, &c(bad, "섞기")).is_err(), "{bad:?}: 범위 밖 · 빈 보기 · 숫자 아님");
+        }
+        assert!(check_fields(CHOICE, &choice, &c("2", "네")).is_err());
+        assert!(check_fields("Basic", &["Front".into(), "Back".into()], &["4".into(), "x".into()]).is_ok(), "다른 유형은 보지 않는다");
     }
 
     #[test]

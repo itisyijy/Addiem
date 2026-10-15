@@ -1,14 +1,15 @@
 /* Q 목록 회상 · 선택형 (Figma Row Q). RecallSlot · ChoiceOption 은 Components 프레임 123:12884 · 123:12926 과 같다 */
 
 /* ---------------------------------------------------------------- RecallSlot */
+/* 학습 화면의 항목은 답이라 자르지 않고 줄을 바꾼다. 한 줄이면 40px (Figma), 번호 · 표시는 첫 줄에 맞춘다 */
 .slot {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   width: 100%;
-  height: 40px;
+  min-height: 40px;
   flex: none;
-  padding: 0 14px;
+  padding: 5px 14px;
   border: 1px solid transparent;
   border-radius: 12px;
   background: var(--bg-subtle);
@@ -24,30 +25,34 @@
   width: 24px;
   height: 24px;
   border-radius: 12px;
+  margin-top: 2px;
   background: var(--accent-subtle);
   color: var(--accent-text);
 }
-.slot__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot__text { flex: 1; min-width: 0; word-break: keep-all; overflow-wrap: anywhere; }
 .slot__mark { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.slot__mark, .slot > .icon { margin-top: 6px; }
 .slot--missed { background: var(--status-danger-bg); color: var(--status-danger-fg); }
 .slot--missed .slot__num { background: var(--status-danger-fg); color: var(--text-inverse); }
 /* 지금 = M3 묻는 칸과 같은 파랑 + "?" */
-.slot--now { padding: 0 13px; border: 2px solid var(--accent-text); background: var(--accent-default); color: var(--text-inverse); }
-.slot--now .slot__num { background: var(--accent-on-inverse); }
+.slot--now { padding: 4px 13px; border: 2px solid var(--accent-text); background: var(--accent-default); color: var(--text-inverse); }
+/* 흰 원 + accent 번호 (두 테마 모두. on-inverse 위 accent-text 는 다크에서 대비가 1.8 이었다) */
+.slot--now .slot__num { background: var(--text-inverse); color: var(--accent-default); }
 .slot--now .slot__text { font-weight: 600; }
 .slot--now .slot__mark { color: var(--accent-on-inverse); }
 .slot--hidden { border: 1px dashed var(--border-strong); }
 .slot--hidden .slot__num { background: var(--bg-surface); color: var(--text-tertiary); }
 
 /* ---------------------------------------------------------------- ChoiceOption */
+/* 보기도 답 면에서는 답이라 줄을 바꾼다. 한 줄이면 40px */
 .opt {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   width: 100%;
-  height: 40px;
+  min-height: 40px;
   flex: none;
-  padding: 0 16px;
+  padding: 5px 16px;
   border: 1px solid var(--border-default);
   border-radius: 14px;
   background: var(--bg-surface);
@@ -57,10 +62,11 @@
 .opt:disabled { cursor: default; opacity: 1; }
 .opt:not(:disabled):hover { border-color: var(--border-strong); }
 .opt__num { flex: none; font: 400 17px/28px var(--font-sans); }
-.opt__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.opt__mark { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.opt > .kbd { flex: none; margin-top: 4px; }
+.opt__text { flex: 1; min-width: 0; word-break: keep-all; overflow-wrap: anywhere; }
+.opt__mark { display: inline-flex; align-items: center; gap: 4px; flex: none; margin-top: 6px; }
 /* 고름 (질문 면). Figma 에 없는 상태라 묻는 칸 파랑을 옅게 쓴다 */
-.opt--picked, .opt--picked:not(:disabled):hover { padding: 0 15px; border: 2px solid var(--accent-default); background: var(--accent-subtle); }
+.opt--picked, .opt--picked:not(:disabled):hover { padding: 4px 15px; border: 2px solid var(--accent-default); background: var(--accent-subtle); }
 .opt--correct { border-color: var(--status-success-fg); background: var(--status-success-bg); }
 .opt--missed { border: 1px dashed var(--status-success-fg); }
 .opt--correct .opt__num, .opt--correct .opt__mark, .opt--missed .opt__num, .opt--missed .opt__mark { color: var(--status-success-fg); }
@@ -101,3 +107,5 @@
 .lc-preview { gap: 12px; padding: 20px; }
 .lc-preview__q { font: 600 17px/28px var(--font-sans); letter-spacing: -0.005em; word-break: keep-all; overflow-wrap: anywhere; }
 .lc-preview .recall__list { gap: 6px; }
+/* 미리보기는 질문 면 모양만 보이면 되므로 한 줄로 자른다 */
+.lc-preview .slot__text, .lc-preview .opt__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

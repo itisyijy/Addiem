@@ -316,7 +316,7 @@ export function ChoicePreview({ question, draft, openKey }: { question: string; 
     <div className="preview lc-preview">
       <PreviewQ html={question} />
       <p className="t-caption c-accent">
-        {choiceLabel(options.length, multi)} · {draft.shuffle ? "보기는 섞여 나와요" : "보기는 이 순서로 나와요"}
+        {choiceLabel(options.length, multi)} · {draft.shuffle ? "학습할 때는 섞여 나와요" : "보기는 이 순서로 나와요"}
       </p>
       <div className="recall__list">
         {options.map((t, i) => (

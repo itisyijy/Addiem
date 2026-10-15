@@ -1543,7 +1543,9 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
         sub={`${
           wn?.native
             ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
-            : note?.kind === "other"
+            : note?.kind === "list" || note?.kind === "choice"
+              ? `${note.kind === "list" ? "목록 회상" : "선택형"} · 필드 ${note.names.length}개 · `
+              : note?.kind === "other"
               ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
               : reversed
                 ? "앞뒤 둘 다 · 카드 2장 · "
