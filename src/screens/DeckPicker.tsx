@@ -209,7 +209,7 @@ export function DeckMenu({ rootDeckId, value, onPick, onClose, choices, classNam
  * 덱 경로 알약 + DeckMenu. C3-n "넣을 곳", C3-e 하위 덱 이동.
  * onLoad 는 목록을 불러올 때마다 (처음, 새 하위 덱을 만든 뒤) 불린다. 고른 덱의 중요도 등을 쓰려는 화면용
  */
-export function DeckPicker({ rootDeckId, value, onChange, onLoad, relative = false }: {
+export function DeckPicker({ rootDeckId, value, onChange, onLoad, relative = false, prefix }: {
   /** 트리의 뿌리 (최상위 덱). 이 덱과 그 아래만 고를 수 있다 */
   rootDeckId: number;
   /** 지금 고른 덱. 모르면 undefined (알약이 비어 보인다) */
@@ -218,6 +218,8 @@ export function DeckPicker({ rootDeckId, value, onChange, onLoad, relative = fal
   onLoad?: (choices: DeckChoice[]) => void;
   /** C3-e: 알약에 최상위 덱 이름 없이 상대 경로만. 넘치면 앞쪽을 자르고 전체 경로는 툴팁으로 */
   relative?: boolean;
+  /** 알약 앞 글자 (R1-c "넣을 곳") */
+  prefix?: string;
 }) {
   const [choices, setChoices] = useState<DeckChoice[] | null>(null);
   const [open, setOpen] = useState(false);
@@ -245,6 +247,7 @@ export function DeckPicker({ rootDeckId, value, onChange, onLoad, relative = fal
         onClick={() => setOpen((v) => !v)}
       >
         <Icon name="layers" size={14} className="c-tertiary" />
+        {prefix && <span className="t-label-m c-secondary">{prefix} ·</span>}
         {current && choices ? (
           <span
             className={`deckpick__label t-label-m ${relative ? "deckpick__label--tail" : ""}`}

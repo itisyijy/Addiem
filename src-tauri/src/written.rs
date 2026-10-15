@@ -355,6 +355,11 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
     Ok(CardInfo { written, answer: quality::html_lines(&html).join("\n"), setting })
 }
 
+/// R2 채점 보조가 보내는 모범 답안 (J2 비교 화면 오른쪽 칸과 같은 글자)
+pub(crate) fn model_answer(con: &Connection, card_id: i64) -> Res<String> {
+    Ok(card_info(con, card_id)?.answer)
+}
+
 // ------------------------------------------------------------------ 명령: 학습 화면 (J1 · J2)
 
 #[derive(Serialize)]

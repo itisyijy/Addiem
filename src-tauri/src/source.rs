@@ -54,12 +54,16 @@ pub struct Material {
     segments: i64,
     /// 카드가 이어진 구간 수
     linked: i64,
+    /// R1-a 빠진 범위: 강조됐는데 이어진 카드가 없는 구간 수 (끊은 자동 연결은 없는 것으로 본다)
+    pub(crate) gaps: i64,
 }
 
 const MATERIAL_SQL: &str = "SELECT m.id, m.deck_id, m.file_name, m.kind, m.pages, m.status,
         (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id),
         (SELECT count(DISTINCT s.id) FROM source_segment s JOIN source_link l ON l.segment_id = s.id
-         WHERE s.material_id = m.id AND l.method != 'rejected')
+         WHERE s.material_id = m.id AND l.method != 'rejected'),
+        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id
+         AND NOT EXISTS (SELECT 1 FROM source_link l WHERE l.segment_id = s.id AND l.method != 'rejected'))
      FROM source_material m";
 
 fn material_row(r: &rusqlite::Row) -> rusqlite::Result<Material> {
@@ -72,10 +76,11 @@ fn material_row(r: &rusqlite::Row) -> rusqlite::Result<Material> {
         status: r.get(5)?,
         segments: r.get(6)?,
         linked: r.get(7)?,
+        gaps: r.get(8)?,
     })
 }
 
-fn subtree(con: &Connection, deck_id: i64) -> Res<String> {
+pub(crate) fn subtree(con: &Connection, deck_id: i64) -> Res<String> {
     let decks = load_decks(con)?;
     Ok(descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
 }
@@ -90,7 +95,7 @@ pub fn source_list(state: State<AppState>, deck_id: i64) -> Res<Vec<Material>> {
     Ok(rows)
 }
 
-fn material(con: &Connection, id: i64) -> Res<Material> {
+pub(crate) fn material(con: &Connection, id: i64) -> Res<Material> {
     con.query_row(&format!("{MATERIAL_SQL} WHERE m.id = ?1"), [id], material_row).map_err(|_| "자료를 찾을 수 없어요.".to_string())
 }
 
@@ -219,6 +224,8 @@ pub struct Link {
     card_id: i64,
     /// manual: 직접 연결 / auto: 자동 연결
     method: String,
+    /// draft: R1 초안에서 만듦 (method 는 manual)
+    origin: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -254,17 +261,17 @@ fn segment_row(r: &rusqlite::Row) -> rusqlite::Result<Segment> {
     })
 }
 
-fn segments_of(con: &Connection, material_id: i64) -> Res<Vec<Segment>> {
+pub(crate) fn segments_of(con: &Connection, material_id: i64) -> Res<Vec<Segment>> {
     let mut st = con.prepare(&format!("{SEGMENT_SQL} WHERE material_id = ?1 ORDER BY page, ord")).map_err(err)?;
     let mut segs: Vec<Segment> = st.query_map([material_id], segment_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     let mut st = con
         .prepare(
-            "SELECT l.segment_id, l.card_id, l.method FROM source_link l JOIN source_segment s ON s.id = l.segment_id
+            "SELECT l.segment_id, l.card_id, l.method, l.origin FROM source_link l JOIN source_segment s ON s.id = l.segment_id
              WHERE s.material_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, l.id",
         )
         .map_err(err)?;
     let mut links: HashMap<i64, Vec<Link>> = HashMap::new();
-    for row in st.query_map([material_id], |r| Ok((r.get::<_, i64>(0)?, Link { card_id: r.get(1)?, method: r.get(2)? }))).map_err(err)? {
+    for row in st.query_map([material_id], |r| Ok((r.get::<_, i64>(0)?, Link { card_id: r.get(1)?, method: r.get(2)?, origin: r.get(3)? }))).map_err(err)? {
         let (seg, link) = row.map_err(err)?;
         links.entry(seg).or_default().push(link);
     }
@@ -317,7 +324,18 @@ fn unlink(con: &Connection, segment_id: i64, card_id: i64) -> Res<()> {
 pub struct CardSource {
     material: Material,
     segment: Segment,
+    /// 카드와의 연결 방식. 구간으로 열면(근거 칩) 빈 글자
     method: String,
+}
+
+/// R 근거 칩: 구간 하나를 I2 패널로 (카드 연결과 상관없이)
+#[tauri::command]
+pub fn source_segment(state: State<AppState>, segment_id: i64) -> Res<CardSource> {
+    let con = state.db.lock().map_err(err)?;
+    let material_id: i64 =
+        con.query_row("SELECT material_id FROM source_segment WHERE id = ?1", [segment_id], |r| r.get(0)).map_err(|_| "구간을 찾을 수 없어요.".to_string())?;
+    let segment = segments_of(&con, material_id)?.into_iter().find(|s| s.id == segment_id).ok_or("구간을 찾을 수 없어요.")?;
+    Ok(CardSource { material: material(&con, material_id)?, segment, method: String::new() })
 }
 
 /// I2 학습 중 원자료. 직접 연결을 먼저, 그다음 유사도가 높은 것. 없으면 null (버튼을 숨긴다)
@@ -646,7 +664,7 @@ fn text_hash(text: &str) -> String {
 }
 
 /// 캐시에 없거나 글이 바뀐 것만 계산한다. 계산하는 동안에는 DB 를 잠그지 않는다
-fn embed_cached(app: &AppHandle, kind: &str, items: &[(i64, String)], mut tick: impl FnMut(usize)) -> Res<HashMap<i64, Vec<f32>>> {
+pub(crate) fn embed_cached(app: &AppHandle, kind: &str, items: &[(i64, String)], mut tick: impl FnMut(usize)) -> Res<HashMap<i64, Vec<f32>>> {
     let state = app.state::<AppState>();
     let cached: HashMap<i64, (String, Vec<u8>)> = {
         let con = state.db.lock().map_err(err)?;
@@ -685,12 +703,12 @@ fn embed_cached(app: &AppHandle, kind: &str, items: &[(i64, String)], mut tick: 
     Ok(out)
 }
 
-/// 카드 글 (앞 + 뒤, 서식 뺌). 카드 목록(C2)과 같은 방식으로 렌더한다
-fn card_texts(con: &Connection, ids: &str) -> Res<Vec<(i64, i64, String)>> {
+/// 카드 글 (앞 + 뒤, 서식 뺌)과 앞면 글. 카드 목록(C2)과 같은 방식으로 렌더한다. ids: 덱 id 목록 ("1,2,3")
+pub(crate) fn card_texts(con: &Connection, ids: &str) -> Res<Vec<CardText>> {
     let names = note_field_names(con)?;
     let mut st = con
         .prepare(&format!(
-            "SELECT c.id, c.deck_id, n.fields, c.template_ord, nt.name, t.qfmt, t.afmt
+            "SELECT c.id, n.fields, c.template_ord, nt.name, t.qfmt, t.afmt
              FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id
                   AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
@@ -699,16 +717,24 @@ fn card_texts(con: &Connection, ids: &str) -> Res<Vec<(i64, i64, String)>> {
         .map_err(err)?;
     let rows = st
         .query_map([], |r| {
-            let fields: String = r.get(2)?;
-            let nt: String = r.get(4)?;
-            let q: Option<String> = r.get(5)?;
-            let a: Option<String> = r.get(6)?;
-            let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(3)?);
-            let text = format!("{} {}", render::strip_tags(&rendered.front), render::strip_tags(answer_part(&rendered.back)));
-            Ok((r.get(0)?, r.get(1)?, text.chars().take(1000).collect()))
+            let fields: String = r.get(1)?;
+            let nt: String = r.get(3)?;
+            let q: Option<String> = r.get(4)?;
+            let a: Option<String> = r.get(5)?;
+            let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(2)?);
+            let front = render::strip_tags(&rendered.front);
+            let text = format!("{front} {}", render::strip_tags(answer_part(&rendered.back)));
+            Ok(CardText { id: r.get(0)?, front, text: text.chars().take(1000).collect() })
         })
         .map_err(err)?;
     rows.collect::<Result<_, _>>().map_err(err)
+}
+
+pub(crate) struct CardText {
+    pub id: i64,
+    pub front: String,
+    /// 임베딩에 쓰는 글 (앞 + 뒤, 1000자까지)
+    pub text: String,
 }
 
 /// 카드마다 가장 비슷한 구간 하나. 기준보다 낮으면 잇지 않는다. 벡터는 L2 정규화돼 있어 내적이 코사인이다
@@ -794,7 +820,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         emit(app, Progress { step, steps, label: label.into(), done, total });
     };
     progress(0, &format!("카드 {}장", cards.len()), 0);
-    let card_items: Vec<(i64, String)> = cards.iter().map(|c| (c.0, c.2.clone())).collect();
+    let card_items: Vec<(i64, String)> = cards.iter().map(|c| (c.id, c.text.clone())).collect();
     let card_vecs = embed_cached(app, "card", &card_items, |n| progress(0, &format!("카드 {}장", cards.len()), n))?;
     let mut seg_vecs = HashMap::new();
     for (i, ((_, name), list)) in materials.iter().zip(&segs).enumerate() {
@@ -813,7 +839,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
     };
     let card_refs: Vec<(i64, &[f32])> =
-        cards.iter().filter(|c| !manual.contains(&c.0)).filter_map(|c| card_vecs.get(&c.0).map(|v| (c.0, v.as_slice()))).collect();
+        cards.iter().filter(|c| !manual.contains(&c.id)).filter_map(|c| card_vecs.get(&c.id).map(|v| (c.id, v.as_slice()))).collect();
     let seg_refs: Vec<(i64, &[f32])> = seg_vecs.iter().map(|(id, v)| (*id, v.as_slice())).collect();
     let links = best_links(&card_refs, &seg_refs, AUTO_LINK);
     for (seg, card, sim) in &links {

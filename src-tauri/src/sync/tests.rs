@@ -598,6 +598,34 @@ fn tables_added_by_other_features_sync_too() {
 }
 
 #[test]
+fn draft_link_origin_round_trips() {
+    // R1 초안에서 만든 카드의 연결(source_link.origin = 'draft')이 다른 기기로 가고, origin 만 바꾼 고치기도 따라간다
+    let env = Env::new();
+    let (a, b, card_a) = pair(&env);
+    let deck: i64 = a.n("SELECT id FROM deck WHERE parent_id IS NULL");
+    let link = {
+        let con = a.con();
+        con.execute_batch(&format!(
+            "INSERT INTO source_material (deck_id, file_name, rel_path, kind, status, created_at, updated_at) VALUES ({deck}, '3장.pdf', 'sources/1.pdf', 'pdf', 'ready', 0, 0);
+             INSERT INTO source_segment (material_id, page, ord, text, signals, weight) VALUES (last_insert_rowid(), 13, 0, '잔차 분석', 'star', 2);
+             INSERT INTO source_link (segment_id, card_id, method, origin, created_at) VALUES (last_insert_rowid(), {card_a}, 'manual', 'draft', 7);"
+        ))
+        .unwrap();
+        con.last_insert_rowid()
+    };
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(b.n("SELECT count(*) FROM source_link WHERE method = 'manual' AND origin = 'draft'"), 1);
+    // B 에서 origin 만 지운다 (예: 다시 직접 이음)
+    let on_b = b.id("source_link", &a.uid("source_link", link)).unwrap();
+    b.con().execute("UPDATE source_link SET origin = NULL WHERE id = ?1", [on_b]).unwrap();
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.n("SELECT count(*) FROM source_link WHERE origin IS NULL"), 1);
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
 fn every_sync_table_reference_is_translatable() {
     // 다른 기능이 SYNC_TABLES 에 표를 더해도 외래 키가 조용히 깨지지 않게:
     //   동기화 대상 표를 가리키는 열은 uid 로 바꿔 보낼 수 있어야 하고 (대상의 정수 id 를 가리킨다),

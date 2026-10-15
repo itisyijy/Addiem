@@ -917,7 +917,8 @@ pub fn add_card(state: State<AppState>, card: NewCard) -> Res<usize> {
 #[derive(Serialize)]
 pub struct NoteEdit {
     note_id: i64,
-    /// basic | cloze | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다
+    /// basic | cloze | image_occlusion | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다.
+    /// image_occlusion 은 화면이 occlusion_note 로 가리기 편집기(M2)를 연다
     kind: String,
     /// 노트 유형 이름 ("Anki 노트타입 '…'")
     type_name: String,
@@ -951,7 +952,15 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let names: Vec<String> = serde_json::from_str(&names).map_err(err)?;
     let mut values: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
     values.resize(names.len(), String::new());
-    let kind = if note_is_cloze(&con, note_id)? { "cloze" } else if names.len() == 2 { "basic" } else { "other" };
+    let kind = if crate::occlusion::is_note(&con, note_id)? && names.len() >= 4 {
+        "image_occlusion"
+    } else if note_is_cloze(&con, note_id)? {
+        "cloze"
+    } else if names.len() == 2 {
+        "basic"
+    } else {
+        "other"
+    };
     // {{이름}} {{필터:이름}} {{#이름}} {{^이름}}
     let front = names
         .iter()
@@ -965,6 +974,12 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
 pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) -> Res<()> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
+    save_note_fields(&tx, note_id, &values)?;
+    tx.commit().map_err(err)
+}
+
+/// update_note 의 본문. 그림 가리기 저장(occlusion::save)도 같은 길로 카드를 맞춘다
+pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String]) -> Res<()> {
     let names: String = tx
         .query_row("SELECT nt.fields FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1", [note_id], |r| r.get(0))
         .map_err(err)?;
@@ -982,7 +997,7 @@ pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) ->
     )
     .map_err(err)?;
 
-    if note_is_cloze(&tx, note_id)? {
+    if note_is_cloze(tx, note_id)? {
         let nums: std::collections::BTreeSet<u32> = values.iter().flat_map(|v| render::cloze_numbers(v)).collect();
         if nums.is_empty() {
             return Err("빈칸을 하나 이상 만들어주세요.".into());
@@ -1008,7 +1023,7 @@ pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) ->
             }
         }
     }
-    tx.commit().map_err(err)
+    Ok(())
 }
 
 #[derive(Serialize)]

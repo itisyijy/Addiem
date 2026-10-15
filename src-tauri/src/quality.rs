@@ -329,7 +329,7 @@ pub struct SplitPart {
 }
 
 /// 글자를 카드 필드 HTML 로 (줄바꿈 → <br>)
-fn to_html(text: &str) -> String {
+pub(crate) fn to_html(text: &str) -> String {
     text.trim().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\n', "<br>")
 }
 
@@ -348,6 +348,9 @@ pub struct SplitProposal {
     pub(crate) flags: Vec<Flag>,
     /// items | lines | questions | nature(ChatGPT 성격별로 묶기). questions 면 한 장 항목 수를 바꿔도 같은 제안이다
     pub(crate) kind: &'static str,
+    /// R3: ChatGPT 에 함께 보낸 자료 구간 · 그중 실제로 인용한 구간 (근거 칩). 규칙 제안은 비어 있다
+    pub(crate) sent: Vec<crate::rag::Sent>,
+    pub(crate) evidence: Vec<crate::rag::Sent>,
 }
 
 /// 받침이 있는가 (조사 고르기)
@@ -464,7 +467,7 @@ pub(crate) fn suggest(con: &Connection, card_id: i64, per_card: Option<i64>) -> 
         _ => format!("순서대로 {each}줄씩 나눴어요."),
     };
     let why = format!("{}. {how}", reason_of(&flags));
-    Ok(SplitProposal { card_id, question: t.question, answer: t.answer, why, parts, per_card: per, flags, kind })
+    Ok(SplitProposal { card_id, question: t.question, answer: t.answer, why, parts, per_card: per, flags, kind, sent: vec![], evidence: vec![] })
 }
 
 /// "왜?"의 앞부분 = 걸린 규칙 (G1 배지와 같은 말) + Again. 뒤에 어떻게 나눴는지를 붙인다 (ai.rs 도 쓴다)
@@ -567,7 +570,7 @@ pub struct ChangeRow {
     undone: bool,
 }
 
-/// 덱 설정의 "최근 변경 30개"
+/// G1 "최근 나눈 카드" 30개 (R1 초안은 토스트의 [되돌리기]로만)
 #[tauri::command]
 pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow>> {
     let con = state.db.lock().map_err(err)?;
@@ -575,7 +578,7 @@ pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow
     let ids = commands::descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let mut st = con
         .prepare(&format!(
-            "SELECT id, summary, card_id, created_at, undone_at IS NOT NULL FROM card_change WHERE deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
+            "SELECT id, summary, card_id, created_at, undone_at IS NOT NULL FROM card_change WHERE kind = 'split' AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
         ))
         .map_err(err)?;
     let rows = st

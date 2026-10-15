@@ -124,6 +124,8 @@ pub struct ExportResult {
     path: String,
     /// 찾지 못한 미디어를 쓰는 카드 (C1-xr [카드 보기])
     missing_cards: Vec<i64>,
+    /// 이름이 있는 그림 가리기 칸 수 (C1-xr "칸 이름 N개는 Anki에서 보이지 않아요", M8)
+    occlusion_labels: usize,
 }
 
 const CANCELLED: &str = "내보내기를 멈췄어요. 만들던 파일만 지웠어요.";
@@ -547,6 +549,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     tx.execute_batch(SCHEMA_11).map_err(err)?;
 
     let mut media = BTreeSet::new();
+    let mut labels = 0;
     let mut note_ids: HashMap<i64, i64> = HashMap::new();
     let mut used = HashSet::new();
     let total = notes.len() + cards.len();
@@ -557,6 +560,9 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         let m = &models[&n.note_type_id];
         let mut flds: Vec<String> = serde_json::from_str(&n.fields).map_err(err)?;
         flds.resize(m.nfields.max(1), String::new()); // Anki 는 필드 수가 노트 유형과 같아야 한다
+        if m.io {
+            labels += crate::occlusion::label_count(&flds[0]);
+        }
         for f in &flds {
             media_refs(f, &mut media);
         }
@@ -649,7 +655,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     )
     .map_err(err)?;
     tx.commit().map_err(err)?;
-    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, ..Default::default() };
+    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, occlusion_labels: labels, ..Default::default() };
     Ok((result, media))
 }
 
@@ -774,6 +780,8 @@ struct Model {
     json: Value,
     nfields: usize,
     sortf: usize,
+    /// Anki 그림 가리기 유형 (occlusion.rs). 칸 필드는 첫 필드다
+    io: bool,
 }
 
 /// 노트 유형 -> Anki 모델. 원본 JSON(anki_raw)이 있으면 그대로 쓰고, 없으면 스키마 11 기본값으로 만든다.
@@ -796,7 +804,8 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
         v["id"] = json!(id);
         let nfields = v["flds"].as_array().map_or(1, Vec::len);
         let sortf = v["sortf"].as_u64().unwrap_or(0) as usize;
-        return Ok(Model { id, json: v, nfields, sortf });
+        let io = crate::occlusion::is_template(&v["tmpls"].to_string());
+        return Ok(Model { id, json: v, nfields, sortf, io });
     }
 
     let fields: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
@@ -805,9 +814,14 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
         .and_then(|mut s| s.query_map([ntid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect())
         .map_err(err)?;
     let cloze = tmpls.iter().any(|t| t.2.contains("{{cloze:"));
+    let io = tmpls.iter().any(|t| crate::occlusion::is_template(&t.2));
     let id = unique(used, anki_id.unwrap_or(created + ntid));
-    let css = if css.trim().is_empty() { format!("{CSS}{}", if cloze { CLOZE_CSS } else { "" }) } else { css };
-    let json = json!({
+    let css = match (css.trim().is_empty(), io) {
+        (false, _) => css,
+        (true, true) => crate::occlusion::CSS.into(),
+        (true, false) => format!("{CSS}{}", if cloze { CLOZE_CSS } else { "" }),
+    };
+    let mut json = json!({
         "id": id, "name": name, "type": i64::from(cloze), "mod": updated / 1000, "usn": -1, "sortf": 0, "did": did,
         "tmpls": tmpls.iter().map(|(ord, n, q, a)| json!({
             "name": n, "ord": ord, "qfmt": q, "afmt": a, "did": null, "bqfmt": "", "bafmt": "",
@@ -819,7 +833,16 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
         "req": tmpls.iter().map(|(ord, _, q, _)| json!([ord, "any", referenced(q, &fields)])).collect::<Vec<_>>(),
         "tags": [], "vers": [],
     });
-    Ok(Model { id, json, nfields: fields.len(), sortf: 0 })
+    // Anki 가 그림 가리기 유형으로 알아보고 IO 편집기를 연다 (rslib notetype/schema11.rs · Anki 26.9.2 가 내보낸 모델과 같다).
+    // 필드는 tag 로 찾는다: 0 Occlusion · 1 Image · 2 Header · 3 Back Extra · 4 Comments. Comments 만 지울 수 있다
+    if io {
+        json["originalStockKind"] = json!(crate::occlusion::STOCK_KIND);
+        for (i, f) in json["flds"].as_array_mut().into_iter().flatten().enumerate().take(5) {
+            f["tag"] = json!(i);
+            f["preventDeletion"] = json!(i < 4);
+        }
+    }
+    Ok(Model { id, json, nfields: fields.len(), sortf: 0, io })
 }
 
 /// 앞면 템플릿이 쓰는 필드 번호. 구버전 Anki 가 카드를 만들지 판단하는 req 에 쓴다
@@ -1137,5 +1160,110 @@ mod tests {
         assert_eq!(export(&con, &a.data_dir, root, &out, true, &stop).unwrap_err(), CANCELLED);
         assert!(out.exists());
         assert!(out.exists(), "실패해도 이미 있던 파일은 그대로");
+    }
+
+    /// 내보낸 .apkg 의 그림 가리기 모델 JSON (스키마 11 col.models)
+    fn io_model(apkg: &Path, work: &Path) -> Value {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(apkg).unwrap()).unwrap();
+        let mut raw = vec![];
+        std::io::Read::read_to_end(&mut zip.by_name("collection.anki2").unwrap(), &mut raw).unwrap();
+        let path = work.join(format!("models-{}.anki2", now_ms()));
+        std::fs::write(&path, raw).unwrap();
+        let models: String = Connection::open(&path).unwrap().query_row("SELECT models FROM col", [], |r| r.get(0)).unwrap();
+        let models: Value = serde_json::from_str(&models).unwrap();
+        models.as_object().unwrap().values().find(|m| m["originalStockKind"] == 6).cloned().expect("그림 가리기 모델")
+    }
+
+    /// M8: 그림 가리기 노트를 내보내고 다시 가져오면 칸 · 이름 · 카드 번호가 그대로고, Anki 가 IO 유형으로 알아볼 표시가 붙는다
+    #[test]
+    fn image_occlusion_round_trip() {
+        use crate::occlusion;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-io-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('해부학', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        std::fs::write(a.data_dir.join("media/neo-io.png"), b"png").unwrap();
+        con.execute("INSERT INTO media (filename, rel_path, sha256, byte_size, created_at) VALUES ('neo-io.png', 'media/neo-io.png', '', 3, 0)", [])
+            .unwrap();
+        let field = "{{c1::image-occlusion:rect:left=.1:top=.2:width=.25:height=.1:label=심장\\: 좌심실:oi=1}}<br>\
+                     {{c3::image-occlusion:ellipse:left=.5:top=.5:rx=.1:ry=.05:oi=1}}<br>\
+                     {{c3::image-occlusion:rect:left=.6:top=.1:width=.2:height=.1:oi=1}}<br>";
+        let ntid: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Image Occlusion' AND anki_model_id IS NULL", [], |r| r.get(0)).unwrap();
+        let fields = serde_json::to_string(&[field, "<img src=\"neo-io.png\">", "머리말", "덧붙임", ""]).unwrap();
+        con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 1, 1)", params![ntid, fields]).unwrap();
+        let nid = con.last_insert_rowid();
+        for ord in [0, 2] {
+            con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, ?3, 1, 1)", params![nid, root, ord])
+                .unwrap();
+        }
+
+        let out = tmp.0.join("io.apkg");
+        let r = serde_json::to_value(export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap()).unwrap();
+        assert_eq!((r["cards"].as_u64(), r["media"].as_u64(), r["occlusion_labels"].as_u64()), (Some(2), Some(1), Some(1)));
+        // Anki 26.9.2 가 내보낸 모델과 같은 표시 (rslib notetype/schema11.rs)
+        let m = io_model(&out, &tmp.0);
+        assert_eq!((m["type"].as_i64(), m["name"].as_str()), (Some(1), Some("Image Occlusion")), "빈칸 종류");
+        let flds: Vec<(String, i64, bool)> = m["flds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| (f["name"].as_str().unwrap().to_string(), f["tag"].as_i64().unwrap(), f["preventDeletion"].as_bool().unwrap()))
+            .collect();
+        let want = [("Occlusion", 0, true), ("Image", 1, true), ("Header", 2, true), ("Back Extra", 3, true), ("Comments", 4, false)];
+        assert_eq!(flds, want.map(|(n, t, p)| (n.to_string(), t, p)));
+        assert_eq!((m["css"].as_str(), m["tmpls"][0]["qfmt"].as_str()), (Some(occlusion::CSS), Some(occlusion::QFMT)), "Anki 의 CSS · 템플릿 그대로");
+
+        // 가져오기: 노트 유형 그대로, 스크립트를 "확인이 필요한 카드"로 세지 않는다, 칸 이름이 살아난다
+        let b = state(&tmp.0.join("b"));
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap()).unwrap();
+        assert_eq!((res["notes"].as_u64(), res["cards"].as_u64(), res["check_cards"].as_u64()), (Some(1), Some(2), Some(0)));
+        let bc = b.db.lock().unwrap();
+        let (bfields, bnid): (String, i64) = bc.query_row("SELECT fields, id FROM note", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(bfields, fields, "필드가 글자 그대로");
+        assert!(occlusion::is_note(&bc, bnid).unwrap());
+        let (shapes, hide_all) = occlusion::parse(&serde_json::from_str::<Vec<String>>(&bfields).unwrap()[0]);
+        assert_eq!((shapes[0].label.as_str(), hide_all), ("심장: 좌심실", true));
+        assert_eq!(strings(&bc, "SELECT group_concat(template_ord) FROM (SELECT template_ord FROM card ORDER BY 1)"), ["0,2"], "칸 번호 = 카드");
+
+        // 가져온 유형(Anki id 있음)을 다시 내보내도 IO 표시가 붙는다
+        let broot: i64 = bc.query_row("SELECT deck_id FROM card LIMIT 1", [], |r| r.get(0)).unwrap();
+        let out2 = tmp.0.join("io2.apkg");
+        export(&bc, &b.data_dir, broot, &out2, false, &QUIET).unwrap();
+        assert_eq!(io_model(&out2, &tmp.0)["flds"][1]["tag"].as_i64(), Some(1));
+    }
+
+    /// 실제 Anki 가 만든 그림 가리기 .apkg 를 가져와 본다 (손으로 돌린다. 개인 데이터일 수 있어 파일은 저장소에 두지 않는다):
+    ///   NEOANKI_IO_APKG=<경로> cargo test real_anki_io_package -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_anki_io_package() {
+        let path = std::env::var("NEOANKI_IO_APKG").expect("NEOANKI_IO_APKG");
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-io-real-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0);
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &a, &path, false, &mut vec![]).unwrap()).unwrap();
+        println!("import: notes {} cards {} check_cards {} issues {}", res["notes"], res["cards"], res["check_cards"], res["issues"]);
+        assert_eq!(res["check_cards"].as_u64(), Some(0), "IO 스크립트를 '확인이 필요한 카드'로 세지 않는다");
+        let con = a.db.lock().unwrap();
+        let names = crate::commands::note_field_names(&con).unwrap();
+        let mut st = con
+            .prepare(
+                "SELECT n.id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord FROM card c JOIN note n ON n.id = c.note_id
+                 JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id ORDER BY n.id, c.template_ord",
+            )
+            .unwrap();
+        let rows: Vec<(i64, String, String, String, String, u32)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        assert!(!rows.is_empty());
+        for (nid, fields, nt, q, a, ord) in rows {
+            assert!(crate::occlusion::is_note(&con, nid).unwrap(), "{nt}");
+            let r = crate::commands::render_fields(&names, &nt, &fields, Some(&q), Some(&a), ord);
+            println!("note {nid} c{} front: {}\n  back: {}", ord + 1, r.front.replace('\n', " "), r.back.replace('\n', " "));
+            assert!(r.front.contains("<div class=\"io\">") && r.front.contains("io-mask--ask") && !r.front.contains("<script"));
+        }
+        let out = tmp.0.join("again.apkg");
+        let root: i64 = con.query_row("SELECT deck_id FROM card LIMIT 1", [], |r| r.get(0)).unwrap();
+        export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+        std::fs::copy(&out, std::env::var("NEOANKI_IO_OUT").unwrap_or_else(|_| format!("{path}.neo.apkg"))).unwrap();
     }
 }

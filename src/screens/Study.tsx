@@ -1,6 +1,7 @@
 // D1 학습 시작 전 요약 / D2 질문 / D3 답변과 평가 / D4 접어두기 / C3-e 카드 편집
 // J1~J3 서술형 · H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { OcclusionEdit } from "./Occlusion";
 import { api, errorText, type CardView, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
 import { eul, n, useKey, useNav, useOverlayScope } from "../nav";
@@ -15,7 +16,8 @@ import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { RichField, makeCloze, toCloze, fromCloze, type FieldHandle } from "./AddCard";
 import { CramHint, KeywordEditor } from "./StudyParts";
-import { SourcePanel } from "./SourcePanel";
+import { SegmentPanel, SourcePanel } from "./SourcePanel";
+import { useGrade } from "./GradeAssist";
 import { cardSource } from "../sourceApi";
 import "../styles/study.css";
 
@@ -480,6 +482,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [editing, setEditing] = useState(false);
   const [hints, setHints] = useState(() => !pref(HINTS_SEEN));
   const [error, setError] = useState<string>();
+  // R2 채점 보조: 학습 세션마다 한 번 확인 · 근거 칩으로 연 구간 (I2 패널 자리)
+  const gradeOk = useRef(false);
+  const [srcSeg, setSrcSeg] = useState<number | null>(null);
+  const grade = useGrade({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, confirmed: gradeOk, openSegment: setSrcSeg });
 
   const finish = useCallback(
     async (completed: boolean) => {
@@ -512,6 +518,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     setUndone(null);
     setTyped("");
     setCompare(null);
+    setSrcSeg(null);
     shownAt.current = Date.now();
   }, []);
 
@@ -672,7 +679,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       );
   };
 
-  const rate = (r: Rating) =>
+  // R2: 결과가 오기 전에 평가하면 채점 보조 요청을 멈추고 결과는 버린다
+  const rate = (r: Rating) => (grade.stop(), rate2(r));
+  const rate2 = (r: Rating) =>
     guard(async () => {
       const c = card!;
       const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current);
@@ -787,7 +796,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   };
 
   // ---- I2 원자료 패널: 답 화면에서만 (질문 화면에서 열면 답이 보일 수 있다)
-  const panel = srcOpen && phase === "a" && !!card?.source;
+  const panel = (srcOpen && phase === "a" && !!card?.source) || (srcSeg !== null && phase === "a");
   const openSourceOf = (id: number) =>
     unfold([id], true).then(() => {
       setPhase("a");
@@ -805,6 +814,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   useKey({ action: "bury" }, bury, keys);
   useKey({ action: "undo" }, () => undo(), keys);
   useKey({ action: "source" }, () => setSrcOpen((v) => !v), keys && phase === "a" && !!card?.source);
+  useKey({ action: "grade" }, () => grade.start(), keys && phase === "a" && grade.ready);
   useKey("b", () => (setFoldSel(0), setFoldMenu(true)), keys && folded.length > 0);
   useKey(["ArrowDown", "ArrowUp", "PageDown", "PageUp"], scrollCard, keys);
   // D4-m 목록 안의 키는 목록이 받는다 (B 로 닫기 · ↑↓ · Enter · Esc)
@@ -822,16 +832,27 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
   const position = Math.min(done + 1, total);
   const remaining = Math.max(0, total - position);
-  // J2 평가 추천 (되돌린 직후에는 되돌리기 안내가 먼저)
-  const suggest = undone === null ? (compare?.suggest ?? null) : null;
+  // J2 평가 추천 (되돌린 직후에는 되돌리기 안내가 먼저). R2: 핵심어 검사와 ChatGPT 추천을 한 줄로 합친다. 다르면 테두리 없이 둘 다 알린다
+  const kwSuggest = undone === null ? (compare?.suggest ?? null) : null;
+  const gptSuggest = undone === null ? grade.rating : null;
+  const suggest = kwSuggest !== null && gptSuggest !== null ? (kwSuggest === gptSuggest ? kwSuggest : null) : (kwSuggest ?? gptSuggest);
   const missing = compare?.keywords.filter((k) => !k.hit).map((k) => k.word) ?? [];
-  const tip = hints || undone !== null || suggest !== null;
+  const both = kwSuggest !== null && gptSuggest !== null;
+  const recLine = both
+    ? kwSuggest === gptSuggest
+      ? `${RATING_NAME[kwSuggest]} 추천 · 핵심어 ${missing.length ? `${n(missing.length)}/${n(compare!.keywords.length)} 빠짐` : "모두 씀"} · ChatGPT도 ${RATING_NAME[gptSuggest]} · 따르지 않아도 돼요`
+      : `핵심어는 ${RATING_NAME[kwSuggest]} · ChatGPT는 ${RATING_NAME[gptSuggest]} · 따르지 않아도 돼요`
+    : gptSuggest !== null
+      ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT · 따르지 않아도 돼요`
+      : null;
+  const tip = hints || undone !== null || suggest !== null || recLine !== null;
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
   const keysQ = writing
     ? [`${actionKey("save")} 비교하기`, `Esc 입력 칸 나가기 (그다음 ${actionKey("reveal")}로 바로 답 보기)`]
     : [`${actionKey("reveal")} 답 보기`, mix && "평가가 복습 일정에 반영돼요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
+    grade.ready && `${actionKey("grade")} ChatGPT 채점 보조`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
     card?.source && `${actionKey("source")} 원자료`,
     `${actionKey("edit")} 편집`,
@@ -958,19 +979,24 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                     ) : null}
                     {compare ? (
                       <>
-                        {compare.keywords.length > 0 && (
+                        {(compare.keywords.length > 0 || grade.button) && (
                           <div className="cmp__kw">
-                            <span className="t-label-m">
-                              핵심어 {n(compare.keywords.length)}개 중 {n(compare.hits)}개
-                            </span>
+                            {compare.keywords.length > 0 && (
+                              <span className="t-label-m">
+                                핵심어 {n(compare.keywords.length)}개 중 {n(compare.hits)}개
+                              </span>
+                            )}
                             {compare.keywords.map((k) => (
                               <span key={k.word} className={`kwhit t-label-s ${k.hit ? "is-hit" : "is-miss"}`}>
                                 <Icon name={k.hit ? "check" : "x"} size={12} />
                                 {k.word}
                               </span>
                             ))}
+                            {/* R2 핵심어 줄 오른쪽 [ChatGPT로 채점 보조 G] + 그 아래 보내는 범위 한 줄 */}
+                            {grade.button}
                           </div>
                         )}
+                        {grade.scopeLine}
                         <div className="cmp">
                           <div className="cmp__col">
                             <span className="t-caption c-tertiary">내 답</span>
@@ -981,6 +1007,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                             <p className="cmp__text">{marked(compare.correct, compare.correct_hits, compare.correct_misses)}</p>
                           </div>
                         </div>
+                        {grade.slot}
                       </>
                     ) : (
                       <>
@@ -1068,6 +1095,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                     <Icon name="rotate" size={16} className="c-accent" />
                     <span className="t-label-s c-accent">평가를 되돌렸어요 · 복습 일정도 원래대로예요. 다시 골라 주세요.</span>
                   </span>
+                ) : recLine !== null ? (
+                  <span className="study__tip study__tip--warn">
+                    <Icon name="info" size={16} />
+                    <span className="t-label-s">{recLine}</span>
+                  </span>
                 ) : suggest !== null ? (
                   <span className="study__tip study__tip--warn">
                     <Icon name="info" size={16} />
@@ -1110,8 +1142,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                           ? "방금 고른 평가"
                           : undefined
                         : r === suggest
-                          ? `추천 · ${HINT[r]}`
-                          : hints
+                          ? `추천 · ${both ? "핵심어 · ChatGPT" : gptSuggest !== null ? "ChatGPT" : HINT[r]}`
+                          : both && (r === kwSuggest || r === gptSuggest)
+                            ? `추천 · ${r === kwSuggest ? "핵심어" : "ChatGPT"}`
+                            : hints
                             ? HINT[r]
                             : undefined
                     }
@@ -1191,9 +1225,15 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       {/* ---- I2 원자료 (통합 지점). 카드는 왼쪽으로 좁아지고 평가 줄이 카드 폭을 따라간다 */}
       {panel && card && (
         <div className="study__source">
-          <SourcePanel cardId={card.view.id} onClose={() => setSrcOpen(false)} />
+          {srcSeg !== null ? (
+            <SegmentPanel key={srcSeg} segmentId={srcSeg} onClose={() => setSrcSeg(null)} />
+          ) : (
+            <SourcePanel cardId={card.view.id} onClose={() => setSrcOpen(false)} />
+          )}
         </div>
       )}
+      {grade.popover}
+      {grade.connectSheet}
 
       {zoom && (
         <div className="scrim study__zoom" role="dialog" aria-label="그림 크게 보기 · 누르거나 Esc 로 닫기" onMouseDown={() => setZoom(null)}>
@@ -1370,6 +1410,8 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   useKey("Enter", remove, confirming, { modal: true });
 
   const front = note ? Math.max(0, note.roles.indexOf("front")) : 0;
+  // M 그림 가리기: 카드 편집(E)은 가리기 편집기로 연다
+  if (note?.kind === "image_occlusion") return <OcclusionEdit noteId={noteId} onClose={onClose} onSaved={onSaved} />;
   const preview = note && [note.kind === "basic" ? plainText(note.values[1] ?? "") : "", here?.label ?? ""].filter(Boolean).join(" · ");
 
   return (

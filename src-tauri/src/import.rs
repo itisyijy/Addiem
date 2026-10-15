@@ -626,7 +626,8 @@ fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Res<Vec<u
 fn degraded_features(body: &str) -> Vec<&'static str> {
     let lower = body.to_lowercase();
     let mut out = vec![];
-    if lower.contains("<script") {
+    // Anki 그림 가리기(IO) 템플릿의 스크립트는 우리가 직접 그리므로 원본과 다르게 보이지 않는다 (occlusion.rs)
+    if lower.contains("<script") && !crate::occlusion::is_template(body) {
         out.push("스크립트");
     }
     if body.contains("{{type:") {

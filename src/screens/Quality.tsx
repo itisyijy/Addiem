@@ -6,7 +6,9 @@ import { aiApi, aiError, api, errorText, qualityApi, type AiError, type CardChan
 import { n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { Badge, Button, Checkbox, Icon, Spinner } from "../ui";
-import { AiConnect, AiErrorBox, UsingPlan, refreshAi, sendConfirmed, setSendConfirmed, useAiStatus } from "../ai";
+import { AiConnect, AiErrorBox, ScopeLine, SendList, UsingPlan, refreshAi, sendConfirmed, sentRows, setSendConfirmed, useAiStatus } from "../ai";
+import { ragApi, type Sent } from "../sourceApi";
+import { SegmentPanel } from "./SourcePanel";
 import { Modal } from "./NewDeck";
 import { splitLater } from "../written";
 
@@ -278,6 +280,13 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   const [connect, setConnect] = useState<{ start: "intro" | "wait"; reconsent: boolean } | null>(null);
   const seq = useRef(0);
   const inFlight = useRef(false);
+  // R3: 이 카드에 연결된 구간(최대 3개)을 함께 보낸다. 확인 목록에서 뺄 수 있다. 근거 칩 → 오른쪽 I2 패널
+  const [segs, setSegs] = useState<Sent[]>([]);
+  const [peek, setPeek] = useState(false);
+  const [panelSeg, setPanelSeg] = useState<number | null>(null);
+  useEffect(() => {
+    ragApi.linked(cardId).then(setSegs, () => setSegs([]));
+  }, [cardId]);
 
   const suggest = useCallback(
     (per: number | null) =>
@@ -304,14 +313,14 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   // 창을 닫으면 보내던 요청도 멈춘다
   useEffect(
     () => () => {
-      if (inFlight.current) aiApi.cancelRegroup().catch(() => {});
+      if (inFlight.current) aiApi.cancel().catch(() => {});
     },
     [],
   );
 
   /** 규칙 제안으로 돌아간다. 보내던 요청은 멈춘다 */
   const toRule = () => {
-    if (inFlight.current) aiApi.cancelRegroup().catch(() => {});
+    if (inFlight.current) aiApi.cancel().catch(() => {});
     inFlight.current = false;
     seq.current++;
     setAiBusy(false);
@@ -324,8 +333,9 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   };
   /** 이 카드 한 장을 보낸다 (처음 보내기 확인 · [다시 묶기] · [다시 시도]). 사용량이 줄어든다 */
   const send = () => {
-    setSendConfirmed(true);
+    setSendConfirmed(true, segs.length);
     setAsking(false);
+    setPeek(false);
     const my = ++seq.current;
     inFlight.current = true;
     setMode("ai");
@@ -333,7 +343,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
     setAiBusy(true);
     setAiSlow(false);
     setEditing(null);
-    aiApi.regroup(cardId).then(
+    aiApi.regroup(cardId, segs.map((s) => s.id)).then(
       (x) => {
         if (seq.current !== my) return;
         inFlight.current = false;
@@ -369,9 +379,16 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
       setEditing(null);
       return;
     }
-    if (!sendConfirmed()) return setAsking(true);
+    if (!sendConfirmed(segs.length)) return setAsking(true);
     send();
   };
+  // 보내는 범위 한 줄 (R3-s): 보내기 전 / 보낸 뒤
+  const sentNow = mode === "ai" && aiP && !aiBusy ? aiP.sent : null;
+  const scopeText = sentNow
+    ? `보낸 것: ${sentNow.length ? `카드 + 자료 ${n(sentNow.length)}구간` : "카드 한 장"}`
+    : segs.length
+      ? `카드 + 자료 ${n(segs.length)}구간을 보내요`
+      : "카드 한 장만 보내요";
 
   // L2 연결 창은 이 창 대신 뜬다 (창을 겹치지 않는다). 돌아오면 규칙에서 다시 고른다 (저절로 보내지 않는다)
   if (connect)
@@ -417,16 +434,30 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   };
 
   return (
+    <>
     <Modal
       title="카드 나누기 제안"
       sub={fromAi ? "ChatGPT가 묶은 제안이에요. 그대로 쓰기 전에 확인하고 고쳐 주세요." : "규칙으로 나눈 제안이에요. 고쳐서 써도 되고, 그대로 두어도 돼요."}
       onClose={onClose}
-      className="split"
+      className={`split ${panelSeg !== null ? "has-panel" : ""}`}
     >
       <p className="quality__info split__why t-body-s">
         <Icon name="info" size={16} />
         왜? {shown.why}
       </p>
+      {/* R3 근거: ChatGPT 가 실제로 인용한 구간만 (보냈지만 쓰지 않은 구간은 칩이 없다) */}
+      {fromAi && aiP && aiP.evidence.length > 0 && (
+        <p className="split__evidence">
+          <span className="t-label-s c-tertiary">근거</span>
+          {aiP.evidence.map((s) => (
+            <button key={s.id} type="button" className="src-chip src-chip--surface t-label-s" onClick={() => setPanelSeg(s.id)}>
+              <Icon name="file" size={12} />
+              {s.material} p.{s.page}
+              {s.signals[0] === "highlight" ? " · 하이라이트" : ""}
+            </button>
+          ))}
+        </p>
+      )}
       <div className="split__cols">
         <section className="split__orig">
           <span className="t-label-s c-tertiary">지금 카드</span>
@@ -553,7 +584,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
       <div className="split__foot">
         <span className="split__alts ai-mode">
           {/* L4-s 처음 보낼 때 한 번. Esc 는 이 확인만 닫는다 */}
-          {asking && (
+          {asking && !segs.length && (
             <div className="ai-confirm" role="dialog" aria-label="이 카드 한 장을 ChatGPT로 보내요" onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setAsking(false))}>
               <span className="ai-confirm__head">
                 <Icon name="send" size={16} className="c-accent" />
@@ -566,6 +597,41 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
               </span>
             </div>
           )}
+          {/* R3-s 자료 구간이 있으면 목록을 펼친 채로 확인. 구간을 모두 빼면 카드 한 장만 보낸다 */}
+          {(asking ? segs.length > 0 : peek) && (
+            <div
+              className="ai-confirm ai-confirm--list"
+              role="dialog"
+              aria-label={asking ? `이 카드와 자료 ${segs.length}구간을 ChatGPT로 보내요` : "보낸 것"}
+              onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setAsking(false), setPeek(false))}
+            >
+              <SendList
+                compact
+                title={asking ? `이 카드와 자료 ${n(segs.length)}구간을 ChatGPT로 보내요` : "보낸 것"}
+                rows={[
+                  { key: "card", icon: "layers", meta: <span className="t-label-s c-secondary">카드 앞·뒷면</span>, text: `${p.question} / ${p.answer.join(" · ")}` },
+                  ...(asking
+                    ? sentRows(segs, (id) => setSegs(segs.filter((s) => s.id !== id)), true)
+                    : sentRows(aiP?.sent ?? [], () => {}, true).map((r) => ({ ...r, remove: undefined }))),
+                ]}
+                foot={
+                  <div className="grade__confirm-foot">
+                    <UsingPlan />
+                    <span className="grade__actions">
+                      {asking ? (
+                        <>
+                          <Button variant="ghost" size="M" label="취소" onClick={() => setAsking(false)} />
+                          <Button size="M" icon="send" label="보내기" autoFocus onClick={send} />
+                        </>
+                      ) : (
+                        <Button variant="ghost" size="M" label="닫기" autoFocus onClick={() => setPeek(false)} />
+                      )}
+                    </span>
+                  </div>
+                }
+              />
+            </div>
+          )}
           <span className="segment segment--boxed" role="radiogroup" aria-label="나누는 방법">
             <button role="radio" aria-checked={!aiSel} className={`segment__item t-label-m ${aiSel ? "" : "is-selected"}`} onClick={toRule}>
               규칙으로 나누기
@@ -575,8 +641,15 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
             </button>
           </span>
           <span className="ai-side">
-            {aiSel && ai?.connected ? (
-              <UsingPlan />
+            {ai?.connected ? (
+              <>
+                <UsingPlan />
+                <ScopeLine
+                  text={scopeText}
+                  open={asking || peek}
+                  onToggle={() => (sentNow ? setPeek((v) => !v) : asking ? setAsking(false) : setAsking(true))}
+                />
+              </>
             ) : !ai?.connected ? (
               <span className="ai-hint t-caption c-tertiary">
                 <Icon name="lock" size={14} />
@@ -606,5 +679,11 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
         </span>
       </div>
     </Modal>
+    {panelSeg !== null && (
+      <div className="split__source">
+        <SegmentPanel key={panelSeg} segmentId={panelSeg} onClose={() => setPanelSeg(null)} />
+      </div>
+    )}
+    </>
   );
 }

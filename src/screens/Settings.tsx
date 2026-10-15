@@ -829,7 +829,7 @@ function KeysTable() {
         </span>
         <Button variant="ghost" size="M" icon="rotate" label="모두 기본값으로" onClick={resetAll} />
       </div>
-      {(["study", "app"] as const).map((scope) => (
+      {(["study", "app", "occlusion"] as const).map((scope) => (
         <div key={scope} className="keys__group" role="group" aria-label={SCOPE_LABEL[scope]}>
           <p className="keys__label t-label-s c-tertiary">{SCOPE_LABEL[scope]}</p>
           {ACTIONS.filter((a) => a.scope === scope).map((a) => row(a.id))}

@@ -1,0 +1,77 @@
+/* M 그림 가리기. .io 는 학습 카드(occlusion.rs 가 만든 HTML)와 미리보기가 같이 쓴다. 칸 위치는 그림 대비 % 라 크기가 바뀌어도 맞는다 */
+:root {
+  --io-cover: #a19fa8;
+}
+:root[data-theme="dark"] {
+  --io-cover: #5d5b66;
+}
+
+.io { position: relative; display: block; width: fit-content; max-width: 100%; margin: 8px auto; line-height: 0; overflow: hidden; }
+.io > img, .card-html .io > img { display: block; max-width: 100%; max-height: none; height: auto; margin: 0; border-radius: 0; }
+/* 학습 카드: 카드 폭에 맞추고 높이는 480px 까지 (M3). 칸은 그림 크기를 따라간다 */
+.card-html .io > img { width: auto; max-height: min(480px, 45vh); }
+.io .io-mask { position: absolute; box-sizing: border-box; background: var(--io-cover); border-radius: 3px; transform-origin: 0 0; }
+.io .io-mask--ellipse { border-radius: 50%; }
+.io .io-mask--polygon { inset: 0; border-radius: 0; }
+.io .io-mask--ask { background: var(--accent-default); border: 2px solid var(--accent-pressed); display: flex; align-items: center; justify-content: center; }
+.io .io-mask--ask::after { content: "?"; color: #fff; font-weight: 700; font-size: 14px; line-height: 1; }
+.io .io-mask--shown { background: transparent; border: 2px solid var(--accent-default); }
+.io .io-mask--polygon.io-mask--shown { background: color-mix(in srgb, var(--accent-default) 20%, transparent); border: 0; }
+.io .io-mask--num { background: var(--accent-default); border-radius: 3px; }
+.io .io-mask--num span { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); color: #fff; font-size: 11px; font-weight: 600; line-height: 1; }
+.io .io-label { position: absolute; padding: 2px 4px; background: #fff; color: #000; font-size: 13px; line-height: 1.2; white-space: pre; }
+.io-question { margin-bottom: 12px; font-size: 20px; font-weight: 600; text-align: center; }
+.io-caption { margin-top: 8px; font-size: 15px; font-weight: 600; text-align: center; color: var(--accent-text); }
+
+/* M2 편집기: 전체 화면. 상단 앱 바를 덮는다 */
+.ioe { position: fixed; inset: 0; z-index: 50; display: grid; grid-template: 64px 1fr / 1fr 340px; background: var(--bg-canvas); }
+.ioe__bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 24px; background: var(--bg-surface); border-bottom: 1px solid var(--border-default); }
+.ioe__back { display: inline-flex; padding: 4px; border-radius: 8px; color: var(--text-primary); }
+.ioe__file { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ioe__tools { margin: 0 auto; }
+.ioe__tools .kbd { margin-left: 6px; font-size: 11px; }
+.ioe__right { display: flex; align-items: center; gap: 12px; }
+.ioe__stage { position: relative; overflow: auto; display: grid; place-items: center; padding: 48px; }
+.ioe__canvas { position: relative; flex: none; background: var(--bg-surface); box-shadow: 0 2px 12px rgb(0 0 0 / 0.08); user-select: none; touch-action: none; }
+.ioe__canvas--rect, .ioe__canvas--ellipse { cursor: crosshair; }
+.ioe__canvas > img { display: block; width: 100%; height: 100%; pointer-events: none; }
+.ioe__shape { position: absolute; box-sizing: border-box; background: var(--accent-default); border-radius: 3px; cursor: move; transform-origin: 0 0; }
+.ioe__shape.io-mask--ellipse { border-radius: 50%; }
+.ioe__shape.is-selected { outline: 2px solid var(--text-primary); outline-offset: 0; }
+.ioe__num { position: absolute; left: 6px; top: 4px; color: #fff; font-size: 11px; font-weight: 600; pointer-events: none; }
+.ioe__handle { position: absolute; width: 8px; height: 8px; background: var(--bg-surface); border: 1px solid var(--text-primary); }
+.ioe__handle--nw { left: -5px; top: -5px; cursor: nwse-resize; }
+.ioe__handle--ne { right: -5px; top: -5px; cursor: nesw-resize; }
+.ioe__handle--sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
+.ioe__handle--se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.ioe__links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.ioe__links line { stroke: var(--accent-default); stroke-width: 1.5; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.ioe__canvas .io-label { position: absolute; padding: 2px 4px; background: #fff; color: #000; font-size: 13px; pointer-events: none; }
+.ioe__hint { position: sticky; bottom: 0; justify-self: center; margin-top: 24px; padding: 8px 16px; border-radius: 999px; background: var(--bg-surface); border: 1px solid var(--border-default); }
+.ioe__missing { display: grid; gap: 12px; justify-items: center; }
+.ioe__panel { display: flex; flex-direction: column; gap: 12px; padding: 24px 20px; overflow-y: auto; background: var(--bg-surface); border-left: 1px solid var(--border-default); }
+.ioe__warn { display: flex; gap: 6px; }
+.ioe__list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border-default); border-radius: 12px; overflow: hidden; }
+.ioe__list li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; }
+.ioe__list li + li { border-top: 1px solid var(--border-default); }
+.ioe__list li.is-selected { background: var(--accent-subtle); }
+.ioe__badge { display: inline-grid; place-items: center; min-width: 22px; height: 22px; border-radius: 6px; background: var(--accent-default); color: #fff; font-size: 12px; font-weight: 600; }
+.ioe__name { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+input.ioe__name { padding: 2px 6px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-surface); color: var(--text-primary); }
+.ioe__chip { padding: 2px 8px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-secondary); white-space: nowrap; }
+.ioe__del { display: inline-flex; color: var(--text-secondary); }
+.ioe__empty { padding: 12px 0; }
+.ioe__group { display: flex; gap: 8px; align-items: center; }
+.ioe__keys { display: grid; gap: 6px; margin: 0; }
+.ioe__keys div { display: flex; align-items: center; gap: 8px; }
+.ioe__keys dd { margin: 0; }
+
+/* M1 카드 추가 */
+.addcard__io { display: grid; gap: 8px; }
+.addcard__io-head { display: flex; justify-content: space-between; align-items: baseline; }
+.addcard__io-pic { padding: 16px; border: 1px solid var(--border-default); border-radius: 16px; background: var(--bg-surface); }
+.addcard__io-sum { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.addcard__io-drop { display: grid; gap: 12px; justify-items: center; padding: 40px 16px; border: 1.5px dashed var(--border-strong); border-radius: 16px; text-align: center; }
+.addcard__io-drop.is-over { border-color: var(--accent-default); background: var(--accent-subtle); }
+.addcard__io-card { padding: 12px 16px; border: 1px solid var(--border-default); border-radius: 16px; background: var(--bg-surface); }
+.addcard__io-card .io { margin: 8px 0 0; }

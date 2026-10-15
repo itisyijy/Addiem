@@ -2,10 +2,61 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
+// ---------------------------------------------------------------- R 자료 근거 AI (src-tauri/src/rag.rs)
+
+/** 보낼 구간 하나. text 는 보내는 글자 그대로 (600자에서 자르면 끝에 "…(잘림)"). 자료 이름 · 쪽 · 신호는 화면에만 */
+export type Sent = {
+  id: number;
+  material_id: number;
+  material: string;
+  kind: "pdf" | "pptx";
+  page: number;
+  signals: Signal[];
+  text: string;
+  /** manual 직접 연결 · auto 자동 연결 · similar 비슷한 구간 · picked 직접 고름 */
+  how: "manual" | "auto" | "similar" | "picked";
+};
+export type DraftCard = {
+  front: string;
+  back: string;
+  segment_id: number;
+  /** 제안: 2 핵심 · 1 일반 */
+  importance: 0 | 1 | 2;
+  similar: { card_id: number; question: string; score: number } | null;
+  /** 근거 구간과 유사도가 낮은 문장 */
+  ungrounded: string[];
+};
+export type Draft = { cards: DraftCard[]; sent: Sent[]; missing: number[]; deck_id: number; root_deck_id: number; checked: boolean };
+export type DraftAmount = "few" | "normal" | "many";
+/** R2 보내는 범위. 글자는 보내는 그대로 (질문 600자 · 답 1500자에서 자른다) */
+export type GradeScope = { question: string; mine: string; model: string; segments: Sent[] };
+/** R2 결과. rating: 1 Again · 2 Hard · 3 Good. missing.segments 는 구간 id (기기 안에서 되돌린 것) */
+export type Grade = { right: string[]; missing: { text: string; segments: number[] }[]; rating: 1 | 2 | 3; sent: Sent[] };
+export const MAX_PICK = 10;
+
+export const ragApi = {
+  preview: (segmentIds: number[]) => invoke<Sent[]>("rag_preview", { segmentIds }),
+  /** R1-b. 아무것도 바꾸지 않는다. 오류는 AiError */
+  draft: (segmentIds: number[], amount: DraftAmount, cloze: boolean) => invoke<Draft>("rag_draft", { segmentIds, amount, cloze }),
+  /** R1-c 승인. 되돌리기는 qualityApi.undo(변경 id) */
+  apply: (deckId: number, cloze: boolean, cards: { front: string; back: string; segment_id: number; importance: number }[]) =>
+    invoke<number>("rag_draft_apply", { deckId, cloze, cards }),
+  /** R3 성격별로 묶기에 함께 보낼 구간 (이 카드에 연결된 것 최대 3개) */
+  linked: (cardId: number) => invoke<Sent[]>("rag_linked", { cardId }),
+  /** R2 버튼 아래 한 줄 · 첫 확인 목록. 아무것도 보내지 않는다 */
+  gradeScope: (cardId: number, answer: string) => invoke<GradeScope>("rag_grade_scope", { cardId, answer }),
+  /** R2 채점 보조. 오류는 AiError */
+  grade: (cardId: number, answer: string, segmentIds: number[]) => invoke<Grade>("rag_grade", { cardId, answer, segmentIds }),
+};
+
+/** "3장_빅데이터분석.pdf · p.13" */
+export const placeOf = (s: { material: string; page: number }) => `${s.material} · p.${s.page}`;
+
 /** 신뢰도 순 (source.rs SIGNALS) */
 export type Signal = "highlight" | "underline" | "red" | "star" | "bold";
 export const SIGNAL_LABEL: Record<Signal, string> = { highlight: "하이라이트", underline: "밑줄", red: "붉은 글씨", star: "★", bold: "볼드" };
-export const SIGNAL_TONE: Record<Signal, string> = { highlight: "warn", underline: "warn", red: "danger", star: "accent", bold: "neutral" };
+/** 밑줄은 하이라이트와 구분되게 회색 + 글자 밑줄 (SignalBadge) */
+export const SIGNAL_TONE: Record<Signal, string> = { highlight: "warn", underline: "neutral", red: "danger", star: "accent", bold: "neutral" };
 export const SIGNAL_ORDER: Signal[] = ["highlight", "underline", "red", "star", "bold"];
 
 export type Material = {
@@ -19,10 +70,13 @@ export type Material = {
   segments: number;
   /** 카드가 이어진 구간 수 */
   linked: number;
+  /** R1-a 빠진 범위: 강조됐는데 이어진 카드가 없는 구간 수 */
+  gaps: number;
 };
 /** 쪽 위 위치 [x, y, w, h], 0~1 비율 (왼쪽 위 기준) */
 export type Rect = [number, number, number, number];
-export type Link = { card_id: number; method: "manual" | "auto" };
+/** origin "draft": R1 초안에서 만듦 (method 는 manual) */
+export type Link = { card_id: number; method: "manual" | "auto"; origin: "draft" | null };
 export type Segment = {
   id: number;
   page: number;
@@ -37,7 +91,8 @@ export type Segment = {
 };
 export type NewSegment = Omit<Segment, "id" | "weight" | "links">;
 export type Para = { text: string; signals: Signal[] };
-export type CardSource = { material: Material; segment: Segment; method: "manual" | "auto" };
+/** method "": 근거 칩으로 구간을 열었다 (카드 연결이 아님) */
+export type CardSource = { material: Material; segment: Segment; method: "manual" | "auto" | "" };
 /** "source-analyze" 이벤트. step 0 은 카드, 그다음 자료 하나씩 */
 export type AnalyzeProgress = { step: number; steps: number; label: string; done: number; total: number };
 export type ModelStatus = { ready: boolean; downloading: boolean; bytes: number; name: string; analyzing: AnalyzeProgress | null };
@@ -54,6 +109,8 @@ export const sourceApi = {
   link: (segmentId: number, cardId: number) => invoke<void>("source_link", { segmentId, cardId }),
   unlink: (segmentId: number, cardId: number) => invoke<void>("source_unlink", { segmentId, cardId }),
   forCard: (cardId: number) => invoke<CardSource | null>("source_for_card", { cardId }),
+  /** R 근거 칩: 구간 하나를 I2 패널로 */
+  segment: (segmentId: number) => invoke<CardSource>("source_segment", { segmentId }),
   analyze: (deckId: number) => invoke<{ linked: number; suggested: number }>("source_analyze", { deckId }),
   /** 이 기기에서 분석한 뒤에 생긴 카드 수 (분석한 적이 없으면 0) */
   unanalyzed: (deckId: number) => invoke<number>("source_unanalyzed", { deckId }),
