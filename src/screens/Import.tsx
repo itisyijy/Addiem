@@ -312,16 +312,22 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
           ? `고른 덱이 쓰는 ${n(types.length)}종 모두 지원`
           : `고른 덱이 쓰는 ${n(types.length)}종 중 ${n(typesOk)}종 지원`,
     },
-    ...info.degraded.map((d) => {
+    ...info.degraded.flatMap((d) => {
       const s = degradedIn(d.feature);
+      // AU23 읽어주기는 이 기기에 그 언어 음성이 없을 때만 오는 참고 한 줄 ("읽어주기(프랑스어)")
+      const lang = d.feature.match(/^읽어주기\((.+)\)$/)?.[1];
+      if (lang)
+        return s.cards === 0
+          ? []
+          : [{ icon: "info" as IconName, tone: "c-secondary", label: "읽어주기", value: `이 기기에 ${lang} 음성이 없어 ${n(s.cards)}장은 소리 없이 보여요` }];
       return s.cards === 0
-        ? { icon: "check" as IconName, tone: "c-success", label: `${d.feature}을 쓰는 템플릿`, value: "고른 덱에는 없어요" }
-        : {
+        ? [{ icon: "check" as IconName, tone: "c-success", label: `${d.feature}을 쓰는 템플릿`, value: "고른 덱에는 없어요" }]
+        : [{
             icon: "alert" as IconName,
             tone: "c-warn",
             label: `${d.feature}을 쓰는 템플릿`,
             value: `${n(s.types)}종 · ${n(s.cards)}장은 ${d.feature === "빈칸 입력칸" ? "써 넣은 답을 본문 전체와 비교해요" : "일부가 다르게 보여요"}`,
-          };
+          }];
     }),
     // D3-m: [latex] 는 수식만 들었으면 KaTeX 로 그리고, LaTeX 문서 전체면 원문으로 둔다
     ...(latex > 0

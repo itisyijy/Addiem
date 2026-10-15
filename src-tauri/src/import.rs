@@ -711,7 +711,8 @@ fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Res<Vec<u
     Ok(buf)
 }
 
-fn degraded_features(body: &str) -> Vec<&'static str> {
+/// voices: 이 기기에서 읽을 수 있는 언어의 앞부분 ("en"). 화면이 내장 음성과 OS 음성을 합쳐 보낸다
+fn degraded_features(body: &str, voices: &[String]) -> Vec<&'static str> {
     let lower = body.to_lowercase();
     let mut out = vec![];
     // Anki 그림 가리기(IO) 템플릿의 스크립트는 우리가 직접 그리므로 원본과 다르게 보이지 않는다 (occlusion.rs)
@@ -722,13 +723,17 @@ fn degraded_features(body: &str) -> Vec<&'static str> {
     if body.contains("{{type:cloze:") {
         out.push("빈칸 입력칸");
     }
-    if body.contains("{{tts") {
-        out.push("읽어주기(TTS)");
+    // AU23 읽어주기는 그 언어 음성이 이 기기에 없을 때만 알린다 (경고가 아니라 참고 한 줄)
+    for lang in crate::tts::template_langs(body) {
+        let f = crate::tts::no_voice(lang);
+        if !voices.contains(&crate::tts::prefix(lang)) && !out.contains(&f) {
+            out.push(f);
+        }
     }
     out
 }
 
-fn open_package(path: &Path, work: &Path) -> Res<Package> {
+fn open_package(path: &Path, work: &Path, voices: &[String]) -> Res<Package> {
     let file = std::fs::File::open(path).map_err(|e| format!("파일을 열 수 없어요: {e}"))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|_| "Anki 패키지(zip) 형식이 아니에요.".to_string())?;
     let names: HashSet<String> = zip.file_names().filter_map(Result::ok).map(|n| n.into_owned()).collect();
@@ -752,12 +757,12 @@ fn open_package(path: &Path, work: &Path) -> Res<Package> {
         .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'notetypes'", [], |r| r.get::<_, i64>(0))
         .map_err(err)?
         > 0;
-    let (decks, types) = if modern { read_modern(&col)? } else { read_legacy(&col)? };
+    let (decks, types) = if modern { read_modern(&col, voices)? } else { read_legacy(&col, voices)? };
     Ok(Package { col, tmp, zip, decks, types })
 }
 
 /// 스키마 18 (Anki 2.1.50+). 덱 이름은 \x1f 로 계층을 나눈다
-fn read_modern(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType>)> {
+fn read_modern(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType>)> {
     let mut decks = HashMap::new();
     let mut st = col.prepare("SELECT id, name, kind FROM decks").map_err(err)?;
     let rows = st
@@ -800,7 +805,7 @@ fn read_modern(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType
             .collect();
         let mut degraded = vec![];
         for t in &templates {
-            for f in degraded_features(&format!("{}\n{}", t.2, t.3)) {
+            for f in degraded_features(&format!("{}\n{}", t.2, t.3), voices) {
                 if !degraded.contains(&f) {
                     degraded.push(f);
                 }
@@ -812,7 +817,7 @@ fn read_modern(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType
 }
 
 /// 스키마 11 (구버전 .apkg). 덱과 노트타입이 col 테이블의 JSON 안에 있다
-fn read_legacy(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType>)> {
+fn read_legacy(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType>)> {
     let (decks_json, models_json): (String, String) =
         col.query_row("SELECT decks, models FROM col", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
     let mut decks = HashMap::new();
@@ -842,7 +847,7 @@ fn read_legacy(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType
                 .unwrap_or_default();
             let mut degraded = vec![];
             for tp in &templates {
-                for f in degraded_features(&format!("{}\n{}", tp.2, tp.3)) {
+                for f in degraded_features(&format!("{}\n{}", tp.2, tp.3), voices) {
                     if !degraded.contains(&f) {
                         degraded.push(f);
                     }
@@ -1061,9 +1066,9 @@ fn degraded_summary(pkg: &Package, by_type: &HashMap<i64, usize>) -> Vec<Degrade
 }
 
 #[tauri::command]
-pub async fn inspect_anki(state: State<'_, AppState>, path: String) -> Res<AnkiPreview> {
+pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Option<Vec<String>>) -> Res<AnkiPreview> {
     let p = Path::new(&path);
-    let mut pkg = open_package(p, &state.data_dir)?;
+    let mut pkg = open_package(p, &state.data_dir, &voices.unwrap_or_default())?;
     let media = media_names(&mut pkg)?.len();
     let paths = card_deck_paths(&pkg)?;
     let tops: BTreeSet<&String> = paths.iter().filter_map(|p| p.first()).collect();
@@ -1134,6 +1139,7 @@ pub async fn import_anki(
     path: String,
     with_history: Option<bool>,
     deck_ids: Option<Vec<i64>>,
+    voices: Option<Vec<String>>,
 ) -> Res<ImportResult> {
     state.import_cancel.store(false, Ordering::Relaxed);
     let emit = |step: &'static str, done: usize, total: usize| {
@@ -1141,7 +1147,7 @@ pub async fn import_anki(
     };
     let mut written = vec![];
     let selected: Option<HashSet<i64>> = deck_ids.map(|v| v.into_iter().collect());
-    let result = run_import_selected(&emit, &state, &path, with_history.unwrap_or(false), selected.as_ref(), &mut written);
+    let result = run_import_selected(&emit, &state, &path, with_history.unwrap_or(false), selected.as_ref(), &voices.unwrap_or_default(), &mut written);
     if result.is_err() {
         // 실패하거나 멈추면 기존 데이터에 영향이 없어야 한다 (MVP 6.10). DB 는 트랜잭션이 되돌린다
         for f in written {
@@ -1160,7 +1166,7 @@ pub(crate) fn run_import_anki(
     with_history: bool,
     written: &mut Vec<PathBuf>,
 ) -> Res<ImportResult> {
-    run_import_selected(emit, state, path, with_history, None, written)
+    run_import_selected(emit, state, path, with_history, None, &[], written)
 }
 
 /// 고른 덱의 카드 (필터 덱에 있던 카드는 원래 덱 기준). 그 카드를 가진 노트만, 그 노트가 쓰는 미디어 · 노트타입 · 기록만 들어간다
@@ -1189,13 +1195,14 @@ fn run_import_selected(
     path: &str,
     with_history: bool,
     selected: Option<&HashSet<i64>>,
+    voices: &[String],
     written: &mut Vec<PathBuf>,
 ) -> Res<ImportResult> {
     let cancelled = || state.import_cancel.load(Ordering::Relaxed);
 
     emit("unzip", 0, 1);
     let p = Path::new(path);
-    let mut pkg = open_package(p, &state.data_dir)?;
+    let mut pkg = open_package(p, &state.data_dir, voices)?;
     emit("unzip", 1, 1);
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let kind = if source.to_lowercase().ends_with(".colpkg") { "colpkg" } else { "apkg" };
@@ -1515,11 +1522,15 @@ fn run_import_selected(
     };
     result.filtered_decks = pkg.decks.values().filter(|d| d.filtered).count();
     for d in &degraded {
+        // AU23 "이 기기에 프랑스어 음성이 없어 읽어주기 N장은 소리 없이 보여요" (참고. 확인이 필요한 카드에 세지 않는다)
+        if let Some(lang) = d.feature.strip_prefix("읽어주기(").and_then(|l| l.strip_suffix(')')) {
+            result.issues.push(issue("info", "tts_no_voice", format!("이 기기에 {lang} 음성이 없어 읽어주기 {}장은 소리 없이 보여요.", n(d.cards))));
+            continue;
+        }
         result.check_cards += d.cards;
         let what = match d.feature.as_str() {
             "빈칸 입력칸" => "써 넣은 답을 그 빈칸이 아니라 본문 전체와 비교해요. 맞게 써도 틀린 것처럼 보일 수 있어요.",
-            "스크립트" => "스크립트는 실행하지 않아요. 스크립트로 바뀌는 부분은 보이지 않아요.",
-            _ => "소리 없이 글자만 보여요.",
+            _ => "스크립트는 실행하지 않아요. 스크립트로 바뀌는 부분은 보이지 않아요.",
         };
         result.issues.push(issue(
             "warning",
@@ -1687,6 +1698,13 @@ pub fn save_text(path: String, text: String) -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tts_note_only_for_languages_without_voice() {
+        let t = "{{tts en_US:Front}}{{tts zh_CN:Back}}<br>{{tts zh_TW speed=0.8:Back}}";
+        assert_eq!(degraded_features(t, &["en".into(), "ko".into()]), ["읽어주기(중국어)"], "언어마다 한 번");
+        assert!(degraded_features(t, &["en".into(), "zh".into()]).is_empty(), "OS 음성이 있으면 알리지 않는다");
+    }
 
     #[test]
     fn importance_rules() {
@@ -1957,7 +1975,7 @@ mod tests {
         two_deck_package(&pkg_path);
 
         // 덱 고르기 트리: 실제 덱마다 자기 카드. 필터 덱의 카드는 원래 덱(A::1)으로 센다
-        let pkg = open_package(&pkg_path, &s.data_dir).unwrap();
+        let pkg = open_package(&pkg_path, &s.data_dir, &[]).unwrap();
         let stats = deck_stats(&pkg, &HashSet::from(["guid3".to_string()]), i64::MAX).unwrap();
         let row = |id: i64| stats.iter().find(|d| d.id == id).unwrap();
         assert_eq!(stats.len(), 3, "필터 덱은 트리에 없다");
@@ -1971,7 +1989,7 @@ mod tests {
 
         // A::1 만 가져온다: 노트 1 · 4, 그 카드 · 그림 · 기록만
         let picked = HashSet::from([11]);
-        let r = run_import_selected(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), true, Some(&picked), &mut vec![]).unwrap();
+        let r = run_import_selected(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), true, Some(&picked), &[], &mut vec![]).unwrap();
         assert_eq!((r.notes, r.cards, r.media, r.reviews, r.filtered_cards), (2, 2, 2, 2, 1));
         let con = s.db.lock().unwrap();
         let strings = |sql: &str| -> Vec<String> { con.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap() };
@@ -1988,7 +2006,7 @@ mod tests {
         drop(con);
 
         // 나머지를 나중에 같은 파일로: 이미 있는 노트는 건너뛰고 B 만 들어온다
-        let r = run_import_selected(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), false, Some(&HashSet::from([11, 20])), &mut vec![]).unwrap();
+        let r = run_import_selected(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), false, Some(&HashSet::from([11, 20])), &[], &mut vec![]).unwrap();
         assert_eq!((r.notes, r.cards, r.media), (1, 1, 1));
         assert!(r.issues.iter().any(|i| i.kind == "duplicate"));
     }
