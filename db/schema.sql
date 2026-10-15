@@ -173,7 +173,10 @@ CREATE TABLE IF NOT EXISTS review_log (
     overdue INTEGER,
 
     -- NULL = 학습 평가. 'cram' = H3 압축 회독 (SRS 에 넘기지 않음). 오늘의 계획 · 지표는 NULL 만 센다, 히트맵은 둘 다
-    kind TEXT
+    kind TEXT,
+
+    -- 접어둔 카드가 돌아와(보류 복귀) 평가됐는가. 신규 상태였어도 오늘 신규 상한을 쓰지 않는다 (큐 명세 4.6)
+    from_buried INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_revlog_card ON review_log(card_id, reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_revlog_time ON review_log(reviewed_at);

@@ -735,6 +735,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       const c = card!;
       if (c.view.special) recall.saveMarks(c.view.id, marks).catch(() => {}); // Q9 이 기기에만
       const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current);
+      if (res.action === "day_rollover") {
+        // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 세션은 닫혔고 방금 평가는 남지 않았다. 새 날의 학습을 다시 짠다
+        notify({ title: "새 학습일이 시작됐어요", text: "오늘의 학습을 새로 만들었어요. 방금 평가는 남기지 않았어요." });
+        return nav(mix ? { name: "home" } : { name: "summary", deckIds });
+      }
       if (mix) {
         const role = mixRoles.current.get(c.view.id)?.shift();
         const st = mixStats.current;
