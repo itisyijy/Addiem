@@ -24,7 +24,7 @@ export type Route =
   | { name: "summary"; deckIds: number[] | null; cram?: boolean } // D1. cram: P1 시험 전 회독 화면으로
   | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이), mix: P2 혼합 회독
   | { name: "done"; sessionId: number; summary: SessionSummary; completed: boolean; deckIds: number[] | null; scale: number } // D5
-  | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats } // P3 혼합 회독 끝난 뒤
+  | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats; minutes: number; completed: boolean } // P3 혼합 회독 끝난 뒤
   | { name: "settings"; focus?: "archived" }; // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
 
 export const NavContext = createContext<(r: Route) => void>(() => {});

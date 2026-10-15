@@ -187,5 +187,6 @@
 .src-seg__more:hover { background: var(--bg-subtle); }
 .src-seg__menu { right: 0; left: auto; width: 260px; }
 .src-seg__meta { flex-wrap: wrap; }
+.src-seg__exam { background: var(--importance-core-bg); color: var(--importance-core-fg); }
 .src-spread { display: flex; align-items: center; gap: 8px; padding: 8px 14px 12px 20px; }
 .src-spread > .t-body-s { flex: 1; }

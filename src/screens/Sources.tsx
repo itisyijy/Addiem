@@ -419,7 +419,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                       {s.signals.map((g) => (
                         <SignalBadge key={g} signal={g} />
                       ))}
-                      {s.exam.hits !== null && <Badge tone="warn">기출{s.exam.names.length ? ` · ${s.exam.names.join(" · ")}` : ""}</Badge>}
+                      {s.exam.hits !== null && <span className="badge src-seg__exam t-label-s">기출{s.exam.names.length ? ` · ${s.exam.names.join(" · ")}` : ""}</span>}
                       <span className="t-caption c-tertiary">p.{s.page}</span>
                       {s.exam.hits === null && examHint(s.text) && (
                         <button
@@ -430,7 +430,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                             markSeg(s, null);
                           }}
                         >
-                          <span className="exam-chip__dot" />"{examHint(s.text)}" · 기출 제안
+                          <span className="exam-chip__dot" />글자에 "{examHint(s.text)}" · 제안
                           <Icon name="plus" size={12} />
                         </button>
                       )}

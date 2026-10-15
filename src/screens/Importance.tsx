@@ -227,9 +227,10 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
         </span>
       </div>
 
-      {groupable && (
+      {(groupable || pending.length > 0) && (
         <div className="board__bar">
           <span className="board__bar-left">
+            {groupable && (
             <span className="segment segment--boxed">
               {[true, false].map((g) => (
                 <button key={String(g)} className={`segment__item t-label-m ${isGrouped === g ? "is-selected" : ""}`} onClick={() => setGrouped(g)}>
@@ -237,6 +238,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
                 </button>
               ))}
             </span>
+            )}
             <span className="t-body-s c-tertiary">
               하위 덱 {n(board.length)}개{pending.length > 0 && ` · 제안 ${n(pending.length)}개는 아직 확인 전`}
             </span>

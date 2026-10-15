@@ -129,7 +129,7 @@ export function ExamField({ deckId, value, onChange, hint }: { deckId: number | 
         {hint && !value.hits && (
           <button className="exam-chip exam-chip--suggest t-label-s" onClick={() => set([], 1)}>
             <span className="exam-chip__dot" />
-            본문에 "{hint}" · 제안
+            글자에 "{hint}" · 제안
             <Icon name="plus" size={12} />
           </button>
         )}
@@ -209,20 +209,28 @@ function ExamPop({ deckId, names, onChange, onClose }: { deckId: number | null; 
   );
 }
 
-/** N4 덱 상세 한 줄. 표시가 없으면 그리지 않는다 (홈에는 넣지 않는다) */
+/** N4 덱 상세 한 줄 (중요도 줄 아래). 표시가 없으면 그리지 않는다 (홈에는 넣지 않는다). 시험 이름은 최근 3개까지 */
 export function ExamLine({ deckId }: { deckId: number }) {
   const nav = useNav();
   const [s, setS] = useState<Awaited<ReturnType<typeof exam.summary>>>();
+  const [names, setNames] = useState<string[]>([]);
   useEffect(() => {
     exam.summary(deckId).then(setS, () => {});
+    exam.list(deckId).then((l) => setNames(l.map((e) => e.name)), () => {});
   }, [deckId]);
   if (!s || s.cards === 0) return null;
-  const facts = [`기출 표시 카드 ${n(s.cards)}장`, s.twice > 0 && `2회 이상 ${n(s.twice)}장`, s.exams > 0 && `시험 ${n(s.exams)}개`, s.unseen > 0 && `아직 안 본 기출 ${n(s.unseen)}장`];
+  const exams = s.exams > 0 && `시험 ${n(s.exams)}개${names.length ? ` (${names.slice(0, 3).join(" · ")}${names.length > 3 ? " 외" : ""})` : ""}`;
+  const facts = [s.twice > 0 && `2회 이상 ${n(s.twice)}장`, exams, s.unseen > 0 && `아직 안 본 기출 카드 ${n(s.unseen)}장`].filter(Boolean);
   return (
-    <div className="exam-line">
-      <Icon name="target" size={16} className="c-accent" />
-      <span className="t-body-s c-secondary">{facts.filter(Boolean).join(" · ")}</span>
-      <Button variant="ghost" size="M" label="기출 카드만 보기" onClick={() => nav({ name: "cards", deckId, cardIds: s.card_ids })} />
-    </div>
+    <section className="exam-line">
+      <span className="exam-line__icon">
+        <Icon name="target" size={18} />
+      </span>
+      <span className="exam-line__text">
+        <span className="t-body-m-strong">기출 표시 카드 {n(s.cards)}장</span>
+        {facts.length > 0 && <span className="t-caption c-tertiary">{facts.join(" · ")}</span>}
+      </span>
+      <Button variant="ghost" size="M" icon="chevron-right" label="기출 카드만 보기" onClick={() => nav({ name: "cards", deckId, cardIds: s.card_ids })} />
+    </section>
   );
 }

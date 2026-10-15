@@ -76,13 +76,13 @@ export function OcclusionRow({ noteId, pos, question }: { noteId: number; pos: {
     <span className="io-row">
       <span className="io-row__thumb">{t?.url && <OcclusionPicture url={t.url} shapes={t.shapes} hideAll={false} ask={pos.ordinal} className="io--thumb" />}</span>
       <span className="io-row__text">
+        <span className="t-body-m io-row__label">{label || `칸 ${n(pos.ordinal)}`}</span>
         <span className="io-row__head">
           <Badge tone="accent">
             그림 가리기 · {n(pos.n)}/{n(pos.count)}
           </Badge>
-          <span className="t-body-m">{label || `${n(pos.ordinal)}번 칸`}</span>
+          <span className="t-caption c-tertiary">{question}</span>
         </span>
-        <span className="t-caption c-tertiary">{question}</span>
       </span>
     </span>
   );

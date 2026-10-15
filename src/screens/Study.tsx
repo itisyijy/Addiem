@@ -457,6 +457,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const mixRoles = useRef(new Map<number, (string | null)[]>());
   const mixStats = useRef<MixStats>({ full: [0, 0], weak: [0, 0], again: [0, 0], due: 0 });
   const mixReplayed = useRef(false); // 접어둔 카드는 회독 끝에 한 번 더
+  const openedAt = useRef(Date.now()); // P3 "N장 회독 · M분": 이 화면에서 쓴 시간 (같은 날 이어 쓴 세션의 쉬던 시간은 빼고)
   const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
   const [compare, setCompare] = useState<Compare | null>(null); // J2
@@ -502,7 +503,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       if (session.current === null) return nav({ name: "home" });
       setPref(HINTS_SEEN, true); // "다음 학습부터는 숨겨요"
       const summary = await api.finishSession(session.current, completed, deckIds, scale);
-      if (mix) return nav({ name: "mixDone", sessionId: session.current, run: mix, stats: mixStats.current });
+      if (mix) {
+        const minutes = Math.max(summary.studied > 0 ? 1 : 0, Math.round((Date.now() - openedAt.current) / 60_000));
+        return nav({ name: "mixDone", sessionId: session.current, run: mix, stats: mixStats.current, minutes, completed });
+      }
       nav({ name: "done", sessionId: session.current, summary, completed, deckIds, scale });
     },
     [nav, deckIds, scale, cram, notify, mix],

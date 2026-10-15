@@ -1,8 +1,8 @@
 // P1 시험 전 회독 (방식 [압축 | 혼합]) · P3 혼합 회독 끝난 뒤. 압축은 H3 그대로, 혼합은 8.5 (cram.rs)
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText } from "../api";
-import { Badge, Button, Icon, Segment, StatTile } from "../ui";
-import { eul, n, useKey, useNav } from "../nav";
+import { Badge, Button, Icon, Segment } from "../ui";
+import { eul, n, useKey, useNav, type Route } from "../nav";
 import { useToast } from "../toast";
 import { cram as cramApi, type CramPlan, type MixCard, type MixRun, type MixStats, type MixSummary } from "../written";
 import "../styles/study.css";
@@ -16,6 +16,21 @@ const RATIOS = [
 ];
 const SIZES = [60, 120, 200];
 const MAX_SIZE = 500; // mix_cards 상한
+
+/** 혼합 회독 한 묶음을 열고 학습 화면으로 (P1 [혼합 회독 시작] · P3 [이어서 N장]) */
+async function beginMix(nav: (r: Route) => void, deckIds: number[] | null, t: { deckId: number; name: string; seen: number; learned: number }, every: number, size: number) {
+  const [s, today] = await Promise.all([cramApi.mixStart(t.deckId, every, size), api.queuePreview(null, 1)]);
+  const run: MixRun = {
+    deckId: t.deckId,
+    name: t.name,
+    cards: s.cards,
+    dueToday: s.due_today,
+    before: { seen: t.seen, learned: t.learned, today: today.total },
+    every,
+    size,
+  };
+  nav({ name: "study", deckIds, scale: 1, cardIds: s.cards.map((c) => c.id), sessionId: s.session_id, mix: run });
+}
 
 export function PreExam({ deckIds }: { deckIds: number[] | null }) {
   const nav = useNav();
@@ -59,15 +74,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
         const ids = await cramApi.cards(plan.deck_id, scope);
         return nav({ name: "study", deckIds, scale: 1, cardIds: ids, cram: true });
       }
-      const [s, today] = await Promise.all([cramApi.mixStart(plan.deck_id, every, mix.length), api.queuePreview(null, 1)]);
-      const run: MixRun = {
-        deckId: plan.deck_id,
-        name: plan.name,
-        cards: s.cards,
-        dueToday: s.due_today,
-        before: { seen: plan.round_seen, learned: plan.learned, today: today.total },
-      };
-      nav({ name: "study", deckIds, scale: 1, cardIds: s.cards.map((c) => c.id), sessionId: s.session_id, mix: run });
+      await beginMix(nav, deckIds, { deckId: plan.deck_id, name: plan.name, seen: plan.round_seen, learned: plan.learned }, every, mix.length);
     } catch (e) {
       setError(errorText(e));
     }
@@ -119,7 +126,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
             </p>
             <p className="summary__count">
               <span className="cram__num">{n(count)}</span>
-              <span className="t-title-m c-secondary">장 · 약 {n(minutes)}분</span>
+              <span className="t-title-m c-secondary">장{count > 0 && ` · 약 ${n(minutes)}분`}</span>
             </p>
             {isMix && (
               <div className="cram__round">
@@ -157,7 +164,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           <header className="summary__order-head">
             <h2 className="t-title-s">이번 {n(count)}장은</h2>
             <p className="t-caption c-tertiary">
-              취약 카드를 전체 사이에 고르게 끼워요 · 전체 {every === 1 ? "1장" : `${every}장`}마다 취약 1장
+              취약 카드를 전체 사이에 고르게 끼워요 · 전체 {every === 1 ? "1장" : `${every}장`}마다 취약 1장 · 같은 카드는 한 번만
             </p>
           </header>
           <div className="summary__row">
@@ -195,7 +202,9 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           <div className="cram__scope">
             <span className="summary__row-text">
               <span className="t-body-m-strong">한 번에</span>
-              <span className="t-caption c-tertiary">카드당 평균 {n(Math.round(plan.sec_per_card))}초 기준</span>
+              <span className="t-caption c-tertiary">
+                카드당 평균 {n(Math.round(plan.sec_per_card))}초 기준{plan.today_seen > 0 && ` · 오늘 이미 본 ${n(plan.today_seen)}장은 빼요`}
+              </span>
             </span>
             <Segment boxed label="한 번에" options={sizes} value={pickedSize} onChange={setSize} />
           </div>
@@ -236,19 +245,24 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
   );
 }
 
-/** P3 혼합 회독 끝난 뒤. 숫자만 (P7). 세션 닫기와 접어둔 카드는 학습 화면이 finish_session 으로 했다 */
-export function MixDone({ sessionId, run, stats }: { sessionId: number; run: MixRun; stats: MixStats }) {
+/**
+ * P3 혼합 회독 끝난 뒤 (끝까지 돌았든 중간에 그만뒀든 같은 틀). 숫자만 (P7): 몇 장 · 몇 분, 회독 진행 a% → b%, 전체 · 취약 Again,
+ * 약한 챕터 제안. 세션 닫기와 접어둔 카드는 학습 화면이 finish_session 으로 했다
+ */
+export function MixDone({ sessionId, run, stats, minutes, completed }: { sessionId: number; run: MixRun; stats: MixStats; minutes: number; completed: boolean }) {
   const nav = useNav();
   const notify = useToast();
   const [sum, setSum] = useState<MixSummary>();
   const [today, setToday] = useState<number>();
+  const [next, setNext] = useState<number>();
   const [weakSet, setWeakSet] = useState(false);
+  const [error, setError] = useState<string>();
   useEffect(() => {
     cramApi.mixSummary(sessionId, run.deckId).then(setSum, () => {});
     api.queuePreview(null, 1).then((q) => setToday(q.total), () => {});
-  }, [sessionId, run.deckId]);
+    cramApi.mixCards(run.deckId, run.every, run.size).then((c) => setNext(c.length), () => setNext(0));
+  }, [sessionId, run.deckId, run.every, run.size]);
   const home = () => nav({ name: "home" });
-  const again = () => nav({ name: "summary", deckIds: [run.deckId], cram: true });
   useKey("Escape", home);
   const markWeak = async () => {
     if (!sum?.hot) return;
@@ -256,31 +270,50 @@ export function MixDone({ sessionId, run, stats }: { sessionId: number; run: Mix
     setWeakSet(true);
     notify({ title: `${sum.hot.name}${eul(sum.hot.name)} 약한 챕터로 정했어요`, text: "복습에서 이 챕터 카드를 먼저 보여드려요." });
   };
+  const roundDone = !!sum && sum.learned > 0 && sum.round_seen >= sum.learned;
+  const goOn = () =>
+    sum && beginMix(nav, [run.deckId], { deckId: run.deckId, name: run.name, seen: sum.round_seen, learned: sum.learned }, run.every, run.size).catch((e) => setError(errorText(e)));
+  const restart = async () => {
+    await cramApi.mixRestart(run.deckId).catch((e) => setError(errorText(e)));
+    nav({ name: "summary", deckIds: [run.deckId], cram: true });
+  };
+  useKey("Enter", () => (roundDone ? restart() : next ? goOn() : undefined), !!sum && (roundDone || !!next));
   const rated = stats.full[0] + stats.weak[0];
+  const pct = (seen: number, learned: number) => (learned ? Math.round((seen * 100) / learned) : 0);
+  const againLine = (a: number, seen: number) => (seen === 0 ? "이번엔 없었어요" : a ? `Again ${n(a)}장 · 나머지는 기억났어요` : "Again 없이 모두 기억났어요");
 
   return (
     <main className="summary cram">
       <section className="summary__left">
         <div className="cram__gap" />
-        <Badge tone="accent">{run.name} · 혼합 회독</Badge>
-        <h1 className="cram__title">{n(rated)}장을 돌았어요</h1>
+        <Badge tone="accent">{completed ? "혼합 회독 끝" : "혼합 회독 · 여기까지"}</Badge>
+        <p className="summary__count">
+          <span className="cram__num">{n(rated)}</span>
+          <span className="t-title-m c-secondary">장 회독 · {n(minutes)}분</span>
+        </p>
         {sum && (
           <div className="cram__round">
             <span className="cram__round-head t-caption">
               <span className="c-secondary">이번 회독</span>
               <span className="t-label-s">
-                {n(run.before.seen)} → {n(sum.round_seen)} / {n(sum.learned)}장
+                {pct(run.before.seen, run.before.learned)}% → {pct(sum.round_seen, sum.learned)}% · {n(sum.round_seen)} / {n(sum.learned)}장
               </span>
             </span>
             <span className="cram__bar">
-              <span style={{ width: `${sum.learned ? Math.round((sum.round_seen * 100) / sum.learned) : 0}%` }} />
+              <span style={{ width: `${pct(sum.round_seen, sum.learned)}%` }} />
             </span>
           </div>
         )}
-        <div className="done__tiles">
-          <StatTile label="전체" value={`${n(stats.full[0])} / ${n(stats.full[1])}`} sub={`Again ${n(stats.again[0])}`} />
-          <StatTile label="취약" value={`${n(stats.weak[0])} / ${n(stats.weak[1])}`} sub={`Again ${n(stats.again[1])}`} />
+        {roundDone && <p className="cram__done t-title-s">전체 범위를 한 번 다 봤어요</p>}
+        <div className="cram__cta">
+          {roundDone ? (
+            <Button icon="rotate" label="처음부터 다시" shortcut="Enter" onClick={restart} />
+          ) : next ? (
+            <Button icon="arrow-right" label={`이어서 ${n(next)}장`} shortcut="Enter" onClick={goOn} />
+          ) : null}
+          <Button variant={roundDone || next ? "ghost" : "secondary"} label="홈으로" onClick={home} />
         </div>
+        {sum && !roundDone && next === 0 && <p className="t-body-s c-tertiary">오늘 볼 수 있는 카드는 다 봤어요. 내일 이어서 돌아요.</p>}
         {sum && (
           <p className="cram__note t-caption c-secondary">
             <Icon name="info" size={14} />
@@ -288,20 +321,38 @@ export function MixDone({ sessionId, run, stats }: { sessionId: number; run: Mix
             {stats.due > 0 && today !== undefined && ` · 오늘 예정이던 ${n(stats.due)}장을 여기서 봐서 오늘의 학습이 ${n(run.before.today)} → ${n(today)}장으로 줄었어요`}
           </p>
         )}
+        {error && <p className="t-body-s c-danger">{error}</p>}
+      </section>
+
+      <section className="summary__order cram__parts">
+        <header className="summary__order-head">
+          <h2 className="t-title-s">이번에 본 것</h2>
+        </header>
+        <div className="summary__row">
+          <span className="summary__row-text">
+            <span className="t-body-m-strong">전체 범위</span>
+            <span className="t-caption c-tertiary">{againLine(stats.again[0], stats.full[0])}</span>
+          </span>
+          <span className="t-title-m">{n(stats.full[0])}</span>
+        </div>
+        <div className="summary__row">
+          <span className="summary__row-text">
+            <span className="t-body-m-strong">취약 카드</span>
+            <span className="t-caption c-tertiary">{againLine(stats.again[1], stats.weak[0])}</span>
+          </span>
+          <span className="t-title-m">{n(stats.weak[0])}</span>
+        </div>
         {sum?.hot && (
-          <div className="cram-hint">
-            <Icon name="alert" size={16} className="c-danger" />
-            <span className="cram-hint__text">
-              <span className="t-label-m">약해 보이는 챕터: {sum.hot.name}</span>
-              <span className="t-caption c-tertiary">이번 회독 Again {n(sum.hot.again)}번이 여기에 몰렸어요</span>
+          <div className="summary__row">
+            <span className="summary__row-text">
+              <span className="t-body-m-strong c-warn">약해 보이는 챕터 1</span>
+              <span className="t-caption c-tertiary">
+                {sum.hot.name} — 이번 회독 Again {n(sum.hot.again)}장
+              </span>
             </span>
             <Button variant="secondary" size="M" label={weakSet ? "정했어요" : "약한 챕터로"} disabled={weakSet} onClick={markWeak} />
           </div>
         )}
-        <div className="cram__cta">
-          <Button icon="arrow-right" label="이어서 회독" onClick={again} />
-          <Button variant="ghost" icon="chevron-left" label="홈으로" onClick={home} />
-        </div>
       </section>
     </main>
   );

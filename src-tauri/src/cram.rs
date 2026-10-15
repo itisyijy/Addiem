@@ -144,6 +144,8 @@ pub struct CramPlan {
     /// 혼합 회독: 배운 카드 수 (P8 분모) · 이번 회독에서 본 카드 수
     learned: usize,
     round_seen: usize,
+    /// 오늘 이미 일정에 반영해서 이번 분량에서 빼는 배운 카드 (P1 "오늘 이미 본 N장은 빼요")
+    today_seen: usize,
 }
 
 /// H3 압축 회독을 열 수 있으면 그 계획. 목표일이 3일보다 멀거나 지났으면 없다
@@ -157,6 +159,7 @@ pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Opti
     let all = items(&con, &commands::descendants(t.id, &decks), &weak_ids)?;
     let count = |f: &dyn Fn(&Item) -> bool| all.iter().filter(|i| f(i)).count();
     let seen = round_seen(&con, t)?;
+    let fed = id_set(&con, "SELECT card_id FROM review_log WHERE fed_to_scheduler = 1 AND kind IS NULL AND reviewed_at >= ?1", [commands::today_start_ms(today)])?;
     let dday = t.target_day.unwrap_or(today) - today;
     Ok(Some(CramPlan {
         deck_id: t.id,
@@ -173,6 +176,7 @@ pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Opti
         mode: if dday <= CRAM_DAYS { "cram" } else { "mix" },
         learned: all.len(),
         round_seen: count(&|i| seen.contains(&i.id)),
+        today_seen: count(&|i| !seen.contains(&i.id) && fed.contains(&i.id)),
     }))
 }
 

@@ -47,13 +47,24 @@ export type CramPlan = {
   /** 혼합 회독: 배운 카드 · 이번 회독에서 본 카드 */
   learned: number;
   round_seen: number;
+  /** 오늘 이미 일정에 반영해서 이번 분량에서 빼는 카드 */
+  today_seen: number;
 };
 
 /** 혼합 회독 한 자리. weak: 취약 카드로 끼운 자리면 이유 */
 export type MixCard = { id: number; weak: string | null };
 export type MixSummary = { fed: number; learned: number; round_seen: number; hot: { deck_id: number; name: string; again: number } | null };
 /** 혼합 회독 한 번 (P1 → P2 → P3). before: 시작 전 값 (P3 의 "→" 비교) */
-export type MixRun = { deckId: number; name: string; cards: MixCard[]; dueToday: number[]; before: { seen: number; learned: number; today: number } };
+export type MixRun = {
+  deckId: number;
+  name: string;
+  cards: MixCard[];
+  dueToday: number[];
+  before: { seen: number; learned: number; today: number };
+  /** P3 [이어서 N장]이 같은 비율 · 분량으로 다음 묶음을 만든다 */
+  every: number;
+  size: number;
+};
 /** P2 에서 센 것 (P3) */
 export type MixStats = { full: [number, number]; weak: [number, number]; again: [number, number]; due: number };
 

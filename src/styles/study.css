@@ -337,6 +337,7 @@
 .cram__note { display: flex; align-items: flex-start; gap: 8px; width: 100%; margin-top: 20px; padding: 8px 12px; border-radius: 12px; background: var(--bg-subtle); }
 .cram__note .icon { flex: none; margin-top: 1px; }
 .cram__cta { display: flex; gap: 10px; padding-top: 24px; }
+.cram__done { margin-top: 16px; }
 .summary__order.cram__parts { margin-top: 0; }
 .cram__parts .cram__out { border-bottom: 0; }
 .cram__scope { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px 18px 28px; }
@@ -385,13 +386,16 @@
 .exam__text { display: flex; flex-direction: column; gap: 2px; }
 .exam__new input { flex: 1; min-width: 0; border: 0; background: none; color: inherit; outline: none; }
 .exam__note { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; padding: 8px 12px; border-radius: 12px; background: var(--bg-subtle); }
-.exam-line { display: flex; align-items: center; gap: 8px; }
+/* N4 덱 상세: 중요도 줄 아래 한 줄 (같은 틀) */
+.exam-line { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid var(--border-default); border-radius: 20px; background: var(--bg-surface); }
+.exam-line__icon { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--importance-core-bg); color: var(--importance-core-fg); }
+.exam-line__text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 
 /* N1 카드 편집의 기출 줄. 확정 칩(주황 바탕) · 제안 칩(점선) · [+ 기출 추가] 팝오버 */
 .exam-field { display: grid; gap: 8px; }
 .exam-field__head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .exam-field__chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.exam-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px; border: 1px solid transparent; border-radius: 999px; background: var(--status-warn-bg); color: var(--status-warn-fg); white-space: nowrap; }
+.exam-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px; border: 1px solid transparent; border-radius: 999px; background: var(--importance-core-bg); color: var(--importance-core-fg); white-space: nowrap; }
 .exam-chip__dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .exam-chip__x { display: inline-flex; padding: 1px; border-radius: 50%; color: inherit; }
 .exam-chip--suggest { border: 1px dashed currentColor; background: transparent; cursor: pointer; }
