@@ -220,12 +220,14 @@ fn card_texts(con: &Connection, filter: &str, args: &[&dyn rusqlite::ToSql]) -> 
             let q: Option<String> = r.get(4)?;
             let a: Option<String> = r.get(5)?;
             let rendered = commands::render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(6)?);
+            // Q 목록 · 선택형은 항목이 많아도 나누기 제안을 하지 않는다 (나누면 일반 카드가 된다. Q4 는 10개 넘을 때 경고만)
+            let special = names.get(&nt).is_some_and(|n| crate::recall::is_special(&nt, n));
             Ok((
                 r.get::<_, i64>(0)?,
                 CardText {
                     deck_id: r.get(1)?,
                     question: render::strip_tags(&rendered.front),
-                    answer: html_lines(commands::answer_part(&rendered.back)),
+                    answer: if special { vec![] } else { html_lines(commands::answer_part(&rendered.back)) },
                 },
             ))
         })

@@ -1,0 +1,111 @@
+/* Q 목록 회상 · 선택형 (Figma Row Q). RecallSlot · ChoiceOption 은 Components 프레임 123:12884 · 123:12926 과 같다 */
+
+/* ---------------------------------------------------------------- RecallSlot */
+/* 학습 화면의 항목은 답이라 자르지 않고 줄을 바꾼다. 한 줄이면 40px (Figma), 번호 · 표시는 첫 줄에 맞춘다 */
+.slot {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  flex: none;
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  text-align: left;
+}
+.slot:disabled { cursor: default; opacity: 1; } /* 누를 수 없는 칸(가림 · 미리보기)도 흐리게 하지 않는다 */
+.slot__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  margin-top: 2px;
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+.slot__text { flex: 1; min-width: 0; word-break: keep-all; overflow-wrap: anywhere; }
+.slot__mark { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.slot__mark, .slot > .icon { margin-top: 6px; }
+.slot--missed { background: var(--status-danger-bg); color: var(--status-danger-fg); }
+.slot--missed .slot__num { background: var(--status-danger-fg); color: var(--text-inverse); }
+/* 지금 = M3 묻는 칸과 같은 파랑 + "?" */
+.slot--now { padding: 4px 13px; border: 2px solid var(--accent-text); background: var(--accent-default); color: var(--text-inverse); }
+/* 흰 원 + accent 번호 (두 테마 모두. on-inverse 위 accent-text 는 다크에서 대비가 1.8 이었다) */
+.slot--now .slot__num { background: var(--text-inverse); color: var(--accent-default); }
+.slot--now .slot__text { font-weight: 600; }
+.slot--now .slot__mark { color: var(--accent-on-inverse); }
+.slot--hidden { border: 1px dashed var(--border-strong); }
+.slot--hidden .slot__num { background: var(--bg-surface); color: var(--text-tertiary); }
+
+/* ---------------------------------------------------------------- ChoiceOption */
+/* 보기도 답 면에서는 답이라 줄을 바꾼다. 한 줄이면 40px */
+.opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  flex: none;
+  padding: 5px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+}
+.opt:disabled { cursor: default; opacity: 1; }
+.opt:not(:disabled):hover { border-color: var(--border-strong); }
+.opt__num { flex: none; font: 400 17px/28px var(--font-sans); }
+.opt > .kbd { flex: none; margin-top: 4px; }
+.opt__text { flex: 1; min-width: 0; word-break: keep-all; overflow-wrap: anywhere; }
+.opt__mark { display: inline-flex; align-items: center; gap: 4px; flex: none; margin-top: 6px; }
+/* 고름 (질문 면). Figma 에 없는 상태라 묻는 칸 파랑을 옅게 쓴다 */
+.opt--picked, .opt--picked:not(:disabled):hover { padding: 4px 15px; border: 2px solid var(--accent-default); background: var(--accent-subtle); }
+.opt--correct { border-color: var(--status-success-fg); background: var(--status-success-bg); }
+.opt--missed { border: 1px dashed var(--status-success-fg); }
+.opt--correct .opt__num, .opt--correct .opt__mark, .opt--missed .opt__num, .opt--missed .opt__mark { color: var(--status-success-fg); }
+.opt--wrong { border-color: var(--status-danger-fg); background: var(--status-danger-bg); }
+.opt--wrong .opt__num, .opt--wrong .opt__mark { color: var(--status-danger-fg); }
+.opt--other .opt__num { color: var(--text-tertiary); }
+.opt--other .opt__text { color: var(--text-secondary); }
+
+/* ---------------------------------------------------------------- 학습 면 (Q1-a · Q1-b · Q2) */
+.study__a.recall { gap: 12px; }
+.study .study__col.is-recall .study__card-content { margin: 0; } /* 질문 면도 위에서부터 (가운데 놓지 않는다) */
+.recall__q { word-break: keep-all; overflow-wrap: anywhere; }
+.recall__sum { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.recall__list { display: flex; flex-direction: column; gap: 8px; }
+.recall__extra { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 16px; background: var(--bg-subtle); }
+/* Q1 목록은 칸 7개가 들어가게 카드가 길다 (800 기준 카드 96–620, 평가 줄 678. 칸 7개 + 머리 · 질문 · 요약이 스크롤 없이 들어간다) */
+.study .study__col.is-list { padding-top: 96px; }
+.study .study__col.is-list .study__card, .study .study__col.is-list.is-answer.has-tip .study__card { height: calc(100vh - 276px); }
+/* Q2 답 면: 보기 4개 + 해설이 스크롤 없이 (800 기준 카드 96–530, 평가 줄 588) */
+.study .study__col.is-choice.is-answer.has-tip .study__card { height: calc(100vh - 366px); }
+.study .study__col.is-recall.has-tip .study__tipwrap { height: 58px; }
+
+/* ---------------------------------------------------------------- C3 편집 칸 (Q0) */
+.lc__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lc__items { display: flex; flex-direction: column; padding: 6px 14px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--bg-surface); }
+.lc__items:focus-within { border-color: var(--accent-default); }
+.lc__item { display: flex; align-items: center; gap: 12px; padding: 6px 0; text-align: left; }
+.lc__num { flex: none; width: 16px; text-align: right; }
+.lc__input { flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: none; color: var(--text-primary); }
+.lc__input::placeholder { color: var(--text-tertiary); }
+.lc__add:hover { color: var(--text-secondary); }
+.lc__opts { display: flex; flex-direction: column; gap: 10px; }
+.lc__opt { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg-surface); }
+.lc__opt:focus-within { border-color: var(--accent-default); }
+.lc__opt.is-correct { border-color: var(--status-success-fg); background: var(--status-success-bg); }
+.lc__more { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; }
+.lc__more:hover { color: var(--text-primary); }
+.lc-preview { gap: 12px; padding: 20px; }
+.lc-preview__q { font: 600 17px/28px var(--font-sans); letter-spacing: -0.005em; word-break: keep-all; overflow-wrap: anywhere; }
+.lc-preview .recall__list { gap: 6px; }
+/* 미리보기는 질문 면 모양만 보이면 되므로 한 줄로 자른다 */
+.lc-preview .slot__text, .lc-preview .opt__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

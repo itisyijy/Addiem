@@ -1203,6 +1203,10 @@ fn run_import_selected(
             }
         };
         nt_map.insert(*aid, id);
+        // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
+        if crate::recall::unrecognized(&t.name, &t.fields) {
+            result.issues.push(issue("info", "recall_type", format!("노트타입 '{}'은 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name)));
+        }
     }
 
     // 노트와 카드. 진행 표시는 둘을 합쳐 "카드" 한 단계로 보여준다

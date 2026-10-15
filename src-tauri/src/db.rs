@@ -202,7 +202,7 @@ fn sync_schema(con: &Connection) -> rusqlite::Result<()> {
 /// (이름, 앞면, 뒷면)
 type Template = (&'static str, &'static str, &'static str);
 /// 앱이 직접 만드는 노트 유형 (Anki 기본 유형과 같은 이름·필드·템플릿). 없는 것만 넣는다
-const NATIVE_TYPES: [(&str, &str, &[Template]); 4] = [
+const NATIVE_TYPES: [(&str, &str, &[Template]); 6] = [
     ("Basic", r#"["Front","Back"]"#, &[("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")]),
     ("Cloze", r#"["Text","Back Extra"]"#, &[("Cloze", "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}")]),
     (
@@ -220,6 +220,9 @@ const NATIVE_TYPES: [(&str, &str, &[Template]); 4] = [
             "{{FrontSide}}<hr id=answer>{{모범 답안}}{{#채점 메모}}<div class=\"grading-memo\">{{채점 메모}}</div>{{/채점 메모}}",
         )],
     ),
+    // Q 목록 회상 · 선택형 (C3 여섯 · 일곱 번째 유형). Anki 에 같은 기본 유형이 없어 앱 전용 이름. 스크립트 없는 템플릿 (recall.rs)
+    (crate::recall::LIST, crate::recall::LIST_FIELDS_JSON, &[("Card 1", crate::recall::LIST_QFMT, crate::recall::LIST_AFMT)]),
+    (crate::recall::CHOICE, crate::recall::CHOICE_FIELDS_JSON, &[("Card 1", crate::recall::CHOICE_QFMT, crate::recall::CHOICE_AFMT)]),
 ];
 
 pub(crate) fn seed_note_types(con: &Connection) -> rusqlite::Result<()> {
@@ -371,12 +374,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let con = open(&dir.join("t.sqlite")).unwrap();
         let n: i64 = con.query_row("SELECT count(*) FROM note_type", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 5, "Basic · Cloze · Basic (and reversed card) · 서술형 · Image Occlusion");
+        assert_eq!(n, 7, "Basic · Cloze · Basic (and reversed card) · 서술형 · 목록 회상 · 선택형 · Image Occlusion");
         drop(con);
         // 두 번 열어도 다시 시드하지 않는다
         let con = open(&dir.join("t.sqlite")).unwrap();
         let n: i64 = con.query_row("SELECT count(*) FROM note_type", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 5);
+        assert_eq!(n, 7);
     }
 
     #[test]

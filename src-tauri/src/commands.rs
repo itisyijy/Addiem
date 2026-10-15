@@ -917,7 +917,7 @@ pub fn add_card(state: State<AppState>, card: NewCard) -> Res<usize> {
 #[derive(Serialize)]
 pub struct NoteEdit {
     note_id: i64,
-    /// basic | cloze | image_occlusion | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다.
+    /// basic | cloze | image_occlusion | list | choice | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다.
     /// image_occlusion 은 화면이 occlusion_note 로 가리기 편집기(M2)를 연다
     kind: String,
     /// 노트 유형 이름 ("Anki 노트타입 '…'")
@@ -960,6 +960,9 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     values.resize(names.len(), String::new());
     let kind = if crate::occlusion::is_note(&con, note_id)? && names.len() >= 4 {
         "image_occlusion"
+    } else if crate::recall::is_special(&type_name, &names) {
+        // Q 목록 · 선택형. 전용 편집기 전까지 필드 편집 그대로 (Q23)
+        if type_name.starts_with(crate::recall::LIST) { "list" } else { "choice" }
     } else if note_is_cloze(&con, note_id)? {
         "cloze"
     } else if names.len() == 2 {
@@ -986,13 +989,16 @@ pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) ->
 
 /// update_note 의 본문. 그림 가리기 저장(occlusion::save)도 같은 길로 카드를 맞춘다
 pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String]) -> Res<()> {
-    let names: String = tx
-        .query_row("SELECT nt.fields FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1", [note_id], |r| r.get(0))
+    let (names, nt): (String, String) = tx
+        .query_row("SELECT nt.fields, nt.name FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1", [note_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(err)?;
-    let count = serde_json::from_str::<Vec<String>>(&names).map_err(err)?.len();
-    if values.len() != count {
+    let names: Vec<String> = serde_json::from_str(&names).map_err(err)?;
+    if values.len() != names.len() {
         return Err("필드 수가 노트 유형과 달라요.".into());
     }
+    crate::recall::check_fields(&nt, &names, values)?;
     if values.first().is_none_or(|v| render::is_blank(v)) {
         return Err("첫 칸을 비울 수 없어요.".into());
     }
@@ -1715,6 +1721,8 @@ pub struct CardView {
     state: String,
     /// M3 그림 가리기 배지
     occlusion: Option<IoPos>,
+    /// Q 목록 회상 · 선택형. 있으면 학습 화면이 템플릿 대신 이것으로 그린다
+    special: Option<crate::recall::Special>,
 }
 
 #[tauri::command]
@@ -1737,6 +1745,7 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
             let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = names.get(&nt).and_then(|n| crate::recall::special(&nt, n, &fields));
             Ok(CardView {
                 id: r.get(0)?,
                 note_id: r.get(9)?,
@@ -1747,6 +1756,7 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
                 importance: r.get(7)?,
                 state: r.get(8)?,
                 occlusion: io_pos(q.as_deref(), r.get(5)?, r.get(11)?, r.get(12)?),
+                special,
             })
         },
     )
