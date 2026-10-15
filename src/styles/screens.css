@@ -317,7 +317,7 @@
 .card-html .snd.is-playing::before { mask-image: url("../assets/icons/pause.svg"); }
 .card-html .snd:disabled { opacity: 1; border: 1px dashed var(--border-strong); background: none; color: var(--text-tertiary); }
 .card-html .snd:disabled::before { mask-image: url("../assets/icons/volume-x.svg"); }
-.cards__snd { margin-left: 6px; vertical-align: -2px; }
+.cards__snd { margin-right: 6px; vertical-align: -2px; }
 
 /* ---------------------------------------------------------------- C3 카드 추가 */
 .addcard { display: flex; flex-direction: column; gap: 18px; width: 1120px; margin: 0 auto; padding: 96px 0 48px; }
