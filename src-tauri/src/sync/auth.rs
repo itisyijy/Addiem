@@ -179,8 +179,18 @@ pub fn wait_callback(listener: TcpListener, path: &str, state: &str, done: &str,
             Ok((mut s, _)) => {
                 let _ = s.set_nonblocking(false);
                 let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                // 머리글 끝(빈 줄)까지 읽는다. 한 번만 읽으면 조각난 요청을 놓치고, 안 읽은 바이트를 남긴 채 닫으면 Windows 는 RST 를 보낸다
                 let mut buf = [0u8; 8192];
-                let n = s.read(&mut buf).unwrap_or(0);
+                let mut n = 0;
+                while n < buf.len() {
+                    match s.read(&mut buf[n..]) {
+                        Ok(0) | Err(_) => break,
+                        Ok(k) => n += k,
+                    }
+                    if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
                 let text = String::from_utf8_lossy(&buf[..n]);
                 let line = text.lines().next().unwrap_or("");
                 let res = parse_callback(line, path, state);
