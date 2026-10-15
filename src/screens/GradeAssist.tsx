@@ -1,5 +1,5 @@
 // R2 서술형 채점 보조 (Figma Row R: R2 81:9865 · R2-s 81:10044, 노트 81:10038 · 81:10176).
-// J2 비교 화면에서 누를 때만 보낸다: 내 답 · 모범 답안 · 자료 구간(연결된 것 먼저, 없으면 비슷한 구간). 결과는 참고용이고 평가는 사용자가 한다.
+// J2 비교 화면에서 누를 때만 보낸다: 내 답 · 모범 답안 · 자료 구간(연결된 것 먼저, 남은 자리는 비슷한 구간). 결과는 참고용이고 평가는 사용자가 한다.
 // 학습 흐름을 막지 않는다: 기다리는 동안에도 1–4 가 되고, 결과 전에 평가하면 요청을 멈추고 결과는 버린다 (Study 가 stop() 을 부른다)
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { aiApi, aiError, type AiError } from "../api";

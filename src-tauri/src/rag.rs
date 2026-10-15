@@ -434,7 +434,7 @@ fn apply_drafts(con: &mut Connection, deck_id: i64, cloze: bool, cards: &[Approv
 const ANSWER_CLIP: usize = 1500;
 /// 함께 보내는 자료 구간 (R2 · R3): 연결된 것 먼저, 최대 3개
 pub const MAX_CONTEXT: usize = 3;
-/// R2 연결이 없을 때 보낼 비슷한 구간의 최소 유사도 (질문 + 모범 답안과)
+/// R2 연결된 구간 뒤 남은 자리에 넣을 비슷한 구간의 최소 유사도 (질문 + 모범 답안과)
 const SIMILAR_SEGMENT: f32 = 0.8;
 
 /// 이 카드에 연결된 구간: 직접 연결 > 자동 연결(유사도 순), 최대 3개
@@ -446,8 +446,8 @@ pub(crate) fn linked_segments(con: &Connection, card_id: i64) -> Res<Vec<(i64, &
     rows.map(|r| r.map(|(id, m)| (id, if m == "manual" { "manual" } else { "auto" })).map_err(err)).collect()
 }
 
-/// 연결이 없을 때: 카드 뿌리 덱에 붙은 자료의 구간 중 query 와 0.8 이상인 위 3개. 분석 모델이 없으면 Err (구간 없이 보낸다)
-fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<i64>> {
+/// 카드 뿌리 덱에 붙은 자료의 구간과 query 의 유사도 (거르지 않음). 분석 모델이 없으면 Err (연결된 구간만 보낸다)
+fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<(i64, f32)>> {
     let state = app.state::<AppState>();
     let model = embed::load(&state.data_dir)?;
     let items: Vec<(i64, String)> = {
@@ -464,9 +464,17 @@ fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<i64>>
     };
     let vecs = source::embed_cached(app, "segment", &items, |_| {})?;
     let q = model.embed(&[query.to_string()])?.remove(0);
-    let mut hits: Vec<(i64, f32)> = vecs.iter().map(|(id, v)| (*id, dot(&q, v))).filter(|h| h.1 >= SIMILAR_SEGMENT).collect();
+    Ok(vecs.iter().map(|(id, v)| (*id, dot(&q, v))).collect())
+}
+
+/// 연결된 구간 먼저, 남은 자리(모두 3개까지)는 0.8 이상인 비슷한 구간을 유사도 순으로 (이미 넣은 구간은 빼고)
+fn grade_picks(linked: Vec<(i64, &'static str)>, mut hits: Vec<(i64, f32)>) -> Vec<(i64, &'static str)> {
+    hits.retain(|h| h.1 >= SIMILAR_SEGMENT && !linked.iter().any(|l| l.0 == h.0));
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    Ok(hits.into_iter().take(MAX_CONTEXT).map(|h| h.0).collect())
+    let mut picks = linked;
+    picks.extend(hits.into_iter().map(|h| (h.0, "similar")));
+    picks.truncate(MAX_CONTEXT);
+    picks
 }
 
 /// (질문, 모범 답안, 내 답) 보내는 글자 그대로
@@ -482,7 +490,7 @@ pub struct GradeScope {
     question: String,
     mine: String,
     model: String,
-    /// 연결된 구간(직접 > 자동), 없으면 비슷한 구간
+    /// 연결된 구간(직접 > 자동), 남은 자리는 비슷한 구간
     segments: Vec<Sent>,
 }
 
@@ -494,12 +502,9 @@ pub async fn rag_grade_scope(app: AppHandle, card_id: i64, answer: String) -> Re
             let (q, model, mine) = grade_texts(c, card_id, &answer)?;
             Ok((q, model, mine, linked_segments(c, card_id)?))
         })?;
-        let picks: Vec<(i64, &str)> = if linked.is_empty() {
-            // 모델이 없으면 비슷한 구간 없이 (답 둘만) 보낸다
-            similar_segments(&app, card_id, &format!("{question} {model}")).unwrap_or_default().into_iter().map(|id| (id, "similar")).collect()
-        } else {
-            linked
-        };
+        // 모델이 없으면 비슷한 구간 없이 보낸다. 연결이 3개면 재지 않는다
+        let hits = if linked.len() < MAX_CONTEXT { similar_segments(&app, card_id, &format!("{question} {model}")).unwrap_or_default() } else { vec![] };
+        let picks = grade_picks(linked, hits);
         let segments = with_db(&app, |c| sent_of(c, &picks))?;
         Ok(GradeScope { question, mine, model, segments })
     })
@@ -713,6 +718,18 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(linked_segments(&con, card).unwrap(), vec![(20, "manual"), (13, "auto"), (11, "auto")]);
+    }
+
+    #[test]
+    fn grade_picks_fill_after_linked() {
+        // 실계정: 연결 1개(14) + 빠진 점을 받치는 구간(15, 0.897) → 둘 다
+        assert_eq!(grade_picks(vec![(14, "manual")], vec![(14, 0.95), (15, 0.897), (16, 0.79)]), vec![(14, "manual"), (15, "similar")]);
+        // 연결이 3개면 더하지 않는다
+        let three = vec![(1, "manual"), (2, "auto"), (3, "auto")];
+        assert_eq!(grade_picks(three.clone(), vec![(9, 0.99)]), three);
+        // 0.8 아래는 넣지 않는다. 연결이 없으면 비슷한 구간 위 3개
+        assert_eq!(grade_picks(vec![], vec![(5, 0.79)]), vec![]);
+        assert_eq!(grade_picks(vec![], vec![(5, 0.81), (6, 0.9), (7, 0.85), (8, 0.82)]), vec![(6, "similar"), (7, "similar"), (8, "similar")]);
     }
 
     fn setup() -> Connection {
