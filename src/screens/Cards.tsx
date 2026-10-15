@@ -10,6 +10,7 @@ import { EditNote } from "./Study";
 import { menuKeys } from "./Deck";
 import { DeckMenu, loadDeckChoices, type DeckChoice } from "./DeckPicker";
 import { ExamDialog } from "./Exam";
+import { OcclusionRow } from "./Occlusion";
 import { exam as examApi } from "../written";
 
 const PAGE = 100;
@@ -541,7 +542,13 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                   {on && <Icon name="check" size={14} />}
                 </button>
               </span>
-              <span className="t-body-m">{c.question || "(내용 없음)"}</span>
+              {c.occlusion ? (
+                <span>
+                  <OcclusionRow noteId={c.note_id} pos={c.occlusion} question={c.question} />
+                </span>
+              ) : (
+                <span className="t-body-m">{c.question || "(내용 없음)"}</span>
+              )}
               <span className="t-body-s c-secondary">{c.answer}</span>
               <span className="t-body-s c-secondary">{relPath(c.deck_path)}</span>
               <span className="cards__imp menu">

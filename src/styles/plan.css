@@ -102,3 +102,5 @@
 .plan__option.is-selected { padding: 15px 17px; border: 2px solid var(--accent-default); }
 .plan__option-head { display: flex; align-items: center; gap: 8px; }
 .plan__actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* P0 입구: 목표일 14일 전부터 차트 아래 한 줄 */
+.plan__cram { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 4px 0 14px; }

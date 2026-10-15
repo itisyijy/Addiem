@@ -8,6 +8,7 @@ import { n, ro, useKey, useNav, type Route } from "../nav";
 import { useToast } from "../toast";
 import { Badge, Button, Icon, Toggle } from "../ui";
 import { dateWithDay } from "./Deck";
+import { cram, type CramPlan } from "../written";
 
 const md = (iso: string) => {
   const [, m, d] = iso.split("-").map(Number);
@@ -29,6 +30,7 @@ export function Plan({ deckId }: { deckId: number | null }) {
   const [p, setP] = useState<StudyPlan | null>(null);
   const [time, setTime] = useState<{ weekday: number | null; weekend: number | null } | null>(null);
   const [error, setError] = useState<string>();
+  const [cramPlan, setCramPlan] = useState<CramPlan | null>(null); // P0 입구: 목표일 14일 전부터
 
   const load = useCallback(
     () =>
@@ -44,6 +46,9 @@ export function Plan({ deckId }: { deckId: number | null }) {
   useEffect(() => {
     if (deckId !== null) api.deckDetail(deckId).then((d) => setDeckName(d.name), () => {});
   }, [deckId]);
+  useEffect(() => {
+    cram.plan(scope === null ? null : [scope]).then(setCramPlan, () => setCramPlan(null));
+  }, [scope]);
   // 시간은 누를 때마다 저장하지 않고 손을 뗀 뒤 한 번 (−/+ 를 여러 번 누르는 동안 그래프가 깜빡이지 않게)
   useEffect(() => {
     if (!time || !p || (time.weekday === p.weekday_min && time.weekend === p.weekend_min)) return;
@@ -128,6 +133,15 @@ export function Plan({ deckId }: { deckId: number | null }) {
               <Icon name="rotate" size={16} />
               {p.pace}
             </p>
+          )}
+          {cramPlan && (
+            <div className="plan__cram">
+              <span className="t-body-s c-secondary">
+                {cramPlan.name} · 남은 {n(cramPlan.dday)}일
+                {p.remaining_new > 0 && ` · 하루 신규 ${n(Math.ceil(p.remaining_new / Math.max(1, cramPlan.dday)))}장`}
+              </span>
+              <Button variant="ghost" size="M" icon="calendar" label="시험 전 회독" onClick={() => nav({ name: "summary", deckIds: [cramPlan.deck_id], cram: true })} />
+            </div>
           )}
         </section>
 

@@ -1,6 +1,7 @@
 // I 원자료 명령 (src-tauri/src/source.rs · embed.rs). 필드 이름은 Rust 와 같다
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import type { ExamState } from "./api";
 
 // ---------------------------------------------------------------- R 자료 근거 AI (src-tauri/src/rag.rs)
 
@@ -88,8 +89,10 @@ export type Segment = {
   before: string | null;
   after: string | null;
   links: Link[];
+  /** 8.4 기출 구간. id 는 구간 id */
+  exam: ExamState;
 };
-export type NewSegment = Omit<Segment, "id" | "weight" | "links">;
+export type NewSegment = Omit<Segment, "id" | "weight" | "links" | "exam">;
 export type Para = { text: string; signals: Signal[] };
 /** method "": 근거 칩으로 구간을 열었다 (카드 연결이 아님) */
 export type CardSource = { material: Material; segment: Segment; method: "manual" | "auto" | "" };

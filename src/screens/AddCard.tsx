@@ -11,7 +11,7 @@ import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { KeywordEditor } from "./StudyParts";
 import { written, type Keyword } from "../written";
 import { OcclusionEditor, OcclusionPicture } from "./Occlusion";
-import { boxCount, labelOf, occlusionApi, ordinalsOf, storeImage, type Picture, type Shape } from "../occlusion";
+import { boxCount, labelOf, naturalSize, occlusionApi, ordinalsOf, storeImage, type Picture, type Shape } from "../occlusion";
 import "../styles/study.css";
 
 type Kind = "basic" | "reversed" | "cloze" | "written" | "occlusion";
@@ -77,6 +77,15 @@ export function AddCard({ deckId }: { deckId: number }) {
   }, [kind]);
 
   const refresh = () => setTick((t) => t + 1);
+  /** M1: 다른 유형에서 붙인 그림으로 그림 가리기 카드를 만든다. 그 그림을 넘기고 편집기(M2)를 연다 */
+  const toOcclusion = async (img: { name: string; url: string }) => {
+    setKind("occlusion");
+    setPic({ name: img.name, url: img.url, fileName: img.name, ...(await naturalSize(img.url)) });
+    setShapes([]);
+    setEditing(true);
+    setError(undefined);
+  };
+  const ioLink = (field: React.RefObject<FieldHandle | null>) => <OcclusionLink html={field.current?.html() ?? ""} onPick={toOcclusion} />;
   // 비워두면 넣을 하위 덱의 중요도를 따른다
   const inherited = targetDeck?.importance ?? deck?.own_importance ?? 1;
   const shownLevel = importance ?? inherited;
@@ -270,6 +279,7 @@ export function AddCard({ deckId }: { deckId: number }) {
             <>
               <span className="t-label-m">질문</span>
               <RichField key="q-written" ref={q} minHeight={64} onInput={refresh} />
+              {ioLink(q)}
               <span className="t-label-m">모범 답안</span>
               <RichField key="a-written" ref={a} minHeight={84} toolbar={false} onInput={refresh} />
               <span className="addcard__label">
@@ -293,8 +303,10 @@ export function AddCard({ deckId }: { deckId: number }) {
               {/* 앞뒤 둘 다는 어느 쪽도 질문이 되므로 앞면 · 뒷면. 질문과 답변을 오가도 쓴 내용은 남는다 */}
               <span className="t-label-m">{kind === "reversed" ? "앞면" : "질문"}</span>
               <RichField key="q-basic" ref={q} minHeight={64} onInput={refresh} />
+              {ioLink(q)}
               <span className="t-label-m">{kind === "reversed" ? "뒷면" : "답변"}</span>
               <RichField key="a-basic" ref={a} minHeight={84} onInput={refresh} />
+              {ioLink(a)}
               {kind === "reversed" && (
                 <span className="addcard__chips">
                   <span className="t-caption c-tertiary">만들어질 카드</span>
@@ -329,6 +341,7 @@ export function AddCard({ deckId }: { deckId: number }) {
                   />
                 }
               />
+              {ioLink(q)}
               {marks.length > 0 && (
                 <span className="addcard__chips">
                   <span className="t-caption c-tertiary">만들어질 카드</span>
@@ -464,6 +477,29 @@ export function AddCard({ deckId }: { deckId: number }) {
         </Modal>
       )}
     </main>
+  );
+}
+
+// ---------------------------------------------------------------- M1 "이 그림으로 가리기 카드 만들기"
+
+/** 편집기에 붙인 마지막 그림 (미디어 폴더에 저장된 것). 움직이는 GIF · SVG · HEIC 는 가리기에 쓰지 않는다 (M7) */
+function lastImage(html: string) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const img = [...tpl.content.querySelectorAll<HTMLImageElement>("img[data-media]")].pop();
+  const name = img?.dataset.media ?? "";
+  return img && name && !/\.(gif|svg|heic|heif)$/i.test(name) ? { name, url: img.getAttribute("src") ?? "" } : null;
+}
+
+/** 그림 아래 링크 (M1 노트). 그림이 없으면 그리지 않는다 */
+function OcclusionLink({ html, onPick }: { html: string; onPick: (img: { name: string; url: string }) => void }) {
+  const img = lastImage(html);
+  if (!img) return null;
+  return (
+    <button className="addcard__io-link t-label-m c-accent" onClick={() => onPick(img)}>
+      <Icon name="image" size={14} />
+      이 그림으로 가리기 카드 만들기
+    </button>
   );
 }
 

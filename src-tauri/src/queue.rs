@@ -334,8 +334,9 @@ pub fn on_rating(session_again_count: i64, rating: u8) -> (RatingAction, bool) {
     }
 }
 
-pub fn bury_until(today: i64, choice_today: bool) -> i64 {
-    if choice_today { today } else { today + BURY_RETURN_DAYS }
+/// "다음 학습으로" 의 복귀일. "오늘 다시" 는 기한을 비운다 (commands::resolve_buried)
+pub fn bury_until(today: i64) -> i64 {
+    today + BURY_RETURN_DAYS
 }
 
 #[cfg(test)]
@@ -524,8 +525,7 @@ mod tests {
         assert!(matches!(on_rating(0, 1), (RatingAction::Continue, true)));
         assert!(matches!(on_rating(1, 1), (RatingAction::Bury, false)));
         assert!(matches!(on_rating(1, 3), (RatingAction::Continue, true)));
-        assert_eq!(bury_until(T, true), T);
-        assert_eq!(bury_until(T, false), T + BURY_RETURN_DAYS);
+        assert_eq!(bury_until(T), T + BURY_RETURN_DAYS);
         let mut c = cards(&[("review", 1, Some(0)), ("review", 1, Some(0))], 1, 1);
         c[0].buried_until = Some(T + 2);
         c[1].buried_until = Some(T);

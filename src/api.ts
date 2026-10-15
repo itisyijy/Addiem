@@ -115,7 +115,11 @@ export type CardRow = {
   buried: boolean;
   /** 8.4 노트의 기출. id 는 노트 id */
   exam: ExamState;
+  /** M4 그림 가리기 카드 */
+  occlusion: IoPos | null;
 };
+/** 그림 가리기 카드의 자리. ordinal: 칸 번호(편집기 focus), n/count: "그림 가리기 · n/N" */
+export type IoPos = { ordinal: number; n: number; count: number };
 /** 8.4 기출 (exam.rs). hits null 이면 표시 없음 */
 export type ExamState = { id: number; hits: number | null; names: string[] };
 export type CardList = { rows: CardRow[]; total: number };
@@ -166,9 +170,22 @@ export type QueueSummary = {
   new_decks: number;
   notes: string[];
   target: { name: string; dday: number; remaining_new: number; days: number } | null;
+  /** 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수 (D1 머리 문장, P9) */
+  mixed_today: number;
 };
 
-export type CardView = { id: number; note_id: number; css: string; front: string; back: string; deck_path: string[]; importance: Level; state: string };
+export type CardView = {
+  id: number;
+  note_id: number;
+  css: string;
+  front: string;
+  back: string;
+  deck_path: string[];
+  importance: Level;
+  state: string;
+  /** M3 배지 */
+  occlusion: IoPos | null;
+};
 export type NoteEdit = {
   note_id: number;
   /** image_occlusion: 가리기 편집기(M2)로 연다 */
@@ -179,6 +196,8 @@ export type NoteEdit = {
   values: string[];
   /** 필드마다 앞면 템플릿에 쓰이는가 */
   front: boolean[];
+  /** 8.4 N1 기출 줄 */
+  exam: ExamState;
 };
 export type AnswerResult = { action: "next" | "again_later" | "buried"; due_in_ms: number | null };
 export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[] };

@@ -240,9 +240,11 @@ pub struct Segment {
     before: Option<String>,
     after: Option<String>,
     links: Vec<Link>,
+    /// 8.4 기출 구간 (I1 ⋯ [기출 구간으로 표시]). R1-a 정렬에서 ★ 와 같은 등급
+    exam: exam::ExamState,
 }
 
-const SEGMENT_SQL: &str = "SELECT id, page, ord, text, signals, weight, rects, before_text, after_text FROM source_segment";
+const SEGMENT_SQL: &str = "SELECT id, page, ord, text, signals, weight, rects, before_text, after_text, exam_hits, exam_names FROM source_segment";
 
 fn segment_row(r: &rusqlite::Row) -> rusqlite::Result<Segment> {
     let signals: String = r.get(4)?;
@@ -258,6 +260,7 @@ fn segment_row(r: &rusqlite::Row) -> rusqlite::Result<Segment> {
         before: r.get(7)?,
         after: r.get(8)?,
         links: vec![],
+        exam: exam::ExamState::of(r.get(0)?, r.get(9)?, r.get(10)?),
     })
 }
 
@@ -850,6 +853,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         .map_err(err)?;
     }
     let suggested = suggest(&con, &ids)?;
+    exam::suggest_all(&con)?; // 자료 제안을 다시 만들면 기출 근거 줄도 다시 붙인다 (N3)
     Ok(Analysis { linked: links.len(), suggested })
 }
 
@@ -870,8 +874,6 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
         weight: f64,
         files: HashMap<String, std::collections::HashSet<i64>>,
         signals: HashMap<String, usize>,
-        /// 8.4 기출 카드 (자료와 이어지지 않았어도 센다)
-        exam: std::collections::HashSet<i64>,
     }
     let mut acc: HashMap<i64, Acc> = HashMap::new();
     let rows = st
@@ -886,17 +888,7 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
         *a.signals.entry(signals.split(',').next().unwrap_or_default().to_string()).or_default() += 1;
     }
     drop(st);
-    // 8.4 기출 카드는 강조 구간 하나만큼 더한다 (카드마다 한 번)
-    let mut st = con
-        .prepare(&format!("SELECT c.deck_id, c.id FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN ({ids}) AND {}", exam::IS_EXAM))
-        .map_err(err)?;
-    for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(err)? {
-        let (deck, card) = row.map_err(err)?;
-        let a = acc.entry(deck).or_default();
-        a.exam.insert(card);
-        a.weight += exam::EXAM_WEIGHT;
-    }
-    drop(st);
+    // 8.4 기출은 여기서 더하지 않는다. 기출 비율 규칙이 따로 제안하고 근거 줄을 붙인다 (exam::suggest_all, N3)
     let mut st = con.prepare(&format!("SELECT deck_id, count(*) FROM card WHERE deck_id IN ({ids}) GROUP BY deck_id")).map_err(err)?;
     let counts: Vec<(i64, usize)> = st.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     drop(st);
@@ -906,7 +898,7 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
             let a = acc.get(id);
             DeckScore {
                 deck_id: *id,
-                linked: a.map_or(0, |a| a.cards.union(&a.exam).count()),
+                linked: a.map_or(0, |a| a.cards.len()),
                 score: a.map_or(0.0, |a| a.weight / (*n).max(1) as f64),
             }
         })
@@ -926,14 +918,11 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
         let (file, _) = a.files.iter().max_by_key(|(name, c)| (c.len(), std::cmp::Reverse((*name).clone()))).map(|(n, c)| (n.clone(), c.len())).unwrap_or_default();
         let signal = a.signals.iter().max_by_key(|(_, n)| **n).map(|(s, _)| s.as_str()).unwrap_or_default();
         let label = SIGNALS.iter().position(|s| s.0 == signal).map_or("강조", |i| SIGNAL_LABEL[i]);
-        let reason = if level == 2 && !a.exam.is_empty() && a.cards.is_empty() {
-            format!("이 덱 카드 {}장이 기출로 표시됐어요 (덱 안 상위 {pct}%)", a.exam.len())
-        } else if level == 2 && !a.exam.is_empty() {
-            format!("이 덱 카드 {}장이 기출이고 {}장이 {file}의 {label} 구간과 연결됐어요 (덱 안 상위 {pct}%)", a.exam.len(), a.cards.len())
-        } else if level == 2 {
-            format!("이 덱 카드 {}장이 {file}의 {label} 구간과 연결됐어요 (덱 안 상위 {pct}%)", a.cards.len())
+        // 근거는 줄마다 머리를 붙인다. 기출 줄은 exam::suggest_all 이 앞에 더한다 (N3 툴팁 "근거 2가지")
+        let reason = if level == 2 {
+            format!("자료 · {}장이 {file}의 {label} 구간과 연결 (덱 안 상위 {pct}%)", a.cards.len())
         } else {
-            format!("이 덱 카드 {}장만 자료의 강조 구간과 연결됐어요 (덱 안 하위 {pct}%)", a.cards.len())
+            format!("자료 · {}장만 강조 구간과 연결 (덱 안 하위 {pct}%)", a.cards.len())
         };
         suggested += con
             .execute(
@@ -1064,25 +1053,25 @@ mod tests {
     }
 
     #[test]
-    fn exam_marks_join_material_suggestion() {
+    fn exam_ratio_joins_material_suggestion() {
         let con = crate::db::open_in_memory().unwrap();
         con.execute_batch(
             "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, '시험', 0, 0);
              INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, created_at, updated_at) VALUES (1, 1, 'a.pdf', 'sources/1.pdf', 'pdf', 0, 0);
-             INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight)
-               VALUES (1, 1, 1, 0, '강조', 'highlight', 3), (2, 1, 1, 1, '굵게', 'bold', 1), (3, 1, 2, 0, '기출 구간', 'bold', 1);",
+             INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight) VALUES (1, 1, 1, 0, '강조', 'highlight', 3), (2, 1, 1, 1, '굵게', 'bold', 1);",
         )
         .unwrap();
         let nt: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Basic'", [], |r| r.get(0)).unwrap();
-        // (덱, 카드 수, 첫 카드에 이을 구간, 노트에 기출 표시)
+        // (덱, 카드 수, 기출 카드 수, 첫 카드에 이을 구간). 기출 카드의 앞 두 장은 2회
         let mut id = 0;
-        for (deck, n, seg, exam) in [(2, 2, None, true), (3, 2, Some(1), false), (4, 1, Some(2), false), (5, 1, Some(3), false), (6, 4, Some(2), false)] {
+        for (deck, n, exam, seg) in [(2, 10, 0, None), (3, 10, 7, Some(1)), (4, 10, 7, Some(2)), (5, 4, 4, None), (6, 10, 0, Some(2))] {
             con.execute("INSERT INTO deck (id, parent_id, name, created_at, updated_at) VALUES (?1, 1, ?1, 0, 0)", [deck]).unwrap();
             for i in 0..n {
                 id += 1;
+                let hits = (i < exam).then_some(if i < 2 { 2 } else { 1 });
                 con.execute(
                     "INSERT INTO note (id, note_type_id, fields, exam_hits, created_at, updated_at) VALUES (?1, ?2, '[\"q\",\"a\"]', ?3, 0, 0)",
-                    params![id, nt, exam.then_some(1)],
+                    params![id, nt, hits],
                 )
                 .unwrap();
                 con.execute("INSERT INTO card (id, note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?1, ?2, 0, 0, 0)", [id, deck]).unwrap();
@@ -1091,19 +1080,33 @@ mod tests {
                 }
             }
         }
-        let row = |deck: i64| -> (i64, Option<String>) {
-            con.query_row("SELECT importance, importance_reason FROM deck WHERE id = ?1", [deck], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        let row = |deck: i64| -> (i64, String, Option<String>) {
+            con.query_row("SELECT importance, importance_source, importance_reason FROM deck WHERE id = ?1", [deck], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
         };
-        // 기출 구간과 이은 카드: 볼드(1) + 기출(3) = 4 로 맨 위. 노트 기출 덱 2 는 6 / 2 = 3
-        con.execute("UPDATE source_segment SET exam_hits = 1 WHERE id = 3", []).unwrap();
-        assert_eq!(suggest(&con, "1,2,3,4,5,6").unwrap(), 2);
-        assert_eq!(row(5), (2, Some("이 덱 카드 1장이 기출이고 1장이 a.pdf의 볼드 구간과 연결됐어요 (덱 안 상위 20%)".into())));
-        assert_eq!(row(6).0, 0);
-        // 구간의 기출 표시를 지우면 덱 5 는 1, 자료와 잇지 않은 기출 카드만 있는 덱 2 가 맨 위
-        con.execute("UPDATE source_segment SET exam_hits = 0 WHERE id = 3", []).unwrap();
-        assert_eq!(suggest(&con, "1,2,3,4,5,6").unwrap(), 2);
-        assert_eq!(row(2), (2, Some("이 덱 카드 2장이 기출로 표시됐어요 (덱 안 상위 20%)".into())));
-        assert_eq!(row(5), (1, None));
+        // 자료: 이어진 덱 3 · 4 · 6 중 덱 3 이 맨 위. 기출 가중치는 더하지 않는다
+        assert_eq!(suggest(&con, "1,2,3,4,5,6").unwrap(), 1);
+        let material = "자료 · 1장이 a.pdf의 하이라이트 구간과 연결 (덱 안 상위 33%)";
+        assert_eq!(row(3), (2, "material".into(), Some(material.into())));
+        // 기출 비율: 5개 덱의 상위 25% (2개, 같은 비율은 함께) = 덱 5(100%) · 덱 3 · 덱 4(70%). 덱 5 는 4장뿐이라 빠진다
+        assert_eq!(crate::exam::suggest_all(&con).unwrap(), 2);
+        let exam3 = "기출 · 이 하위 덱 카드 10장 중 7장에 기출 표시 (2회 이상 2장)";
+        assert_eq!(row(3), (2, "material".into(), Some(format!("{exam3}\n{material}"))), "근거 2가지");
+        assert_eq!(row(4).2.as_deref(), Some(exam3), "기본값 덱은 기출 근거만으로 핵심");
+        assert_eq!(row(5), (1, "default".into(), None));
+        assert_eq!(crate::exam::suggest_all(&con).unwrap(), 0, "바뀐 것이 없으면 고치지 않는다");
+        // 기출 표시를 지우면 기출 줄만 빠지고, 기출로만 핵심이던 덱은 기본값으로
+        con.execute("UPDATE note SET exam_hits = 0 WHERE id IN (SELECT note_id FROM card WHERE deck_id IN (3, 4))", []).unwrap();
+        assert_eq!(crate::exam::suggest_all(&con).unwrap(), 2);
+        assert_eq!(row(3), (2, "material".into(), Some(material.into())));
+        assert_eq!(row(4), (1, "default".into(), None));
+        // 확정한 덱은 덮지 않는다. 자료 제안이 핵심이 아니면 기출이 이긴다
+        con.execute("UPDATE deck SET importance_source = 'user' WHERE id = 3", []).unwrap();
+        con.execute("UPDATE deck SET importance = 0, importance_source = 'material', importance_reason = '자료 · 하위' WHERE id = 6", []).unwrap();
+        con.execute("UPDATE note SET exam_hits = 1 WHERE id IN (SELECT note_id FROM card WHERE deck_id IN (3, 6))", []).unwrap();
+        crate::exam::suggest_all(&con).unwrap();
+        assert_eq!(row(3).1, "user");
+        assert_eq!(row(6), (2, "material".into(), Some("기출 · 이 하위 덱 카드 10장 중 10장에 기출 표시".into())));
     }
 
     #[test]

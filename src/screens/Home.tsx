@@ -120,7 +120,7 @@ function ActiveHome({ data, reload }: { data: HomeData; reload: () => void }) {
         </div>
         {/* H3 목표일 0–3일 전에만 보인다 */}
         <div className="home__cram">
-          <CramHint deckIds={null} />
+          <CramHint deckIds={null} dismissible />
         </div>
       </section>
 
@@ -163,7 +163,7 @@ function DoneHome({ data, reload }: { data: HomeData; reload: () => void }) {
           )}
         </div>
         <div className="home__cram">
-          <CramHint deckIds={null} />
+          <CramHint deckIds={null} dismissible />
         </div>
       </section>
 

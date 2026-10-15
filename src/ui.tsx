@@ -125,7 +125,8 @@ export function Segment<T extends string | number>({
   label,
   disabled,
 }: {
-  options: { value: T; label: string }[];
+  /** disabled: 그 선택지만 끈다 (P1 남은 양보다 큰 분량) */
+  options: { value: T; label: string; disabled?: boolean }[];
   value: T;
   onChange: (v: T) => void;
   /** 회색 트랙 (segment--boxed) */
@@ -141,7 +142,7 @@ export function Segment<T extends string | number>({
           role="radio"
           aria-checked={o.value === value}
           className={`segment__item t-label-m ${o.value === value ? "is-selected" : ""}`}
-          disabled={disabled}
+          disabled={disabled || o.disabled}
           onClick={() => onChange(o.value)}
         >
           {o.label}
