@@ -162,7 +162,7 @@ let run = 0;
 let current: { chip: HTMLElement; stop: () => void } | null = null;
 
 function settle(chip: HTMLElement) {
-  chip.classList.remove("is-playing");
+  chip.classList.remove("is-playing", "is-loading");
   chip.dataset.label = chip.dataset.idle ?? "";
 }
 
@@ -200,13 +200,15 @@ export async function playSounds(chips: Iterable<Element>) {
     chip.classList.add("is-playing");
     const lang = chip.dataset.tts;
     if (lang !== undefined) {
-      // 소리를 만드는 동안(0.5–0.9초)도 읽는 중으로 보인다
+      // 누르자마자 읽는 중. 소리를 만드는 동안(0.5–0.9초)은 일시정지 대신 회전 표시
       chip.dataset.label = chip.dataset.busy ?? "";
+      chip.classList.add("is-loading");
       const text = chip.dataset.text ?? "";
       const speed = Number(chip.dataset.speed) || 1;
       const url = (await engineLangs()).includes(langPrefix(lang)) ? await ttsUrl(lang, text, speed) : "";
       const voice = url ? null : await osVoice(lang);
       if (me !== run) return;
+      chip.classList.remove("is-loading");
       if (url) await playUrl(url, chip);
       else if (voice) await sayOs(voice, chip, text, speed);
     } else {

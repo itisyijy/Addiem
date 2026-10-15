@@ -242,6 +242,10 @@ export function Settings({ focus }: { focus?: "archived" }) {
   );
 }
 
+/** 라이선스 원문은 80–100자에서 줄을 바꿔 두었다. 문단 안의 줄바꿈만 이어 상자 너비로 감싸게 한다 (빈 줄 · 목록 (a) · 1. · 구분선은 둔다) */
+const reflow = (t: string) =>
+  t.replace(/\r\n/g, "\n").replace(/^(.{60,})\n(?!\s|\([a-z0-9]{1,4}\)|[•*-]|\d+\.)/gim, (m, line: string) => (/[a-z]/i.test(line) ? `${line} ` : m));
+
 /** 읽어주기 음성(tts.rs)과 함께 설치되는 것의 라이선스. 음성 파일이 없는 빌드에서는 보이지 않는다 */
 function Licenses() {
   const [shown, setShown] = useState(false);
@@ -254,7 +258,7 @@ function Licenses() {
   const open = (which: "supertonic" | "onnxruntime") =>
     texts[which] === undefined &&
     api.ttsLicense(which).then(
-      (t) => setTexts((x) => ({ ...x, [which]: t })),
+      (t) => setTexts((x) => ({ ...x, [which]: reflow(t) })),
       (e) => setTexts((x) => ({ ...x, [which]: errorText(e) })),
     );
   const items = [

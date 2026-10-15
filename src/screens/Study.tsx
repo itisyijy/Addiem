@@ -969,6 +969,20 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT 검토 · 직접 평가해 주세요`
       : null;
   const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip?.id === card.view.id);
+  // AU21 읽어주기 첫 안내는 칩이 처음 나온 면에 (질문 면에 칩이 있으면 질문 면부터, 답 면에서도 이어서)
+  const qTip = phase === "q" && !special && !writing && !!card && !!soundTip?.tts && soundTip.id === card.view.id && card.front.includes("data-tts");
+  const ttsTip = (
+    <span className="study__tip">
+      <Icon name="speech" size={16} className="c-accent" />
+      <span className="t-label-s c-accent">
+        읽어주기는 눌러야 읽어요 (자동 재생 꺼짐) · {actionKey("replay")}
+        {ro(actionKey("replay"))} 들어요 · 설정에서 켤 수 있어요
+      </span>
+      <button className="study__tip-x c-accent" aria-label="읽어주기 안내 숨기기" onClick={() => setSoundTip(null)}>
+        <Icon name="x" size={14} />
+      </button>
+    </span>
+  );
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
   const replayHint = (html = "") => html.includes('class="snd') && `${actionKey("replay")} 다시 듣기`;
   const keysQ = special
@@ -1060,7 +1074,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       </div>
 
       {card && (
-        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${writing ? "is-writing" : ""} ${special ? `is-recall is-${special.kind}` : ""}`}>
+        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${qTip ? "has-qtip" : ""} ${writing ? "is-writing" : ""} ${special ? `is-recall is-${special.kind}` : ""}`}>
           {/* 밝은 덱 카드는 카드 면만 밝은 토큰으로 (tokens.css [data-theme="light"]) */}
           <article className={`study__card ${fit.overflow ? "is-overflow" : ""}`} data-theme={face === "light" ? "light" : undefined}>
             {noteCss && <style>{noteCss}</style>}
@@ -1208,6 +1222,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
           {phase === "q" ? (
             <>
+              {qTip && <div className="study__tipwrap">{ttsTip}</div>}
               {writing && (
                 <div className="write">
                   <p className="write__head">
@@ -1277,21 +1292,16 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                       답의 의미를 확인하고 직접 평가해 주세요.
                     </span>
                   </span>
+                ) : soundTip?.id === card.view.id && soundTip.tts ? (
+                  ttsTip
                 ) : soundTip?.id === card.view.id ? (
                   <span className="study__tip">
-                    <Icon name={soundTip.tts ? "speech" : "volume-2"} size={16} className="c-accent" />
-                    {soundTip.tts ? (
-                      <span className="t-label-s c-accent">
-                        읽어주기는 눌러야 읽어요 (자동 재생 꺼짐) · {actionKey("replay")}
-                        {ro(actionKey("replay"))} 들어요 · 설정에서 켤 수 있어요
-                      </span>
-                    ) : (
-                      <span className="t-label-s c-accent">
-                        소리는 카드를 열 때 · 답을 볼 때 저절로 재생해요. {actionKey("replay")}
-                        {ro(actionKey("replay"))} 다시 들어요. 설정에서 끌 수 있어요.
-                      </span>
-                    )}
-                    <button className="study__tip-x c-accent" aria-label={soundTip.tts ? "읽어주기 안내 숨기기" : "소리 안내 숨기기"} onClick={() => setSoundTip(null)}>
+                    <Icon name="volume-2" size={16} className="c-accent" />
+                    <span className="t-label-s c-accent">
+                      소리는 카드를 열 때 · 답을 볼 때 저절로 재생해요. {actionKey("replay")}
+                      {ro(actionKey("replay"))} 다시 들어요. 설정에서 끌 수 있어요.
+                    </span>
+                    <button className="study__tip-x c-accent" aria-label="소리 안내 숨기기" onClick={() => setSoundTip(null)}>
                       <Icon name="x" size={14} />
                     </button>
                   </span>

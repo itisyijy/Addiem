@@ -317,6 +317,7 @@
 .card-html .snd::after { content: attr(data-label); max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 .card-html .snd.is-playing { border-color: var(--accent-default); background: var(--accent-subtle); color: var(--accent-text); }
 .card-html .snd.is-playing::before { mask-image: url("../assets/icons/pause.svg"); }
+.card-html .snd.is-loading::before { box-sizing: border-box; border: 2px solid currentColor; border-right-color: transparent; border-radius: 999px; background: none; mask: none; animation: spin 0.8s linear infinite; }
 .card-html .snd:disabled { opacity: 1; border: 1px dashed var(--border-strong); background: none; color: var(--text-tertiary); }
 .card-html .snd:disabled::before { mask-image: url("../assets/icons/volume-x.svg"); }
 .cards__snd { margin-right: 6px; vertical-align: -2px; }
