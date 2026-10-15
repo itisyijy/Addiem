@@ -27,7 +27,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
   const resume = () => nav({ name: "summary", deckIds });
   const userFolded = s.buried.filter((b) => b.reason === "user").length;
   const foldedWhy =
-    userFolded === 0 ? "같은 학습에서 두 번 막혀서 잠시 빼둔 카드예요." : userFolded === s.buried.length ? "직접 접어둔 카드예요." : "두 번 막혔거나 직접 접어둔 카드예요.";
+    userFolded === 0 ? "두 번 기억나지 않아 자동으로 접어둔 카드예요." : userFolded === s.buried.length ? "직접 접어둔 카드예요." : "자동으로 또는 직접 접어둔 카드예요.";
 
   const resolve = async (today: boolean) => {
     try {
@@ -144,7 +144,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
             </span>
             <h2 className="t-title-m">접어둔 카드 {n(s.buried.length)}장</h2>
           </header>
-          <p className="t-body-s c-secondary">{foldedWhy} 사라지지 않았고, 정하신 때 다시 나와요.</p>
+          <p className="t-body-s c-secondary">{foldedWhy} 사라지지 않고 {buryReturnDay()}부터 다시 나와요. 오늘 다시 볼 수도 있어요.</p>
           <div className="done__list">
             {s.buried.map((b) => (
               <div key={b.id} className="done__row">
