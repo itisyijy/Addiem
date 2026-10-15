@@ -232,6 +232,8 @@
  */
 .study .study__card[data-theme="light"] { background: var(--bg-canvas); color: var(--text-primary); color-scheme: light; }
 .study__card[data-theme="light"] .study__fade { background: linear-gradient(transparent, var(--bg-canvas) 85%); }
+/* 위 페이드도 카드 면 색으로. bg/surface(흰색)로 두면 머리글 아래에 흰 띠가 남는다 */
+.study__card[data-theme="light"] .study__scroll::before { background: linear-gradient(var(--bg-canvas), transparent); }
 
 /* ---------------------------------------------------------------- C3-m 수식 (편집기 · 미리보기 아래 안내) */
 .rich__math { gap: 4px; padding: 2px 8px 2px 6px; border-radius: 6px; background: var(--bg-subtle); }
