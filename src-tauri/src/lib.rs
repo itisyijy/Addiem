@@ -17,6 +17,7 @@ mod render;
 mod source;
 mod srs;
 mod sync;
+mod tts;
 
 use tauri::Manager;
 
@@ -147,6 +148,8 @@ pub fn run() {
             sync::sync_probe, sync::sync_join, sync::sync_disconnect, sync::sync_settings, sync::sync_set_lock, sync::sync_unlock,
             sync::sync_backups, sync::sync_restore_preview, sync::sync_restore, sync::sync_backup_full, sync::sync_delete_backup,
             sync::sync_prune_backups, sync::sync_open_folder, sync::sync_conflicts, sync::sync_conflict_use, sync::sync_conflicts_seen,
+            // AU20 읽어주기
+            tts::tts_langs, tts::tts_preload, tts::tts_speak, tts::tts_license,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
