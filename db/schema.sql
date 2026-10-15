@@ -391,3 +391,11 @@ CREATE TABLE IF NOT EXISTS written_answer (
     written_at INTEGER NOT NULL,
     uid        TEXT
 );
+
+-- Q9 목록 회상 · 선택형: 마지막 평가 때 빠뜨린 항목 · 고른 보기 (번호 JSON 배열). 카드마다 하나.
+-- 이 기기 안에서만 쓴다 (동기화하지 않는다. Anki 에는 평가만 간다)
+CREATE TABLE IF NOT EXISTS recall_mark (
+    card_id   INTEGER PRIMARY KEY REFERENCES card(id) ON DELETE CASCADE,
+    marks     TEXT    NOT NULL,
+    marked_at INTEGER NOT NULL
+);

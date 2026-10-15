@@ -1715,6 +1715,8 @@ pub struct CardView {
     state: String,
     /// M3 그림 가리기 배지
     occlusion: Option<IoPos>,
+    /// Q 목록 회상 · 선택형. 있으면 학습 화면이 템플릿 대신 이것으로 그린다
+    special: Option<crate::recall::Special>,
 }
 
 #[tauri::command]
@@ -1737,6 +1739,7 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
             let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = names.get(&nt).and_then(|n| crate::recall::special(&nt, n, &fields));
             Ok(CardView {
                 id: r.get(0)?,
                 note_id: r.get(9)?,
@@ -1747,6 +1750,7 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
                 importance: r.get(7)?,
                 state: r.get(8)?,
                 occlusion: io_pos(q.as_deref(), r.get(5)?, r.get(11)?, r.get(12)?),
+                special,
             })
         },
     )

@@ -11,6 +11,7 @@ mod occlusion;
 mod plan;
 mod quality;
 mod rag;
+mod recall;
 mod queue;
 mod render;
 mod source;
@@ -118,6 +119,8 @@ pub fn run() {
             cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo, cram::mix_cards, cram::mix_start, cram::mix_restart, cram::mix_summary,
             // M 그림 가리기
             occlusion::occlusion_note, occlusion::save_occlusion,
+            // Q 목록 회상 · 선택형
+            recall::add_list_card, recall::add_choice_card, recall::recall_suggest, recall::save_recall_marks,
             // 8.4 기출 이력
             exam::mark_exam, exam::set_exam, exam::exam_list, exam::exam_summary,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)

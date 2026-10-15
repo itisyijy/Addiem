@@ -819,7 +819,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
     let css = match (css.trim().is_empty(), io) {
         (false, _) => css,
         (true, true) => crate::occlusion::CSS.into(),
-        (true, false) => format!("{CSS}{}", if cloze { CLOZE_CSS } else { "" }),
+        (true, false) => format!("{CSS}{}{}", if cloze { CLOZE_CSS } else { "" }, if crate::recall::is_special(&name, &fields) { crate::recall::CSS } else { "" }),
     };
     let mut json = json!({
         "id": id, "name": name, "type": i64::from(cloze), "mod": updated / 1000, "usn": -1, "sortf": 0, "did": did,
@@ -1231,6 +1231,125 @@ mod tests {
         let out2 = tmp.0.join("io2.apkg");
         export(&bc, &b.data_dir, broot, &out2, false, &QUIET).unwrap();
         assert_eq!(io_model(&out2, &tmp.0)["flds"][1]["tag"].as_i64(), Some(1));
+    }
+
+    /// Q: 내보내고 새 DB 로 가져온다 (실제 가져오기 경로 그대로). 가져온 DB 와 결과
+    fn recall_round_trip(tmp: &Path, a: &AppState, deck_id: i64) -> (AppState, Value) {
+        let out = tmp.join("q.apkg");
+        export(&a.db.lock().unwrap(), &a.data_dir, deck_id, &out, true, &QUIET).unwrap();
+        let b = state(&tmp.join("b"));
+        let res = crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), true, &mut vec![]).unwrap();
+        (b, serde_json::to_value(res).unwrap())
+    }
+
+    /// Q1 · Q3 · Q10: 목록 노트 1개 = 카드 1장 → 빠뜨림 추천 → 내보내고 다시 가져오면 목록으로 알아보고 복습 기록이 1:1
+    #[test]
+    fn list_recall_round_trip() {
+        use crate::recall::{self, Special};
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-list-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let deck_id = {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('정보처리기사', 0, 0)", []).unwrap();
+            let deck_id = con.last_insert_rowid();
+            let items = ["응용 계층", "표현 계층", "세션 계층", "전송 계층", "네트워크 계층", "데이터 링크 계층", "물리 계층"];
+            let card = recall::ListNew {
+                deck_id,
+                question: "OSI 7계층을 위에서부터 차례로 말해 보세요.".into(),
+                items: items.map(String::from).to_vec(),
+                ordered: true,
+                extra: "<b>All People Seem To Need Data Processing</b>".into(),
+                importance: Some(2),
+            };
+            recall::insert(&con, recall::LIST, deck_id, &recall::list_fields(&card).unwrap(), card.importance).unwrap();
+            let id: i64 = con.query_row("SELECT id FROM card", [], |r| r.get(0)).unwrap();
+            assert_eq!(con.query_row("SELECT count(*) FROM card", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "노트 1개 = 카드 1장");
+            assert_eq!(recall::suggest_for(&con, id, &[3, 6]).unwrap(), Some(2), "7개 중 5개 기억 → Hard (Q1-b)");
+            assert_eq!(recall::suggest_for(&con, id, &[3, 3, 99]).unwrap(), Some(3), "같은 번호 · 없는 번호는 세지 않는다");
+            con.execute(
+                "INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_state, fed_to_scheduler) VALUES (?1, ?2, 2, 5000, 'new', 1)",
+                params![id, now_ms() - DAY_MS],
+            )
+            .unwrap();
+            con.execute("INSERT INTO recall_mark (card_id, marks, marked_at) VALUES (?1, '[3,6]', 1)", [id]).unwrap();
+            // Anki 쪽 모습: 앞면 질문 + 순서, 뒷면 항목 (스크립트 없음)
+            let names = crate::commands::note_field_names(&con).unwrap();
+            let fields: String = con.query_row("SELECT fields FROM note", [], |r| r.get(0)).unwrap();
+            let r = crate::commands::render_fields(&names, recall::LIST, &fields, Some(recall::LIST_QFMT), Some(recall::LIST_AFMT), 0);
+            assert!(r.front.contains("순서대로") && !r.front.contains("세션 계층"));
+            assert!(crate::commands::answer_part(&r.back).contains("응용 계층<br>표현 계층"));
+            deck_id
+        };
+        let (b, res) = recall_round_trip(&tmp.0, &a, deck_id);
+        let n = |k: &str| res[k].as_u64();
+        assert_eq!((n("notes"), n("cards"), n("reviews"), n("check_cards")), (Some(1), Some(1), Some(1), Some(0)));
+        let bc = b.db.lock().unwrap();
+        let id: i64 = bc.query_row("SELECT id FROM card", [], |r| r.get(0)).unwrap();
+        let Some(Special::List { items, ordered, question, extra }) = recall::card_special(&bc, id).unwrap() else { panic!("목록으로 알아본다") };
+        assert_eq!((items.len(), items[2].as_str(), ordered), (7, "세션 계층", true));
+        assert!(question.starts_with("OSI 7계층") && extra.contains("<b>"));
+        assert_eq!(recall::suggest_for(&bc, id, &[3, 6]).unwrap(), Some(2));
+        assert_eq!(bc.query_row("SELECT count(*) FROM recall_mark", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "빠뜨림은 이 기기에만 (Q9)");
+    }
+
+    /// Q5 · Q7 · Q10: 선택형. 정답 번호 · 섞기 · 해설이 그대로고, Anki 앞면은 보기 목록 · 뒷면은 정답 굵게 (CSS)
+    #[test]
+    fn choice_round_trip() {
+        use crate::recall::{self, Special};
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-choice-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let deck_id = {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('네트워크', 0, 0)", []).unwrap();
+            let deck_id = con.last_insert_rowid();
+            let card = recall::ChoiceNew {
+                deck_id,
+                question: "TCP 3-way handshake에서 두 번째로 오가는 것은?".into(),
+                options: ["SYN", "SYN-ACK", "ACK", "FIN"].map(String::from).to_vec(),
+                correct: vec![1],
+                shuffle: true,
+                extra: "서버가 SYN을 받으면 SYN-ACK로 답해요.".into(),
+                importance: None,
+            };
+            recall::insert(&con, recall::CHOICE, deck_id, &recall::choice_fields(&card).unwrap(), None).unwrap();
+            let id: i64 = con.query_row("SELECT id FROM card", [], |r| r.get(0)).unwrap();
+            assert_eq!(recall::suggest_for(&con, id, &[3]).unwrap(), Some(1), "ACK 를 고름 → Again (Q2)");
+            assert_eq!(recall::suggest_for(&con, id, &[2]).unwrap(), Some(3));
+            assert_eq!(recall::suggest_for(&con, id, &[]).unwrap(), None, "고르지 않으면 추천 없음");
+            let names = crate::commands::note_field_names(&con).unwrap();
+            let fields: String = con.query_row("SELECT fields FROM note", [], |r| r.get(0)).unwrap();
+            let r = crate::commands::render_fields(&names, recall::CHOICE, &fields, Some(recall::CHOICE_QFMT), Some(recall::CHOICE_AFMT), 0);
+            assert!(r.front.contains("<li class=\"o2\">SYN-ACK</li>") && !r.front.contains("o5") && !r.front.contains("<script"));
+            assert!(r.back.contains("data-answer=\",2,\""));
+            deck_id
+        };
+        let (b, res) = recall_round_trip(&tmp.0, &a, deck_id);
+        assert_eq!((res["cards"].as_u64(), res["check_cards"].as_u64()), (Some(1), Some(0)), "스크립트가 없다");
+        let bc = b.db.lock().unwrap();
+        let id: i64 = bc.query_row("SELECT id FROM card", [], |r| r.get(0)).unwrap();
+        let Some(Special::Choice { options, correct, shuffle, extra, .. }) = recall::card_special(&bc, id).unwrap() else { panic!("선택형으로 알아본다") };
+        assert_eq!(options.iter().map(|o| o.1.as_str()).collect::<Vec<_>>(), ["SYN", "SYN-ACK", "ACK", "FIN"]);
+        assert_eq!((correct, shuffle, extra.as_str()), (vec![2], true, "서버가 SYN을 받으면 SYN-ACK로 답해요."));
+        let css: String = bc.query_row("SELECT css FROM note_type WHERE name = ?1 AND anki_model_id IS NOT NULL", [recall::CHOICE], |r| r.get(0)).unwrap();
+        assert!(css.contains("[data-answer*=\",2,\"] .o2"), "정답 굵게는 CSS 로");
+        drop(bc);
+
+        // Q10 이견: Anki 에서 필드를 지운 선택형은 알아보지 못하고 가져오기 결과에 한 줄
+        let c = state(&tmp.0.join("c"));
+        let cc = c.db.lock().unwrap();
+        cc.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('바꾼 덱', 0, 0)", []).unwrap();
+        let deck = cc.last_insert_rowid();
+        cc.execute("INSERT INTO note_type (name, fields, created_at, updated_at) VALUES (?1, '[\"질문\",\"보기1\",\"정답\"]', 0, 0)", [recall::CHOICE])
+            .unwrap();
+        let nt = cc.last_insert_rowid();
+        cc.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, 0, 'Card 1', '{{질문}}', '{{보기1}}')", [nt]).unwrap();
+        cc.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, '[\"q\",\"a\",\"1\"]', 0, 0)", [nt]).unwrap();
+        cc.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, 0, 0, 0)", params![cc.last_insert_rowid(), deck])
+            .unwrap();
+        let out = tmp.0.join("changed.apkg");
+        export(&cc, &c.data_dir, deck, &out, false, &QUIET).unwrap();
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap()).unwrap();
+        assert!(res["issues"].as_array().unwrap().iter().any(|i| i["kind"] == "recall_type"), "{res}");
     }
 
     /// 실제 Anki 가 만든 그림 가리기 .apkg 를 가져와 본다 (손으로 돌린다. 개인 데이터일 수 있어 파일은 저장소에 두지 않는다):

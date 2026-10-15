@@ -1567,7 +1567,7 @@ pub enum Join {
 
 /// 동기화 대상 표를 비운다 (Drive 데이터로 바꾸기). applying 이라 지운 기록이 쌓이지 않는다
 /// 이 기기 안에서만 쓰지만 동기화 대상 행을 정수 id 로 가리키는 표. Drive 데이터로 바꾸면 id 가 달라져 비운다
-const LOCAL_REFS: [&str; 4] = ["session_card_state", "card_change", "embedding_cache", "import_issue"];
+const LOCAL_REFS: [&str; 5] = ["session_card_state", "card_change", "embedding_cache", "import_issue", "recall_mark"];
 
 fn clear_synced(tx: &Transaction) -> SRes<()> {
     for t in LOCAL_REFS {
