@@ -1760,7 +1760,7 @@ pub struct AnswerResult {
     due_in_ms: Option<i64>,
 }
 
-fn load_srs(con: &Connection, card_id: i64) -> Res<SrsState> {
+pub(crate) fn load_srs(con: &Connection, card_id: i64) -> Res<SrsState> {
     con.query_row(
         "SELECT state, srs_step, stability, difficulty, due_at, interval_days, last_reviewed_at, reps, lapses FROM card WHERE id = ?1",
         [card_id],
