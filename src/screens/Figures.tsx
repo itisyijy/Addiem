@@ -1,19 +1,21 @@
-// 8.4 그림 · 표로 카드 만들기 (Figma Row IT: IT1-p 176:14681 · IT3 168:13918, 노트 178:14484 · 170:14084, DECISIONS IT).
-// PPTX 는 앱이 슬라이드를 그림으로 그리지 않아 끌어서 잡기 없이, 그림 · 표가 있는 슬라이드 목록에서 고른다 (IT1-p).
+// 8.4 그림 · 표로 카드 만들기 (Figma Row IT: IT1 157:13787 · IT1-p 176:14681 · IT3 168:13918, 노트 170:14075 · 178:14484 · 170:14084, DECISIONS IT).
+// PPTX 는 앱이 슬라이드를 그림으로 그리지 않아 끌어서 잡기 없이, 그림 · 표가 있는 슬라이드 목록에서 고른다 (IT1-p). PDF 는 PdfFigures.tsx.
 // 그림 → 그림 가리기(M2 편집기) · 그림을 앞면에 둔 카드, 표 → 표로 카드 만들기(IT3). EMF · WMF 는 만들지 않는다 (IT11).
-// 만든 카드는 그 슬라이드 · 영역 구간에 이어진다 (IT9). TableCards 와 영역 잇기는 PDF(2단계)도 그대로 쓴다
+// 만든 카드는 그 쪽 · 영역 구간에 이어진다 (IT9). 흐름(useFlows) · 메뉴 · 오른쪽 목록 · 차례로 만들기(IT8)는 PDF 도 같이 쓴다
 import "../styles/figures.css";
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api, errorText, qualityApi } from "../api";
 import { sanitize } from "../cardHtml";
-import { Badge, Button, Checkbox, Icon, Input, Segment as SegmentControl } from "../ui";
+import { Badge, Button, Checkbox, Icon, Input, Segment as SegmentControl, type IconName } from "../ui";
 import { n, useKey, useOverlayScope } from "../nav";
 import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
 import { DeckPicker } from "./DeckPicker";
 import { menuKeys } from "./Deck";
 import { OcclusionEditor } from "./Occlusion";
+import { cropPage, pageLayout } from "../pdf";
+import { boxOf, gridIn } from "../figures";
 import { naturalSize, occlusionApi, ordinalsOf, type Picture, type Shape } from "../occlusion";
 import {
   sourceApi,
@@ -30,7 +32,7 @@ import {
 } from "../sourceApi";
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-const sameRect = (a: Rect | undefined, b: Rect) => !!a && a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
+export const sameRect = (a: Rect | undefined, b: Rect) => !!a && a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
 /** 이 영역의 구간 (목록 · 타일의 "카드 N장", 연결 끊기) */
 const regionSeg = (segs: Segment[], page: number, kind: "figure" | "table", rect: Rect) =>
   segs.find((s) => s.page === page && s.signals.includes(kind) && sameRect(s.rects?.[0], rect));
@@ -39,6 +41,8 @@ const width = (rows: Cell[][]) => Math.max(0, ...rows.map((r) => r.length));
 const merges = (rows: Cell[][]) => rows.flat().filter((c) => !c.merged && (c.row_span > 1 || c.col_span > 1)).length;
 /** "4행 × 3열 · 합친 칸 1" */
 export const sizeLabel = (rows: Cell[][]) => `${rows.length}행 × ${width(rows)}열${merges(rows) ? ` · 합친 칸 ${merges(rows)}` : ""}`;
+/** PDF 칸 나누기(글자만) → 표 창의 칸 */
+export const cellsOf = (g: string[][]): Cell[][] => g.map((r) => r.map((text) => ({ text, row_span: 1, col_span: 1, merged: false })));
 /** 구간 글자 (I2 패널 · 검색): 행마다 한 줄, 칸은 " · " */
 const tableText = (rows: Cell[][]) =>
   rows
@@ -46,6 +50,9 @@ const tableText = (rows: Cell[][]) =>
     .filter(Boolean)
     .join("\n");
 const imageLabel = (img: SlideImage) => img.descr.trim() || img.name.trim() || `그림 ${img.index + 1}`;
+
+/** data URL 그림(PDF 에서 자른 것)을 미디어 폴더에. 파일 이름은 save_media 가 내용으로 정한다 */
+export const storeDataUrl = (url: string, name = "figure.png") => invoke<string>("save_media", { name, dataBase64: url.split(",")[1] ?? "" });
 
 // ---------------------------------------------------------------- 썸네일 (원본 바이트 → Blob URL)
 
@@ -90,7 +97,258 @@ async function storeImage(materialId: number, page: number, img: SlideImage) {
     r.onerror = () => reject(r.error);
     r.readAsDataURL(blob);
   });
-  return invoke<string>("save_media", { name: `slide.${img.ext}`, dataBase64: data.split(",")[1] ?? "" });
+  return storeDataUrl(data, `slide.${img.ext}`);
+}
+
+// ---------------------------------------------------------------- 흐름 (PPTX · PDF 공통)
+
+/** 그림 카드가 받는 것. url: 보여 줄 그림 · store: 미디어 폴더에 넣고 이름 (카드를 만들 때만) */
+export type FigSource = {
+  region: Region;
+  /** "그림 1 · 강의.pptx · 슬라이드 3" */
+  sub: string;
+  /** 가리기 편집기 머리 */
+  fileName: string;
+  alt: string;
+  /** 넣을 곳 기본값 (R8) */
+  deckId: number;
+  url: () => Promise<string>;
+  store: () => Promise<string>;
+};
+export type TableFlow = { sub: string; how?: string; rows: Cell[][]; region: Omit<Region, "kind" | "text">; deckId: number };
+
+/** 그림 가리기 · 그림을 앞면에 둔 카드 · 표 창. onEnded: 창을 닫을 때마다 (차례로 만들기가 다음 것을 연다) */
+export function useFlows(rootDeckId: number, onChanged: () => void, onEnded: () => void) {
+  const toast = useToast();
+  const [occl, setOccl] = useState<{ src: FigSource; pic: Picture } | null>(null);
+  const [front, setFront] = useState<FigSource | null>(null);
+  const [table, setTable] = useState<TableFlow | null>(null);
+  const occlusion = async (src: FigSource) => {
+    try {
+      const url = await src.url();
+      setOccl({ src, pic: { name: "", url, fileName: src.fileName, ...(await naturalSize(url)) } });
+    } catch (e) {
+      toast({ title: "그림을 열지 못했어요", text: errorText(e), tone: "error" });
+      onEnded();
+    }
+  };
+  const saveOcclusion = async (src: FigSource, shapes: Shape[], hideAll: boolean) => {
+    try {
+      const image = await src.store();
+      const note = await occlusionApi.save({ note_id: null, deck_id: src.deckId, image, header: "", back_extra: "", shapes, hide_all: hideAll, importance: null });
+      await sourceApi.regionLink(src.region, [note]);
+      toast({ title: `그림 가리기 카드 ${n(ordinalsOf(shapes).length)}장을 만들었어요`, text: "자료의 그림과 이어 두었어요." });
+      setOccl(null);
+      onChanged();
+      onEnded();
+    } catch (e) {
+      toast({ title: "카드를 만들지 못했어요", text: errorText(e), tone: "error" });
+    }
+  };
+  const close = (set: (v: null) => void) => () => {
+    set(null);
+    onEnded();
+  };
+  const ui = (
+    <>
+      {occl && (
+        <OcclusionEditor picture={occl.pic} shapes={[]} hideAll onCancel={close(setOccl)} onDone={(shapes, hideAll) => saveOcclusion(occl.src, shapes, hideAll)} />
+      )}
+      {front && <ImageCard src={front} rootDeckId={rootDeckId} onClose={close(setFront)} onDone={onChanged} onUndone={onChanged} />}
+      {table && <TableCards sub={table.sub} how={table.how} rows={table.rows} region={table.region} rootDeckId={rootDeckId} deckId={table.deckId} onClose={close(setTable)} onDone={onChanged} />}
+    </>
+  );
+  return { occlusion, front: setFront, table: setTable, ui };
+}
+
+// ---------------------------------------------------------------- 그림 메뉴 (IT2)
+
+export type MenuEntry = { icon: IconName; title: string; hint: string; disabled?: boolean; onClick: () => void };
+
+/** 그림 · 잡은 영역 메뉴. tail: 아래 줄 (목록에서 빼기 · 영역 다시 잡기) */
+export function FigMenu({ entries, tail, className = "", style, onClose }: {
+  entries: MenuEntry[];
+  tail?: { label: string; onClick: () => void };
+  className?: string;
+  style?: React.CSSProperties;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className={`menu__list menu--panel fig-menu ${className}`}
+      style={style}
+      role="menu"
+      aria-label="그림 메뉴"
+      onKeyDown={menuKeys}
+      onPointerDown={(e) => e.stopPropagation()}
+      onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && onClose()}
+    >
+      {entries.map((x, i) => (
+        <button key={x.title} role="menuitem" autoFocus={i === 0} className="menu__item menu__item--top" disabled={x.disabled} onClick={x.onClick}>
+          <Icon name={x.icon} size={18} />
+          <span className="menu__text">
+            <span className="t-label-m">{x.title}</span>
+            <span className="t-caption c-tertiary">{x.hint}</span>
+          </span>
+        </button>
+      ))}
+      {tail && (
+        <>
+          <div className="menu__sep" role="separator" />
+          <button role="menuitem" className="menu__item" onClick={tail.onClick}>
+            <Icon name="x" size={18} />
+            <span className="t-label-m c-secondary">{tail.label}</span>
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 오른쪽 목록 · 차례로 만들기 (IT4 · IT8)
+
+export type FigRow = {
+  key: string;
+  kind: "figure" | "table";
+  /** "슬라이드 7" · "p.12" */
+  where: string;
+  text: string;
+  /** "표일 수 있어요 · 확인 전" (warn) */
+  note?: string;
+  seg?: Segment;
+  /** 만들 수 없음 (IT11) */
+  off?: boolean;
+  /** 버튼 글: "만들기" · "확인" */
+  act?: string;
+};
+
+/** 고르기 · 차례로 만들기. open: 그 줄의 흐름을 연다 (표는 IT3 창, 그림은 메뉴). 창이 닫히면 next() */
+export function useBulk(open: (key: string) => void) {
+  const [checked, setChecked] = useState<string[]>([]);
+  const [run, setRun] = useState<{ keys: string[]; at: number } | null>(null);
+  const go = (keys: string[], at: number) => {
+    if (at >= keys.length) return setRun(null);
+    setRun({ keys, at });
+    open(keys[at]);
+  };
+  return {
+    checked,
+    toggle: (k: string, on: boolean) => setChecked((c) => (on ? [...c.filter((x) => x !== k), k] : c.filter((x) => x !== k))),
+    run,
+    /** 목록 순서대로 */
+    start: (order: string[]) => {
+      setChecked([]);
+      go(order.filter((k) => checked.includes(k)), 0);
+    },
+    next: () => run && go(run.keys, run.at + 1),
+    stop: () => setRun(null),
+  };
+}
+export type Bulk = ReturnType<typeof useBulk>;
+
+export function FigList({ rows, head, notes, linking, onLinking, links, onOpen, onPick, menu, bulk, picked }: {
+  rows: FigRow[];
+  head: ReactNode;
+  /** 목록 위 안내 (읽는 중 · 오류 · 비었음) */
+  notes?: ReactNode;
+  linking?: number;
+  onLinking: (segmentId: number | undefined) => void;
+  links: (seg: Segment) => ReactNode;
+  onOpen: (key: string) => void;
+  /** 줄을 누르면 (PDF: 그 쪽으로) */
+  onPick?: (key: string) => void;
+  /** 그 줄의 메뉴 (PPTX 그림) */
+  menu?: (key: string) => ReactNode;
+  bulk: Bulk;
+  /** 쪽 보기에서 고른 것 */
+  picked?: string;
+}) {
+  const usable = rows.filter((r) => !r.off);
+  const sel = rows.filter((r) => bulk.checked.includes(r.key));
+  const tables = sel.filter((r) => r.kind === "table").length;
+  const label = (r?: FigRow) => (r ? `${r.where} · ${r.text}` : "");
+  const run = bulk.run;
+  const current = picked ?? run?.keys[run.at];
+  return (
+    <section className="panel src-list" aria-label="그림과 표">
+      {head}
+      {notes}
+      {rows.map((r) => {
+        const count = r.seg?.links.length ?? 0;
+        const on = bulk.checked.includes(r.key);
+        return (
+          <div key={r.key} id={`fig-${r.key}`} className={`fig-item ${on ? "is-picked" : ""} ${current === r.key ? "is-active" : ""}`}>
+            <div className="fig-row" onClick={onPick && (() => onPick(r.key))}>
+              <span className="src-seg__check">
+                <Checkbox quiet label={`${r.text} 고르기`} checked={on} disabled={r.off} onChange={(v) => bulk.toggle(r.key, v)} />
+              </span>
+              <span className="fig-row__thumb">
+                <Icon name={r.kind === "figure" ? "image" : "list"} size={18} />
+              </span>
+              <span className="fig-row__text">
+                <span className="fig-row__top">
+                  <Badge>{r.kind === "figure" ? "그림" : "표"}</Badge>
+                  <span className="t-caption c-tertiary">{r.where}</span>
+                  {r.note && <span className="t-caption c-warn">{r.note}</span>}
+                </span>
+                <span className={`t-body-s ${r.off ? "c-tertiary" : "c-primary"}`}>{r.text}</span>
+              </span>
+              {r.off ? (
+                <span className="t-caption c-tertiary">만들 수 없어요</span>
+              ) : r.seg && count ? (
+                <button
+                  className="badge badge--accent t-label-s fig-row__count"
+                  aria-expanded={linking === r.seg.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onLinking(linking === r.seg!.id ? undefined : r.seg!.id);
+                  }}
+                >
+                  카드 {n(count)}장
+                </button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="M"
+                  icon="plus"
+                  label={r.act ?? "만들기"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpen(r.key);
+                  }}
+                />
+              )}
+              {menu?.(r.key)}
+            </div>
+            {r.seg && linking === r.seg.id && links(r.seg)}
+          </div>
+        );
+      })}
+      {usable.length > 0 &&
+        (run ? (
+          <div className="src-pick" role="status">
+            <span className="src-pick__text">
+              <span className="t-label-m">
+                차례로 만들기 {n(run.at + 1)} / {n(run.keys.length)} · {label(rows.find((r) => r.key === run.keys[run.at]))}
+              </span>
+              <span className="t-caption c-tertiary">창을 닫으면 다음 것을 열어요{run.at + 1 < run.keys.length ? ` · 다음: ${label(rows.find((r) => r.key === run.keys[run.at + 1]))}` : " · 마지막이에요"}</span>
+            </span>
+            <span className="fig-run__btns">
+              <Button variant="ghost" size="M" label="그만하기" onClick={bulk.stop} />
+              <Button variant="secondary" size="M" icon="arrow-right" label={run.at + 1 < run.keys.length ? "다음" : "끝내기"} onClick={bulk.next} />
+            </span>
+          </div>
+        ) : (
+          <div className="src-pick">
+            <span className="src-pick__text">
+              <span className="t-label-m">{sel.length ? `${n(sel.length)}개 고름 · 표 ${n(tables)} · 그림 ${n(sel.length - tables)}` : "차례로 만들 그림·표를 골라 주세요"}</span>
+              <span className="t-caption c-tertiary">하나씩 차례로 열어요 · 이미 만든 것은 다시 고를 수 있어요</span>
+            </span>
+            <Button size="M" icon="arrow-right" label="차례로 만들기" disabled={!sel.length} onClick={() => bulk.start(rows.map((r) => r.key))} />
+          </div>
+        ))}
+    </section>
+  );
 }
 
 // ---------------------------------------------------------------- IT1-p 슬라이드별 목록
@@ -102,8 +360,8 @@ const itemsOf = (o: SlideObjects): Item[] => [
 ];
 const usable = (it: Item) => !it.img || it.img.supported;
 
-/** 가운데 열(슬라이드 카드)과 오른쪽 목록. head: 목록 위 탭 줄, links: 카드 잇기 칸 (Sources 가 준다) */
-export function Figures({ m, objs, error, segs, deckId, head, linking, onLinking, links, onChanged }: {
+/** 가운데 열(슬라이드 카드)과 오른쪽 목록. head: 목록 위 탭 줄, pill: 파일 알약, links: 카드 잇기 칸 (Sources 가 준다) */
+export function Figures({ m, objs, error, segs, deckId, head, pill, linking, onLinking, links, onChanged }: {
   m: Material;
   objs: SlideObjects[] | null;
   error?: string;
@@ -111,82 +369,81 @@ export function Figures({ m, objs, error, segs, deckId, head, linking, onLinking
   /** 자료 화면의 덱 (넣을 곳 고르기의 뿌리) */
   deckId: number;
   head: ReactNode;
+  pill: ReactNode;
   /** 카드 잇기 칸을 연 구간 ("카드 N장"을 누르면 이어진 카드 · 끊기) */
   linking?: number;
   onLinking: (segmentId: number | undefined) => void;
   links: (seg: Segment) => ReactNode;
   onChanged: () => void;
 }) {
-  const toast = useToast();
   const [menu, setMenu] = useState<string | null>(null);
-  const [occl, setOccl] = useState<{ it: Item; pic: Picture } | null>(null);
-  const [front, setFront] = useState<Item | null>(null);
-  const [table, setTable] = useState<Item | null>(null);
   useOverlayScope(menu !== null);
   useKey("Escape", () => setMenu(null), menu !== null, { modal: true });
   useEffect(() => dropThumbs, [m.id]);
 
   const items = (objs ?? []).flatMap(itemsOf);
+  const byKey = (key: string) => items.find((it) => it.key === key);
   const segOf = (it: Item) => regionSeg(segs, it.o.page, it.img ? "figure" : "table", (it.img ?? it.table)!.rect);
   const linked = (it: Item) => segOf(it)?.links.length ?? 0;
   const region = (it: Item): Omit<Region, "kind" | "text"> => ({ material_id: m.id, page: it.o.page, rects: [(it.img ?? it.table)!.rect] });
   const place = (it: Item) => `${m.file_name} · 슬라이드 ${it.o.page}`;
-  const open = (it: Item, where: string) => (it.table ? setTable(it) : setMenu(`${where}:${it.key}`));
-
-  const startOcclusion = async (it: Item) => {
-    setMenu(null);
-    try {
-      const { url } = await thumb(m.id, it.o.page, it.img!);
-      setOccl({ it, pic: { name: "", url, fileName: place(it), ...(await naturalSize(url)) } });
-    } catch (e) {
-      toast({ title: "그림을 열지 못했어요", text: errorText(e), tone: "error" });
-    }
-  };
-  const saveOcclusion = async (it: Item, shapes: Shape[], hideAll: boolean) => {
-    try {
-      const image = await storeImage(m.id, it.o.page, it.img!);
-      const note = await occlusionApi.save({ note_id: null, deck_id: it.o.deck_id, image, header: "", back_extra: "", shapes, hide_all: hideAll, importance: null });
-      await sourceApi.regionLink({ ...region(it), kind: "figure", text: it.img!.descr.trim() }, [note]);
-      toast({ title: `그림 가리기 카드 ${n(ordinalsOf(shapes).length)}장을 만들었어요`, text: "슬라이드 그림과 이어 두었어요." });
-      setOccl(null);
-      onChanged();
-    } catch (e) {
-      toast({ title: "카드를 만들지 못했어요", text: errorText(e), tone: "error" });
-    }
-  };
+  const bulk = useBulk((key) => {
+    const it = byKey(key);
+    if (!it) return bulk.next();
+    if (it.table) return openTable(it);
+    setMenu(`row:${key}`);
+    document.getElementById(`fig-${key}`)?.scrollIntoView({ block: "nearest" });
+  });
+  const flows = useFlows(deckId, onChanged, () => bulk.run && bulk.next());
+  const openTable = (it: Item) => flows.table({ sub: `표 ${it.k + 1} · ${place(it)}`, rows: it.table!.rows, region: region(it), deckId: it.o.deck_id });
+  const open = (it: Item, where: string) => (it.table ? openTable(it) : setMenu(`${where}:${it.key}`));
+  const src = (it: Item): FigSource => ({
+    region: { ...region(it), kind: "figure", text: it.img!.descr.trim() },
+    sub: `그림 ${it.k + 1} · ${place(it)}`,
+    fileName: place(it),
+    alt: imageLabel(it.img!),
+    deckId: it.o.deck_id,
+    url: () => thumb(m.id, it.o.page, it.img!).then((t) => t.url),
+    store: () => storeImage(m.id, it.o.page, it.img!),
+  });
 
   const imageMenu = (it: Item, where: string) =>
     menu === `${where}:${it.key}` && (
-      <div
-        className="menu__list menu--panel fig-menu"
-        role="menu"
-        aria-label="그림 메뉴"
-        onKeyDown={menuKeys}
-        onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setMenu(null)}
-      >
-        <button role="menuitem" autoFocus className="menu__item menu__item--top" disabled={it.img?.ext === "gif"} onClick={() => startOcclusion(it)}>
-          <Icon name="image" size={18} />
-          <span className="menu__text">
-            <span className="t-label-m">그림 가리기 카드로</span>
-            <span className="t-caption c-tertiary">{it.img?.ext === "gif" ? "움직이는 GIF는 가릴 수 없어요" : "이 그림으로 가리기 편집기를 열어요"}</span>
-          </span>
-        </button>
-        <button role="menuitem" className="menu__item menu__item--top" onClick={() => (setMenu(null), setFront(it))}>
-          <Icon name="layers" size={18} />
-          <span className="menu__text">
-            <span className="t-label-m">그림을 앞면에 둔 카드</span>
-            <span className="t-caption c-tertiary">앞면에 그림, 뒷면에 답을 써요</span>
-          </span>
-        </button>
-      </div>
+      <FigMenu
+        onClose={() => setMenu(null)}
+        entries={[
+          {
+            icon: "image",
+            title: "그림 가리기 카드로",
+            hint: it.img?.ext === "gif" ? "움직이는 GIF는 가릴 수 없어요" : "이 그림으로 가리기 편집기를 열어요",
+            disabled: it.img?.ext === "gif",
+            onClick: () => (setMenu(null), flows.occlusion(src(it))),
+          },
+          { icon: "layers", title: "그림을 앞면에 둔 카드", hint: "앞면에 그림, 뒷면에 답을 써요", onClick: () => (setMenu(null), flows.front(src(it))) },
+        ]}
+      />
     );
+
+  const rows: FigRow[] = items.map((it) => ({
+    key: it.key,
+    kind: it.img ? "figure" : "table",
+    where: `슬라이드 ${it.o.page}`,
+    text: it.img
+      ? `${imageLabel(it.img)}${it.img.supported ? "" : " · 미리 볼 수 없는 형식"}`
+      : `${it.table!.name || `표 ${it.k + 1}`} · ${it.table!.rows.length}행 × ${width(it.table!.rows)}열`,
+    seg: segOf(it),
+    off: !usable(it),
+  }));
 
   return (
     <>
       <div className="fig-slides" aria-label="그림·표가 있는 슬라이드">
-        <span className="t-label-m c-secondary">
-          그림·표가 있는 슬라이드 {n(objs?.length ?? 0)} / {n(m.pages)}
-        </span>
+        <div className="fig-bar">
+          {pill}
+          <span className="t-label-m c-secondary">
+            그림·표가 있는 슬라이드 {n(objs?.length ?? 0)} / {n(m.pages)}
+          </span>
+        </div>
         {objs?.map((o) => (
           <div key={o.page} className="fig-slide">
             <div className="fig-slide__head">
@@ -200,7 +457,16 @@ export function Figures({ m, objs, error, segs, deckId, head, linking, onLinking
             </div>
             <div className="fig-tiles">
               {itemsOf(o).map((it) => (
-                <Tile key={it.key} m={m} it={it} linked={linked(it)} onOpen={() => open(it, "tile")} menu={imageMenu(it, "tile")} />
+                <Tile
+                  key={it.key}
+                  m={m}
+                  it={it}
+                  linked={linked(it)}
+                  checked={bulk.checked.includes(it.key)}
+                  onCheck={(v) => bulk.toggle(it.key, v)}
+                  onOpen={() => open(it, "tile")}
+                  menu={imageMenu(it, "tile")}
+                />
               ))}
             </div>
           </div>
@@ -208,93 +474,35 @@ export function Figures({ m, objs, error, segs, deckId, head, linking, onLinking
         <p className="t-caption c-tertiary">그림·표가 없는 슬라이드는 빼고 보여요 · 그림을 누르면 메뉴, 표를 누르면 표 카드 창이 열려요</p>
       </div>
 
-      <section className="panel src-list" aria-label="그림과 표">
-        {head}
-        {objs === null && !error && <p className="src-list__note t-body-s c-secondary">슬라이드를 읽고 있어요…</p>}
-        {error && <p className="src-list__note t-body-s c-secondary">{error}</p>}
-        {objs?.length === 0 && !error && <p className="src-list__note t-body-s c-secondary">이 자료에서 그림이나 표를 찾지 못했어요.</p>}
-        {items.map((it) => {
-          const seg = segOf(it);
-          const count = seg?.links.length ?? 0;
-          return (
-            <div key={it.key} className="fig-item">
-              <div className="fig-row">
-                <span className="fig-row__thumb">
-                  <Icon name={it.img ? "image" : "list"} size={18} />
-                </span>
-                <span className="fig-row__text">
-                  <span className="fig-row__top">
-                    <Badge>{it.img ? "그림" : "표"}</Badge>
-                    <span className="t-caption c-tertiary">슬라이드 {it.o.page}</span>
-                  </span>
-                  <span className={`t-body-s ${usable(it) ? "c-primary" : "c-tertiary"}`}>
-                    {it.img
-                      ? `${imageLabel(it.img)}${it.img.supported ? "" : " · 미리 볼 수 없는 형식"}`
-                      : `${it.table!.name || `표 ${it.k + 1}`} · ${it.table!.rows.length}행 × ${width(it.table!.rows)}열`}
-                  </span>
-                </span>
-                {!usable(it) ? (
-                  <span className="t-caption c-tertiary">만들 수 없어요</span>
-                ) : seg && count ? (
-                  <button className="badge badge--accent t-label-s fig-row__count" aria-expanded={linking === seg.id} onClick={() => onLinking(linking === seg.id ? undefined : seg.id)}>
-                    카드 {n(count)}장
-                  </button>
-                ) : (
-                  <Button variant="ghost" size="M" icon="plus" label="만들기" onClick={() => open(it, "row")} />
-                )}
-                {imageMenu(it, "row")}
-              </div>
-              {seg && linking === seg.id && links(seg)}
-            </div>
-          );
-        })}
-        {items.length > 0 && <p className="src-list__note t-caption c-tertiary">타일을 누르면 더 만들 수 있어요. "카드 N장"을 누르면 이어진 카드를 보고 끊어요.</p>}
-      </section>
-
-      {occl && (
-        <OcclusionEditor
-          picture={occl.pic}
-          shapes={[]}
-          hideAll
-          onCancel={() => setOccl(null)}
-          onDone={(shapes, hideAll) => saveOcclusion(occl.it, shapes, hideAll)}
-        />
-      )}
-      {front && (
-        <ImageCard
-          m={m}
-          it={front}
-          rootDeckId={deckId}
-          onClose={() => setFront(null)}
-          onDone={() => {
-            setFront(null);
-            onChanged();
-          }}
-          onUndone={onChanged}
-        />
-      )}
-      {table && (
-        <TableCards
-          sub={`표 ${table.k + 1} · ${place(table)}`}
-          rows={table.table!.rows}
-          region={region(table)}
-          rootDeckId={deckId}
-          deckId={table.o.deck_id}
-          onClose={() => setTable(null)}
-          onDone={onChanged}
-        />
-      )}
+      <FigList
+        rows={rows}
+        head={head}
+        notes={
+          <>
+            {objs === null && !error && <p className="src-list__note t-body-s c-secondary">슬라이드를 읽고 있어요…</p>}
+            {error && <p className="src-list__note t-body-s c-secondary">{error}</p>}
+            {objs?.length === 0 && !error && <p className="src-list__note t-body-s c-secondary">이 자료에서 그림이나 표를 찾지 못했어요.</p>}
+          </>
+        }
+        linking={linking}
+        onLinking={onLinking}
+        links={links}
+        onOpen={(key) => byKey(key) && open(byKey(key)!, "row")}
+        menu={(key) => byKey(key) && imageMenu(byKey(key)!, "row")}
+        bulk={bulk}
+      />
+      {flows.ui}
     </>
   );
 }
 
-function Tile({ m, it, linked, onOpen, menu }: { m: Material; it: Item; linked: number; onOpen: () => void; menu: ReactNode }) {
+function Tile({ m, it, linked, checked, onCheck, onOpen, menu }: { m: Material; it: Item; linked: number; checked: boolean; onCheck: (v: boolean) => void; onOpen: () => void; menu: ReactNode }) {
   const ok = usable(it);
   const label = it.img
     ? `그림 ${it.k + 1} · ${imageLabel(it.img)}${it.img.supported ? "" : ` · ${it.img.ext.toUpperCase()}`}`
     : `표 ${it.k + 1} · ${sizeLabel(it.table!.rows)}`;
   return (
-    <div className="fig-tile">
+    <div className={`fig-tile ${checked ? "is-checked" : ""}`}>
       <button className={`fig-thumb ${ok ? "" : "is-off"}`} disabled={!ok} aria-label={`${label} ${it.table ? "표로 카드 만들기" : "카드 만들기"}`} aria-haspopup={it.img ? "menu" : "dialog"} onClick={onOpen}>
         {it.img ? (
           ok ? (
@@ -310,6 +518,11 @@ function Tile({ m, it, linked, onOpen, menu }: { m: Material; it: Item; linked: 
         )}
         {linked > 0 && <span className="badge badge--accent t-label-s fig-thumb__count">카드 {n(linked)}장</span>}
       </button>
+      {ok && (
+        <button className="fig-tile__check" role="checkbox" aria-checked={checked} aria-label={`${label} 고르기`} onClick={() => onCheck(!checked)}>
+          {checked && <Icon name="check" size={12} />}
+        </button>
+      )}
       <span className={`t-caption ${ok ? "c-secondary" : "c-tertiary"}`} title={label}>
         {label}
       </span>
@@ -356,32 +569,50 @@ function hitsOf(rows: Cell[][], cardHtml: string) {
   return hits;
 }
 
-/** 표는 카드와 같은 HTML 표로 (첫 행 머리글), 그림은 썸네일. PPTX 만 (PDF 는 2단계) */
+/** 표는 카드와 같은 HTML 표로 (첫 행 머리글), 그림은 썸네일. PDF 는 그 영역을 다시 나누거나(표) 잘라 그린다(그림 · 글자 없는 표) */
 export function RegionView({ m, s, cardId }: { m: Material; s: Segment; cardId?: number }) {
-  const [obj, setObj] = useState<{ img?: SlideImage; table?: SlideTable } | null>();
+  const [obj, setObj] = useState<{ img?: SlideImage; table?: SlideTable; url?: string } | null>();
   const [card, setCard] = useState("");
   useEffect(() => {
     let live = true;
     setObj(undefined);
-    if (m.kind !== "pptx") return setObj(null);
-    sourceApi.slideObjects(m.id, s.page).then(
-      ([o]) => {
-        const img = o?.images.find((x) => sameRect(s.rects?.[0], x.rect));
-        const table = o?.tables.find((x) => sameRect(s.rects?.[0], x.rect));
-        if (live) setObj(img || table ? { img, table } : null);
-      },
-      () => live && setObj(null),
-    );
+    const r = s.rects?.[0];
+    if (m.kind === "pdf" && r) {
+      (async () => {
+        if (s.signals.includes("table")) {
+          const lay = await pageLayout(m.id, s.page);
+          const g = gridIn(lay, boxOf(lay, r));
+          if (g.length) return live && setObj({ table: { name: "", rect: r, rows: cellsOf(g) } });
+        }
+        const c = await cropPage(m.id, s.page, r, 600);
+        if (live) setObj({ url: c.url });
+      })().catch(() => live && setObj(null));
+    } else if (m.kind === "pptx") {
+      sourceApi.slideObjects(m.id, s.page).then(
+        ([o]) => {
+          const img = o?.images.find((x) => sameRect(r, x.rect));
+          const table = o?.tables.find((x) => sameRect(r, x.rect));
+          if (live) setObj(img || table ? { img, table } : null);
+        },
+        () => live && setObj(null),
+      );
+    } else setObj(null);
     if (cardId != null) api.cardView(cardId).then((v) => live && setCard(v.back), () => {});
     return () => {
       live = false;
     };
-  }, [m.id, m.kind, s.page, s.rects, cardId]);
+  }, [m.id, m.kind, s.page, s.rects, s.signals, cardId]);
   if (obj === undefined) return <div className="src-panel__region is-wait" />;
-  if (obj?.img) {
+  if (obj?.img || obj?.url) {
     return (
       <figure className="src-panel__region">
-        {obj.img.supported ? <ThumbImage m={m} page={s.page} img={obj.img} /> : <span className="t-caption c-tertiary">미리 볼 수 없는 형식</span>}
+        {obj.url ? (
+          <img src={obj.url} alt={s.text} />
+        ) : obj.img!.supported ? (
+          <ThumbImage m={m} page={s.page} img={obj.img!} />
+        ) : (
+          <span className="t-caption c-tertiary">미리 볼 수 없는 형식</span>
+        )}
         <figcaption className="t-caption c-tertiary">{s.text}</figcaption>
       </figure>
     );
@@ -415,47 +646,51 @@ export function RegionView({ m, s, cardId }: { m: Material; s: Segment; cardId?:
 
 // ---------------------------------------------------------------- IT3 그림을 앞면에 둔 카드
 
-function ImageCard({ m, it, rootDeckId, onClose, onDone, onUndone }: {
-  m: Material;
-  it: Item;
+function ImageCard({ src, rootDeckId, onClose, onDone, onUndone }: {
+  src: FigSource;
   rootDeckId: number;
   onClose: () => void;
   onDone: () => void;
   onUndone: () => void;
 }) {
   const toast = useToast();
-  const img = it.img!;
-  const url = useThumb(m.id, it.o.page, img);
+  const [url, setUrl] = useState<string>();
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
-  const [deck, setDeck] = useState(it.o.deck_id);
+  const [deck, setDeck] = useState(src.deckId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    src.url().then((u) => live && setUrl(u), (e) => live && setError(errorText(e)));
+    return () => {
+      live = false;
+    };
+  }, [src]);
   const create = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      const name = await storeImage(m.id, it.o.page, img);
+      const name = await src.store();
       const front = `${question.trim() ? `<div>${esc(question.trim())}</div>` : ""}<img src="${esc(name)}">`;
-      const change = await sourceApi.regionCards(deck, { material_id: m.id, page: it.o.page, rects: [img.rect], kind: "figure", text: img.descr.trim() }, [
-        { kind: "basic", front, back: esc(answer.trim()).replace(/\n/g, "<br>") },
-      ]);
+      const change = await sourceApi.regionCards(deck, src.region, [{ kind: "basic", front, back: esc(answer.trim()).replace(/\n/g, "<br>") }]);
       toast({
         title: "카드 1장을 만들었어요",
-        text: "슬라이드 그림과 이어 두었어요.",
+        text: "자료의 그림과 이어 두었어요.",
         tone: "undo",
         action: { label: "되돌리기", onClick: () => qualityApi.undo(change).then(() => (toast({ title: "카드 만들기를 되돌렸어요" }), onUndone()), (e) => toast({ title: "되돌리지 못했어요", text: errorText(e), tone: "error" })) },
       });
       onDone();
+      onClose();
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
     }
   };
   return (
-    <Modal title="그림을 앞면에 둔 카드" sub={`그림 ${it.k + 1} · ${m.file_name} · 슬라이드 ${it.o.page}`} onClose={onClose} className="fig-front">
+    <Modal title="그림을 앞면에 둔 카드" sub={src.sub} onClose={onClose} className="fig-front">
       <div className="modal__body">
-        {url ? <img className="fig-front__img" src={url} alt={imageLabel(img)} /> : <span className="fig-front__img fig-front__img--wait" />}
+        {url ? <img className="fig-front__img" src={url} alt={src.alt} /> : <span className="fig-front__img fig-front__img--wait" />}
         <Input label="질문 (앞면, 그림 위)" placeholder="비워 두면 그림만 보여요" value={question} onChange={(e) => setQuestion(e.target.value)} />
         <label className="field">
           <span className="t-label-m">답 (뒷면)</span>
@@ -510,10 +745,12 @@ function DraftView({ d }: { d: RegionCard }) {
   );
 }
 
-export function TableCards({ title = "표로 카드 만들기", sub, rows, region, rootDeckId, deckId, onClose, onDone }: {
+export function TableCards({ title = "표로 카드 만들기", sub, how = "표 구조 그대로 가져왔어요 · 칸을 눌러 고쳐요", rows, region, rootDeckId, deckId, onClose, onDone }: {
   title?: string;
   /** "표 1 · 강의.pptx · 슬라이드 7" */
   sub: string;
+  /** 표 위 한 줄 (어떻게 칸을 나눴는지) */
+  how?: string;
   rows: Cell[][];
   /** 카드를 이을 곳 (자료 · 쪽 · 영역) */
   region: Omit<Region, "kind" | "text">;
@@ -629,7 +866,7 @@ export function TableCards({ title = "표로 카드 만들기", sub, rows, regio
       <div className="tg-body">
         <div className="tg-editor">
           <div className="tg-editor__head">
-            <span className="t-caption c-secondary">표 구조 그대로 가져왔어요 · 칸을 눌러 고쳐요</span>
+            <span className="t-caption c-secondary">{how}</span>
             <Checkbox label="첫 행은 머리글" checked={header} onChange={setHeader} />
           </div>
           <div className="tg__grid">
