@@ -236,23 +236,32 @@ fn round_seen(con: &Connection, t: &queue::Deck) -> Res<HashSet<i64>> {
     )
 }
 
-/// P2 혼합 순서: 전체 every 장마다 취약 1장 (1/3 이면 2장마다). 취약은 전체 카드 사이에만 들어가 서로 붙지 않고,
-/// 앞뒤 카드와 같은 노트(형제 · 같은 카드)면 다음 취약 카드를 쓴다. 한 번에 size 장까지. (카드, 취약 자리인가)
+/// P2 혼합 순서. full: 이번 회독에서 아직 안 본 배운 카드(순서대로), weak: 취약 카드. 카드는 한 번에 한 번만 나온다
+/// (취약 카드는 전체 범위와 겹치므로 더하면 장수가 실제 카드 수를 넘는다, 디자인 검토 P).
+/// 취약이 아닌 전체 카드 every 장마다 취약 1장 (1/3 이면 2장마다). 취약은 아직 안 본 것부터, 전체 카드 사이에만 들어가 서로 붙지 않고,
+/// 앞뒤 카드와 같은 노트(형제)면 다음 취약 카드를 쓴다. 전체를 다 돌고 남은 취약은 이번 회독 범위(아직 안 본 것)만 뒤에 붙인다.
+/// 한 번에 size 장까지 (작은 size 의 결과는 큰 size 결과의 앞부분이다). (카드, 취약 자리인가)
 fn mix_order(full: &[(i64, i64)], weak: &[(i64, i64)], every: usize, size: usize) -> Vec<(i64, bool)> {
+    let unseen: HashSet<i64> = full.iter().map(|f| f.0).collect();
+    let weak_ids: HashSet<i64> = weak.iter().map(|w| w.0).collect();
+    let rest: Vec<&(i64, i64)> = full.iter().filter(|f| !weak_ids.contains(&f.0)).collect();
+    let mut pending: Vec<(i64, i64)> =
+        weak.iter().filter(|w| unseen.contains(&w.0)).chain(weak.iter().filter(|w| !unseen.contains(&w.0))).copied().collect();
     let mut out = vec![];
-    let mut pending: Vec<(i64, i64)> = weak.to_vec();
-    for (i, f) in full.iter().enumerate() {
+    for (i, f) in rest.iter().enumerate() {
         if out.len() >= size {
-            break;
+            return out;
         }
         out.push((f.0, false));
         if (i + 1) % every.max(1) == 0 && out.len() < size {
-            let next = full.get(i + 1).map(|n| n.1);
+            let next = rest.get(i + 1).map(|n| n.1);
             if let Some(k) = pending.iter().position(|w| w.1 != f.1 && Some(w.1) != next) {
                 out.push((pending.remove(k).0, true));
             }
         }
     }
+    out.extend(pending.into_iter().filter(|w| unseen.contains(&w.0)).map(|w| (w.0, true)));
+    out.truncate(size);
     out
 }
 
@@ -487,15 +496,21 @@ mod tests {
 
     #[test]
     fn mix_order_spreads_weak_cards() {
-        // (카드, 노트). 전체 2장마다 취약 1장, 취약끼리 붙지 않고 앞뒤와 같은 노트면 다음 취약 카드
+        // (카드, 노트). 취약이 아닌 전체 2장마다 취약 1장. 카드는 한 번만, 취약은 아직 안 본 것(3 · 1)부터
         let full = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)];
-        let weak = [(3, 3), (9, 9), (1, 1)];
+        let weak = [(9, 9), (3, 3), (1, 1)];
         let ids = |v: Vec<(i64, bool)>| v.iter().map(|c| if c.1 { -c.0 } else { c.0 }).collect::<Vec<_>>();
-        // 2 다음: 3 은 바로 뒤 카드와 같은 노트라 9 를 먼저
-        assert_eq!(ids(mix_order(&full, &weak, 2, 100)), [1, 2, -9, 3, 4, -3, 5, 6, -1]);
-        assert_eq!(ids(mix_order(&full, &weak, 4, 100)), [1, 2, 3, 4, -3, 5, 6]);
-        assert_eq!(ids(mix_order(&full, &weak, 1, 5)), [1, -3, 2, -9, 3]);
-        assert!(mix_order(&[], &weak, 2, 100).is_empty(), "전체를 다 돌면 취약만 남기지 않는다");
+        // 이미 본 취약 9 는 자리가 남지 않아 빠진다. 장수 = 서로 다른 카드 수
+        assert_eq!(ids(mix_order(&full, &weak, 2, 100)), [2, 4, -3, 5, 6, -1]);
+        // 전체를 다 돌고 남은 안 본 취약(1)은 회독 범위라 뒤에 붙는다
+        assert_eq!(ids(mix_order(&full, &weak, 4, 100)), [2, 4, 5, 6, -3, -1]);
+        assert_eq!(ids(mix_order(&full, &weak, 1, 5)), [2, -3, 4, -1, 5]);
+        // 앞뒤 카드와 같은 노트면 다음 취약 카드
+        assert_eq!(ids(mix_order(&[(1, 1), (2, 7), (3, 3)], &[(8, 3), (9, 9)], 2, 100)), [1, 2, -9, 3]);
+        for size in 1..6 {
+            assert_eq!(mix_order(&full, &weak, 2, size), mix_order(&full, &weak, 2, 100)[..size], "작은 분량은 앞부분");
+        }
+        assert!(mix_order(&[], &weak, 2, 100).is_empty(), "전체를 다 돌면 이미 본 취약만 남기지 않는다");
     }
 
     #[test]
@@ -532,7 +547,7 @@ mod tests {
         let (cards, due) = build_mix(&con, t, &decks, 2, 100, now).unwrap();
         let w = |id, why| MixCard { id, weak: Some(why) };
         let f = |id| MixCard { id, weak: None };
-        assert_eq!(cards, [f(1), f(3), w(1, "불안한 핵심"), f(4), f(2), w(3, "약한 챕터")]);
+        assert_eq!(cards, [f(4), f(2), w(1, "불안한 핵심"), w(3, "약한 챕터")], "취약 카드도 한 번만");
         assert_eq!(due, [1]);
 
         // 혼합 세션에서 카드 1 을 처음 보면 일정에 반영, 같은 날 다시 보면(취약 자리) 기록만. 학습 단계를 잇는 평가는 반영
@@ -547,7 +562,7 @@ mod tests {
         // 회독 진행: 본 카드는 다음 분량의 전체 범위에서 빠지고, [처음부터 다시] 뒤에는 다시 든다 (오늘 반영한 카드는 오늘은 빼고)
         assert_eq!(round_seen(&con, t).unwrap(), HashSet::from([1]));
         let ids = |cards: Vec<MixCard>| cards.iter().map(|c| c.id).collect::<Vec<_>>();
-        assert_eq!(ids(build_mix(&con, t, &decks, 2, 100, now).unwrap().0), [3, 4, 3, 2]);
+        assert_eq!(ids(build_mix(&con, t, &decks, 2, 100, now).unwrap().0), [4, 2, 3]);
         con.execute("INSERT INTO deck_config (deck_id, updated_at, mix_since) VALUES (1, 0, ?1) ON CONFLICT (deck_id) DO UPDATE SET mix_since = ?1", [now + 1])
             .unwrap();
         assert!(round_seen(&con, t).unwrap().is_empty());

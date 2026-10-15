@@ -1,7 +1,7 @@
 // 학습 화면 묶음의 작은 조각: J3 필수 키워드 칩 · H3 압축 회독 안내 줄 (홈 · D1) · G3 [나누기 제안] 칩 (D5)
 import { useEffect, useRef, useState } from "react";
 import { Button, Icon } from "../ui";
-import { n, useNav } from "../nav";
+import { n, studyDate, useNav } from "../nav";
 import { cram, splitLater, type CramPlan, type Keyword } from "../written";
 import "../styles/study.css";
 
@@ -112,14 +112,36 @@ export function KeywordEditor({ keywords, suggestions, onChange, onDismiss }: {
 
 // ---------------------------------------------------------------- H3 압축 회독 안내 (홈 · D1)
 
-/** P0 목표일 14일 전부터 "시험 전 회독을 할 수 있어요" 한 줄 + [시험 전 회독]. 열 수 없으면 아무것도 그리지 않는다 */
-export function CramHint({ deckIds }: { deckIds: number[] | null }) {
+const CRAM_HIDDEN = "neo.cramHintHidden"; // 홈 회독 줄을 접은 학습일 (이 기기에서만, 다음 학습일에 다시 보인다)
+const studyDay = () => studyDate().toLocaleDateString("sv-SE");
+const hiddenToday = () => {
+  try {
+    return localStorage.getItem(CRAM_HIDDEN) === studyDay();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * P0 목표일 14일 전부터 "시험 전 회독을 할 수 있어요" 한 줄 + [시험 전 회독]. 열 수 없으면 아무것도 그리지 않는다.
+ * dismissible: 홈의 줄은 × 로 오늘 하루 접는다
+ */
+export function CramHint({ deckIds, dismissible = false }: { deckIds: number[] | null; dismissible?: boolean }) {
   const nav = useNav();
   const [plan, setPlan] = useState<CramPlan | null>(null);
+  const [hidden, setHidden] = useState(() => dismissible && hiddenToday());
   useEffect(() => {
     cram.plan(deckIds).then(setPlan, () => setPlan(null));
   }, [deckIds]);
-  if (!plan) return null;
+  if (!plan || hidden) return null;
+  const hide = () => {
+    try {
+      localStorage.setItem(CRAM_HIDDEN, studyDay());
+    } catch {
+      /* 저장이 막힌 환경. 이번 화면에서만 접는다 */
+    }
+    setHidden(true);
+  };
   return (
     <div className="cram-hint">
       <Icon name="target" size={16} className="c-accent" />
@@ -131,6 +153,11 @@ export function CramHint({ deckIds }: { deckIds: number[] | null }) {
         </span>
       </span>
       <Button variant="secondary" size="M" label="시험 전 회독" onClick={() => nav({ name: "summary", deckIds, cram: true })} />
+      {dismissible && (
+        <button className="cram-hint__x" aria-label="오늘은 접기" title="오늘은 접기" onClick={hide}>
+          <Icon name="x" size={14} />
+        </button>
+      )}
     </div>
   );
 }

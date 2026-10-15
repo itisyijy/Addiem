@@ -73,8 +73,8 @@ export const written = {
 
 /** 8.4 기출 (exam.rs). target "note" 면 노트 id, "segment" 면 자료 구간 id */
 export const exam = {
-  /** 시험 하나를 더한다. 같은 시험이 이미 있는 것은 건너뛴다. 바뀐 수 */
-  mark: (target: "note" | "segment", ids: number[], name: string | null) => invoke<number>("mark_exam", { target, ids, exam: name }),
+  /** 시험 하나를 더한다. 같은 시험이 이미 있는 것은 건너뛴다. "card" 는 카드의 노트에. 바뀐 수 */
+  mark: (target: "note" | "segment" | "card", ids: number[], name: string | null) => invoke<number>("mark_exam", { target, ids, exam: name }),
   /** 그대로 쓰기: 빼기 (hits null) · 되돌리기 */
   set: (target: "note" | "segment", states: ExamState[]) => invoke<void>("set_exam", { target, states }),
   list: (deckId: number | null) => invoke<{ name: string; cards: number }[]>("exam_list", { deckId }),

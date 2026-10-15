@@ -2,7 +2,7 @@
 // J1~J3 서술형 · H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { OcclusionEdit } from "./Occlusion";
-import { api, errorText, type CardView, type Level, type NoteEdit, type QueueSummary } from "../api";
+import { api, errorText, type CardView, type ExamState, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
 import { eul, n, useKey, useNav, useOverlayScope } from "../nav";
 import { actionKey, getKeys, matchAction, useKeymap } from "../keys";
@@ -10,7 +10,7 @@ import { useToast } from "../toast";
 import { plainText, renderCardHtml, toStoredHtml } from "../cardHtml";
 import { findMath, withMath } from "../math";
 import {
-  cram as cramApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
+  cram as cramApi, exam as examApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
 } from "../written";
 import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
@@ -18,6 +18,7 @@ import { RichField, makeCloze, toCloze, fromCloze, type FieldHandle } from "./Ad
 import { CramHint, KeywordEditor } from "./StudyParts";
 import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
+import { ExamField, examHint } from "./Exam";
 import { cardSource } from "../sourceApi";
 import "../styles/study.css";
 
@@ -100,13 +101,16 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
   // (큐 사유가 "남은 N장 ÷ M일" 계산식이면 목표일이 수를 정한 것)
   const base = "복습을 먼저 비우고, 신규는 핵심부터 넣었어요.";
   const split = !!t && q.notes.some((x) => x.startsWith(`${t.name}: `) && x.includes("÷"));
-  const reason = !t
-    ? base
-    : t.dday === 0
-      ? `${base} ${t.name} 목표일이 오늘이에요.`
-      : split
-        ? `${base} ${t.name} 목표일까지 ${t.dday}일이라 하루 몫을 나눴어요.`
-        : base;
+  // P9: 시험 전 회독(혼합)에서 본 오늘 예정 카드는 오늘의 학습에서 빠졌다
+  const mixed = q.mixed_today > 0 ? ` 시험 전 회독에서 ${n(q.mixed_today)}장을 이미 봤어요.` : "";
+  const reason =
+    (!t
+      ? base
+      : t.dday === 0
+        ? `${base} ${t.name} 목표일이 오늘이에요.`
+        : split
+          ? `${base} ${t.name} 목표일까지 ${t.dday}일이라 하루 몫을 나눴어요.`
+          : base) + mixed;
   // 핵심 신규 캡션은 숫자와 맞게: 여러 덱에서 오면 그렇다고, 목표 계산식은 결과까지 (하루 N장)
   const perDay = t ? Math.ceil(t.remaining_new / Math.max(1, t.days)) : 0;
   const coreDesc = !t
@@ -477,7 +481,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [undone, setUndone] = useState<Rating | null>(null); // D3-u 방금 되돌린 평가
   const [foldMenu, setFoldMenu] = useState(false);
   const [foldSel, setFoldSel] = useState(0);
-  const [zoom, setZoom] = useState<string | null>(null);
+  // 확대 보기: 그림 주소, 또는 그림 가리기(M3)면 덮개까지 그린 HTML (원본 그림만 크게 보이면 답이 보인다)
+  const [zoom, setZoom] = useState<{ src: string } | { html: string } | null>(null);
   const [fit, setFit] = useState({ overflow: false, more: false });
   const [editing, setEditing] = useState(false);
   const [hints, setHints] = useState(() => !pref(HINTS_SEEN));
@@ -610,7 +615,20 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     if (el.firstElementChild) ro.observe(el.firstElementChild);
-    return () => ro.disconnect();
+    // M3: 아주 긴 그림이라 넘치면 질문 면은 묻는 칸이 보이게 내린다 (그림이 그려진 뒤에 위치를 안다)
+    const ask = () => {
+      const a = el.querySelector(".io-mask--ask")?.getBoundingClientRect();
+      const b = el.getBoundingClientRect();
+      if (a && (a.bottom > b.bottom - 40 || a.top < b.top)) el.scrollTop += a.top - b.top - (b.height - a.height) / 2;
+    };
+    if (phase === "q") {
+      ask();
+      el.addEventListener("load", ask, true);
+    }
+    return () => {
+      ro.disconnect();
+      el.removeEventListener("load", ask, true);
+    };
   }, [card, phase, measure]);
 
   const dark = useDarkTheme();
@@ -770,7 +788,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   };
 
   const zoomImage = (e: ReactMouseEvent<HTMLDivElement>) => {
-    if (e.target instanceof HTMLImageElement) setZoom(e.target.src);
+    const io = (e.target as HTMLElement).closest(".io");
+    if (io) setZoom({ html: io.outerHTML });
+    else if (e.target instanceof HTMLImageElement) setZoom({ src: e.target.src });
   };
 
   // ---- J1 직접 써보기 (선택). 쓰지 않고 Space 로 답을 봐도 된다
@@ -852,6 +872,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     : [`${actionKey("reveal")} 답 보기`, mix && "평가가 복습 일정에 반영돼요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
+    mix && "평가가 복습 일정에 반영돼요",
     grade.ready && `${actionKey("grade")} ChatGPT 채점 보조`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
     card?.source && `${actionKey("source")} 원자료`,
@@ -939,6 +960,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 {typeof mixRoles.current.get(card.view.id)?.[0] === "string" && <Badge tone="danger">취약 · {mixRoles.current.get(card.view.id)![0]}</Badge>}
                 {card.written?.written && <Badge tone="accent">서술형</Badge>}
                 <span className="t-caption c-tertiary">{pathLabel(card.view.deck_path)}</span>
+                {card.view.occlusion && (
+                  <Badge tone="accent">
+                    그림 가리기 · {n(card.view.occlusion.n)}/{n(card.view.occlusion.count)}
+                  </Badge>
+                )}
               </span>
               <span className="study__tools">
                 {phase === "a" && card.source && (
@@ -1237,7 +1263,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
       {zoom && (
         <div className="scrim study__zoom" role="dialog" aria-label="그림 크게 보기 · 누르거나 Esc 로 닫기" onMouseDown={() => setZoom(null)}>
-          <img src={zoom} alt="" />
+          {"src" in zoom ? <img src={zoom.src} alt="" /> : <div className="study__zoom-io" dangerouslySetInnerHTML={{ __html: zoom.html }} />}
         </div>
       )}
 
@@ -1295,7 +1321,7 @@ function fieldRoles(note: NoteEdit): FieldRole[] {
 export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   noteId: number;
   /** 이 카드만의 중요도 · 하위 덱 이동 · 삭제 (아래 줄). 없으면 노트 내용만 고친다 */
-  card?: Pick<CardView, "id" | "importance" | "deck_path">;
+  card?: Pick<CardView, "id" | "importance" | "deck_path" | "occlusion">;
   onClose: () => void;
   onSaved: () => void;
   /** 카드를 지운 뒤. 없으면 onSaved 를 부른다 */
@@ -1319,9 +1345,11 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   const [write, setWrite] = useState(true);
   const [answerHtml, setAnswerHtml] = useState("");
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [exam, setExam] = useState<ExamState | null>(null); // N1 기출 줄 (저장할 때 쓴다)
 
   useEffect(() => {
     Promise.all([api.noteEdit(noteId), writtenApi.note(noteId).catch(() => null)]).then(([n, w]) => {
+      setExam(n.exam);
       const roles = fieldRoles(n);
       if (w?.native) roles.splice(0, 3, "front", "rich", "rich"); // 질문 · 모범 답안 · 채점 메모
       else if (w?.capable && w.answer_field !== null) roles[w.answer_field] = "rich"; // 제안 칩을 뽑는 칸
@@ -1385,6 +1413,7 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
     try {
       await api.updateNote(note.note_id, values);
       if (wn) await writtenApi.saveNote(note.note_id, write, kws, dismissed);
+      if (exam && JSON.stringify(exam) !== JSON.stringify(note.exam)) await examApi.set("note", [exam]);
       if (card && target && target.id !== here?.id) await api.moveCard(card.id, target.id);
       // 옮길 덱의 기본값과 같으면 개별 지정을 풀어 덱 설정을 따르게 한다
       if (card && level !== null && level !== card.importance) await api.setCardImportance(card.id, level === target?.importance ? null : level);
@@ -1411,7 +1440,7 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
 
   const front = note ? Math.max(0, note.roles.indexOf("front")) : 0;
   // M 그림 가리기: 카드 편집(E)은 가리기 편집기로 연다
-  if (note?.kind === "image_occlusion") return <OcclusionEdit noteId={noteId} onClose={onClose} onSaved={onSaved} />;
+  if (note?.kind === "image_occlusion") return <OcclusionEdit noteId={noteId} focus={card?.occlusion?.ordinal} onClose={onClose} onSaved={onSaved} />;
   const preview = note && [note.kind === "basic" ? plainText(note.values[1] ?? "") : "", here?.label ?? ""].filter(Boolean).join(" · ");
 
   return (
@@ -1495,7 +1524,8 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
               </div>
             )}
           </div>
-          {(card || wn) && <div className="edit__rule" />}
+          <div className="edit__rule" />
+          {note && exam && <ExamField deckId={rootId ?? null} value={exam} onChange={setExam} hint={examHint(plainText(note.values.join(" ")))} />}
           {wn && (
             <label className="edit__write">
               <Toggle on={write} onChange={setWrite} label="공부할 때 직접 써서 답하기" />

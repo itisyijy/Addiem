@@ -12,6 +12,9 @@ import { eul, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { readPdf, renderPage } from "../pdf";
 import { Modal } from "./NewDeck";
+import { menuKeys } from "./Deck";
+import { ExamDialog, examHint } from "./Exam";
+import { exam as examApi } from "../written";
 import {
   cardSource,
   MAX_PICK,
@@ -45,9 +48,9 @@ export function SourcesButton({ deckId }: { deckId: number }) {
   return <Button variant="secondary" size="M" icon="file" label={label} onClick={() => nav({ name: "sources", deckId, gaps: gaps > 0 })} />;
 }
 
-/** R1-a 정렬: ★ · 붉은 글씨 > 하이라이트 > 밑줄 > 볼드, 같은 등급은 쪽 순서 */
+/** R1-a 정렬: ★ · 붉은 글씨 · 기출 구간 > 하이라이트 > 밑줄 > 볼드, 같은 등급은 쪽 순서 */
 const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underline: 2, bold: 3 };
-const gapRank = (s: Segment) => Math.min(...s.signals.map((g) => GAP_RANK[g] ?? 3));
+const gapRank = (s: Segment) => (s.exam.hits ? 0 : Math.min(...s.signals.map((g) => GAP_RANK[g] ?? 3)));
 /** 보내는 글자 수 어림 (1구간 600자에서 자른다, rag.rs) */
 const sentChars = (s: Segment) => Math.min(s.text.trim().length, 600);
 
@@ -119,6 +122,10 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const [drafting, setDrafting] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const ai = useAiStatus();
+  // 8.4 기출 구간: ⋯ 메뉴 · 시험 고르기 창 · 연결된 카드에 퍼뜨릴지 묻는 한 줄
+  const [segMenu, setSegMenu] = useState<number | null>(null);
+  const [examSeg, setExamSeg] = useState<Segment | null>(null);
+  const [spread, setSpread] = useState<{ seg: number; name: string | null; cards: number[] } | null>(null);
 
   const reload = useCallback(async () => {
     const list = await sourceApi.list(deckId);
@@ -229,6 +236,34 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const changed = () => {
     loadSegs();
     reload();
+  };
+
+  /** 구간에 기출 표시. 연결된 카드가 있으면 그 카드에도 표시할지 한 줄로 묻는다 (N3) */
+  const markSeg = async (s: Segment, name: string | null) => {
+    setExamSeg(null);
+    setSegMenu(null);
+    try {
+      await examApi.mark("segment", [s.id], name);
+      setSpread(s.links.length ? { seg: s.id, name, cards: s.links.map((l) => l.card_id) } : null);
+      loadSegs();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const spreadToCards = async () => {
+    if (!spread) return;
+    try {
+      const done = await examApi.mark("card", spread.cards, spread.name);
+      toast({ title: done ? `카드 노트 ${n(done)}개에 기출을 표시했어요` : "연결된 카드에 이미 표시돼 있어요" });
+    } catch (e) {
+      setError(errorText(e));
+    }
+    setSpread(null);
+  };
+  const clearSeg = async (s: Segment) => {
+    setSegMenu(null);
+    await examApi.set("segment", [{ id: s.id, hits: null, names: [] }]).catch((e) => setError(errorText(e)));
+    loadSegs();
   };
 
   if (!materials) return null;
@@ -384,7 +419,21 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                       {s.signals.map((g) => (
                         <SignalBadge key={g} signal={g} />
                       ))}
+                      {s.exam.hits !== null && <Badge tone="warn">기출{s.exam.names.length ? ` · ${s.exam.names.join(" · ")}` : ""}</Badge>}
                       <span className="t-caption c-tertiary">p.{s.page}</span>
+                      {s.exam.hits === null && examHint(s.text) && (
+                        <button
+                          className="exam-chip exam-chip--suggest t-label-s"
+                          title="눌러야 기출 구간으로 표시돼요"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            markSeg(s, null);
+                          }}
+                        >
+                          <span className="exam-chip__dot" />"{examHint(s.text)}" · 기출 제안
+                          <Icon name="plus" size={12} />
+                        </button>
+                      )}
                     </span>
                     <p className="t-body-s c-primary">{s.text}</p>
                   </div>
@@ -414,7 +463,42 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                       }}
                     />
                   )}
+                  <span className="menu" onClick={(e) => e.stopPropagation()}>
+                    <button className="src-seg__more" aria-label="구간 메뉴" aria-haspopup="menu" aria-expanded={segMenu === s.id} onClick={() => setSegMenu(segMenu === s.id ? null : s.id)}>
+                      <Icon name="more" size={16} />
+                    </button>
+                    {segMenu === s.id && (
+                      <div className="menu__list menu--panel src-seg__menu" role="menu" aria-label="구간 메뉴" onKeyDown={menuKeys}>
+                        {s.exam.hits === null ? (
+                          <button role="menuitem" autoFocus className="menu__item menu__item--top" onClick={() => (setSegMenu(null), setExamSeg(s))}>
+                            <Icon name="target" size={16} scaled />
+                            <span className="menu__text">
+                              <span className="t-body-m">기출 구간으로 표시</span>
+                              <span className="t-caption c-tertiary">빠진 범위에서 ★처럼 먼저 보여요</span>
+                            </span>
+                          </button>
+                        ) : (
+                          <button role="menuitem" autoFocus className="menu__item menu__item--top" onClick={() => clearSeg(s)}>
+                            <Icon name="target" size={16} scaled />
+                            <span className="menu__text">
+                              <span className="t-body-m">기출 표시 빼기</span>
+                              <span className="t-caption c-tertiary">{s.exam.names.length ? s.exam.names.join(" · ") : `기출 ${n(s.exam.hits)}회`}</span>
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </span>
                 </div>
+                {spread?.seg === s.id && (
+                  <div className="src-spread" role="status">
+                    <span className="t-body-s">
+                      연결된 카드 {n(spread.cards.length)}장에도 {spread.name ? `"${spread.name}" ` : ""}기출을 표시할까요?
+                    </span>
+                    <Button variant="ghost" size="M" label="아니요" onClick={() => setSpread(null)} />
+                    <Button variant="secondary" size="M" label="카드에도 표시" onClick={spreadToCards} />
+                  </div>
+                )}
                 {linking === s.id && <LinkEditor deckId={deckId} seg={s} onChange={changed} />}
               </div>
             ))}
@@ -431,6 +515,18 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
             )}
           </section>
         </div>
+      )}
+      {examSeg && (
+        <ExamDialog
+          deckId={deckId}
+          notes={[examSeg.exam]}
+          cards={1}
+          title="기출 구간으로 표시"
+          sub="이 구간이 나온 시험을 골라요. 이 구간과 이은 카드는 기출 카드로 세요."
+          unit="구간"
+          onClose={() => setExamSeg(null)}
+          onConfirm={(name) => markSeg(examSeg, name)}
+        />
       )}
       {connecting && (
         <AiConnect

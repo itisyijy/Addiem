@@ -1,7 +1,7 @@
 // P1 시험 전 회독 (방식 [압축 | 혼합]) · P3 혼합 회독 끝난 뒤. 압축은 H3 그대로, 혼합은 8.5 (cram.rs)
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText } from "../api";
-import { Badge, Button, Icon, StatTile } from "../ui";
+import { Badge, Button, Icon, Segment, StatTile } from "../ui";
 import { eul, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { cram as cramApi, type CramPlan, type MixCard, type MixRun, type MixStats, type MixSummary } from "../written";
@@ -15,29 +15,7 @@ const RATIOS = [
   { label: "많이", every: 1 },
 ];
 const SIZES = [60, 120, 200];
-
-function Segment<T>({ label, items, value, onPick }: {
-  label: string;
-  items: { label: string; value: T }[];
-  value: T;
-  onPick: (v: T) => void;
-}) {
-  return (
-    <div className="segment segment--boxed" role="radiogroup" aria-label={label}>
-      {items.map((it) => (
-        <button
-          key={it.label}
-          role="radio"
-          aria-checked={value === it.value}
-          className={`segment__item t-label-m ${value === it.value ? "is-selected" : ""}`}
-          onClick={() => onPick(it.value)}
-        >
-          {it.label}
-        </button>
-      ))}
-    </div>
-  );
-}
+const MAX_SIZE = 500; // mix_cards 상한
 
 export function PreExam({ deckIds }: { deckIds: number[] | null }) {
   const nav = useNav();
@@ -46,7 +24,8 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
   const [scope, setScope] = useState(2);
   const [every, setEvery] = useState(2);
   const [size, setSize] = useState(120);
-  const [mix, setMix] = useState<MixCard[]>([]);
+  // 지금 돌 수 있는 순서 전부 (한 번에 할 양은 앞에서 자른다. 작은 분량은 큰 분량의 앞부분이다)
+  const [all, setAll] = useState<MixCard[]>([]);
   const [error, setError] = useState<string>();
   const load = useCallback(
     () =>
@@ -58,8 +37,13 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
   );
   useEffect(() => void load(), [load]);
   useEffect(() => {
-    if (plan && mode === "mix") cramApi.mixCards(plan.deck_id, every, size).then(setMix, (e) => setError(errorText(e)));
-  }, [plan, mode, every, size]);
+    if (plan && mode === "mix") cramApi.mixCards(plan.deck_id, every, MAX_SIZE).then(setAll, (e) => setError(errorText(e)));
+  }, [plan, mode, every]);
+  // 남은 양보다 큰 선택지는 끄고, 남은 양을 넘는 첫 선택지는 "전부 N장" (카드 수를 넘겨 세지 않는다)
+  const fits = SIZES.findIndex((s) => s >= all.length);
+  const sizes = SIZES.map((s, i) => (fits >= 0 && i > fits ? { label: `${s}장`, value: s, disabled: true } : { label: i === fits ? `전부 ${n(all.length)}장` : `${s}장`, value: s }));
+  const pickedSize = fits >= 0 && SIZES.indexOf(size) > fits ? SIZES[fits] : size;
+  const mix = all.slice(0, pickedSize);
 
   const isMix = mode === "mix";
   const count = isMix ? mix.length : (plan?.scopes[scope] ?? 0);
@@ -75,7 +59,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
         const ids = await cramApi.cards(plan.deck_id, scope);
         return nav({ name: "study", deckIds, scale: 1, cardIds: ids, cram: true });
       }
-      const [s, today] = await Promise.all([cramApi.mixStart(plan.deck_id, every, size), api.queuePreview(null, 1)]);
+      const [s, today] = await Promise.all([cramApi.mixStart(plan.deck_id, every, mix.length), api.queuePreview(null, 1)]);
       const run: MixRun = {
         deckId: plan.deck_id,
         name: plan.name,
@@ -87,7 +71,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
     } catch (e) {
       setError(errorText(e));
     }
-  }, [plan, count, isMix, scope, every, size, nav, deckIds]);
+  }, [plan, count, isMix, scope, every, mix.length, nav, deckIds]);
   const restart = async () => {
     if (!plan) return;
     await cramApi.mixRestart(plan.deck_id).catch((e) => setError(errorText(e)));
@@ -126,7 +110,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
         {plan ? (
           <>
             <div className="cram__mode">
-              <Segment label="방식" items={[{ label: "압축", value: "cram" as const }, { label: "혼합", value: "mix" as const }]} value={mode} onPick={setMode} />
+              <Segment boxed label="방식" options={[{ label: "압축", value: "cram" as const }, { label: "혼합", value: "mix" as const }]} value={mode} onChange={setMode} />
             </div>
             <p className="cram__lead t-body-s c-secondary">
               {isMix
@@ -206,14 +190,14 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
               <span className="t-body-m-strong">취약 비율</span>
               <span className="t-caption c-tertiary">1/5 · 1/3 · 1/2</span>
             </span>
-            <Segment label="취약 비율" items={RATIOS.map((r) => ({ label: r.label, value: r.every }))} value={every} onPick={setEvery} />
+            <Segment boxed label="취약 비율" options={RATIOS.map((r) => ({ label: r.label, value: r.every }))} value={every} onChange={setEvery} />
           </div>
           <div className="cram__scope">
             <span className="summary__row-text">
               <span className="t-body-m-strong">한 번에</span>
               <span className="t-caption c-tertiary">카드당 평균 {n(Math.round(plan.sec_per_card))}초 기준</span>
             </span>
-            <Segment label="한 번에" items={SIZES.map((s) => ({ label: `${s}장`, value: s }))} value={size} onPick={setSize} />
+            <Segment boxed label="한 번에" options={sizes} value={pickedSize} onChange={setSize} />
           </div>
         </section>
       )}
@@ -244,7 +228,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           </div>
           <div className="cram__scope">
             <span className="t-body-m-strong">범위</span>
-            <Segment label="범위" items={CRAM_SCOPES.map((label, i) => ({ label, value: i }))} value={scope} onPick={setScope} />
+            <Segment boxed label="범위" options={CRAM_SCOPES.map((label, i) => ({ label, value: i }))} value={scope} onChange={setScope} />
           </div>
         </section>
       )}
