@@ -17,7 +17,11 @@ export type IconName =
   | "plus" | "x" | "chevron-right" | "chevron-down" | "chevron-left" | "check" | "settings"
   | "upload" | "download" | "pencil" | "archive" | "alert" | "info" | "image" | "search"
   | "folder" | "calendar" | "file" | "arrow-right" | "layers" | "list" | "more" | "grip"
-  | "rotate" | "trash" | "target" | "clock" | "check-circle";
+  | "rotate" | "trash" | "target" | "clock" | "check-circle"
+  // K Google Drive (Figma Row K)
+  | "cloud" | "cloud-check" | "cloud-off" | "lock" | "laptop" | "merge" | "external" | "link-off"
+  // G2 성격별로 묶기 · ChatGPT (Figma Row L)
+  | "sparkles" | "gauge" | "wifi-off" | "send";
 
 /**
  * Figma 는 작은 크기에서도 선 두께를 2px 로 유지한다. 그래서 크기별 원본(plus-16.svg)이
@@ -117,19 +121,27 @@ export function Segment<T extends string | number>({
   options,
   value,
   onChange,
+  boxed,
+  label,
+  disabled,
 }: {
   options: { value: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
+  /** 회색 트랙 (segment--boxed) */
+  boxed?: boolean;
+  label?: string;
+  disabled?: boolean;
 }) {
   return (
-    <div className="segment" role="radiogroup">
+    <div className={`segment ${boxed ? "segment--boxed" : ""}`} role="radiogroup" aria-label={label}>
       {options.map((o) => (
         <button
           key={String(o.value)}
           role="radio"
           aria-checked={o.value === value}
           className={`segment__item t-label-m ${o.value === value ? "is-selected" : ""}`}
+          disabled={disabled}
           onClick={() => onChange(o.value)}
         >
           {o.label}
@@ -196,12 +208,13 @@ export function Input({ label, helper, error, className = "", ...rest }: InputPr
 
 // ---------------------------------------------------------------- Checkbox
 
-export function Checkbox({ checked, label, onChange }: { checked: boolean; label: string; onChange: (v: boolean) => void }) {
+/** quiet: 글자 없이 상자만 (label 은 화면 읽기용). 목록 행의 고르기 */
+export function Checkbox({ checked, label, onChange, quiet, disabled }: { checked: boolean; label: string; onChange: (v: boolean) => void; quiet?: boolean; disabled?: boolean }) {
   return (
-    <label className="checkbox">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <label className={`checkbox ${disabled ? "is-disabled" : ""}`} onClick={(e) => e.stopPropagation()}>
+      <input type="checkbox" checked={checked} disabled={disabled} aria-label={quiet ? label : undefined} onChange={(e) => onChange(e.target.checked)} />
       <span className={`checkbox__box ${checked ? "is-on" : ""}`}>{checked && <Icon name="check" size={14} />}</span>
-      <span className="t-body-m">{label}</span>
+      {!quiet && <span className="t-body-m">{label}</span>}
     </label>
   );
 }
@@ -285,11 +298,13 @@ export function Logo() {
   );
 }
 
-export function TopNav({ onImport, onNewDeck, onSettings, onHome }: {
+export function TopNav({ onImport, onNewDeck, onSettings, onHome, sync }: {
   onImport: () => void;
   onNewDeck: () => void;
   onSettings: () => void;
   onHome: () => void;
+  /** K5 동기화 버튼 자리 (설정 버튼 바로 왼쪽). 연결하지 않았으면 비어 있다 */
+  sync?: ReactNode;
 }) {
   return (
     <header className="topnav">
@@ -300,6 +315,7 @@ export function TopNav({ onImport, onNewDeck, onSettings, onHome }: {
       <div className="topnav__actions">
         <Button variant="ghost" size="M" icon="upload" label="가져오기" onClick={onImport} />
         <Button variant="secondary" size="M" icon="plus" label="새 덱" onClick={onNewDeck} />
+        {sync}
         <button className="topnav__settings" aria-label="설정" onClick={onSettings}>
           <Icon name="settings" size={18} className="c-secondary" />
         </button>

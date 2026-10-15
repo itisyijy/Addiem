@@ -87,7 +87,7 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
       <>
         <BannerText
           title="자료로 중요도를 제안하려면 분석 모델이 필요해요"
-          sub={`약 ${mb(model.bytes)} · 한 번 내려받으면 인터넷 없이 동작해요. 자료와 카드는 기기 밖으로 나가지 않아요.`}
+          sub={`약 ${mb(model.bytes)} · 한 번 내려받으면 인터넷 없이 동작해요. 분석하려고 자료와 카드를 밖으로 보내지 않아요.`}
         />
         <Button
           variant="ghost"

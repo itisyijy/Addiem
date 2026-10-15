@@ -5,13 +5,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorText, type CardRow } from "../api";
-import { Badge, Button, Icon, type BadgeTone } from "../ui";
+import { Badge, Button, Checkbox, Icon, Segment as SegmentControl, type BadgeTone } from "../ui";
+import { AiConnect, useAiStatus } from "../ai";
+import { DraftSend } from "./Drafts";
 import { eul, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { readPdf, renderPage } from "../pdf";
 import { Modal } from "./NewDeck";
 import {
   cardSource,
+  MAX_PICK,
   mb,
   refreshModel,
   useModel,
@@ -27,28 +30,44 @@ import {
   type Signal,
 } from "../sourceApi";
 
-/** 덱 상세 헤더의 [자료 N] (I1 노트) */
+/** 덱 상세 헤더의 [자료 N] (I1 노트). 빠진 곳이 있으면 숫자를 붙이고 빠진 범위(R1-a)로 연다 */
 export function SourcesButton({ deckId }: { deckId: number }) {
   const nav = useNav();
-  const [count, setCount] = useState<number>();
+  const [list, setList] = useState<Material[]>([]);
   useEffect(() => {
     sourceApi
       .list(deckId)
-      .then((m) => setCount(m.length))
-      .catch(() => setCount(0));
+      .then(setList)
+      .catch(() => setList([]));
   }, [deckId]);
+  const gaps = list.reduce((t, m) => t + m.gaps, 0);
+  const label = list.length ? `자료 ${n(list.length)}${gaps ? ` · 빠진 곳 ${n(gaps)}` : ""}` : "자료";
+  return <Button variant="secondary" size="M" icon="file" label={label} onClick={() => nav({ name: "sources", deckId, gaps: gaps > 0 })} />;
+}
+
+/** R1-a 정렬: ★ · 붉은 글씨 > 하이라이트 > 밑줄 > 볼드, 같은 등급은 쪽 순서 */
+const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underline: 2, bold: 3 };
+const gapRank = (s: Segment) => Math.min(...s.signals.map((g) => GAP_RANK[g] ?? 3));
+/** 보내는 글자 수 어림 (1구간 600자에서 자른다, rag.rs) */
+const sentChars = (s: Segment) => Math.min(s.text.trim().length, 600);
+
+export function SignalBadge({ signal }: { signal: Signal }) {
   return (
-    <Button variant="secondary" size="M" icon="file" label={count ? `자료 ${n(count)}` : "자료"} onClick={() => nav({ name: "sources", deckId })} />
+    <Badge tone={SIGNAL_TONE[signal] as BadgeTone}>
+      <span className={signal === "underline" ? "u-line" : undefined}>{SIGNAL_LABEL[signal]}</span>
+    </Badge>
   );
 }
 
-export function SignalBadge({ signal }: { signal: Signal }) {
-  return <Badge tone={SIGNAL_TONE[signal] as BadgeTone}>{SIGNAL_LABEL[signal]}</Badge>;
-}
-
 const rankOf = (s: Segment) => SIGNAL_ORDER.indexOf(topSignal(s));
-const metaOf = (m: Material) =>
-  m.status === "unsupported" ? "글자를 읽을 수 없어요" : m.status === "pending" ? "읽는 중…" : `${n(m.pages)}${m.kind === "pptx" ? "장" : "쪽"} · 강조 ${n(m.segments)}곳`;
+const metaOf = (m: Material, gaps: boolean) =>
+  m.status === "unsupported"
+    ? "글자를 읽을 수 없어요"
+    : m.status === "pending"
+      ? "읽는 중…"
+      : gaps
+        ? `빠진 곳 ${n(m.gaps)} · 강조 ${n(m.segments)}곳`
+        : `${n(m.pages)}${m.kind === "pptx" ? "장" : "쪽"} · 강조 ${n(m.segments)}곳`;
 
 /** 분석 진행 (I3 노트 "분석 중 2/3 · 기출_2023_필기.pdf"). 이벤트를 듣고, 이미 돌고 있으면 그 상태로 시작한다 */
 export function useAnalyzeProgress(initial: AnalyzeProgress | null | undefined) {
@@ -77,7 +96,7 @@ export function AnalyzeBar({ p }: { p: AnalyzeProgress }) {
 }
 
 /** materialId · segmentId: I2 패널에서 들어올 때 그 구간을 보여준다. link: 카드 잇기 칸을 연 채로 */
-export function Sources({ deckId, materialId, segmentId, link }: { deckId: number; materialId?: number; segmentId?: number; link?: boolean }) {
+export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }: { deckId: number; materialId?: number; segmentId?: number; link?: boolean; gaps?: boolean }) {
   const nav = useNav();
   const toast = useToast();
   const [deckName, setDeckName] = useState("");
@@ -93,6 +112,13 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
   const [stale, setStale] = useState(0);
   const model = useModel();
   const reading = useRef(new Set<number>());
+  // R1-a 빠진 범위: 고른 구간 · 쪽 지도 거르기 · R1-b 창 · L2 연결 창
+  const [gapView, setGapView] = useState(!!gapsFirst);
+  const [picked, setPicked] = useState<number[]>([]);
+  const [pageOnly, setPageOnly] = useState<number | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const ai = useAiStatus();
 
   const reload = useCallback(async () => {
     const list = await sourceApi.list(deckId);
@@ -152,13 +178,17 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
     loadSegs();
     setDeleting(false);
   }, [loadSegs, current?.status]);
+  useEffect(() => {
+    setPicked([]);
+    setPageOnly(null);
+  }, [sel]);
   // 다른 자료를 고르면 첫 쪽부터. 구간에서 들어왔으면 그 쪽으로
   useEffect(() => {
     const s = segs.find((x) => x.id === active);
     setPage(s ? s.page : 1);
   }, [sel, segs, active]);
 
-  useKey("Escape", () => nav({ name: "deck", deckId }), linking === undefined);
+  useKey("Escape", () => nav({ name: "deck", deckId }), linking === undefined && !drafting && !connecting);
   // 검색 칸에 글을 쓰는 중에도 Esc 로 카드 잇기 칸만 닫는다
   useKey("Escape", () => setLinking(undefined), linking !== undefined, { modal: true });
   useKey("ArrowLeft", () => setPage((p) => Math.max(1, p - 1)), !!current && linking === undefined);
@@ -204,6 +234,12 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
   if (!materials) return null;
   const sorted = [...segs].sort((a, b) => rankOf(a) - rankOf(b) || a.page - b.page || a.ord - b.ord);
   const linkedSegs = segs.filter((s) => s.links.length).length;
+  const gapSegs = segs.filter((s) => !s.links.length).sort((a, b) => gapRank(a) - gapRank(b) || a.page - b.page || a.ord - b.ord);
+  const listed = gapView ? gapSegs.filter((s) => pageOnly === null || s.page === pageOnly) : sorted;
+  const pick = (id: number, on: boolean) => setPicked((p) => (on ? (p.length < MAX_PICK && !p.includes(id) ? [...p, id] : p) : p.filter((x) => x !== id)));
+  const pickedChars = segs.filter((s) => picked.includes(s.id)).reduce((t, s) => t + sentChars(s), 0);
+  // 연결 전이면 같은 버튼이 L2 를 먼저 연다. 연결하면 미리보기(R1-b)로 (보내는 것은 그 창에서 누를 때)
+  const startDraft = () => (ai?.connected ? setDrafting(true) : setConnecting(true));
 
   return (
     <main className="sources">
@@ -215,7 +251,7 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
         <div className="deck__title">
           <h1 className="t-title-l">자료</h1>
           <p className="t-body-s c-secondary">
-            강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요.
+            {gapView ? "강조됐는데 아직 카드가 없는 곳을 모았어요. 고른 구간으로 카드 초안을 만들 수 있어요." : "강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요."}
             {/* 다시 분석은 자동으로 하지 않는다. 지난 분석 뒤에 생긴 카드가 있을 때만 알린다 */}
             {stale > 0 && model?.ready && !progress && (
               <>
@@ -260,7 +296,7 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
                     <Icon name={bad ? "alert" : "file"} size={18} className={bad ? "c-warn" : "c-secondary"} />
                     <span className="src-file__text">
                       <span className={`t-label-m ${bad ? "c-tertiary" : "c-primary"}`}>{m.file_name}</span>
-                      <span className={`t-caption ${bad ? "c-warn" : "c-tertiary"}`}>{metaOf(m)}</span>
+                      <span className={`t-caption ${bad ? "c-warn" : "c-tertiary"}`}>{metaOf(m, gapView)}</span>
                     </span>
                   </button>
                   {on && !deleting && (
@@ -284,7 +320,8 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
             {model?.ready && <p className="src-model t-caption c-tertiary">분석 모델 있음 · 설정에서 지울 수 있어요</p>}
           </div>
 
-          {current && (
+          {current && gapView && current.status === "ready" && <PageMap m={current} segs={segs} page={pageOnly} onPage={setPageOnly} />}
+          {current && !gapView && (
             <Preview
               m={current}
               page={page}
@@ -300,9 +337,21 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
 
           <section className="panel src-list" aria-label="강조된 구간">
             <div className="src-list__head">
-              <span className="t-title-s">강조된 구간 {n(segs.length)}</span>
+              <SegmentControl
+                boxed
+                label="구간 보기"
+                value={gapView ? "gaps" : "all"}
+                onChange={(v) => {
+                  setGapView(v === "gaps");
+                  setLinking(undefined);
+                }}
+                options={[
+                  { value: "all", label: `강조 구간 ${n(segs.length)}` },
+                  { value: "gaps", label: `빠진 범위 ${n(gapSegs.length)}` },
+                ]}
+              />
               <span className="t-caption c-tertiary">
-                연결된 카드 {n(linkedSegs)} · 연결 없음 {n(segs.length - linkedSegs)}
+                {gapView ? "기기 안에서 찾았어요 · 연결 없이 돼요" : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(segs.length - linkedSegs)}`}
               </span>
             </div>
             {current?.status === "unsupported" && (
@@ -313,9 +362,23 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
             {current?.status === "ready" && segs.length === 0 && (
               <p className="src-list__note t-body-s c-secondary">하이라이트·붉은 글씨·★·볼드로 강조된 곳을 찾지 못했어요.</p>
             )}
-            {sorted.map((s) => (
-              <div key={s.id} id={`seg-${s.id}`} className={`src-seg ${s.id === active ? "is-active" : ""}`}>
-                <div className="src-seg__row" onClick={() => setActive(s.id)}>
+            {gapView && current?.status === "ready" && listed.length === 0 && (
+              <p className="src-list__note t-body-s c-secondary">{pageOnly === null ? "빠진 범위가 없어요. 강조된 곳마다 카드가 있어요." : `${n(pageOnly)}쪽에는 빠진 구간이 없어요.`}</p>
+            )}
+            {listed.map((s) => (
+              <div key={s.id} id={`seg-${s.id}`} className={`src-seg ${s.id === active && !gapView ? "is-active" : ""} ${gapView && picked.includes(s.id) ? "is-picked" : ""}`}>
+                <div className="src-seg__row" onClick={() => (gapView ? pick(s.id, !picked.includes(s.id)) : setActive(s.id))}>
+                  {gapView && (
+                    <span className="src-seg__check">
+                      <Checkbox
+                        quiet
+                        label={`${s.text} 고르기`}
+                        checked={picked.includes(s.id)}
+                        disabled={!picked.includes(s.id) && picked.length >= MAX_PICK}
+                        onChange={(v) => pick(s.id, v)}
+                      />
+                    </span>
+                  )}
                   <div className="src-seg__body">
                     <span className="src-seg__meta">
                       {s.signals.map((g) => (
@@ -355,10 +418,82 @@ export function Sources({ deckId, materialId, segmentId, link }: { deckId: numbe
                 {linking === s.id && <LinkEditor deckId={deckId} seg={s} onChange={changed} />}
               </div>
             ))}
+            {gapView && current?.status === "ready" && gapSegs.length > 0 && (
+              <div className="src-pick">
+                <span className="src-pick__text">
+                  <span className="t-label-m">{picked.length ? `${n(picked.length)}구간 고름 · 약 ${n(pickedChars)}자` : "초안을 만들 구간을 골라 주세요"}</span>
+                  <span className="t-caption c-tertiary">
+                    {picked.length >= MAX_PICK ? `한 번에 ${MAX_PICK}구간까지 고를 수 있어요` : "ChatGPT 요금제 사용 · 보내기 전에 내용을 보여줘요"}
+                  </span>
+                </span>
+                <Button size="M" icon="sparkles" label="카드 초안 만들기" disabled={!picked.length} onClick={startDraft} />
+              </div>
+            )}
           </section>
         </div>
       )}
+      {connecting && (
+        <AiConnect
+          onDone={(ok) => {
+            setConnecting(false);
+            if (ok) setDrafting(true);
+          }}
+        />
+      )}
+      {drafting && current && (
+        <DraftSend
+          picked={picked}
+          onClose={() => setDrafting(false)}
+          onDone={(draft, ids, amount, cloze) => nav({ name: "drafts", deckId, materialId: current.id, draft, picked: ids, amount, cloze })}
+        />
+      )}
     </main>
+  );
+}
+
+/** R1-a 쪽 지도: 한 칸이 한 쪽. 카드 있음(accent) · 강조됐는데 카드 없음(warn) · 강조 없음(회색). 칸을 누르면 그 쪽만 */
+function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page: number | null; onPage: (p: number | null) => void }) {
+  const unit = m.kind === "pptx" ? "장" : "쪽";
+  const state = (p: number) => {
+    const on = segs.filter((s) => s.page === p);
+    return !on.length ? "none" : on.some((s) => !s.links.length) ? "gap" : "linked";
+  };
+  const label = { linked: "카드가 있는 강조 구간", gap: "강조됐는데 카드 없음", none: "강조 없음" } as const;
+  return (
+    <div className="panel src-map" aria-label="쪽 지도">
+      <span className="t-label-m">
+        쪽 지도 · {n(m.pages)}
+        {unit}
+      </span>
+      <div className="src-map__pages">
+        {Array.from({ length: m.pages }, (_, i) => i + 1).map((p) => {
+          const st = state(p);
+          return (
+            <button
+              key={p}
+              type="button"
+              className={`src-map__page is-${st} ${page === p ? "is-selected" : ""} t-caption`}
+              aria-label={`${p}${unit} · ${label[st]}`}
+              aria-pressed={page === p}
+              onClick={() => onPage(page === p ? null : p)}
+            >
+              {p}
+            </button>
+          );
+        })}
+      </div>
+      <div className="src-map__legend">
+        {(["linked", "gap", "none"] as const).map((st) => (
+          <span key={st} className="t-caption c-secondary">
+            <span className={`src-map__swatch is-${st}`} />
+            {label[st]}
+          </span>
+        ))}
+      </div>
+      <p className="t-caption c-tertiary">
+        칸을 누르면 그 {unit}의 구간만 보여요{page !== null ? ` · ${n(page)}${unit} 선택됨` : ""}
+      </p>
+    </div>
   );
 }
 
@@ -554,7 +689,10 @@ function LinkEditor({ deckId, seg, onChange }: { deckId: number; seg: Segment; o
     cardSource(cardId, true); // 학습 화면의 [원자료] 버튼이 바로 따라오게
     onChange();
   };
-  const method = (id: number) => (seg.links.find((l) => l.card_id === id)?.method === "auto" ? "자동 연결" : "직접 연결");
+  const method = (id: number) => {
+    const l = seg.links.find((x) => x.card_id === id);
+    return l?.method === "auto" ? "자동 연결" : l?.origin === "draft" ? "초안에서 만듦" : "직접 연결";
+  };
   return (
     <div className="src-link" onClick={(e) => e.stopPropagation()}>
       {linked.length > 0 && (

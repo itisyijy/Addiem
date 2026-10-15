@@ -4,13 +4,26 @@
 import "../styles/sources.css";
 import { Button, Icon } from "../ui";
 import { n, useNav } from "../nav";
-import { useCardSource } from "../sourceApi";
+import { useEffect, useState } from "react";
+import { sourceApi, useCardSource, type CardSource } from "../sourceApi";
 import { PdfPage, SignalBadge, SlidePage } from "./Sources";
 
 export function SourcePanel({ cardId, onClose }: { cardId: number; onClose: () => void }) {
-  const nav = useNav();
   const src = useCardSource(cardId);
-  if (!src) return null;
+  return src ? <SourceView src={src} onClose={onClose} /> : null;
+}
+
+/** R 근거 칩: 그 구간을 같은 패널로 (R1-c 초안 · R2 채점 보조 · R3 묶기) */
+export function SegmentPanel({ segmentId, onClose }: { segmentId: number; onClose: () => void }) {
+  const [src, setSrc] = useState<CardSource | null>(null);
+  useEffect(() => {
+    sourceApi.segment(segmentId).then(setSrc, () => setSrc(null));
+  }, [segmentId]);
+  return src?.segment.id === segmentId ? <SourceView src={src} onClose={onClose} /> : null;
+}
+
+function SourceView({ src, onClose }: { src: CardSource; onClose: () => void }) {
+  const nav = useNav();
   const { material: m, segment: s, method } = src;
   // [연결 바꾸기]는 그 구간의 카드 잇기 칸을 연 채로 들어간다
   const open = (link: boolean) => nav({ name: "sources", deckId: m.deck_id, materialId: m.id, segmentId: s.id, link });
@@ -35,17 +48,22 @@ export function SourcePanel({ cardId, onClose }: { cardId: number; onClose: () =
       </div>
       <span className="src-panel__meta">
         <SignalBadge signal={s.signals[0] ?? "bold"} />
-        <span className="t-caption c-tertiary">이 카드와 연결된 구간 · {method === "manual" ? "직접 연결함" : "자동으로 연결됨"}</span>
+        <span className="t-caption c-tertiary">
+          {method ? `이 카드와 연결된 구간 · ${method === "manual" ? "직접 연결함" : "자동으로 연결됨"}` : "근거 구간"}
+        </span>
       </span>
       {m.kind === "pdf" ? (
         <PdfPage materialId={m.id} page={s.page} width={376} height={180} segs={[s]} active={s.id} />
       ) : (
         <SlidePage materialId={m.id} page={s.page} active={s.text} height={180} />
       )}
-      <span className="src-panel__actions">
-        <Button variant="ghost" size="M" icon="file" label="자료에서 열기" onClick={() => open(false)} />
-        <Button variant="ghost" size="M" icon="pencil" label="연결 바꾸기" onClick={() => open(true)} />
-      </span>
+      {/* 근거 칩으로 연 패널은 화면을 떠나지 않는다 (초안 · 채점 결과가 사라지지 않게) */}
+      {method && (
+        <span className="src-panel__actions">
+          <Button variant="ghost" size="M" icon="file" label="자료에서 열기" onClick={() => open(false)} />
+          <Button variant="ghost" size="M" icon="pencil" label="연결 바꾸기" onClick={() => open(true)} />
+        </span>
+      )}
     </aside>
   );
 }

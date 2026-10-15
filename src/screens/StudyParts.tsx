@@ -112,7 +112,7 @@ export function KeywordEditor({ keywords, suggestions, onChange, onDismiss }: {
 
 // ---------------------------------------------------------------- H3 압축 회독 안내 (홈 · D1)
 
-/** 목표일 3일 전부터 "압축 회독을 할 수 있어요" 한 줄 + [압축 회독]. 열 수 없으면 아무것도 그리지 않는다 */
+/** P0 목표일 14일 전부터 "시험 전 회독을 할 수 있어요" 한 줄 + [시험 전 회독]. 열 수 없으면 아무것도 그리지 않는다 */
 export function CramHint({ deckIds }: { deckIds: number[] | null }) {
   const nav = useNav();
   const [plan, setPlan] = useState<CramPlan | null>(null);
@@ -124,12 +124,13 @@ export function CramHint({ deckIds }: { deckIds: number[] | null }) {
     <div className="cram-hint">
       <Icon name="target" size={16} className="c-accent" />
       <span className="cram-hint__text">
-        <span className="t-label-m">압축 회독을 할 수 있어요</span>
+        <span className="t-label-m">시험 전 회독을 할 수 있어요</span>
         <span className="t-caption c-tertiary">
-          {plan.name} {plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`} · 불안한 카드 {n(plan.scopes[2])}장
+          {plan.name} {plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`} ·{" "}
+          {plan.mode === "mix" ? `이번 회독 ${n(plan.round_seen)} / ${n(plan.learned)}장` : `불안한 카드 ${n(plan.scopes[2])}장`}
         </span>
       </span>
-      <Button variant="secondary" size="M" label="압축 회독" onClick={() => nav({ name: "summary", deckIds, cram: true })} />
+      <Button variant="secondary" size="M" label="시험 전 회독" onClick={() => nav({ name: "summary", deckIds, cram: true })} />
     </div>
   );
 }

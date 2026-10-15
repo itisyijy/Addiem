@@ -57,6 +57,8 @@ pub struct Card {
     pub note_id: i64,
     /// 약한 챕터의 카드 (큐가 채운다)
     pub weak: bool,
+    /// 기출 카드 (8.4, exam::IS_EXAM). 신규를 넣을 때 같은 중요도 안에서 먼저
+    pub exam: bool,
 }
 
 /// 오늘 이미 한 학습. 계획을 다시 만들 때 오늘 분량이 또 생기지 않게 뺀다
@@ -249,7 +251,7 @@ pub fn build_queue_with_progress(
         }
     }
 
-    // 3단계(복습 먼저). 오래 밀린 것부터, 같으면 중요도 높은 순
+    // 3단계(복습 먼저). 오래 밀린 것부터, 같으면 중요도 높은 순. 기출은 신규에만 쓴다 (8.4, 복습 일정은 SRS 대로)
     let key = |c: &Card| (c.due_day.unwrap_or(today), -c.importance, c.position, c.id);
     plan.review.sort_by_key(key);
     all_backlog.sort_by_key(key);
@@ -291,12 +293,12 @@ pub fn build_queue_with_progress(
         target = (target - done).clamp(0, group.len() as i64);
         plan.per_deck_new_target.insert(owner, target);
         plan.notes.push(format!("{}: {why}", deck.name));
-        // 3단계. 중요도 높은 순, 같으면 원래 순서
-        group.sort_by_key(|c| (-c.importance, c.position, c.id));
+        // 3단계. 중요도 높은 순, 같으면 기출 먼저, 그다음 원래 순서
+        group.sort_by_key(|c| (-c.importance, !c.exam, c.position, c.id));
         plan.new.extend(group.into_iter().filter(&mut first).take(target as usize));
     }
-    // 덱을 가로질러 핵심 -> 일반 -> 보충 (D1 "이 순서로 보여드려요"). 같은 중요도 안에서는 덱 순서를 지킨다
-    plan.new.sort_by_key(|c| -c.importance);
+    // 덱을 가로질러 핵심 -> 일반 -> 보충 (D1 "이 순서로 보여드려요"), 같은 중요도면 기출 먼저. 그 안에서는 덱 순서를 지킨다
+    plan.new.sort_by_key(|c| (-c.importance, !c.exam));
 
     // 4단계. 밀린 복습 상한. 오늘 이미 처리한 만큼 뺀다
     let cap = BACKLOG_DAILY_CAP.saturating_sub(done.backlog_done);
@@ -356,6 +358,7 @@ mod tests {
                 sibling: None,
                 note_id: start + i as i64,
                 weak: false,
+                exam: false,
             })
             .collect()
     }
@@ -439,6 +442,27 @@ mod tests {
         let ids: Vec<i64> = p.ordered().iter().map(|c| c.id).collect();
         assert_eq!(ids, [10, 11, 1, 2]);
         assert_eq!(build_queue(T, &[deck(1), deck(2)], &c, None, 1.0).ordered().len(), 4);
+    }
+
+    #[test]
+    fn exam_new_cards_first_within_same_importance() {
+        // 신규: 상한 2장. 핵심(3)이 먼저이고, 일반 중에서는 기출(4)이 앞선 순서(1, 2)보다 먼저 뽑힌다
+        let mut c = cards(&[("new", 1, None), ("new", 1, None), ("new", 2, None), ("new", 1, None)], 1, 1);
+        c[3].exam = true;
+        let one = Deck { daily_new_limit: Some(2), ..deck(1) };
+        let ids = |p: &QueuePlan| p.ordered().iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(ids(&build_queue(T, &[one], &c, None, 1.0)), [3, 4]);
+        // 덱을 가로질러도: 덱 2 의 기출 일반 카드(20)가 덱 1 의 기출 아닌 일반 카드(1)보다 먼저. 핵심은 넘지 않는다
+        let mut c2 = news(2, 2, 20);
+        c2[0].exam = true;
+        c2.extend(c.clone());
+        let decks = [Deck { daily_new_limit: Some(3), ..deck(1) }, Deck { daily_new_limit: Some(1), ..deck(2) }];
+        assert_eq!(ids(&build_queue(T, &decks, &c2, None, 1.0)), [3, 4, 20, 1]);
+        // 복습 순서에는 쓰지 않는다: 예정일 → 중요도 → 원래 순서 그대로
+        let mut r = cards(&[("review", 1, Some(0)), ("review", 1, Some(0)), ("review", 2, Some(0)), ("review", 1, Some(-1)), ("review", 1, Some(-1))], 1, 10);
+        r[1].exam = true;
+        r[4].exam = true;
+        assert_eq!(ids(&build_queue(T, &[deck(1)], &r, None, 1.0)), [12, 10, 11, 13, 14]);
     }
 
     #[test]

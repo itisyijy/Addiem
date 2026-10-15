@@ -1,9 +1,11 @@
-# PR마다(스택 PR 포함) 프론트 빌드 · 타입 검사 · clippy · Rust 테스트를 Windows 에서 돌린다.
+# main 으로 가는 PR과 main push 마다 프론트 빌드 · 타입 검사 · clippy · Rust 테스트를 Windows 에서 돌린다.
 # 앱이 Windows 데스크톱(WebView2)이라 러너도 Windows 로 맞춘다. Rust 버전은 rust-toolchain.toml 을 따른다
 name: CI
 
+# 스택 PR(main 이 아닌 브랜치로 가는 PR)은 이제 로컬에서 같은 검사를 돌려 확인한다
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
 

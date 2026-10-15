@@ -105,12 +105,13 @@ pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
 
 pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
     let mut st = con
-        .prepare(
+        .prepare(&format!(
             "SELECT c.id, c.deck_id, c.state, c.eff_importance, c.due_at, COALESCE(c.anki_card_id, c.id), c.buried_until,
-                    CASE WHEN nt.name = 'Cloze' OR EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = nt.id AND t.qfmt LIKE '%{{cloze:%')
-                         THEN NULL ELSE c.note_id END, c.note_id
+                    CASE WHEN nt.name = 'Cloze' OR EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = nt.id AND t.qfmt LIKE '%{{{{cloze:%')
+                         THEN NULL ELSE c.note_id END, c.note_id, {}
              FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id",
-        )
+            crate::exam::IS_EXAM
+        ))
         .map_err(err)?;
     let rows = st
         .query_map([], |r| {
@@ -125,6 +126,7 @@ pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
                 sibling: r.get(7)?,
                 note_id: r.get(8)?,
                 weak: false,
+                exam: r.get(9)?,
             })
         })
         .map_err(err)?;
@@ -915,7 +917,8 @@ pub fn add_card(state: State<AppState>, card: NewCard) -> Res<usize> {
 #[derive(Serialize)]
 pub struct NoteEdit {
     note_id: i64,
-    /// basic | cloze | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다
+    /// basic | cloze | image_occlusion | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다.
+    /// image_occlusion 은 화면이 occlusion_note 로 가리기 편집기(M2)를 연다
     kind: String,
     /// 노트 유형 이름 ("Anki 노트타입 '…'")
     type_name: String,
@@ -949,7 +952,15 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let names: Vec<String> = serde_json::from_str(&names).map_err(err)?;
     let mut values: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
     values.resize(names.len(), String::new());
-    let kind = if note_is_cloze(&con, note_id)? { "cloze" } else if names.len() == 2 { "basic" } else { "other" };
+    let kind = if crate::occlusion::is_note(&con, note_id)? && names.len() >= 4 {
+        "image_occlusion"
+    } else if note_is_cloze(&con, note_id)? {
+        "cloze"
+    } else if names.len() == 2 {
+        "basic"
+    } else {
+        "other"
+    };
     // {{이름}} {{필터:이름}} {{#이름}} {{^이름}}
     let front = names
         .iter()
@@ -963,6 +974,12 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
 pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) -> Res<()> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
+    save_note_fields(&tx, note_id, &values)?;
+    tx.commit().map_err(err)
+}
+
+/// update_note 의 본문. 그림 가리기 저장(occlusion::save)도 같은 길로 카드를 맞춘다
+pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String]) -> Res<()> {
     let names: String = tx
         .query_row("SELECT nt.fields FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1", [note_id], |r| r.get(0))
         .map_err(err)?;
@@ -980,7 +997,7 @@ pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) ->
     )
     .map_err(err)?;
 
-    if note_is_cloze(&tx, note_id)? {
+    if note_is_cloze(tx, note_id)? {
         let nums: std::collections::BTreeSet<u32> = values.iter().flat_map(|v| render::cloze_numbers(v)).collect();
         if nums.is_empty() {
             return Err("빈칸을 하나 이상 만들어주세요.".into());
@@ -1006,7 +1023,7 @@ pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) ->
             }
         }
     }
-    tx.commit().map_err(err)
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1023,6 +1040,8 @@ pub struct CardRow {
     due_at: Option<i64>,
     lapses: i64,
     buried: bool,
+    /// 8.4 노트의 기출 (N2 같은 시험 건너뛰기 · 되돌리기)
+    exam: crate::exam::ExamState,
 }
 
 #[derive(Serialize)]
@@ -1083,7 +1102,7 @@ pub fn list_cards(
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
-                    c.buried_until IS NOT NULL, c.template_ord, nt.name, t.qfmt, t.afmt
+                    c.buried_until IS NOT NULL, c.template_ord, nt.name, t.qfmt, t.afmt, n.exam_hits, n.exam_names
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
@@ -1111,6 +1130,7 @@ pub fn list_cards(
                 due_at: r.get(7)?,
                 lapses: r.get(8)?,
                 buried: r.get(9)?,
+                exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
             })
         })
         .map_err(err)?
@@ -1614,7 +1634,7 @@ pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     let day = db::date_from_day(today);
     let resumed: Option<i64> = con
         .query_row(
-            "SELECT id FROM study_session WHERE study_day = ?1 AND end_reason IN ('user_exit','app_exit') ORDER BY started_at DESC LIMIT 1",
+            "SELECT id FROM study_session WHERE study_day = ?1 AND end_reason IN ('user_exit','app_exit') AND mode IS NULL ORDER BY started_at DESC LIMIT 1",
             [&day],
             |r| r.get(0),
         )
@@ -1727,6 +1747,8 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
         .query_row("SELECT again_count FROM session_card_state WHERE session_id = ?1 AND card_id = ?2", params![session_id, card_id], |r| r.get(0))
         .map_err(err)?;
     let (action, feed) = queue::on_rating(again_count, rating);
+    // P9 혼합 회독: 그 카드의 오늘 첫 일정 반영 평가(또는 학습 단계를 잇는 평가)만 일정에 반영한다
+    let feed = feed && crate::cram::mix_feeds(&tx, session_id, card_id, &prev.state, today)?;
     tx.execute(
         "UPDATE session_card_state SET shown_count = shown_count + 1, again_count = again_count + ?3 WHERE session_id = ?1 AND card_id = ?2",
         params![session_id, card_id, (rating == 1) as i64],
@@ -2024,6 +2046,11 @@ pub(crate) fn safe_media_name(name: &str) -> Res<&str> {
     Ok(name)
 }
 
+/// data_dir 기준 `<dir>/<안전한 이름>` 경로인가. 동기화로 받은 경로가 다른 곳의 파일을 가리키지 않게
+pub(crate) fn safe_rel_path(rel: &str, dir: &str) -> bool {
+    rel.strip_prefix(dir).and_then(|r| r.strip_prefix('/')).is_some_and(|n| safe_media_name(n).is_ok())
+}
+
 pub(crate) fn mime_of(name: &str) -> &'static str {
     match name.rsplit('.').next().map(|e| e.to_ascii_lowercase()).as_deref() {
         Some("png") => "image/png",
@@ -2266,7 +2293,7 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
         let mut st = con
             .prepare(
                 "SELECT s.end_reason = 'completed' FROM study_session s
-                 WHERE s.ended_at IS NOT NULL
+                 WHERE s.ended_at IS NOT NULL AND s.mode IS NULL
                    AND EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id AND x.buried_at IS NOT NULL)
                  ORDER BY s.started_at DESC LIMIT 20",
             )
@@ -2278,7 +2305,7 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
         .query_row(
             "SELECT count(*), coalesce(sum(s.end_reason = 'completed'), 0) FROM study_session s
              WHERE EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id AND x.buried_at IS NOT NULL)
-               AND s.ended_at IS NOT NULL",
+               AND s.ended_at IS NOT NULL AND s.mode IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -2444,6 +2471,8 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
     let mut con = state.db.lock().map_err(err)?;
     let saved = if backup { Some(write_backup(&con, &state.data_dir)?.display().to_string()) } else { None };
     let tx = con.transaction().map_err(err)?;
+    // Drive 동기화 중이면 "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 먼저 끊는다 (Drive 데이터는 그대로, K10)
+    crate::sync::forget_local(&tx).map_err(err)?;
     tx.execute_batch(
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;

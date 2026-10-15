@@ -37,6 +37,16 @@ tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"
 # 모델 내려받기 전용 HTTPS (사용자가 [내려받기]를 누를 때만). 인증서는 번들(webpki-roots)
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"] }
 sha2 = "=0.10.9"
+# K · Google Drive 동기화 (sync/). HTTPS 는 위 ureq, 그림 해시는 위 sha2 를 같이 쓴다.
+# gzip(변경 묶음) · OS 키체인(토큰) · OAuth 주소 · 난수(PKCE) · 암호로 잠그기(Argon2id + XChaCha20-Poly1305). 모두 순수 Rust
+flate2 = "=1.1.10"
+keyring = "=4.2.0"
+url = "=2.5.8"
+getrandom = "=0.4.3"
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+# G2 ChatGPT 로그인의 ID 토큰 서명(RS256) 확인. rustls 가 이미 쓰는 같은 버전이라 새로 받는 크레이트는 없다
+ring = "=0.17.14"
 
 
 # 임베딩 행렬곱은 디버그 빌드에서 수십 배 느리다. 개발 중에도 이 크레이트들만 최적화한다

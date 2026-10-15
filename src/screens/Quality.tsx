@@ -1,11 +1,14 @@
-// G1 카드 점검 · G2 나누기 제안. 검사는 규칙으로만 한다 (모델 없음, 기기 안에서).
+// G1 카드 점검 · G2 나누기 제안. 검사는 규칙으로만 한다 (모델 없음, 기기 안에서). G2 성격별로 묶기만 ChatGPT 요금제로 (ai.tsx, 누를 때만).
 // 이 화면은 카드를 바꾸지 않는다. 바뀌는 건 G2 에서 승인했을 때뿐이고, 한 번의 변경으로 남아 되돌릴 수 있다
 import "../styles/quality.css";
-import { useCallback, useEffect, useState } from "react";
-import { api, errorText, qualityApi, type CardChange, type QualityCard, type QualityFlag, type SplitPart, type SplitProposal } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { aiApi, aiError, api, errorText, qualityApi, type AiError, type CardChange, type QualityCard, type QualityFlag, type SplitPart, type SplitProposal } from "../api";
 import { n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
-import { Badge, Button, Checkbox, Icon } from "../ui";
+import { Badge, Button, Checkbox, Icon, Spinner } from "../ui";
+import { AiConnect, AiErrorBox, ScopeLine, SendList, UsingPlan, refreshAi, sendConfirmed, sentRows, setSendConfirmed, useAiStatus } from "../ai";
+import { ragApi, type Sent } from "../sourceApi";
+import { SegmentPanel } from "./SourcePanel";
 import { Modal } from "./NewDeck";
 import { splitLater } from "../written";
 
@@ -253,7 +256,7 @@ function lostLine(lost: { images: number; formatted: boolean }, archive: boolean
 const PER_ORDER = [3, 2, 4, 1];
 const lines = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolean);
 
-/** G2 나누기 제안. 승인하기 전에는 아무것도 바뀌지 않는다 */
+/** G2 나누기 제안. 승인하기 전에는 아무것도 바뀌지 않는다. [규칙으로 나누기 | 성격별로 묶기(ChatGPT 요금제, L4)] */
 function SplitModal({ cardId, onClose, onKeep, onDone }: {
   cardId: number;
   onClose: () => void;
@@ -266,6 +269,24 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   const [archive, setArchive] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // L4 성격별로 묶기. 기본은 규칙. 저절로 보내지 않고, 결과도 승인 전에는 제안일 뿐이다
+  const ai = useAiStatus();
+  const [mode, setMode] = useState<"rule" | "ai">("rule");
+  const [aiP, setAiP] = useState<SplitProposal | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiSlow, setAiSlow] = useState(false);
+  const [aiFail, setAiFail] = useState<AiError | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [connect, setConnect] = useState<{ start: "intro" | "wait"; reconsent: boolean } | null>(null);
+  const seq = useRef(0);
+  const inFlight = useRef(false);
+  // R3: 이 카드에 연결된 구간(최대 3개)을 함께 보낸다. 확인 목록에서 뺄 수 있다. 근거 칩 → 오른쪽 I2 패널
+  const [segs, setSegs] = useState<Sent[]>([]);
+  const [peek, setPeek] = useState(false);
+  const [panelSeg, setPanelSeg] = useState<number | null>(null);
+  useEffect(() => {
+    ragApi.linked(cardId).then(setSegs, () => setSegs([]));
+  }, [cardId]);
 
   const suggest = useCallback(
     (per: number | null) =>
@@ -283,7 +304,104 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   useEffect(() => {
     api.cardView(cardId).then((v) => api.noteEdit(v.note_id)).then((e) => setLost(lostInSplit(e.values)), () => {});
   }, [cardId]);
+  // 30초가 지나면 [계속 기다리기] [규칙으로 나누기]
+  useEffect(() => {
+    if (!aiBusy || aiSlow) return;
+    const t = setTimeout(() => setAiSlow(true), 30_000);
+    return () => clearTimeout(t);
+  }, [aiBusy, aiSlow]);
+  // 창을 닫으면 보내던 요청도 멈춘다
+  useEffect(
+    () => () => {
+      if (inFlight.current) aiApi.cancel().catch(() => {});
+    },
+    [],
+  );
 
+  /** 규칙 제안으로 돌아간다. 보내던 요청은 멈춘다 */
+  const toRule = () => {
+    if (inFlight.current) aiApi.cancel().catch(() => {});
+    inFlight.current = false;
+    seq.current++;
+    setAiBusy(false);
+    setAiSlow(false);
+    setAiFail(null);
+    setAsking(false);
+    setMode("rule");
+    if (p) setParts(p.parts);
+    setEditing(null);
+  };
+  /** 이 카드 한 장을 보낸다 (처음 보내기 확인 · [다시 묶기] · [다시 시도]). 사용량이 줄어든다 */
+  const send = () => {
+    setSendConfirmed(true, segs.length);
+    setAsking(false);
+    setPeek(false);
+    const my = ++seq.current;
+    inFlight.current = true;
+    setMode("ai");
+    setAiFail(null);
+    setAiBusy(true);
+    setAiSlow(false);
+    setEditing(null);
+    aiApi.regroup(cardId, segs.map((s) => s.id)).then(
+      (x) => {
+        if (seq.current !== my) return;
+        inFlight.current = false;
+        setAiP(x);
+        setParts(x.parts);
+        setAiBusy(false);
+        refreshAi();
+      },
+      (e) => {
+        if (seq.current !== my) return;
+        inFlight.current = false;
+        const f = aiError(e);
+        setAiBusy(false);
+        refreshAi();
+        if (f.kind === "cancelled") return toRule();
+        if (f.kind === "not_connected") {
+          toRule();
+          return setConnect({ start: "intro", reconsent: false });
+        }
+        setAiFail(f);
+        // 깨진 응답은 한 조각도 쓰지 않는다: 아래에 규칙 제안을 그대로 보인다
+        if (f.kind === "bad_output" && p) setParts(p.parts);
+      },
+    );
+  };
+  const pickAi = () => {
+    if (mode === "ai" || asking) return;
+    if (!ai?.connected) return setConnect({ start: "intro", reconsent: false });
+    if (aiP) {
+      setMode("ai");
+      setParts(aiP.parts);
+      setAiFail(null);
+      setEditing(null);
+      return;
+    }
+    if (!sendConfirmed(segs.length)) return setAsking(true);
+    send();
+  };
+  // 보내는 범위 한 줄 (R3-s): 보내기 전 / 보낸 뒤
+  const sentNow = mode === "ai" && aiP && !aiBusy ? aiP.sent : null;
+  const scopeText = sentNow
+    ? `보낸 것: ${sentNow.length ? `카드 + 자료 ${n(sentNow.length)}구간` : "카드 한 장"}`
+    : segs.length
+      ? `카드 + 자료 ${n(segs.length)}구간을 보내요`
+      : "카드 한 장만 보내요";
+
+  // L2 연결 창은 이 창 대신 뜬다 (창을 겹치지 않는다). 돌아오면 규칙에서 다시 고른다 (저절로 보내지 않는다)
+  if (connect)
+    return (
+      <AiConnect
+        start={connect.start}
+        reconsent={connect.reconsent}
+        onDone={(ok) => {
+          setConnect(null);
+          if (ok) toRule();
+        }}
+      />
+    );
   if (!p) return null;
   const total = p.parts.reduce((s, x) => s + lines(x.back).length, 0);
   // 지금과 장수가 달라지는 다음 항목 수. 물음마다 나눈 제안은 항목 수와 상관없다
@@ -296,7 +414,13 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
     }
     return null;
   })();
-  const ready = parts.filter((x) => x.front.trim() && lines(x.back).length);
+  const aiSel = mode === "ai" || asking;
+  // 지금 보이는 제안: ChatGPT 결과가 있고 오류가 없을 때만 ChatGPT 제안
+  const fromAi = mode === "ai" && !!aiP && !aiBusy && !aiFail;
+  const shown = fromAi && aiP ? aiP : p;
+  // 보내는 중 · 오류(깨진 응답 제외)에는 목록이 없다
+  const listed = !(mode === "ai" && (aiBusy || (aiFail && aiFail.kind !== "bad_output")));
+  const ready = listed ? parts.filter((x) => x.front.trim() && lines(x.back).length) : [];
   const set = (i: number, patch: Partial<SplitPart>) => setParts(parts.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   const apply = () => {
     setBusy(true);
@@ -310,11 +434,30 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   };
 
   return (
-    <Modal title="카드 나누기 제안" sub="규칙으로 나눈 제안이에요. 고쳐서 써도 되고, 그대로 두어도 돼요." onClose={onClose} className="split">
+    <>
+    <Modal
+      title="카드 나누기 제안"
+      sub={fromAi ? "ChatGPT가 묶은 제안이에요. 그대로 쓰기 전에 확인하고 고쳐 주세요." : "규칙으로 나눈 제안이에요. 고쳐서 써도 되고, 그대로 두어도 돼요."}
+      onClose={onClose}
+      className={`split ${panelSeg !== null ? "has-panel" : ""}`}
+    >
       <p className="quality__info split__why t-body-s">
         <Icon name="info" size={16} />
-        왜? {p.why}
+        왜? {shown.why}
       </p>
+      {/* R3 근거: ChatGPT 가 실제로 인용한 구간만 (보냈지만 쓰지 않은 구간은 칩이 없다) */}
+      {fromAi && aiP && aiP.evidence.length > 0 && (
+        <p className="split__evidence">
+          <span className="t-label-s c-tertiary">근거</span>
+          {aiP.evidence.map((s) => (
+            <button key={s.id} type="button" className="src-chip src-chip--surface t-label-s" onClick={() => setPanelSeg(s.id)}>
+              <Icon name="file" size={12} />
+              {s.material} p.{s.page}
+              {s.signals[0] === "highlight" ? " · 하이라이트" : ""}
+            </button>
+          ))}
+        </p>
+      )}
       <div className="split__cols">
         <section className="split__orig">
           <span className="t-label-s c-tertiary">지금 카드</span>
@@ -326,95 +469,221 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
         <span className="split__arrow c-tertiary">
           <Icon name="arrow-right" size={22} scaled />
         </span>
-        <section className="split__parts">
-          <span className="t-label-s c-tertiary">나눈 카드 {n(ready.length)}장</span>
-          {parts.map((x, i) => {
-            const items = lines(x.back);
-            const on = editing === i;
-            return (
-              <div key={i} className={`split__card ${on ? "is-editing" : ""}`}>
-                <div className="split__card-head">
-                  {on ? (
-                    <input
-                      className="split__input t-body-m-strong"
-                      value={x.front}
-                      placeholder="질문"
-                      aria-label={`${i + 1}번째 카드 질문`}
-                      autoFocus
-                      onChange={(e) => set(i, { front: e.target.value })}
-                      onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setEditing(null))}
-                    />
-                  ) : (
-                    <p className={`t-body-m-strong ${x.front.trim() ? "" : "c-tertiary"}`}>{x.front.trim() || "질문을 써 주세요"}</p>
-                  )}
-                  <span className="split__tools">
-                    <button className="split__tool c-secondary" aria-label={on ? "고치기 끝" : `${i + 1}번째 카드 고치기`} aria-pressed={on} onClick={() => setEditing(on ? null : i)}>
-                      <Icon name={on ? "check" : "pencil"} size={16} />
-                    </button>
-                    <button
-                      className="split__tool c-secondary"
-                      aria-label={`${i + 1}번째 카드 빼기`}
-                      onClick={() => {
-                        setParts(parts.filter((_, j) => j !== i));
-                        setEditing(null);
-                      }}
-                    >
-                      <Icon name="x" size={16} />
-                    </button>
-                  </span>
+        <section className="split__parts" aria-busy={aiBusy}>
+          {mode === "ai" && aiBusy ? (
+            <>
+              <span className="ai-busy">
+                <Spinner size={16} />
+                <span className="t-label-m c-secondary">ChatGPT가 묶는 중…</span>
+                <button type="button" className="ai-link t-label-s" onClick={toRule}>
+                  취소
+                </button>
+              </span>
+              {aiSlow && (
+                <span className="ai-slow">
+                  <span className="t-caption c-tertiary">30초가 넘게 걸리고 있어요.</span>
+                  <Button variant="secondary" size="M" label="계속 기다리기" onClick={() => setAiSlow(false)} />
+                  <Button variant="ghost" size="M" label="규칙으로 나누기" onClick={toRule} />
+                </span>
+              )}
+              {[0.78, 0.66, 0.72].map((w, i) => (
+                <div key={i} className="ai-skel" aria-hidden>
+                  <span style={{ width: `${w * 100}%` }} />
+                  <span style={{ width: `${w * 80}%` }} />
                 </div>
-                {on ? (
-                  <textarea
-                    className="split__input split__textarea t-body-s"
-                    value={x.back}
-                    placeholder="답. 한 줄에 항목 하나"
-                    aria-label={`${i + 1}번째 카드 답`}
-                    rows={Math.max(2, x.back.split("\n").length)}
-                    onChange={(e) => set(i, { back: e.target.value })}
-                    onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setEditing(null))}
-                  />
-                ) : (
-                  <p className={`t-body-s ${items.length ? "c-secondary" : "c-tertiary"}`}>{items.length ? items.join(" · ") : "답을 써 주세요"}</p>
-                )}
-                {on && (
-                  <p className="t-caption c-accent">
-                    고치는 중{items.length >= 4 ? ` · 항목이 ${items.length}개라 한 번 더 나눌 수 있어요` : " · 답은 한 줄에 항목 하나"}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-          <button
-            className="split__add t-label-m c-tertiary"
-            onClick={() => {
-              setParts([...parts, { front: "", back: "" }]);
-              setEditing(parts.length);
-            }}
-          >
-            <Icon name="plus" size={14} scaled />
-            카드 한 장 더
-          </button>
+              ))}
+            </>
+          ) : (
+            <>
+              {mode === "ai" && aiFail && <AiErrorBox e={aiFail} onRule={toRule} onRetry={send} onReconnect={(reconsent) => setConnect({ start: "wait", reconsent })} />}
+              {listed && (
+                <>
+                  <span className="t-label-s c-tertiary">
+                    나눈 카드 {n(ready.length)}장{fromAi ? " · ChatGPT 제안" : ""}
+                  </span>
+                  {parts.map((x, i) => {
+                    const items = lines(x.back);
+                    const on = editing === i;
+                    return (
+                      <div key={i} className={`split__card ${on ? "is-editing" : ""}`}>
+                        <div className="split__card-head">
+                          {on ? (
+                            <input
+                              className="split__input t-body-m-strong"
+                              value={x.front}
+                              placeholder="질문"
+                              aria-label={`${i + 1}번째 카드 질문`}
+                              autoFocus
+                              onChange={(e) => set(i, { front: e.target.value })}
+                              onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setEditing(null))}
+                            />
+                          ) : (
+                            <p className={`t-body-m-strong ${x.front.trim() ? "" : "c-tertiary"}`}>{x.front.trim() || "질문을 써 주세요"}</p>
+                          )}
+                          <span className="split__tools">
+                            <button className="split__tool c-secondary" aria-label={on ? "고치기 끝" : `${i + 1}번째 카드 고치기`} aria-pressed={on} onClick={() => setEditing(on ? null : i)}>
+                              <Icon name={on ? "check" : "pencil"} size={16} />
+                            </button>
+                            <button
+                              className="split__tool c-secondary"
+                              aria-label={`${i + 1}번째 카드 빼기`}
+                              onClick={() => {
+                                setParts(parts.filter((_, j) => j !== i));
+                                setEditing(null);
+                              }}
+                            >
+                              <Icon name="x" size={16} />
+                            </button>
+                          </span>
+                        </div>
+                        {on ? (
+                          <textarea
+                            className="split__input split__textarea t-body-s"
+                            value={x.back}
+                            placeholder="답. 한 줄에 항목 하나"
+                            aria-label={`${i + 1}번째 카드 답`}
+                            rows={Math.max(2, x.back.split("\n").length)}
+                            onChange={(e) => set(i, { back: e.target.value })}
+                            onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setEditing(null))}
+                          />
+                        ) : (
+                          <p className={`t-body-s ${items.length ? "c-secondary" : "c-tertiary"}`}>{items.length ? items.join(" · ") : "답을 써 주세요"}</p>
+                        )}
+                        {on && (
+                          <p className="t-caption c-accent">
+                            고치는 중{items.length >= 4 ? ` · 항목이 ${items.length}개라 한 번 더 나눌 수 있어요` : " · 답은 한 줄에 항목 하나"}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <button
+                    className="split__add t-label-m c-tertiary"
+                    onClick={() => {
+                      setParts([...parts, { front: "", back: "" }]);
+                      setEditing(parts.length);
+                    }}
+                  >
+                    <Icon name="plus" size={14} scaled />
+                    카드 한 장 더
+                  </button>
+                </>
+              )}
+            </>
+          )}
         </section>
       </div>
       <div className="split__keep">
         <Checkbox checked={archive} onChange={setArchive} label="원래 카드는 보관해요 (학습에서 빠지고, 복습 기록은 그대로 남아요)" />
         {lost && lostLine(lost, archive) && <p className="split__lost t-caption">{lostLine(lost, archive)}</p>}
         <p className="t-caption c-tertiary">
-          새 카드 {n(ready.length)}장은 새 카드로 시작하고, 중요도·하위 덱은 원래 카드를 따라요. 카드 점검의 "최근 나눈 카드"에서 언제든 되돌릴 수 있어요.
+          새 카드{listed ? ` ${n(ready.length)}장` : ""}은 새 카드로 시작하고, 중요도·하위 덱은 원래 카드를 따라요. 카드 점검의 "최근 나눈 카드"에서 언제든 되돌릴 수 있어요.
         </p>
       </div>
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="split__foot">
-        <span className="split__alts">
-          <Button variant="ghost" size="M" icon="rotate" label="다른 제안 받기" disabled={nextPer === null} onClick={() => nextPer && suggest(nextPer)} />
-          {/* 성격별로 묶기는 기기 안 모델(B-3)을 받은 경우에만. 지금은 모델이 없어 끈다 */}
-          <Button variant="ghost" size="M" icon="layers" label="성격별로 묶기 · 모델이 필요해요" disabled />
+        <span className="split__alts ai-mode">
+          {/* L4-s 처음 보낼 때 한 번. Esc 는 이 확인만 닫는다 */}
+          {asking && !segs.length && (
+            <div className="ai-confirm" role="dialog" aria-label="이 카드 한 장을 ChatGPT로 보내요" onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setAsking(false))}>
+              <span className="ai-confirm__head">
+                <Icon name="send" size={16} className="c-accent" />
+                <span className="t-body-m-strong">이 카드 한 장을 ChatGPT로 보내요</span>
+              </span>
+              <span className="t-caption c-tertiary">앞·뒷면 글자만 보내요 · ChatGPT 요금제 사용량에서 줄어요</span>
+              <span className="ai-confirm__actions">
+                <Button variant="ghost" size="M" label="취소" onClick={() => setAsking(false)} />
+                <Button size="M" icon="send" label="보내기" autoFocus onClick={send} />
+              </span>
+            </div>
+          )}
+          {/* R3-s 자료 구간이 있으면 목록을 펼친 채로 확인. 구간을 모두 빼면 카드 한 장만 보낸다 */}
+          {(asking ? segs.length > 0 : peek) && (
+            <div
+              className="ai-confirm ai-confirm--list"
+              role="dialog"
+              aria-label={asking ? `이 카드와 자료 ${segs.length}구간을 ChatGPT로 보내요` : "보낸 것"}
+              onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setAsking(false), setPeek(false))}
+            >
+              <SendList
+                compact
+                title={asking ? `이 카드와 자료 ${n(segs.length)}구간을 ChatGPT로 보내요` : "보낸 것"}
+                rows={[
+                  { key: "card", icon: "layers", meta: <span className="t-label-s c-secondary">카드 앞·뒷면</span>, text: `${p.question} / ${p.answer.join(" · ")}` },
+                  ...(asking
+                    ? sentRows(segs, (id) => setSegs(segs.filter((s) => s.id !== id)), true)
+                    : sentRows(aiP?.sent ?? [], () => {}, true).map((r) => ({ ...r, remove: undefined }))),
+                ]}
+                foot={
+                  <div className="grade__confirm-foot">
+                    <UsingPlan />
+                    <span className="grade__actions">
+                      {asking ? (
+                        <>
+                          <Button variant="ghost" size="M" label="취소" onClick={() => setAsking(false)} />
+                          <Button size="M" icon="send" label="보내기" autoFocus onClick={send} />
+                        </>
+                      ) : (
+                        <Button variant="ghost" size="M" label="닫기" autoFocus onClick={() => setPeek(false)} />
+                      )}
+                    </span>
+                  </div>
+                }
+              />
+            </div>
+          )}
+          <span className="segment segment--boxed" role="radiogroup" aria-label="나누는 방법">
+            <button role="radio" aria-checked={!aiSel} className={`segment__item t-label-m ${aiSel ? "" : "is-selected"}`} onClick={toRule}>
+              규칙으로 나누기
+            </button>
+            <button role="radio" aria-checked={aiSel} className={`segment__item t-label-m ${aiSel ? "is-selected" : ""}`} onClick={pickAi}>
+              성격별로 묶기
+            </button>
+          </span>
+          <span className="ai-side">
+            {ai?.connected ? (
+              <>
+                <UsingPlan />
+                <ScopeLine
+                  text={scopeText}
+                  open={asking || peek}
+                  onToggle={() => (sentNow ? setPeek((v) => !v) : asking ? setAsking(false) : setAsking(true))}
+                />
+              </>
+            ) : !ai?.connected ? (
+              <span className="ai-hint t-caption c-tertiary">
+                <Icon name="lock" size={14} />
+                "성격별로 묶기"는 ChatGPT 연결이 필요해요
+              </span>
+            ) : null}
+            {aiSel ? (
+              (aiP || aiFail?.kind === "bad_output") &&
+              !aiBusy &&
+              !asking && (
+                <button type="button" className="ai-mini t-label-s" onClick={send}>
+                  <Icon name="rotate" size={14} />
+                  다시 묶기
+                </button>
+              )
+            ) : (
+              <button type="button" className="ai-mini t-label-s" disabled={nextPer === null} onClick={() => nextPer && suggest(nextPer)}>
+                <Icon name="rotate" size={14} />
+                다른 제안 받기
+              </button>
+            )}
+          </span>
         </span>
         <span className="split__actions">
           <Button variant="ghost" size="M" label="그대로 두기" onClick={onKeep} />
-          <Button size="M" icon="check" label={`${n(ready.length)}장으로 나누기`} disabled={ready.length < 2} busy={busy} busyLabel="나누는 중…" onClick={apply} />
+          <Button size="M" icon="check" label={listed ? `${n(ready.length)}장으로 나누기` : "나누기"} disabled={ready.length < 2} busy={busy} busyLabel="나누는 중…" onClick={apply} />
         </span>
       </div>
     </Modal>
+    {panelSeg !== null && (
+      <div className="split__source">
+        <SegmentPanel key={panelSeg} segmentId={panelSeg} onClose={() => setPanelSeg(null)} />
+      </div>
+    )}
+    </>
   );
 }

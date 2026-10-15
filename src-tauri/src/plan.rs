@@ -801,6 +801,7 @@ mod tests {
                 sibling: None,
                 note_id: start + i,
                 weak: false,
+                exam: false,
             })
             .collect()
     }

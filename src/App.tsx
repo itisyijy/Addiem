@@ -3,12 +3,14 @@ import { api, type AppInfo } from "./api";
 import { NavContext, isNavLocked, setCutoff, useKey, type Route } from "./nav";
 import { Backdrop, TopNav } from "./ui";
 import { ToastProvider } from "./toast";
+import { SyncButton, SyncHost } from "./sync";
 import { Home } from "./screens/Home";
 import { NewDeckModal } from "./screens/NewDeck";
 import { Deck } from "./screens/Deck";
 import { AddCard } from "./screens/AddCard";
 import { Study, Summary } from "./screens/Study";
 import { Done } from "./screens/Done";
+import { MixDone, PreExam } from "./screens/PreExam";
 import { Cards } from "./screens/Cards";
 import { DeckSettings } from "./screens/DeckSettings";
 import { Import, ImportResultScreen } from "./screens/Import";
@@ -17,6 +19,7 @@ import { Settings } from "./screens/Settings";
 import { Recover } from "./screens/Recover";
 import { Quality } from "./screens/Quality";
 import { Sources } from "./screens/Sources";
+import { Drafts } from "./screens/Drafts";
 import { Plan, PlanConflictScreen } from "./screens/Plan";
 
 export default function App() {
@@ -60,10 +63,13 @@ export default function App() {
                 onImport={() => nav({ name: "import" })}
                 onNewDeck={() => nav({ name: "newDeck" })}
                 onSettings={() => nav({ name: "settings" })}
+                sync={<SyncButton />}
               />
             </div>
           )}
           {ready && (broken ? <Recover info={broken} onRecovered={() => (load(), nav({ name: "home" }))} /> : <Screen route={route} />)}
+          {/* K Drive 동기화 창들. 학습 화면에서는 동기화를 멈추고, 나오면(학습을 마치면) 올린다 */}
+          <SyncHost studying={focused} />
         </div>
       </NavContext.Provider>
     </ToastProvider>
@@ -110,17 +116,21 @@ function Screen({ route }: { route: Route }) {
     case "quality":
       return <Quality key={route.deckId} deckId={route.deckId} />;
     case "sources": // I1 자료
-      return <Sources key={`${route.deckId}-${route.segmentId}`} {...route} />;
+      return <Sources key={`${route.deckId}-${route.segmentId}-${route.gaps}`} {...route} />;
+    case "drafts": // R1-c 초안 검토
+      return <Drafts {...route} />;
     case "plan":
       return <Plan key={route.deckId ?? "all"} deckId={route.deckId} />;
     case "planConflict":
       return <PlanConflictScreen back={route.back} />;
     case "summary":
-      return <Summary key={route.cram ? "cram" : "d1"} deckIds={route.deckIds} cram={route.cram} />;
+      return route.cram ? <PreExam key="cram" deckIds={route.deckIds} /> : <Summary key="d1" deckIds={route.deckIds} />;
     case "study":
       return <Study key={route.sessionId ?? "new"} {...route} />;
     case "done":
       return <Done {...route} />;
+    case "mixDone":
+      return <MixDone {...route} />;
     default:
       return <Home />;
   }

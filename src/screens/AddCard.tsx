@@ -1,4 +1,4 @@
-// C3 카드 추가 / C3-b 빈칸 카드 / C3-r 앞뒤 둘 다 / C3-n 넣을 곳 / J3 서술형
+// C3 카드 추가 / C3-b 빈칸 카드 / C3-r 앞뒤 둘 다 / C3-n 넣을 곳 / J3 서술형 / M1 그림 가리기
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, type DeckDetail, type Level } from "../api";
 import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge, Toggle } from "../ui";
@@ -10,14 +10,17 @@ import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { KeywordEditor } from "./StudyParts";
 import { written, type Keyword } from "../written";
+import { OcclusionEditor, OcclusionPicture } from "./Occlusion";
+import { boxCount, labelOf, occlusionApi, ordinalsOf, storeImage, type Picture, type Shape } from "../occlusion";
 import "../styles/study.css";
 
-type Kind = "basic" | "reversed" | "cloze" | "written";
+type Kind = "basic" | "reversed" | "cloze" | "written" | "occlusion";
 const KINDS: [Kind, string][] = [
   ["basic", "질문과 답변"],
   ["reversed", "앞뒤 둘 다"],
   ["cloze", "빈칸"],
   ["written", "서술형"],
+  ["occlusion", "그림 가리기"],
 ];
 
 export function AddCard({ deckId }: { deckId: number }) {
@@ -42,6 +45,25 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [dismissed, setDismissed] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [write, setWrite] = useState(true);
+  // M1 그림 가리기: 그림 · 칸 · 묻는 방식(기본 모두 가림, M3) · 편집기(M2)
+  const [pic, setPic] = useState<Picture | null>(null);
+  const [shapes, setShapes] = useState<Shape[]>([]);
+  const [hideAll, setHideAll] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [over, setOver] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+  const takeImage = async (files: FileList | null | undefined) => {
+    const f = Array.from(files ?? []).find((x) => x.type.startsWith("image/"));
+    if (!f) return;
+    try {
+      setPic(await storeImage(f));
+      setShapes([]);
+      setEditing(true);
+      setError(undefined);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
 
   useEffect(() => {
     api.deckDetail(deckId).then(async (d) => {
@@ -65,11 +87,19 @@ export function AddCard({ deckId }: { deckId: number }) {
     const front = kind === "cloze" ? toCloze(qHtml) : toStoredHtml(qHtml);
     try {
       let made = 1;
-      if (kind === "written") {
+      if (kind === "occlusion") {
+        if (!pic) throw new Error("그림을 넣어주세요.");
+        const note = { note_id: null, deck_id: target, image: pic.name, header: toStoredHtml(qHtml), back_extra: toStoredHtml(aHtml), shapes, hide_all: hideAll, importance };
+        await occlusionApi.save(note);
+        made = ordinalsOf(shapes).length;
+        setPic(null);
+        setShapes([]);
+      } else if (kind === "written") {
         const memoHtml = memo.current?.html() ?? "";
         await written.add({ deck_id: target, question: front, answer: toStoredHtml(aHtml), memo: toStoredHtml(memoHtml), importance, write, keywords: kws });
       } else made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
-      setAdded((list) => [...list, plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml)].slice(-5));
+      const text = kind === "occlusion" ? plainText(qHtml) || "그림 가리기 · " + (pic?.fileName ?? "") : plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml);
+      setAdded((list) => [...list, text].slice(-5));
       setAddedCount((c) => c + made);
       setError(undefined);
       setKws([]);
@@ -94,12 +124,12 @@ export function AddCard({ deckId }: { deckId: number }) {
       const html = f.current?.html() ?? "";
       return plainText(html).replace(/​/g, "") !== "" || html.includes("<img"); // 빈칸 뒤 공백 문자는 내용이 아니다
     });
-    if (typed) setLeaving(r);
+    if (typed || pic) setLeaving(r);
     else nav(r);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (leaving) return; // 확인 창의 Esc 는 창이 처리한다 (넣을 곳 드롭다운은 제 키를 스스로 멈춘다)
+    if (leaving || editing) return; // 확인 창의 Esc 는 창이 처리한다 (넣을 곳 드롭다운은 제 키를 스스로 멈춘다). 편집기는 제 키를 먼저 받는다
     if (matchAction("save", e.nativeEvent) >= 0) {
       e.preventDefault();
       save();
@@ -181,7 +211,62 @@ export function AddCard({ deckId }: { deckId: number }) {
             )}
           </div>
 
-          {kind === "written" ? (
+          {kind === "occlusion" ? (
+            <div className="addcard__io">
+              <input ref={picker} type="file" accept="image/png,image/jpeg,image/webp,image/bmp" hidden onChange={(e) => takeImage(e.target.files)} />
+              {!pic ? (
+                <div
+                  className={`addcard__io-drop ${over ? "is-over" : ""}`}
+                  tabIndex={0}
+                  onPaste={(e) => takeImage(e.clipboardData.files)}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setOver(true);
+                  }}
+                  onDragLeave={() => setOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setOver(false);
+                    takeImage(e.dataTransfer.files);
+                  }}
+                >
+                  <Icon name="image" size={32} className="c-tertiary" />
+                  <span className="t-body-m c-secondary">그림을 끌어놓거나 붙여넣어요 (Ctrl V)</span>
+                  <Button variant="secondary" size="M" label="그림 고르기" onClick={() => picker.current?.click()} />
+                  <span className="t-caption c-tertiary">PNG · JPG · WEBP. 그림은 원본 그대로 이 기기에 복사해요.</span>
+                </div>
+              ) : (
+                <>
+                  <span className="addcard__io-head">
+                    <span className="t-label-m">그림</span>
+                    <span className="t-caption c-tertiary">
+                      {pic.fileName} · {pic.width}×{pic.height}
+                    </span>
+                  </span>
+                  <div className="addcard__io-pic">
+                    <OcclusionPicture url={pic.url} shapes={shapes} hideAll={hideAll} />
+                  </div>
+                  <div className="addcard__io-sum">
+                    <span>
+                      <span className="t-body-m-strong">
+                        칸 {n(boxCount(shapes))}개 · 카드 {n(ordinalsOf(shapes).length)}장
+                      </span>{" "}
+                      <span className="t-caption c-secondary">{hideAll ? "모두 가리고 하나씩 묻기" : "하나만 가리기"}</span>
+                    </span>
+                    <Button variant="secondary" size="M" icon="pencil" label="가릴 곳 편집" onClick={() => setEditing(true)} />
+                  </div>
+                  <span className="t-caption c-tertiary">질문·추가 설명 칸은 선택이에요. 비워 두면 "가린 곳에 들어갈 말은?"으로 물어요.</span>
+                </>
+              )}
+              <span className="t-label-m">질문</span>
+              <RichField key="q-io" ref={q} minHeight={44} toolbar={false} onInput={refresh} />
+              <span className="addcard__label">
+                <span className="t-label-m">추가 설명</span>
+                <span className="t-caption c-tertiary">선택 · 답을 본 뒤에만 보여요</span>
+              </span>
+              <RichField key="a-io" ref={a} minHeight={44} toolbar={false} onInput={refresh} />
+            </div>
+          ) : kind === "written" ? (
             <>
               <span className="t-label-m">질문</span>
               <RichField key="q-written" ref={q} minHeight={64} onInput={refresh} />
@@ -292,9 +377,28 @@ export function AddCard({ deckId }: { deckId: number }) {
         <aside className="addcard__side">
           <p className="t-caption c-tertiary">
             학습할 때 이렇게 보여요
-            {kind === "cloze" && marks.length > 0 ? ` · 카드 1 / ${marks.length}` : kind === "reversed" ? " · 카드 2장" : ""}
+            {kind === "cloze" && marks.length > 0
+              ? ` · 카드 1 / ${marks.length}`
+              : kind === "reversed"
+                ? " · 카드 2장"
+                : kind === "occlusion" && shapes.length > 0
+                  ? ` · 카드 ${ordinalsOf(shapes).length}장`
+                  : ""}
           </p>
-          {kind === "reversed" ? (
+          {kind === "occlusion" ? (
+            pic &&
+            ordinalsOf(shapes)
+              .slice(0, 3)
+              .map((o) => (
+                <div key={o} className="addcard__io-card">
+                  <p className="t-caption c-secondary">
+                    카드 {o}
+                    {labelOf(shapes, o) && ` · ${labelOf(shapes, o)}`}
+                  </p>
+                  <OcclusionPicture url={pic.url} shapes={shapes} hideAll={hideAll} ask={o} />
+                </div>
+              ))
+          ) : kind === "reversed" ? (
             <>
               <Preview kind="basic" qHtml={qHtml} aHtml={a.current?.html() ?? ""} level={shownLevel} head="카드 1 · 앞 → 뒤" />
               <Preview kind="basic" qHtml={a.current?.html() ?? ""} aHtml={qHtml} level={shownLevel} head="카드 2 · 뒤 → 앞" />
@@ -332,6 +436,22 @@ export function AddCard({ deckId }: { deckId: number }) {
         </aside>
       </div>
 
+      {editing && pic && (
+        <OcclusionEditor
+          picture={pic}
+          shapes={shapes}
+          hideAll={hideAll}
+          onCancel={() => {
+            setEditing(false);
+            if (!shapes.length) setPic(null); // 처음 그리다 버리면 그림 고르기로 돌아간다
+          }}
+          onDone={(s, h) => {
+            setShapes(s);
+            setHideAll(h);
+            setEditing(false);
+          }}
+        />
+      )}
       {leaving && (
         <Modal title="작성 중인 카드가 있어요" onClose={() => setLeaving(null)}>
           <div className="modal__body">

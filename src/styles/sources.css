@@ -147,3 +147,36 @@
 /* I1 부제 안의 [분석하기] */
 .src-inline { padding: 0; text-decoration: underline; text-underline-offset: 3px; }
 .src-inline:hover { color: var(--accent-default); }
+
+/* ---------------------------------------------------------------- R1-a 빠진 범위 (Figma 78:9379) */
+.src-map { display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; width: 280px; padding: 14px 16px 16px; border-radius: 20px; }
+.src-map__pages { display: flex; flex-wrap: wrap; gap: 4px; }
+.src-map__page { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 26px; border-radius: 4px; }
+.src-map__page.is-linked, .src-map__swatch.is-linked { background: var(--accent-default); color: var(--text-inverse); }
+.src-map__page.is-gap, .src-map__swatch.is-gap { background: var(--status-warn-fg); color: var(--text-inverse); }
+.src-map__page.is-none, .src-map__swatch.is-none { background: var(--bg-subtle); color: var(--text-tertiary); }
+.src-map__page.is-selected { box-shadow: inset 0 0 0 2px var(--text-primary); }
+/* 다크의 warn-fg 는 밝은 노랑이라 숫자를 바탕색으로 */
+:root[data-theme="dark"] .src-map__page.is-gap { color: var(--bg-canvas); }
+.src-map__page:hover { opacity: 0.85; }
+.src-map__legend { display: flex; flex-direction: column; gap: 6px; }
+.src-map__legend > span { display: inline-flex; align-items: center; gap: 8px; }
+.src-map__swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+
+.src-seg.is-picked { background: var(--accent-subtle); }
+.src-seg__check { display: inline-flex; padding-top: 2px; }
+.src-pick {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 12px 16px;
+  border-top: 1px solid var(--border-default);
+  border-radius: 0 0 23px 23px;
+  background: var(--bg-canvas);
+}
+/* 선택 막대가 화면 아래에 붙도록 목록 칸은 넘침을 자르지 않는다 (마지막 칸이 모서리를 둥글게 맡는다) */
+.src-list.panel:has(.src-pick) { overflow: visible; }
+.src-pick__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

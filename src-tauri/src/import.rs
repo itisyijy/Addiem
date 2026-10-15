@@ -480,6 +480,7 @@ pub fn import_json(state: State<AppState>, text: String, source: String, deck_id
         }
     }
     suggest_from_tags(&tx, &card_tags)?;
+    crate::exam::fill_from_tags(&tx).map_err(err)?;
 
     let roots = roots_of(&tx, &used)?;
     let skipped = issues.iter().filter(|i| i.severity == "skipped").count();
@@ -625,7 +626,8 @@ fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Res<Vec<u
 fn degraded_features(body: &str) -> Vec<&'static str> {
     let lower = body.to_lowercase();
     let mut out = vec![];
-    if lower.contains("<script") {
+    // Anki 그림 가리기(IO) 템플릿의 스크립트는 우리가 직접 그리므로 원본과 다르게 보이지 않는다 (occlusion.rs)
+    if lower.contains("<script") && !crate::occlusion::is_template(body) {
         out.push("스크립트");
     }
     if body.contains("{{type:") {
@@ -1338,6 +1340,7 @@ fn run_import_selected(
     }
     emit("cards", total, total);
     suggest_from_tags(&tx, &card_tags)?;
+    crate::exam::fill_from_tags(&tx).map_err(err)?;
 
     // 미디어. 새로 쓴 파일은 written 에 남겨, 실패하거나 멈추면 지운다
     let dir = media_dir(&state.data_dir);
@@ -1702,8 +1705,8 @@ mod tests {
         // (노트, 그림, 카드가 있는 덱, 원래 덱)
         for (n, img, did, odid) in [(1, "a1.png", 11, 0), (2, "a2.png", 12, 0), (3, "b.png", 20, 0), (4, "f.png", 30, 11)] {
             col.execute(
-                "INSERT INTO notes VALUES (?1, ?2, 7, 0, 0, '', ?3, '', 0, 0, '')",
-                params![n, format!("guid{n}"), format!("앞 {n}\x1f<img src=\"{img}\">")],
+                "INSERT INTO notes VALUES (?1, ?2, 7, 0, 0, ?4, ?3, '', 0, 0, '')",
+                params![n, format!("guid{n}"), format!("앞 {n}\x1f<img src=\"{img}\">"), if n == 1 { "기출::2023_중간" } else { "" }],
             )
             .unwrap();
             col.execute("INSERT INTO cards VALUES (?1, ?2, ?3, 0, 0, 0, 2, 2, 5, 3, 2500, 2, 0, 0, 0, ?4, 0, '')", params![100 + n, n, did, odid])
@@ -1756,6 +1759,11 @@ mod tests {
         assert_eq!(strings("SELECT filename FROM media ORDER BY filename"), ["a1.png", "f.png"], "고른 노트가 쓰는 미디어만");
         assert!(!s.data_dir.join("media/a2.png").exists() && !s.data_dir.join("media/b.png").exists());
         assert_eq!(strings("SELECT anki_revlog_id || '' FROM review_log ORDER BY 1"), ["1001", "1004"], "고른 카드의 기록만");
+        assert_eq!(
+            strings("SELECT anki_guid || ' ' || exam_hits || ' ' || exam_names FROM note WHERE exam_hits > 0"),
+            [r#"guid1 1 ["2023 중간"]"#],
+            "기출 태그를 기출 표시로 (8.4)"
+        );
         drop(con);
 
         // 나머지를 나중에 같은 파일로: 이미 있는 노트는 건너뛰고 B 만 들어온다

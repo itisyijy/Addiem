@@ -4,7 +4,7 @@
 
 use crate::commands::{answer_part, descendants, load_decks, note_field_names, render_fields, AppState};
 use crate::db::now_ms;
-use crate::{embed, render};
+use crate::{embed, exam, render};
 use quick_xml::events::Event;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -54,12 +54,16 @@ pub struct Material {
     segments: i64,
     /// 카드가 이어진 구간 수
     linked: i64,
+    /// R1-a 빠진 범위: 강조됐는데 이어진 카드가 없는 구간 수 (끊은 자동 연결은 없는 것으로 본다)
+    pub(crate) gaps: i64,
 }
 
 const MATERIAL_SQL: &str = "SELECT m.id, m.deck_id, m.file_name, m.kind, m.pages, m.status,
         (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id),
         (SELECT count(DISTINCT s.id) FROM source_segment s JOIN source_link l ON l.segment_id = s.id
-         WHERE s.material_id = m.id AND l.method != 'rejected')
+         WHERE s.material_id = m.id AND l.method != 'rejected'),
+        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id
+         AND NOT EXISTS (SELECT 1 FROM source_link l WHERE l.segment_id = s.id AND l.method != 'rejected'))
      FROM source_material m";
 
 fn material_row(r: &rusqlite::Row) -> rusqlite::Result<Material> {
@@ -72,10 +76,11 @@ fn material_row(r: &rusqlite::Row) -> rusqlite::Result<Material> {
         status: r.get(5)?,
         segments: r.get(6)?,
         linked: r.get(7)?,
+        gaps: r.get(8)?,
     })
 }
 
-fn subtree(con: &Connection, deck_id: i64) -> Res<String> {
+pub(crate) fn subtree(con: &Connection, deck_id: i64) -> Res<String> {
     let decks = load_decks(con)?;
     Ok(descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
 }
@@ -90,7 +95,7 @@ pub fn source_list(state: State<AppState>, deck_id: i64) -> Res<Vec<Material>> {
     Ok(rows)
 }
 
-fn material(con: &Connection, id: i64) -> Res<Material> {
+pub(crate) fn material(con: &Connection, id: i64) -> Res<Material> {
     con.query_row(&format!("{MATERIAL_SQL} WHERE m.id = ?1"), [id], material_row).map_err(|_| "자료를 찾을 수 없어요.".to_string())
 }
 
@@ -142,7 +147,7 @@ pub fn source_delete(state: State<AppState>, material_id: i64) -> Res<()> {
     let rel: Option<String> =
         con.query_row("SELECT rel_path FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).optional().map_err(err)?;
     con.execute("DELETE FROM source_material WHERE id = ?1", [material_id]).map_err(err)?;
-    if let Some(rel) = rel.filter(|r| r.starts_with("sources/")) {
+    if let Some(rel) = rel.filter(|r| crate::commands::safe_rel_path(r, "sources")) {
         let _ = std::fs::remove_file(state.data_dir.join(rel));
     }
     Ok(())
@@ -155,7 +160,10 @@ pub fn source_bytes(state: State<AppState>, material_id: i64) -> Res<tauri::ipc:
         let con = state.db.lock().map_err(err)?;
         con.query_row("SELECT rel_path FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).map_err(err)?
     };
-    let bytes = std::fs::read(state.data_dir.join(rel)).map_err(|_| "이 기기에는 자료 파일이 없어요.".to_string())?;
+    let bytes = Some(rel)
+        .filter(|r| crate::commands::safe_rel_path(r, "sources"))
+        .and_then(|r| std::fs::read(state.data_dir.join(r)).ok())
+        .ok_or_else(|| "이 기기에는 자료 파일이 없어요.".to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -216,6 +224,8 @@ pub struct Link {
     card_id: i64,
     /// manual: 직접 연결 / auto: 자동 연결
     method: String,
+    /// draft: R1 초안에서 만듦 (method 는 manual)
+    origin: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -251,17 +261,17 @@ fn segment_row(r: &rusqlite::Row) -> rusqlite::Result<Segment> {
     })
 }
 
-fn segments_of(con: &Connection, material_id: i64) -> Res<Vec<Segment>> {
+pub(crate) fn segments_of(con: &Connection, material_id: i64) -> Res<Vec<Segment>> {
     let mut st = con.prepare(&format!("{SEGMENT_SQL} WHERE material_id = ?1 ORDER BY page, ord")).map_err(err)?;
     let mut segs: Vec<Segment> = st.query_map([material_id], segment_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     let mut st = con
         .prepare(
-            "SELECT l.segment_id, l.card_id, l.method FROM source_link l JOIN source_segment s ON s.id = l.segment_id
+            "SELECT l.segment_id, l.card_id, l.method, l.origin FROM source_link l JOIN source_segment s ON s.id = l.segment_id
              WHERE s.material_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, l.id",
         )
         .map_err(err)?;
     let mut links: HashMap<i64, Vec<Link>> = HashMap::new();
-    for row in st.query_map([material_id], |r| Ok((r.get::<_, i64>(0)?, Link { card_id: r.get(1)?, method: r.get(2)? }))).map_err(err)? {
+    for row in st.query_map([material_id], |r| Ok((r.get::<_, i64>(0)?, Link { card_id: r.get(1)?, method: r.get(2)?, origin: r.get(3)? }))).map_err(err)? {
         let (seg, link) = row.map_err(err)?;
         links.entry(seg).or_default().push(link);
     }
@@ -314,7 +324,18 @@ fn unlink(con: &Connection, segment_id: i64, card_id: i64) -> Res<()> {
 pub struct CardSource {
     material: Material,
     segment: Segment,
+    /// 카드와의 연결 방식. 구간으로 열면(근거 칩) 빈 글자
     method: String,
+}
+
+/// R 근거 칩: 구간 하나를 I2 패널로 (카드 연결과 상관없이)
+#[tauri::command]
+pub fn source_segment(state: State<AppState>, segment_id: i64) -> Res<CardSource> {
+    let con = state.db.lock().map_err(err)?;
+    let material_id: i64 =
+        con.query_row("SELECT material_id FROM source_segment WHERE id = ?1", [segment_id], |r| r.get(0)).map_err(|_| "구간을 찾을 수 없어요.".to_string())?;
+    let segment = segments_of(&con, material_id)?.into_iter().find(|s| s.id == segment_id).ok_or("구간을 찾을 수 없어요.")?;
+    Ok(CardSource { material: material(&con, material_id)?, segment, method: String::new() })
 }
 
 /// I2 학습 중 원자료. 직접 연결을 먼저, 그다음 유사도가 높은 것. 없으면 null (버튼을 숨긴다)
@@ -589,7 +610,10 @@ pub fn source_slide(state: State<AppState>, material_id: i64, page: i64) -> Res<
         let con = state.db.lock().map_err(err)?;
         con.query_row("SELECT rel_path FROM source_material WHERE id = ?1 AND kind = 'pptx'", [material_id], |r| r.get(0)).map_err(err)?
     };
-    let bytes = std::fs::read(state.data_dir.join(rel)).map_err(|_| "이 기기에는 자료 파일이 없어요.".to_string())?;
+    let bytes = Some(rel)
+        .filter(|r| crate::commands::safe_rel_path(r, "sources"))
+        .and_then(|r| std::fs::read(state.data_dir.join(r)).ok())
+        .ok_or_else(|| "이 기기에는 자료 파일이 없어요.".to_string())?;
     let mut slides = pptx_slides(&bytes)?;
     let i = usize::try_from(page - 1).map_err(err)?;
     Ok(if i < slides.len() { slides.swap_remove(i) } else { vec![] })
@@ -640,7 +664,7 @@ fn text_hash(text: &str) -> String {
 }
 
 /// 캐시에 없거나 글이 바뀐 것만 계산한다. 계산하는 동안에는 DB 를 잠그지 않는다
-fn embed_cached(app: &AppHandle, kind: &str, items: &[(i64, String)], mut tick: impl FnMut(usize)) -> Res<HashMap<i64, Vec<f32>>> {
+pub(crate) fn embed_cached(app: &AppHandle, kind: &str, items: &[(i64, String)], mut tick: impl FnMut(usize)) -> Res<HashMap<i64, Vec<f32>>> {
     let state = app.state::<AppState>();
     let cached: HashMap<i64, (String, Vec<u8>)> = {
         let con = state.db.lock().map_err(err)?;
@@ -679,12 +703,12 @@ fn embed_cached(app: &AppHandle, kind: &str, items: &[(i64, String)], mut tick: 
     Ok(out)
 }
 
-/// 카드 글 (앞 + 뒤, 서식 뺌). 카드 목록(C2)과 같은 방식으로 렌더한다
-fn card_texts(con: &Connection, ids: &str) -> Res<Vec<(i64, i64, String)>> {
+/// 카드 글 (앞 + 뒤, 서식 뺌)과 앞면 글. 카드 목록(C2)과 같은 방식으로 렌더한다. ids: 덱 id 목록 ("1,2,3")
+pub(crate) fn card_texts(con: &Connection, ids: &str) -> Res<Vec<CardText>> {
     let names = note_field_names(con)?;
     let mut st = con
         .prepare(&format!(
-            "SELECT c.id, c.deck_id, n.fields, c.template_ord, nt.name, t.qfmt, t.afmt
+            "SELECT c.id, n.fields, c.template_ord, nt.name, t.qfmt, t.afmt
              FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id
                   AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
@@ -693,16 +717,24 @@ fn card_texts(con: &Connection, ids: &str) -> Res<Vec<(i64, i64, String)>> {
         .map_err(err)?;
     let rows = st
         .query_map([], |r| {
-            let fields: String = r.get(2)?;
-            let nt: String = r.get(4)?;
-            let q: Option<String> = r.get(5)?;
-            let a: Option<String> = r.get(6)?;
-            let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(3)?);
-            let text = format!("{} {}", render::strip_tags(&rendered.front), render::strip_tags(answer_part(&rendered.back)));
-            Ok((r.get(0)?, r.get(1)?, text.chars().take(1000).collect()))
+            let fields: String = r.get(1)?;
+            let nt: String = r.get(3)?;
+            let q: Option<String> = r.get(4)?;
+            let a: Option<String> = r.get(5)?;
+            let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(2)?);
+            let front = render::strip_tags(&rendered.front);
+            let text = format!("{front} {}", render::strip_tags(answer_part(&rendered.back)));
+            Ok(CardText { id: r.get(0)?, front, text: text.chars().take(1000).collect() })
         })
         .map_err(err)?;
     rows.collect::<Result<_, _>>().map_err(err)
+}
+
+pub(crate) struct CardText {
+    pub id: i64,
+    pub front: String,
+    /// 임베딩에 쓰는 글 (앞 + 뒤, 1000자까지)
+    pub text: String,
 }
 
 /// 카드마다 가장 비슷한 구간 하나. 기준보다 낮으면 잇지 않는다. 벡터는 L2 정규화돼 있어 내적이 코사인이다
@@ -788,7 +820,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         emit(app, Progress { step, steps, label: label.into(), done, total });
     };
     progress(0, &format!("카드 {}장", cards.len()), 0);
-    let card_items: Vec<(i64, String)> = cards.iter().map(|c| (c.0, c.2.clone())).collect();
+    let card_items: Vec<(i64, String)> = cards.iter().map(|c| (c.id, c.text.clone())).collect();
     let card_vecs = embed_cached(app, "card", &card_items, |n| progress(0, &format!("카드 {}장", cards.len()), n))?;
     let mut seg_vecs = HashMap::new();
     for (i, ((_, name), list)) in materials.iter().zip(&segs).enumerate() {
@@ -807,7 +839,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
     };
     let card_refs: Vec<(i64, &[f32])> =
-        cards.iter().filter(|c| !manual.contains(&c.0)).filter_map(|c| card_vecs.get(&c.0).map(|v| (c.0, v.as_slice()))).collect();
+        cards.iter().filter(|c| !manual.contains(&c.id)).filter_map(|c| card_vecs.get(&c.id).map(|v| (c.id, v.as_slice()))).collect();
     let seg_refs: Vec<(i64, &[f32])> = seg_vecs.iter().map(|(id, v)| (*id, v.as_slice())).collect();
     let links = best_links(&card_refs, &seg_refs, AUTO_LINK);
     for (seg, card, sim) in &links {
@@ -817,7 +849,12 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         )
         .map_err(err)?;
     }
+    let suggested = suggest(&con, &ids)?;
+    Ok(Analysis { linked: links.len(), suggested })
+}
 
+/// 하위 덱 중요도 제안. 제안을 붙인 덱 수
+fn suggest(con: &Connection, ids: &str) -> Res<usize> {
     // 하위 덱 점수: 카드마다 이어진 구간 가중치 합의 평균. 근거 문장에 쓸 자료 이름과 신호도 모은다
     let mut st = con
         .prepare(&format!(
@@ -827,11 +864,14 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
              WHERE c.deck_id IN ({ids}) AND m.deck_id IN ({ids})"
         ))
         .map_err(err)?;
+    #[derive(Default)]
     struct Acc {
         cards: std::collections::HashSet<i64>,
         weight: f64,
         files: HashMap<String, std::collections::HashSet<i64>>,
         signals: HashMap<String, usize>,
+        /// 8.4 기출 카드 (자료와 이어지지 않았어도 센다)
+        exam: std::collections::HashSet<i64>,
     }
     let mut acc: HashMap<i64, Acc> = HashMap::new();
     let rows = st
@@ -839,11 +879,22 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         .map_err(err)?;
     for row in rows {
         let (deck, card, w, file, signals) = row.map_err(err)?;
-        let a = acc.entry(deck).or_insert_with(|| Acc { cards: Default::default(), weight: 0.0, files: HashMap::new(), signals: HashMap::new() });
+        let a = acc.entry(deck).or_default();
         a.cards.insert(card);
         a.weight += w;
         a.files.entry(file).or_default().insert(card);
         *a.signals.entry(signals.split(',').next().unwrap_or_default().to_string()).or_default() += 1;
+    }
+    drop(st);
+    // 8.4 기출 카드는 강조 구간 하나만큼 더한다 (카드마다 한 번)
+    let mut st = con
+        .prepare(&format!("SELECT c.deck_id, c.id FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN ({ids}) AND {}", exam::IS_EXAM))
+        .map_err(err)?;
+    for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(err)? {
+        let (deck, card) = row.map_err(err)?;
+        let a = acc.entry(deck).or_default();
+        a.exam.insert(card);
+        a.weight += exam::EXAM_WEIGHT;
     }
     drop(st);
     let mut st = con.prepare(&format!("SELECT deck_id, count(*) FROM card WHERE deck_id IN ({ids}) GROUP BY deck_id")).map_err(err)?;
@@ -855,7 +906,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
             let a = acc.get(id);
             DeckScore {
                 deck_id: *id,
-                linked: a.map_or(0, |a| a.cards.len()),
+                linked: a.map_or(0, |a| a.cards.union(&a.exam).count()),
                 score: a.map_or(0.0, |a| a.weight / (*n).max(1) as f64),
             }
         })
@@ -875,7 +926,11 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         let (file, _) = a.files.iter().max_by_key(|(name, c)| (c.len(), std::cmp::Reverse((*name).clone()))).map(|(n, c)| (n.clone(), c.len())).unwrap_or_default();
         let signal = a.signals.iter().max_by_key(|(_, n)| **n).map(|(s, _)| s.as_str()).unwrap_or_default();
         let label = SIGNALS.iter().position(|s| s.0 == signal).map_or("강조", |i| SIGNAL_LABEL[i]);
-        let reason = if level == 2 {
+        let reason = if level == 2 && !a.exam.is_empty() && a.cards.is_empty() {
+            format!("이 덱 카드 {}장이 기출로 표시됐어요 (덱 안 상위 {pct}%)", a.exam.len())
+        } else if level == 2 && !a.exam.is_empty() {
+            format!("이 덱 카드 {}장이 기출이고 {}장이 {file}의 {label} 구간과 연결됐어요 (덱 안 상위 {pct}%)", a.exam.len(), a.cards.len())
+        } else if level == 2 {
             format!("이 덱 카드 {}장이 {file}의 {label} 구간과 연결됐어요 (덱 안 상위 {pct}%)", a.cards.len())
         } else {
             format!("이 덱 카드 {}장만 자료의 강조 구간과 연결됐어요 (덱 안 하위 {pct}%)", a.cards.len())
@@ -887,7 +942,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
             )
             .map_err(err)?;
     }
-    Ok(Analysis { linked: links.len(), suggested })
+    Ok(suggested)
 }
 
 #[cfg(test)]
@@ -1006,6 +1061,49 @@ mod tests {
         let cards: i64 = con.query_row("SELECT count(*) FROM card", [], |r| r.get(0)).unwrap();
         let left: i64 = con.query_row("SELECT count(*) FROM source_segment", [], |r| r.get(0)).unwrap();
         assert_eq!((cards, left), (1, 0));
+    }
+
+    #[test]
+    fn exam_marks_join_material_suggestion() {
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute_batch(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, '시험', 0, 0);
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, created_at, updated_at) VALUES (1, 1, 'a.pdf', 'sources/1.pdf', 'pdf', 0, 0);
+             INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight)
+               VALUES (1, 1, 1, 0, '강조', 'highlight', 3), (2, 1, 1, 1, '굵게', 'bold', 1), (3, 1, 2, 0, '기출 구간', 'bold', 1);",
+        )
+        .unwrap();
+        let nt: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Basic'", [], |r| r.get(0)).unwrap();
+        // (덱, 카드 수, 첫 카드에 이을 구간, 노트에 기출 표시)
+        let mut id = 0;
+        for (deck, n, seg, exam) in [(2, 2, None, true), (3, 2, Some(1), false), (4, 1, Some(2), false), (5, 1, Some(3), false), (6, 4, Some(2), false)] {
+            con.execute("INSERT INTO deck (id, parent_id, name, created_at, updated_at) VALUES (?1, 1, ?1, 0, 0)", [deck]).unwrap();
+            for i in 0..n {
+                id += 1;
+                con.execute(
+                    "INSERT INTO note (id, note_type_id, fields, exam_hits, created_at, updated_at) VALUES (?1, ?2, '[\"q\",\"a\"]', ?3, 0, 0)",
+                    params![id, nt, exam.then_some(1)],
+                )
+                .unwrap();
+                con.execute("INSERT INTO card (id, note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?1, ?2, 0, 0, 0)", [id, deck]).unwrap();
+                if let (0, Some(s)) = (i, seg) {
+                    link(&con, s, id).unwrap();
+                }
+            }
+        }
+        let row = |deck: i64| -> (i64, Option<String>) {
+            con.query_row("SELECT importance, importance_reason FROM deck WHERE id = ?1", [deck], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        // 기출 구간과 이은 카드: 볼드(1) + 기출(3) = 4 로 맨 위. 노트 기출 덱 2 는 6 / 2 = 3
+        con.execute("UPDATE source_segment SET exam_hits = 1 WHERE id = 3", []).unwrap();
+        assert_eq!(suggest(&con, "1,2,3,4,5,6").unwrap(), 2);
+        assert_eq!(row(5), (2, Some("이 덱 카드 1장이 기출이고 1장이 a.pdf의 볼드 구간과 연결됐어요 (덱 안 상위 20%)".into())));
+        assert_eq!(row(6).0, 0);
+        // 구간의 기출 표시를 지우면 덱 5 는 1, 자료와 잇지 않은 기출 카드만 있는 덱 2 가 맨 위
+        con.execute("UPDATE source_segment SET exam_hits = 0 WHERE id = 3", []).unwrap();
+        assert_eq!(suggest(&con, "1,2,3,4,5,6").unwrap(), 2);
+        assert_eq!(row(2), (2, Some("이 덱 카드 2장이 기출로 표시됐어요 (덱 안 상위 20%)".into())));
+        assert_eq!(row(5), (1, None));
     }
 
     #[test]

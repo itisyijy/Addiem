@@ -65,7 +65,7 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
 const openBoxes: HTMLElement[] = [];
 
 /** Tab 이 모달 밖으로 나가지 않게 하고, 닫히면 열기 전 초점(연 버튼)으로 돌려준다 */
-function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>) {
+export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>) {
   useEffect(() => {
     const box = ref.current;
     if (!box) return;

@@ -1,16 +1,21 @@
+mod ai;
 mod commands;
 mod cram;
 mod written;
 mod db;
 mod embed;
+mod exam;
 mod export;
 mod import;
+mod occlusion;
 mod plan;
 mod quality;
+mod rag;
 mod queue;
 mod render;
 mod source;
 mod srs;
+mod sync;
 
 use tauri::Manager;
 
@@ -40,8 +45,14 @@ pub fn run() {
                 undo: std::sync::Mutex::new(vec![]),
                 import_cancel: std::sync::atomic::AtomicBool::new(false),
             });
+            // K Google Drive 동기화: 상태 · 백그라운드 작업 (연결하지 않았으면 네트워크를 쓰지 않는다)
+            sync::setup(app.handle());
+            // G2 성격별로 묶기 · ChatGPT 요금제 (연결하지 않았으면 네트워크를 쓰지 않는다)
+            app.manage(ai::AiState::new());
             Ok(())
         })
+        // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
+        .on_window_event(sync::on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::home,
             commands::create_deck,
@@ -104,15 +115,20 @@ pub fn run() {
             // J 서술형 · G3 신호 · H3 압축 회독 (학습 화면)
             written::written_card, written::save_written_answer, written::compare_written, written::written_note, written::save_written_note,
             written::suggest_keywords, written::add_written_card, written::split_signal,
-            cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo,
+            cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo, cram::mix_cards, cram::mix_start, cram::mix_restart, cram::mix_summary,
+            // M 그림 가리기
+            occlusion::occlusion_note, occlusion::save_occlusion,
+            // 8.4 기출 이력
+            exam::mark_exam, exam::set_exam, exam::exam_list, exam::exam_summary,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
             source::source_list, source::source_add, source::source_delete, source::source_bytes, source::source_save_pdf,
             source::source_segments, source::source_slide, source::source_link, source::source_unlink, source::source_for_card,
-            source::source_analyze, source::source_unanalyzed, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
+            source::source_analyze, source::source_unanalyzed, source::source_segment, rag::rag_preview, rag::rag_draft, rag::rag_draft_apply, rag::rag_grade_scope, rag::rag_grade, rag::rag_linked, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
             quality::quality_check,
             quality::hide_quality,
             quality::split_suggest,
             quality::split_apply,
+            ai::ai_status, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_cancel,
             quality::undo_change,
             quality::recent_changes,
             plan::study_plan,
@@ -122,6 +138,11 @@ pub fn run() {
             plan::plan_conflict,
             plan::resolve_plan_conflict,
             plan::plan_adjust,
+            // K Google Drive 보관 · 동기화
+            sync::sync_status, sync::sync_pause, sync::sync_now, sync::sync_close_now, sync::sync_connect, sync::sync_connect_cancel,
+            sync::sync_probe, sync::sync_join, sync::sync_disconnect, sync::sync_settings, sync::sync_set_lock, sync::sync_unlock,
+            sync::sync_backups, sync::sync_restore_preview, sync::sync_restore, sync::sync_backup_full, sync::sync_delete_backup,
+            sync::sync_prune_backups, sync::sync_open_folder, sync::sync_conflicts, sync::sync_conflict_use, sync::sync_conflicts_seen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
