@@ -121,7 +121,7 @@ fn locate(folded: &(Vec<char>, Vec<(usize, usize)>), k: &Keyword) -> Vec<(usize,
 }
 
 /// J2 평가 추천: 핵심어 비율 40% 미만 Again, 80% 미만 Hard, 그 이상 Good. Easy 는 추천하지 않는다 (속도는 모른다)
-fn suggest(hits: usize, total: usize) -> Option<u8> {
+pub(crate) fn suggest(hits: usize, total: usize) -> Option<u8> {
     if total == 0 {
         return None;
     }
@@ -348,10 +348,13 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
         let deck: i64 = con.query_row("SELECT deck_id FROM card WHERE id = ?1", [card_id], |r| r.get(0)).map_err(err)?;
         Ok(commands::write_mode_source(con, deck)?.is_some())
     };
-    let written = match setting.write {
-        Some(w) => w,
-        None => deck_writes()? || typed.is_some(),
-    };
+    // Q12 목록 · 선택형은 써서 답하기 덱에서도 자기 방식으로 묻는다
+    let special = names.get(&nt).is_some_and(|n| crate::recall::is_special(&nt, n));
+    let written = !special
+        && match setting.write {
+            Some(w) => w,
+            None => deck_writes()? || typed.is_some(),
+        };
     // ---- 여기까지
     Ok(CardInfo { written, answer: quality::html_lines(&html).join("\n"), setting })
 }
@@ -608,6 +611,22 @@ mod tests {
         // 정한 묶음에 든 낱말은 따로 내지 않는다
         let text = "독립변수 간 상관이 높아 회귀계수 추정이 불안정해지는 현상";
         assert_eq!(suggest_from(text, &["회귀계수 추정".into(), "독립변수 간 상관".into()], 6), Vec::<String>::new());
+    }
+
+    /// Q12: 써서 답하기 덱에서도 목록 · 선택형은 자기 방식으로 묻는다
+    #[test]
+    fn list_cards_are_not_written_in_write_decks() {
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        con.execute("INSERT INTO deck_config (deck_id, write_mode, updated_at) VALUES (?1, 1, 0)", [deck]).unwrap();
+        let basic = crate::commands::NewCard { deck_id: deck, kind: "basic".into(), front: "q".into(), back: "a".into(), importance: None };
+        crate::commands::insert_note(&con, &basic, "", None).unwrap();
+        let fields = ["q", "a<br>b", "순서대로", ""].map(String::from);
+        crate::recall::insert(&con, crate::recall::LIST, deck, &fields, None).unwrap();
+        let ids: Vec<i64> = con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert!(card_info(&con, ids[0]).unwrap().written, "일반 카드는 덱을 따른다");
+        assert!(!card_info(&con, ids[1]).unwrap().written);
     }
 
     #[test]

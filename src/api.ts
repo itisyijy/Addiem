@@ -1,5 +1,6 @@
 // Rust 명령(src-tauri/src/commands.rs)의 타입과 호출. 필드 이름은 Rust 와 같다
 import type { Sent } from "./sourceApi";
+import type { Special } from "./recall";
 import { invoke } from "@tauri-apps/api/core";
 
 export type Level = 0 | 1 | 2;
@@ -187,11 +188,13 @@ export type CardView = {
   state: string;
   /** M3 배지 */
   occlusion: IoPos | null;
+  /** Q 목록 회상 · 선택형. 있으면 템플릿 대신 이것으로 그린다 */
+  special: Special | null;
 };
 export type NoteEdit = {
   note_id: number;
   /** image_occlusion: 가리기 편집기(M2)로 연다 */
-  kind: "basic" | "cloze" | "image_occlusion" | "other";
+  kind: "basic" | "cloze" | "image_occlusion" | "list" | "choice" | "other";
   /** 노트 유형 이름 */
   type_name: string;
   names: string[];

@@ -1,4 +1,4 @@
-// C3 카드 추가 / C3-b 빈칸 카드 / C3-r 앞뒤 둘 다 / C3-n 넣을 곳 / J3 서술형 / M1 그림 가리기
+// C3 카드 추가 / C3-b 빈칸 카드 / C3-r 앞뒤 둘 다 / C3-n 넣을 곳 / J3 서술형 / M1 그림 가리기 / Q0 목록 · 선택형
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, type DeckDetail, type Level } from "../api";
 import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge, Toggle } from "../ui";
@@ -12,16 +12,22 @@ import { KeywordEditor } from "./StudyParts";
 import { written, type Keyword } from "../written";
 import { OcclusionEditor, OcclusionPicture } from "./Occlusion";
 import { boxCount, labelOf, naturalSize, occlusionApi, ordinalsOf, storeImage, type Picture, type Shape } from "../occlusion";
+import { ChoiceEditor, ChoicePreview, ListEditor, ListPreview } from "./Recall";
+import { EMPTY_CHOICE, EMPTY_LIST, recall } from "../recall";
 import "../styles/study.css";
 
-type Kind = "basic" | "reversed" | "cloze" | "written" | "occlusion";
+type Kind = "basic" | "reversed" | "cloze" | "written" | "occlusion" | "list" | "choice";
 const KINDS: [Kind, string][] = [
   ["basic", "질문과 답변"],
   ["reversed", "앞뒤 둘 다"],
   ["cloze", "빈칸"],
   ["written", "서술형"],
   ["occlusion", "그림 가리기"],
+  ["list", "목록"],
+  ["choice", "선택형"],
 ];
+/** Q 목록 · 선택형. 이 유형으로 (또는 이 유형에서) 바꾸면 질문은 옮기고 답은 버린다 (Q0 노트) */
+const isRecall = (k: Kind) => k === "list" || k === "choice";
 
 export function AddCard({ deckId }: { deckId: number }) {
   const nav = useNav();
@@ -52,6 +58,11 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [editing, setEditing] = useState(false);
   const [over, setOver] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
+  // Q0 목록 · 선택형: 항목 · 순서, 보기 · 정답 · 섞기. 추가 설명은 누르면 펼친다. qInit: 유형을 바꿀 때 옮겨 온 질문
+  const [list, setList] = useState(EMPTY_LIST);
+  const [choice, setChoice] = useState(EMPTY_CHOICE);
+  const [extraOpen, setExtraOpen] = useState(false);
+  const [qInit, setQInit] = useState<string>();
   const takeImage = async (files: FileList | null | undefined) => {
     const f = Array.from(files ?? []).find((x) => x.type.startsWith("image/"));
     if (!f) return;
@@ -106,6 +117,12 @@ export function AddCard({ deckId }: { deckId: number }) {
       } else if (kind === "written") {
         const memoHtml = memo.current?.html() ?? "";
         await written.add({ deck_id: target, question: front, answer: toStoredHtml(aHtml), memo: toStoredHtml(memoHtml), importance, write, keywords: kws });
+      } else if (kind === "list") {
+        await recall.addList({ deck_id: target, question: front, extra: toStoredHtml(aHtml), importance, ...list });
+        setList((l) => ({ ...EMPTY_LIST, ordered: l.ordered }));
+      } else if (kind === "choice") {
+        await recall.addChoice({ deck_id: target, question: front, extra: toStoredHtml(aHtml), importance, ...choice });
+        setChoice((c) => ({ ...EMPTY_CHOICE, shuffle: c.shuffle }));
       } else made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
       const text = kind === "occlusion" ? plainText(qHtml) || "그림 가리기 · " + (pic?.fileName ?? "") : plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml);
       setAdded((list) => [...list, text].slice(-5));
@@ -133,7 +150,8 @@ export function AddCard({ deckId }: { deckId: number }) {
       const html = f.current?.html() ?? "";
       return plainText(html).replace(/​/g, "") !== "" || html.includes("<img"); // 빈칸 뒤 공백 문자는 내용이 아니다
     });
-    if (typed || pic) setLeaving(r);
+    const drafted = (kind === "list" && list.items.some((t) => t.trim())) || (kind === "choice" && choice.options.some((t) => t.trim()));
+    if (typed || pic || drafted) setLeaving(r);
     else nav(r);
   };
 
@@ -154,7 +172,7 @@ export function AddCard({ deckId }: { deckId: number }) {
   const qHtml = q.current?.html() ?? "";
   const marks = kind === "cloze" ? clozeMarks(qHtml) : [];
   // C3-m: 읽지 못한 수식. 저장은 막지 않는다
-  const names = kind === "cloze" ? ["본문", "추가 설명"] : kind === "reversed" ? ["앞면", "뒷면"] : kind === "written" ? ["질문", "모범 답안"] : ["질문", "답변"];
+  const names = kind === "cloze" ? ["본문", "추가 설명"] : kind === "reversed" ? ["앞면", "뒷면"] : kind === "written" ? ["질문", "모범 답안"] : isRecall(kind) ? ["질문", "추가 설명"] : ["질문", "답변"];
   // J3 제안 칩: 모범 답안에서 뽑는다. 이미 정한 키워드와 뺀 말은 빼고
   const answerHtml = kind === "written" ? (a.current?.html() ?? "") : "";
   useEffect(() => {
@@ -198,6 +216,7 @@ export function AddCard({ deckId }: { deckId: number }) {
                 key={k}
                 className={`segment__item t-label-m ${kind === k ? "is-selected" : ""}`}
                 onClick={() => {
+                  setQInit(k !== kind && (isRecall(k) || isRecall(kind)) ? toStoredHtml(q.current?.html() ?? "") : undefined);
                   setKind(k);
                   refresh();
                 }}
@@ -268,7 +287,7 @@ export function AddCard({ deckId }: { deckId: number }) {
                 </>
               )}
               <span className="t-label-m">질문</span>
-              <RichField key="q-io" ref={q} minHeight={44} toolbar={false} onInput={refresh} />
+              <RichField key="q-io" ref={q} initial={qInit} minHeight={44} toolbar={false} onInput={refresh} />
               <span className="addcard__label">
                 <span className="t-label-m">추가 설명</span>
                 <span className="t-caption c-tertiary">선택 · 답을 본 뒤에만 보여요</span>
@@ -278,7 +297,7 @@ export function AddCard({ deckId }: { deckId: number }) {
           ) : kind === "written" ? (
             <>
               <span className="t-label-m">질문</span>
-              <RichField key="q-written" ref={q} minHeight={64} onInput={refresh} />
+              <RichField key="q-written" ref={q} initial={qInit} minHeight={64} onInput={refresh} />
               {ioLink(q)}
               <span className="t-label-m">모범 답안</span>
               <RichField key="a-written" ref={a} minHeight={84} toolbar={false} onInput={refresh} />
@@ -298,11 +317,31 @@ export function AddCard({ deckId }: { deckId: number }) {
                 <span className="t-body-s c-secondary">공부할 때 직접 써서 답하기</span>
               </label>
             </>
+          ) : isRecall(kind) ? (
+            <>
+              <span className="t-label-m">질문</span>
+              <RichField key={`q-${kind}`} ref={q} initial={qInit} minHeight={44} toolbar={false} onInput={refresh} />
+              {kind === "list" ? <ListEditor value={list} onChange={setList} /> : <ChoiceEditor value={choice} onChange={setChoice} />}
+              {extraOpen ? (
+                <>
+                  <span className="addcard__label">
+                    <span className="t-label-m">추가 설명</span>
+                    <span className="t-caption c-tertiary">선택 · 답을 본 뒤에만 보여요</span>
+                  </span>
+                  <RichField key={`a-${kind}`} ref={a} minHeight={44} toolbar={false} onInput={refresh} />
+                </>
+              ) : (
+                <button className="lc__more t-label-m c-secondary" onClick={() => setExtraOpen(true)}>
+                  <Icon name="plus" size={14} />
+                  추가 설명 · 답을 본 뒤에만 보여요
+                </button>
+              )}
+            </>
           ) : kind !== "cloze" ? (
             <>
               {/* 앞뒤 둘 다는 어느 쪽도 질문이 되므로 앞면 · 뒷면. 질문과 답변을 오가도 쓴 내용은 남는다 */}
               <span className="t-label-m">{kind === "reversed" ? "앞면" : "질문"}</span>
-              <RichField key="q-basic" ref={q} minHeight={64} onInput={refresh} />
+              <RichField key="q-basic" ref={q} initial={qInit} minHeight={64} onInput={refresh} />
               {ioLink(q)}
               <span className="t-label-m">{kind === "reversed" ? "뒷면" : "답변"}</span>
               <RichField key="a-basic" ref={a} minHeight={84} onInput={refresh} />
@@ -325,6 +364,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               <RichField
                 key="q-cloze"
                 ref={q}
+                initial={qInit}
                 minHeight={96}
                 onInput={refresh}
                 extraTool={
@@ -396,7 +436,11 @@ export function AddCard({ deckId }: { deckId: number }) {
                 ? " · 카드 2장"
                 : kind === "occlusion" && shapes.length > 0
                   ? ` · 카드 ${ordinalsOf(shapes).length}장`
-                  : ""}
+                  : kind === "list"
+                    ? " · 카드 1장"
+                    : kind === "choice"
+                      ? " · 질문 면"
+                      : ""}
           </p>
           {kind === "occlusion" ? (
             pic &&
@@ -411,6 +455,12 @@ export function AddCard({ deckId }: { deckId: number }) {
                   <OcclusionPicture url={pic.url} shapes={shapes} hideAll={hideAll} ask={o} />
                 </div>
               ))
+          ) : isRecall(kind) ? (
+            kind === "list" ? (
+              <ListPreview question={withMath(sanitize(qHtml))} draft={list} openKey={actionKey("reveal")} />
+            ) : (
+              <ChoicePreview question={withMath(sanitize(qHtml))} draft={choice} openKey={actionKey("reveal")} />
+            )
           ) : kind === "reversed" ? (
             <>
               <Preview kind="basic" qHtml={qHtml} aHtml={a.current?.html() ?? ""} level={shownLevel} head="카드 1 · 앞 → 뒤" />

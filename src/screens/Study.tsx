@@ -1,5 +1,5 @@
 // D1 학습 시작 전 요약 / D2 질문 / D3 답변과 평가 / D4 접어두기 / C3-e 카드 편집
-// J1~J3 서술형 · H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널
+// J1~J3 서술형 · H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널 · Q1/Q2 목록 회상 · 선택형
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { OcclusionEdit } from "./Occlusion";
 import { api, errorText, type CardView, type ExamState, type Level, type NoteEdit, type QueueSummary } from "../api";
@@ -20,6 +20,8 @@ import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
 import { ExamField, examHint } from "./Exam";
 import { cardSource } from "../sourceApi";
+import { RecallFace, recallTip } from "./Recall";
+import { choiceLabel, listLabel, optionOrder, recall } from "../recall";
 import "../styles/study.css";
 
 /*
@@ -463,6 +465,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const openedAt = useRef(Date.now()); // P3 "N장 회독 · M분": 이 화면에서 쓴 시간 (같은 날 이어 쓴 세션의 쉬던 시간은 빼고)
   const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
+  // Q 목록 회상 · 선택형: 연 칸 수 · 표시(목록은 빠뜨린 항목, 선택형은 고른 보기. 1부터) · 보기 순서(필드 번호) · 평가 추천
+  const [opened, setOpened] = useState(0);
+  const [marks, setMarks] = useState<number[]>([]);
+  const [order, setOrder] = useState<number[]>([]);
+  const [lcSuggest, setLcSuggest] = useState<Rating | null>(null);
   const [compare, setCompare] = useState<Compare | null>(null); // J2
   const [srcOpen, setSrcOpen] = useState(false); // I2 세션 동안 열림 상태를 기억한다
   const writeBox = useRef<HTMLTextAreaElement>(null);
@@ -519,7 +526,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const show = useCallback(async (id: number, at: "q" | "a" = "q") => {
     // J 서술형 정보 · I2 자료 연결은 없어도 카드는 보인다
     const [view, written, source] = await Promise.all([api.cardView(id), writtenApi.card(id).catch(() => null), hasSource(id)]);
-    const parts = splitBack(view.back, view.front);
+    // Q 목록 · 선택형은 템플릿 대신 필드로 그린다 (질문 · 추가 설명만 HTML)
+    const sp = view.special;
+    const parts = sp ? { question: sp.question, answer: sp.extra } : splitBack(view.back, view.front);
     // 살균(renderCardHtml) 뒤에 수식을 그린다 (math.ts)
     const [front, question, answer] = (await Promise.all([
       renderCardHtml(view.front),
@@ -531,6 +540,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       setPref(SOUND_TIP_SEEN, true);
       setSoundTip(id);
     }
+    setOpened(0);
+    setMarks([]);
+    setOrder(sp?.kind === "choice" ? optionOrder(sp) : []);
     setPhase(at);
     setUndone(null);
     setTyped("");
@@ -644,7 +656,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   }, [card, phase, measure]);
 
   const dark = useDarkTheme();
-  const css = card?.view.css ?? "";
+  const css = card?.view.special ? "" : (card?.view.css ?? ""); // Q 목록 · 선택형은 템플릿을 쓰지 않는다
   const face = dark && css.trim() ? deckFace(css) : null;
   const noteCss = useMemo(() => scopeCss(css, face === "other"), [css, face]);
 
@@ -714,6 +726,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const rate2 = (r: Rating) =>
     guard(async () => {
       const c = card!;
+      if (c.view.special) recall.saveMarks(c.view.id, marks).catch(() => {}); // Q9 이 기기에만
       const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current);
       if (mix) {
         const role = mixRoles.current.get(c.view.id)?.shift();
@@ -820,12 +833,43 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   /** 답 보기. 쓴 답이 있으면 J2 비교 (핵심어 판정 · 평가 추천) */
   const reveal = () => {
     if (!card || phase !== "q") return;
+    // Q1-a 한 칸씩 연다. 다 열면 평가 단계 (Q1-b). Q2 는 고른 뒤 확인 = 답 보기
+    const sp = card.view.special;
+    if (sp?.kind === "list") {
+      setOpened(opened + 1);
+      if (opened + 1 >= sp.items.length) setPhase("a");
+      return;
+    }
+    if (sp) return setPhase("a");
     if (!card.written?.written || !typed.trim()) return setPhase("a");
     return guard(async () => {
       setCompare(await writtenApi.compare(card.view.id, typed));
       setPhase("a");
     });
   };
+
+  // ---- Q 목록 회상 · 선택형
+  const special = card?.view.special ?? null;
+  const toggleMiss = (num: number) => setMarks((m) => (m.includes(num) ? m.filter((x) => x !== num) : [...m, num]));
+  /** 칸 누르기: 연 칸은 빠뜨림을 바꾸고, 다음 칸("?")은 연다 */
+  const onSlot = (num: number) => (phase === "q" && num > opened ? reveal() : toggleMiss(num));
+  /** 정답이 여럿이면 여러 개, 하나면 하나만 */
+  const pick = (num: number) =>
+    setMarks((m) => (special?.kind === "choice" && special.correct.length > 1 ? (m.includes(num) ? m.filter((x) => x !== num) : [...m, num]) : m[0] === num ? [] : [num]));
+  const openAll = () => {
+    if (special?.kind !== "list") return;
+    setOpened(special.items.length);
+    setPhase("a");
+  };
+  // 빠뜨림을 고치거나 보기를 고르면 추천이 바로 바뀐다
+  useEffect(() => {
+    if (!card?.view.special || phase !== "a") return setLcSuggest(null);
+    let live = true;
+    recall.suggest(card.view.id, marks).then((r) => live && setLcSuggest(r), () => live && setLcSuggest(null));
+    return () => {
+      live = false;
+    };
+  }, [card, phase, marks]);
 
   // ---- I2 원자료 패널: 답 화면에서만 (질문 화면에서 열면 답이 보일 수 있다)
   const panel = (srcOpen && phase === "a" && !!card?.source) || (srcSeg !== null && phase === "a");
@@ -867,6 +911,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   useKey({ action: "replay" }, () => playSide(false), keys);
   useKey("b", () => (setFoldSel(0), setFoldMenu(true)), keys && folded.length > 0);
   useKey(["ArrowDown", "ArrowUp", "PageDown", "PageUp"], scrollCard, keys);
+  // Q2 · Q6: X 방금 연 항목 빠뜨림, Enter 남은 칸 모두 열기, 1–6 보기 고르기 (질문 면에서만. 답 면의 1–4 는 평가)
+  useKey("x", () => toggleMiss(phase === "a" ? opened || (special?.kind === "list" ? special.items.length : 0) : opened), keys && special?.kind === "list" && (phase === "a" || opened > 0));
+  useKey("Enter", openAll, keys && phase === "q" && special?.kind === "list");
+  useKey(["1", "2", "3", "4", "5", "6"], (_, i) => order[i] !== undefined && pick(order[i]), keys && phase === "q" && special?.kind === "choice");
   // D4-m 목록 안의 키는 목록이 받는다 (B 로 닫기 · ↑↓ · Enter · Esc)
   useKey(["ArrowDown", "ArrowUp"], (e) => setFoldSel((i) => Math.max(0, Math.min(folded.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))), foldMenu, { modal: true });
   useKey("Enter", () => folded[foldSel] && unfold([folded[foldSel].id]), foldMenu, { modal: true });
@@ -885,7 +933,15 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   // J2 평가 추천 (되돌린 직후에는 되돌리기 안내가 먼저). R2: 핵심어 검사와 ChatGPT 추천을 한 줄로 합친다. 다르면 테두리 없이 둘 다 알린다
   const kwSuggest = undone === null ? (compare?.suggest ?? null) : null;
   const gptSuggest = undone === null ? grade.rating : null;
-  const suggest = kwSuggest !== null && gptSuggest !== null ? (kwSuggest === gptSuggest ? kwSuggest : null) : (kwSuggest ?? gptSuggest);
+  const suggest = special
+    ? undone === null
+      ? lcSuggest
+      : null
+    : kwSuggest !== null && gptSuggest !== null
+      ? kwSuggest === gptSuggest
+        ? kwSuggest
+        : null
+      : (kwSuggest ?? gptSuggest);
   const missing = compare?.keywords.filter((k) => !k.hit).map((k) => k.word) ?? [];
   const both = kwSuggest !== null && gptSuggest !== null;
   const recLine = both
@@ -898,12 +954,17 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip === card.view.id);
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
   const replayHint = (html = "") => html.includes('class="snd') && `${actionKey("replay")} 다시 듣기`;
-  const keysQ = writing
+  const keysQ = special
+    ? special.kind === "list"
+      ? [`${actionKey("reveal")} 다음 항목`, "X 방금 연 항목 빠뜨림", "Enter 남은 항목 모두 열기", "Esc 그만하기"]
+      : [`1–${n(order.length)} 고르기`, `${actionKey("reveal")} 확인`, `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, "Esc 그만하기"]
+    : writing
     ? [`${actionKey("save")} 비교하기`, `Esc 입력 칸 나가기 (그다음 ${actionKey("reveal")}로 바로 답 보기)`]
     : [`${actionKey("reveal")} 답 보기`, replayHint(card?.front), mix && "평가가 복습 일정에 반영돼요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
     replayHint(card?.view.back),
+    special?.kind === "list" && "항목 누르기 · X 빠뜨림 고치기",
     mix && "평가가 복습 일정에 반영돼요",
     grade.ready && `${actionKey("grade")} ChatGPT 채점 보조`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
@@ -918,7 +979,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     <main
       className={`study ${panel ? "has-source" : ""}`}
       // 마우스로 누른 버튼에는 초점을 두지 않는다. 남은 초점이 Space · Enter 를 가져가 답 보기 등이 안 되는 일을 막는다 (키보드 Tab 은 그대로)
-      onMouseDown={(e) => (e.target as HTMLElement).closest(".study__tool, .study__toast-btn, .study__undo-btn, .study__more, .study__folded, .rating, .study__reveal, .snd") && e.preventDefault()}
+      onMouseDown={(e) => (e.target as HTMLElement).closest(".study__tool, .study__toast-btn, .study__undo-btn, .study__more, .study__folded, .rating, .study__reveal, .snd, .slot, .opt") && e.preventDefault()}
     >
       <div className="study__quit">
         <Button variant="ghost" size="M" icon="x" label="그만하기" shortcut="Esc" onClick={() => finish(false)} />
@@ -982,7 +1043,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       </div>
 
       {card && (
-        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${writing ? "is-writing" : ""}`}>
+        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${writing ? "is-writing" : ""} ${special ? `is-recall is-${special.kind}` : ""}`}>
           {/* 밝은 덱 카드는 카드 면만 밝은 토큰으로 (tokens.css [data-theme="light"]) */}
           <article className={`study__card ${fit.overflow ? "is-overflow" : ""}`} data-theme={face === "light" ? "light" : undefined}>
             {noteCss && <style>{noteCss}</style>}
@@ -992,6 +1053,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 {typeof mixRoles.current.get(card.view.id)?.[0] === "string" && <Badge tone="danger">취약 · {mixRoles.current.get(card.view.id)![0]}</Badge>}
                 {card.written?.written && <Badge tone="accent">서술형</Badge>}
                 <span className="t-caption c-tertiary">{pathLabel(card.view.deck_path)}</span>
+                {special && (
+                  <Badge tone="accent">
+                    {special.kind === "list" ? listLabel(special.items.length, special.ordered) : choiceLabel(special.options.length, special.correct.length > 1)}
+                  </Badge>
+                )}
                 {card.view.occlusion && (
                   <Badge tone="accent">
                     그림 가리기 · {n(card.view.occlusion.n)}/{n(card.view.occlusion.count)}
@@ -1025,7 +1091,22 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             <div ref={scroller} className="study__scroll" onScroll={measure}>
               <div className="study__card-content" onClick={zoomImage}>
                 <div className={face === "night" ? "nightMode night_mode" : undefined}>
-                {phase === "q" ? (
+                {special ? (
+                  <div className="study__a recall" ref={phase === "a" ? answerBox : undefined} tabIndex={-1} aria-label={phase === "a" ? "정답" : undefined}>
+                    <RecallFace
+                      s={special}
+                      phase={phase}
+                      question={card.question}
+                      extra={card.answer}
+                      opened={opened}
+                      marks={marks}
+                      order={order}
+                      openKey={actionKey("reveal")}
+                      onSlot={onSlot}
+                      onPick={pick}
+                    />
+                  </div>
+                ) : phase === "q" ? (
                   <div className="study__q card-html" dangerouslySetInnerHTML={{ __html: card.front }} />
                 ) : (
                   <div className="study__a" ref={answerBox} tabIndex={-1} aria-label="정답">
@@ -1138,7 +1219,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
               )}
               <Button
                 className="study__reveal"
-                label={writing ? "답과 비교하기" : "답 보기"}
+                label={writing ? "답과 비교하기" : special?.kind === "list" ? "다음 항목" : special && marks.length ? "확인" : "답 보기"}
                 shortcut={writing ? actionKey("save") : actionKey("reveal")}
                 aria-keyshortcuts={writing ? actionKey("save") : actionKey("reveal")}
                 onClick={reveal}
@@ -1157,6 +1238,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   <span className="study__tip study__tip--warn">
                     <Icon name="info" size={16} />
                     <span className="t-label-s">{recLine}</span>
+                  </span>
+                ) : suggest !== null && special ? (
+                  <span className="study__tip study__tip--warn">
+                    <Icon name="info" size={16} />
+                    <span className="t-label-s">
+                      {RATING_NAME[suggest]} 추천 · {recallTip(special, marks, order, suggest)} 추천은 따르지 않아도 돼요.
+                    </span>
                   </span>
                 ) : suggest !== null ? (
                   <span className="study__tip study__tip--warn">
@@ -1494,7 +1582,9 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
         sub={`${
           wn?.native
             ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
-            : note?.kind === "other"
+            : note?.kind === "list" || note?.kind === "choice"
+              ? `${note.kind === "list" ? "목록 회상" : "선택형"} · 필드 ${note.names.length}개 · `
+              : note?.kind === "other"
               ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
               : reversed
                 ? "앞뒤 둘 다 · 카드 2장 · "
