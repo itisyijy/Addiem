@@ -284,21 +284,37 @@ fn json_recall(nt: &str, o: &serde_json::Map<String, Value>) -> Result<Vec<Strin
         return checked(recall::list_fields(&recall::ListNew { deck_id: 0, question, items, ordered: flag("ordered")?, extra, importance: None }));
     }
     let options: Vec<String> = strings("options")?;
-    // correct 는 보기 번호 (1부터, 화면 · 정답 칸과 같다). 하나면 숫자만 써도 된다.
-    // 앱 화면에서는 없는 보기를 고를 수 없어 choice_fields 가 조용히 버린다. 여기서는 건너뛰고 알린다
-    let correct = match o.get("correct") {
-        None | Some(Value::Null) => return Err(missing("correct")),
-        Some(Value::Array(a)) => a.iter().collect(),
-        Some(v) => vec![v],
+    // 정답은 둘 중 하나 (Q26). answer = 보기 글자 (앞뒤 공백만 무시), correct = 보기 번호 (1부터, 화면 · 정답 칸과 같다).
+    // 하나면 배열 없이 써도 된다. 앱 화면에서는 없는 보기를 고를 수 없어 choice_fields 가 조용히 버린다. 여기서는 건너뛰고 알린다
+    let given = |key: &str| match o.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(a.iter().collect::<Vec<_>>()),
+        Some(v) => Some(vec![v]),
     };
-    let correct = correct
-        .iter()
-        .map(|v| match v.as_u64() {
-            Some(n) if n >= 1 && options.get(n as usize - 1).is_some_and(|o| !o.trim().is_empty()) => Ok(n as usize - 1),
-            Some(n) if n >= 1 => Err(("invalid", format!("correct 의 {n}번 보기가 없거나 비어 있어요"))),
-            _ => Err(("bad_field", "correct 는 1부터 세는 보기 번호예요".into())),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let correct = match (given("answer"), given("correct")) {
+        (Some(_), Some(_)) => return Err(("bad_field", "correct 와 answer 중 하나만 써 주세요".into())),
+        (None, None) => return Err(missing("answer (또는 correct)")),
+        (Some(answer), None) => answer
+            .iter()
+            .map(|v| {
+                let t = v.as_str().ok_or(("bad_field", "answer 는 보기 글자예요 (번호는 correct)".to_string()))?.trim();
+                let hits: Vec<usize> = options.iter().enumerate().filter(|(_, o)| !t.is_empty() && o.trim() == t).map(|(i, _)| i).collect();
+                match hits[..] {
+                    [i] => Ok(i),
+                    [] => Err(("invalid", format!("answer '{t}' 와 같은 보기가 없어요"))),
+                    _ => Err(("invalid", format!("answer '{t}' 와 같은 보기가 여러 개예요"))),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        (None, Some(correct)) => correct
+            .iter()
+            .map(|v| match v.as_u64() {
+                Some(n) if n >= 1 && options.get(n as usize - 1).is_some_and(|o| !o.trim().is_empty()) => Ok(n as usize - 1),
+                Some(n) if n >= 1 => Err(("invalid", format!("correct 의 {n}번 보기가 없거나 비어 있어요"))),
+                _ => Err(("bad_field", "correct 는 1부터 세는 보기 번호예요".into())),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
     checked(recall::choice_fields(&recall::ChoiceNew { deck_id: 0, question, options, correct, shuffle: flag("shuffle")?, extra, importance: None }))
 }
 
@@ -1749,6 +1765,12 @@ mod tests {
         assert_eq!((f[7].as_str(), f[8].as_str()), ("1,2", "섞지 않음"), "빈 보기는 당기고 정답 번호도 따라간다 (앱과 같다)");
         let read = recall::special(recall::CHOICE, &names(recall::CHOICE), &serde_json::to_string(f).unwrap());
         assert!(matches!(read, Some(recall::Special::Choice { shuffle: false, ref correct, .. }) if correct == &[1, 2]));
+        // answer (Q26): 보기 글자로. 앞뒤 공백만 무시하고 같은 1부터 정답 칸에 저장한다
+        let f = &parse_json(r#"[{"question":"q","options":["SYN"," SYN-ACK ","ACK"],"answer":"SYN-ACK "}]"#).0[0].fields;
+        assert_eq!(f[7], "2");
+        let f = &parse_json(r#"[{"question":"q","options":["a","","b","c"],"answer":["a","b"]}]"#).0[0].fields;
+        assert_eq!(f[7], "1,2", "빈 보기를 당겨도 correct 와 같다");
+        assert!(parse_json(r#"[{"question":"q","options":["a","b"],"answer":"c"}]"#).1[0].detail.contains("'c'"), "어느 글자인지 알린다");
 
         // 잘못된 항목은 그것만 건너뛰고 번호와 이유를 알린다
         for (card, kind) in [
@@ -1770,6 +1792,12 @@ mod tests {
             (r#"{"question":"q","options":["a","b"],"correct":[1,3]}"#, "invalid"),
             (r#"{"question":"q","options":["a","","b"],"correct":2}"#, "invalid"),
             (r#"{"question":"q","options":["a","b"],"correct":1,"shuffle":0}"#, "bad_field"),
+            (r#"{"question":"q","options":["a","b"],"correct":1,"answer":"a"}"#, "bad_field"),
+            (r#"{"question":"q","options":["a","b"],"answer":"c"}"#, "invalid"),
+            (r#"{"question":"q","options":["a","b"],"answer":["a","A"]}"#, "invalid"),
+            (r#"{"question":"q","options":["a","b"],"answer":""}"#, "invalid"),
+            (r#"{"question":"q","options":["a","b"," a"],"answer":"a"}"#, "invalid"),
+            (r#"{"question":"q","options":["a","b"],"answer":1}"#, "bad_field"),
         ] {
             let (cs, iss, err) = parse_json(&format!(r#"[{{"front":"a","back":"b"}},{card}]"#));
             assert_eq!((cs.len(), err), (1, None), "{card}");
