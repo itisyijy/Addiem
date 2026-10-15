@@ -623,7 +623,7 @@ mod tests {
         let basic = crate::commands::NewCard { deck_id: deck, kind: "basic".into(), front: "q".into(), back: "a".into(), importance: None };
         crate::commands::insert_note(&con, &basic, "", None).unwrap();
         let fields = ["q", "a<br>b", "순서대로", ""].map(String::from);
-        crate::recall::insert(&con, crate::recall::LIST, deck, &fields, None).unwrap();
+        crate::recall::insert(&con, crate::recall::LIST, deck, &fields, None, "", None).unwrap();
         let ids: Vec<i64> = con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert!(card_info(&con, ids[0]).unwrap().written, "일반 카드는 덱을 따른다");
         assert!(!card_info(&con, ids[1]).unwrap().written);

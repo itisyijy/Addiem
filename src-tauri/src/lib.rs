@@ -121,6 +121,7 @@ pub fn run() {
             occlusion::occlusion_note, occlusion::save_occlusion,
             // Q 목록 회상 · 선택형
             recall::add_list_card, recall::add_choice_card, recall::recall_suggest, recall::save_recall_marks,
+            recall::update_list_note, recall::update_choice_note,
             // 8.4 기출 이력
             exam::mark_exam, exam::set_exam, exam::exam_list, exam::exam_summary,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)

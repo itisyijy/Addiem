@@ -203,6 +203,8 @@ export type NoteEdit = {
   front: boolean[];
   /** 8.4 N1 기출 줄 */
   exam: ExamState;
+  /** Q24 목록 · 선택형 전용 편집기를 채운다 */
+  special: Special | null;
 };
 export type AnswerResult = { action: "next" | "again_later" | "buried"; due_in_ms: number | null };
 export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[] };
