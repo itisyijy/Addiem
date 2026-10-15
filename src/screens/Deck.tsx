@@ -395,7 +395,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
                 d.hard === 0
                   ? "두 번 막히거나 직접 접은 카드"
                   : `자동 ${n(d.hard_auto)} · 직접 ${n(d.hard - d.hard_auto)} · ${
-                      d.hard_next && d.hard_next > studyDate().toLocaleDateString("sv-SE") ? monthDay(d.hard_next) : "오늘"
+                      d.hard_next && d.hard_next > studyDate().toLocaleDateString("sv-SE") ? `${+d.hard_next.slice(5, 7)}/${+d.hard_next.slice(8, 10)}` : "오늘"
                     } 복귀`
               }
             />

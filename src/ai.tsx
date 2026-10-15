@@ -371,7 +371,7 @@ export function AiSection() {
           <div className="sync-facts">
             <span>
               <Icon name="send" size={16} className="c-secondary" />
-              <span className="t-caption c-secondary">실행할 때 보여 주는 카드 글자와 자료 구간을 OpenAI로 보내요</span>
+              <span className="t-caption c-secondary">보여 준 카드 글자·자료 구간만 OpenAI로 보내요</span>
             </span>
             <span>
               <Icon name="lock" size={16} className="c-secondary" />

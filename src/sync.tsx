@@ -83,7 +83,7 @@ const backupDate = (ms: number) => {
 export const size = (b: number) =>
   b >= 1e9 ? `${(b / 1e9).toFixed(1)}GB` : b >= 1e8 ? `${Math.round(b / 1e6)}MB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)}MB` : `${Math.ceil(b / 1e3)}KB`;
 const counts = (c: { decks: number; cards: number; reviews: number } | null | undefined) =>
-  c ? `덱 ${n(c.decks)}개 · 카드 ${n(c.cards)}장 · 기록 ${n(c.reviews)}개` : "덱 · 카드 수를 아직 몰라요";
+  c ? `덱 ${n(c.decks)}개 · 카드 ${n(c.cards)}장 · 복습 기록 ${n(c.reviews)}건` : "덱 · 카드 수를 아직 몰라요";
 /** 은/는 */
 const eun = (w: string) => {
   const c = w.charCodeAt(w.length - 1);
@@ -832,7 +832,7 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
           icon="merge"
           title="두 데이터 합치기"
           badge={choice ? undefined : "권장"}
-          text="덱·카드·복습 기록을 합쳐요. 같은 Anki 노트에서 온 카드는 하나로 합치고, 같은 카드의 내용이 다르면 나중에 고친 버전을 지금 내용으로 써요. 다른 버전은 30일 동안 설정 › Google Drive › 두 기기에서 고친 카드에 남아요."
+          text="덱·카드·복습 기록을 합쳐요. 같은 Anki 노트의 카드는 하나로 합치고, 내용이 다르면 나중에 고친 버전을 써요. 다른 버전은 30일 동안 ‘두 기기에서 고친 카드’에서 볼 수 있어요."
         />
         <Option on={mode === "take"} onPick={() => setMode("take")} icon="download" title="Drive 데이터로 바꾸기" badge={choice ? "권장" : undefined} text="이 기기 데이터는 백업 파일로 남기고, Drive의 데이터를 받아요." />
         <Option

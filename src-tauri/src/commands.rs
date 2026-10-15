@@ -814,7 +814,8 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         unseen,
         hard,
         hard_auto,
-        hard_next: hard_next.map(db::date_from_day),
+        // buried_until 은 ms 다 (큐는 study_day 로 읽는다)
+        hard_next: hard_next.map(|ms| db::date_from_day(study_day(ms))),
         backlog: plan.backlog.len() + plan.backlog_deferred,
         today_review: plan.ordered().len() - today_new - plan.returning.len(),
         today_new,

@@ -213,7 +213,9 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
         <div className="deck__title">
           <h1 className="t-title-l">중요도 정하기</h1>
           <p className="t-body-l c-secondary">
-            태그와 하위 덱 이름으로 정한 중요도가 지금 학습에 적용돼요. 신규 카드는 핵심 → 일반 → 보충 순으로 배워요(보충도 학습 범위예요).
+            태그와 하위 덱 이름으로 정한 중요도가 지금 학습에 적용돼요.
+            <br />
+            신규 카드는 핵심 → 일반 → 보충 순으로 배워요(보충도 학습 범위예요).
           </p>
         </div>
         <span className="board__legend">
