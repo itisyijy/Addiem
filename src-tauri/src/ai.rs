@@ -114,7 +114,7 @@ impl std::fmt::Display for AiError {
             AiError::Limit => write!(f, "사용량 한도에 도달했어요."),
             AiError::Offline(_) => write!(f, "인터넷에 연결되지 않았어요."),
             AiError::BadOutput(_) => write!(f, "ChatGPT 제안이 카드 모양에 맞지 않아 규칙으로 나눈 제안을 보여 드려요."),
-            AiError::Cancelled => write!(f, "묶기를 멈췄어요."),
+            AiError::Cancelled => write!(f, "요청을 멈췄어요."),
             AiError::Other(e) => write!(f, "{e}"),
         }
     }
@@ -982,7 +982,7 @@ fn regroup_blocking(app: &AppHandle, card_id: i64, segment_ids: &[i64]) -> Resul
     })?;
     let items = regroup_items(&rule.answer);
     if items.len() < MIN_ITEMS {
-        return Err(AiError::Other("답 항목이 3개 이상일 때 묶을 수 있어요.".into()));
+        return Err(AiError::Other("답 항목이 3개 이상일 때 나눌 수 있어요.".into()));
     }
     let mut input = regroup_input(&rule.question, &items);
     if items.len() > MAX_ITEMS || input.chars().count() > MAX_INPUT_CHARS {
@@ -1000,7 +1000,7 @@ fn regroup_blocking(app: &AppHandle, card_id: i64, segment_ids: &[i64]) -> Resul
     let evidence = parse_cited(&text, &sent)?;
     // L4 "왜?": 걸린 규칙 + ChatGPT 가 묶은 장수 (R3: 함께 보낸 구간 수)
     let seen = if sent.is_empty() { String::new() } else { format!("연결된 자료 {}구간을 보고 ", sent.len()) };
-    let why = format!("{}. ChatGPT가 {seen}성격이 비슷한 것끼리 {}장으로 묶었어요.", quality::reason_of(&rule.flags), parts.len());
+    let why = format!("{}. ChatGPT가 {seen}비슷한 내용끼리 {}장으로 나눴어요.", quality::reason_of(&rule.flags), parts.len());
     Ok(SplitProposal { why, parts, kind: "nature", evidence, sent, ..rule })
 }
 

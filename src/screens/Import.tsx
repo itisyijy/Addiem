@@ -383,10 +383,12 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
                   <span className="import__radio" />
                   <span className="import__option-text">
                     <span className="import__option-title">
-                      <span className="t-body-m-strong">복습 기록과 일정 그대로 옮기기</span>
+                      <span className="t-body-m-strong">복습 기록과 다음 복습 일정 가져오기</span>
                       <Badge tone="accent">권장 · {n(reviews)}건</Badge>
                     </span>
-                    <span className="t-body-s c-secondary">카드마다 간격·기한·기억 상태를 이어받아요. Anki에서 하던 그대로 이어서 복습해요.</span>
+                    <span className="t-body-s c-secondary">
+                      카드마다 간격·기한·기억 상태를 이어받아 시작해요. 이후 평가는 Neo-Anki의 일정 계산을 따르고, 학습 순서·하루 분량은 Neo-Anki 설정을 써요.
+                    </span>
                     {!all && orphanReviews > 0 && (
                       <span className="t-caption c-tertiary">지운 카드의 기록 {n(orphanReviews)}건은 덱을 모두 고를 때만 함께 들어가요</span>
                     )}
@@ -425,7 +427,7 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
                 ? "가져올 덱을 하나 이상 골라 주세요"
                 : nothingNew
                   ? "고른 덱의 노트는 이미 모두 있어요 · 다른 덱을 골라 주세요"
-                : "고르지 않은 덱은 나중에 같은 파일로 다시 가져올 수 있어요 · 이미 있는 노트는 건너뛰어요"}
+                : "이미 있는 노트는 추가하거나 갱신하지 않아요 · 고르지 않은 덱은 나중에 같은 파일로 다시 가져올 수 있어요"}
           </span>
           <span className="import__foot-right">
             {slow && <Button variant="ghost" label="취소" shortcut="Esc" onClick={cancel} busy={cancelling} busyLabel="멈추는 중…" />}
@@ -524,7 +526,7 @@ function DeckTree({ tree, sel, onChange, total }: {
         const subs = descendants(node);
         const caption =
           existing > 0 && existing === notes
-            ? `이미 있는 노트 ${n(existing)}개 · 가져와도 건너뛰어요`
+            ? `이미 있는 노트 ${n(existing)}개 · 추가하거나 갱신하지 않아요`
             : state === "mixed" && subs.length > 0
               ? `하위 덱 ${n(subs.length)}개 중 ${n(subs.filter((s) => pickOf(s, sel) !== "off").length)}개`
               : null;
@@ -647,7 +649,7 @@ function IssueList({ issues, limit = 30 }: { issues: ImportIssue[]; limit?: numb
       {issues.slice(0, limit).map((i, k) => (
         <div key={k} className="import__issue">
           <Badge tone={i.severity === "skipped" ? "danger" : i.severity === "warning" ? "warn" : "neutral"}>
-            {i.index !== null ? `#${i.index}` : i.severity === "skipped" ? "건너뜀" : i.severity === "warning" ? "경고" : "참고"}
+            {i.index !== null ? `${i.index}번째` : i.severity === "skipped" ? "건너뜀" : i.severity === "warning" ? "경고" : "참고"}
           </Badge>
           <span className="t-body-s c-secondary">{i.detail}</span>
         </div>
@@ -782,7 +784,7 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
               <div className="import__counts">
                 <span>
                   <span className="t-title-l">{n(preview.ok)}</span>
-                  <span className="t-body-s c-secondary">가져올 수 있는 항목</span>
+                  <span className="t-body-s c-secondary">검사를 통과한 항목</span>
                 </span>
                 <span>
                   <span className="t-title-l c-danger">{n(preview.skipped)}</span>
@@ -810,7 +812,7 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
           {shownError && <span className="t-body-s c-danger">{shownError}</span>}
           <Button variant="secondary" label="전체 취소" onClick={onCancel} />
           <Button
-            label={preview && preview.skipped > 0 ? `성공한 ${n(preview.ok)}개 항목 가져오기` : `${n(preview?.ok ?? 0)}개 항목 가져오기`}
+            label={preview && preview.skipped > 0 ? `검사를 통과한 ${n(preview.ok)}개 항목 가져오기` : `${n(preview?.ok ?? 0)}개 항목 가져오기`}
             onClick={run}
             busy={busy}
             busyLabel="가져오는 중…"
@@ -911,9 +913,9 @@ const csvIssues = (issues: ImportIssue[]) =>
       i.kind === "bad_item"
         ? "열 개수가 달라요"
         : i.detail
-            .replace(/^front (이|가) /, "앞면이 ")
-            .replace(/^back (이|가) /, "뒷면이 ")
-            .replace(/^importance 값/, "중요도 값"),
+            .replace(/^질문\(front\)/, "앞면")
+            .replace(/^답\(back\)/, "뒷면")
+            .replace(/^중요도\(importance\)/, "중요도"),
   }));
 
 /** 줄바꿈이 있는 글자 칸은 카드에서도 줄을 나눈다. 이미 HTML 이면 그대로 */
@@ -1167,7 +1169,7 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
             <>
               <span className="csv__count">
                 <span className="t-title-m">{n(preview.ok)}</span>
-                <span className="t-body-s c-secondary">가져올 수 있는 항목</span>
+                <span className="t-body-s c-secondary">검사를 통과한 항목</span>
               </span>
               <span className="csv__count">
                 <span className="t-title-m c-danger">{n(preview.skipped)}</span>
@@ -1201,7 +1203,7 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
           {error && <span className="t-body-s c-danger">{error}</span>}
           <Button variant="secondary" label="전체 취소" onClick={onCancel} />
           <Button
-            label={preview && preview.skipped > 0 ? `성공한 ${n(preview.ok)}개 항목 가져오기` : `${n(preview?.ok ?? 0)}개 항목 가져오기`}
+            label={preview && preview.skipped > 0 ? `검사를 통과한 ${n(preview.ok)}개 항목 가져오기` : `${n(preview?.ok ?? 0)}개 항목 가져오기`}
             onClick={run}
             busy={busy}
             busyLabel="가져오는 중…"

@@ -95,11 +95,11 @@ const others = (s: SyncStatus | null) => (s?.devices ?? []).filter((d) => !d.me 
 function line(s: SyncStatus): { title: string; icon: IconName; tone: "ok" | "plain" | "warn" } {
   switch (s.state) {
     case "syncing": {
-      const verb = s.phase === "push" || s.phase === "snapshot" ? "올리는 중" : s.phase === "media" ? "그림 맞추는 중" : s.phase === "backup" ? "Drive에 백업하는 중" : s.phase === "restore" ? "되돌리는 중" : "맞추는 중";
+      const verb = s.phase === "push" || s.phase === "snapshot" ? "올리는 중" : s.phase === "media" ? "그림 맞추는 중" : s.phase === "backup" ? "Drive에 백업하는 중" : s.phase === "restore" ? "백업으로 복구하는 중" : "맞추는 중";
       return { title: s.total > 1 ? `${verb} · ${n(s.done)} / ${n(s.total)}` : verb, icon: "cloud", tone: "plain" };
     }
     case "offline":
-      return { title: s.pending > 0 ? `오프라인 · 변경 ${n(s.pending)}개는 이 기기에 있어요` : "오프라인 · 연결되면 저절로 맞춰요", icon: "cloud-off", tone: "plain" };
+      return { title: s.pending > 0 ? `오프라인 · 전송 대기 변경 ${n(s.pending)}건 · 이 기기에 저장됨` : "오프라인 · 연결되면 저절로 맞춰요", icon: "cloud-off", tone: "plain" };
     case "login":
       return { title: "다시 로그인이 필요해요", icon: "alert", tone: "warn" };
     case "quota":
@@ -237,7 +237,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     </>
   );
   if (s.state === "login") {
-    text = `Google 로그인이 만료됐어요. 그동안 바뀐 ${n(s.pending)}개는 이 기기에 안전하게 있어요.`;
+    text = `Google 로그인이 만료됐어요. 전송 대기 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요.`;
     actions = (
       <>
         <Button variant="ghost" size="M" label="나중에" onClick={close} />
@@ -338,7 +338,7 @@ export function SyncHost({ studying }: { studying: boolean }) {
       shown.current = s.conflict_seq;
       toast({
         title: "다른 기기와 맞췄어요",
-        text: `카드 ${n(s.conflicts)}장은 두 기기에서 고쳐서 나중에 동기화한 쪽으로 맞췄어요`,
+        text: `카드 ${n(s.conflicts)}장은 두 기기에서 고쳐서 나중에 고친 쪽 내용으로 맞췄어요`,
         icon: "cloud-check",
         ms: 5000,
         action: { label: "보기", onClick: () => setFlow({ kind: "conflicts" }) },
@@ -775,7 +775,7 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
   const title = !choice
     ? "이 기기에도 덱이 있어요"
     : kind === "restore"
-      ? `${dev}에서 데이터를 ${header?.reason?.backup_at ? md(new Date(header.reason.backup_at)) : "예전"} 백업으로 되돌렸어요`
+      ? `${dev}에서 데이터를 ${header?.reason?.backup_at ? md(new Date(header.reason.backup_at)) : "예전"} 백업으로 복구했어요`
       : kind === "lock"
         ? "다른 기기에서 Drive 데이터를 암호로 잠갔어요"
         : kind === "unlock"
@@ -786,7 +786,7 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
     ? `Drive에는 ${dev}에서 맞춘 데이터가 있어요. 어떻게 할까요?`
     : kind === "unlock"
       ? `${named ? `${named}에서` : "다른 기기에서"} 잠금을 풀고 Drive에 다시 올렸어요. 이 기기에 저장된 암호는 더 이상 쓰지 않아요. 어떻게 할까요?`
-      : `이 기기에는 ${kind === "restore" ? "되돌리기" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
+      : `이 기기에는 ${kind === "restore" ? "복구" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
   const locked = (choice?.locked || remote?.locked) && mode !== "fresh";
   const others_ = others(s ?? null).filter((n) => n !== probe?.device_name);
   const who = others_.length ? others_.join(", ") : dev;
@@ -830,9 +830,9 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
           on={mode === "merge"}
           onPick={() => setMode("merge")}
           icon="merge"
-          title="둘 다 남기고 합치기"
+          title="두 데이터 합치기"
           badge={choice ? undefined : "권장"}
-          text="두 쪽의 덱·카드·복습 기록을 모두 남겨요. 같은 Anki 노트에서 온 카드는 하나로 합치고, 내용이 다르면 한쪽으로 맞춘 뒤 다른 쪽은 30일 동안 기록에 남겨요."
+          text="덱·카드·복습 기록을 합쳐요. 같은 Anki 노트에서 온 카드는 하나로 합치고, 같은 카드의 내용이 다르면 나중에 고친 버전을 지금 내용으로 써요. 다른 버전은 30일 동안 설정 › Google Drive › 두 기기에서 고친 카드에 남아요."
         />
         <Option on={mode === "take"} onPick={() => setMode("take")} icon="download" title="Drive 데이터로 바꾸기" badge={choice ? "권장" : undefined} text="이 기기 데이터는 백업 파일로 남기고, Drive의 데이터를 받아요." />
         <Option
@@ -898,7 +898,7 @@ function Version({ v, other, current, onUse, busy }: { v: SyncConflict["versions
         ))}
       </div>
       {current ? (
-        <span className="t-caption c-accent">{v.at >= other.at ? "나중에 동기화한 쪽이라 이 내용으로 맞췄어요" : "직접 고른 내용이에요"}</span>
+        <span className="t-caption c-accent">{v.at >= other.at ? "나중에 고친 쪽이라 이 내용으로 맞췄어요" : "직접 고른 내용이에요"}</span>
       ) : (
         <Button variant="secondary" size="M" icon="rotate" label="이 버전으로 바꾸기" busy={busy} onClick={onUse} />
       )}
@@ -934,7 +934,7 @@ function ConflictsModal({ onClose }: { onClose: () => void }) {
     <Sheet label="두 기기에서 고친 카드" onClose={onClose} className="sync-k7">
       <Head
         title={`두 기기에서 고친 카드 ${list ? n(list.length) : ""}장`}
-        sub="나중에 동기화한 쪽으로 맞췄어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+        sub="나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
         onClose={onClose}
       />
       <div className="sync-k7__list">
@@ -989,8 +989,8 @@ function CloseModal({ s }: { s: SyncStatus }) {
         <span style={{ width: `${pct}%` }} />
       </span>
       <span className="t-caption c-tertiary">
-        {s.pending_reviews > 0 && `오늘 학습한 복습 기록 ${n(s.pending_reviews)}개 · `}
-        {s.pending_notes > 0 && `카드 변경 ${n(s.pending_notes)}개 · `}몇 초면 끝나요
+        {s.pending_reviews > 0 && `오늘 학습한 복습 기록 ${n(s.pending_reviews)}건 · `}
+        {s.pending_notes > 0 && `카드 변경 ${n(s.pending_notes)}건 · `}몇 초면 끝나요
       </span>
       <div className="sync-foot">
         <span className="t-caption c-secondary">남은 변경은 다음에 열 때 올려요</span>
@@ -1024,7 +1024,7 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
       await refreshSync();
       onClose();
       nav({ name: "home" });
-      toast({ title: `${backupDate(backup.at)} 백업으로 되돌렸어요`, text: "되돌리기 전 데이터는 이 기기 백업에 있어요", icon: "rotate" });
+      toast({ title: `${backupDate(backup.at)} 백업으로 복구했어요`, text: "복구 전 데이터는 이 기기 백업에 있어요", icon: "rotate" });
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
@@ -1032,8 +1032,8 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
   };
   const who = p?.others.length ? p.others.join(", ") : "다른 기기";
   return (
-    <Sheet label="Drive 백업으로 되돌리기" onClose={onClose} className="sync-k9">
-      <h2 className="t-title-m">{backupDate(backup.at)} 백업으로 되돌릴까요?</h2>
+    <Sheet label="Drive 백업으로 복구" onClose={onClose} className="sync-k9">
+      <h2 className="t-title-m">{backupDate(backup.at)} 백업으로 복구할까요?</h2>
       {!p ? (
         error ? <p className="t-body-s c-danger">{error}</p> : (
           <span className="sync-loading t-body-s c-secondary">
@@ -1043,7 +1043,7 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
       ) : (
         <>
           <span className="t-caption c-tertiary">
-            {p.device ?? "어느 기기"}에서 만든 백업 · 카드 {n(p.cards)}장 · 복습 기록 {n(p.reviews)}개
+            {p.device ?? "어느 기기"}에서 만든 백업 · 카드 {n(p.cards)}장 · 복습 기록 {n(p.reviews)}건
           </span>
           <div className="sync-box sync-box--rows">
             <span className="sync-perm">
@@ -1059,7 +1059,7 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
                 <span className="sync-perm__text">
                   <span className="t-body-m">
                     이 백업 뒤의{" "}
-                    {[p.lost_reviews && `복습 기록 ${n(p.lost_reviews)}개`, p.lost_changes && `카드 변경 ${n(p.lost_changes)}개`].filter(Boolean).join(" · ")}는 빠져요
+                    {[p.lost_reviews && `복습 기록 ${n(p.lost_reviews)}건`, p.lost_changes && `카드 변경 ${n(p.lost_changes)}건`].filter(Boolean).join(" · ")}은 빠져요
                   </span>
                   <span className="t-caption c-tertiary">방금 남긴 백업 파일에는 그대로 있어요</span>
                 </span>
@@ -1075,10 +1075,10 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
             <span className="sync-perm">
               <Icon name="rotate" size={18} className="c-secondary" />
               <span className="sync-perm__text">
-                <span className="t-body-m">동기화도 이 상태로 새로 시작해요</span>
+                <span className="t-body-m">이 기기를 백업 상태로 바꾸고, Drive 동기화 기준도 이 상태로 바꿔요</span>
                 <span className="t-caption c-tertiary">
                   {who}
-                  {eun(who)} 다음에 동기화할 때 고르는 창을 봐요
+                  {eun(who)} 다음에 동기화할 때 처리 방법을 골라요
                 </span>
               </span>
             </span>
@@ -1088,7 +1088,7 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
       )}
       <div className="sync-foot sync-foot--end">
         <Button variant="ghost" size="M" label="취소" disabled={busy} onClick={onClose} />
-        <Button size="M" icon="rotate" label="되돌리기" busy={busy} busyLabel="되돌리는 중…" disabled={!p} onClick={run} />
+        <Button size="M" icon="rotate" label="이 백업으로 복구" busy={busy} busyLabel="복구하는 중…" disabled={!p} onClick={run} />
       </div>
     </Sheet>
   );
@@ -1232,8 +1232,10 @@ function Intro({ s }: { s: SyncStatus }) {
         <div className="sync-noclient">
           <Icon name="info" size={16} className="c-secondary" />
           <span className="prefs__text">
-            <span className="t-body-m-strong">이 빌드에는 Google 연결이 설정되지 않았어요</span>
-            <span className="t-caption c-tertiary">직접 빌드한 앱이라 Google 로그인 정보가 들어 있지 않아요. 이 기기 백업은 그대로 쓸 수 있어요.</span>
+            <span className="t-body-m-strong">이 앱 버전에서는 Google Drive 연결을 사용할 수 없어요</span>
+            <span className="t-caption c-tertiary" title="직접 빌드한 앱에는 Google 로그인 정보가 들어 있지 않아요">
+              Google Drive 연결이 설정된 배포 버전이 필요해요. 지금은 이 기기 백업을 쓸 수 있어요.
+            </span>
           </span>
         </div>
       )}
@@ -1413,8 +1415,8 @@ function Connected({ s }: { s: SyncStatus }) {
         <div className="sync-block sync-block--last">
           <div className="sync-backups__head">
             <span className="prefs__text">
-              <span className="t-body-m-strong">Drive 백업 {backups ? `${n(backups.length)}개` : ""}</span>
-              <span className="t-caption c-tertiary">카드 · 기록 · 설정만 담은 파일 · 그림은 동기화 공간에 한 번만 보관</span>
+              <span className="t-body-m-strong">Drive 기록 백업 {backups ? `${n(backups.length)}개` : ""}</span>
+              <span className="t-caption c-tertiary">카드·복습 기록·설정이 들어 있어요 · 그림·소리는 Drive 동기화 공간에 따로, 원자료 파일은 이 기기에만 있어요</span>
             </span>
             <Button variant="ghost" size="M" icon="external" label="Drive에서 열기" onClick={() => syncApi.openFolder().catch((e) => toast({ title: errorText(e), tone: "error" }))} />
           </div>
@@ -1434,7 +1436,7 @@ function Connected({ s }: { s: SyncStatus }) {
                     {size(b.size)}
                   </span>
                 </span>
-                <Button variant="ghost" size="M" icon="rotate" label="되돌리기" disabled={busyNow || s.studying} onClick={() => syncFlow({ kind: "restore", backup: b })} />
+                <Button variant="ghost" size="M" icon="rotate" label="복구" disabled={busyNow || s.studying} onClick={() => syncFlow({ kind: "restore", backup: b })} />
                 <span className="menu" onClick={(e) => e.stopPropagation()}>
                   <button className="sync-more c-tertiary" aria-label={`${backupDate(b.at)} 백업 메뉴`} aria-expanded={menu === b.name} onClick={() => setMenu(menu === b.name ? null : b.name)}>
                     {busy === b.name ? <Spinner size={16} /> : <Icon name="more" size={18} scaled />}

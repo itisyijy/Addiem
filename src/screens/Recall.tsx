@@ -20,7 +20,7 @@ export function RecallSlot({ num, state, text, openKey, onClick }: { num: number
       {state === "missed" && (
         <span className="slot__mark t-label-s">
           <Icon name="x" size={16} />
-          빠뜨림
+          기억 못함
         </span>
       )}
       {state === "now" && <span className="slot__mark t-label-s">{`${openKey}${ro(openKey)} 열기`}</span>}
@@ -86,13 +86,17 @@ export function RecallFace({ s, phase, question, extra, opened, marks, order, op
     const shown = phase === "a" ? total : opened;
     const missed = marks.length;
     const head =
-      phase === "a" ? `${n(total)}개 중 ${n(total - missed)}개 기억` : shown ? `${n(shown)}개 열었어요${missed ? ` · ${n(missed)}개 빠뜨림` : ""}` : `${n(total)}개를 떠올려 보세요`;
+      phase === "a"
+        ? `직접 표시한 결과: ${n(total)}개 중 ${n(total - missed)}개 기억`
+        : shown
+          ? `${n(shown)}개 열었어요${missed ? ` · ${n(missed)}개 기억 못함` : ""}`
+          : `${n(total)}개를 떠올려 보세요`;
     return (
       <>
         <div className="recall__q t-title-m c-tertiary card-html" dangerouslySetInnerHTML={{ __html: question }} />
         <p className="recall__sum">
           <span className="t-label-m">{head}</span>
-          <span className="t-caption c-tertiary">{phase === "a" ? "항목을 누르거나 X로 빠뜨림을 고칠 수 있어요" : "연 항목은 기억한 것으로 세요. 못 떠올렸으면 X"}</span>
+          <span className="t-caption c-tertiary">{phase === "a" ? "항목을 누르거나 X로 기억 여부를 바꿀 수 있어요" : "항목을 연 뒤 못 떠올렸던 것은 X로 \"기억 못함\" 표시해 주세요"}</span>
         </p>
         <div className="recall__list">
           {s.items.map((t, i) => {

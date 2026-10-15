@@ -126,15 +126,15 @@ export function AiConnect({ start = "intro", reconsent = false, onDone }: { star
 function Intro({ onClose, onGo }: { onClose: () => void; onGo: () => void }) {
   return (
     <Sheet label="ChatGPT를 연결할까요?" onClose={onClose} className="ai-l2">
-      <Head title="ChatGPT를 연결할까요?" sub="카드 초안 만들기 · 채점 보조 · 성격별로 묶기를 직접 누를 때만 써요. 내 ChatGPT 요금제로 요청하고, Neo-Anki에는 추가 요금이 없어요." onClose={onClose} />
+      <Head title="ChatGPT를 연결할까요?" sub="카드 초안 만들기 · 채점 보조 · 비슷한 내용끼리 나누기를 직접 누를 때만 써요. 내 ChatGPT 요금제로 요청하고, Neo-Anki에는 추가 요금이 없어요." onClose={onClose} />
       <div className="ai-two">
         <div className="ai-two__col">
           <span className="ai-two__head">
             <Icon name="send" size={16} className="c-accent" />
             <span className="t-label-m">OpenAI로 보내는 것</span>
           </span>
-          <span className="t-body-s c-secondary">직접 고른 카드와 자료 구간의 글자</span>
-          <span className="t-caption c-tertiary">보내기 전에 보낼 내용을 목록으로 보여줘요</span>
+          <span className="t-body-s c-secondary">실행할 때 보여 주는 카드 글자와 자료 구간 발췌</span>
+          <span className="t-caption c-tertiary">직접 고른 구간 · 카드에 연결된 구간 · 비슷한 구간 · 보내기 전에 범위를 보여줘요</span>
         </div>
         <div className="ai-two__col">
           <span className="ai-two__head">
@@ -143,12 +143,12 @@ function Intro({ onClose, onGo }: { onClose: () => void; onGo: () => void }) {
           </span>
           <span className="t-body-s c-secondary">덱 이름 · 다른 카드</span>
           <span className="t-body-s c-secondary">복습 기록 · 일정</span>
-          <span className="t-body-s c-secondary">자료 파일 통째 · 그림</span>
+          <span className="t-body-s c-secondary">원자료 파일 전체 · 그림</span>
         </div>
       </div>
       <div className="ai-notes">
         <Note icon="gauge" title="ChatGPT 요금제 사용량이 Codex와 함께 줄어요" text="ChatGPT 설정의 사용량 관리에서 이 앱의 한도를 정할 수 있어요" />
-        <Note icon="link-off" title="연결을 끊으면 바로 멈춰요" text="이미 만든 카드는 그대로예요" />
+        <Note icon="link-off" title="연결을 끊으면 이후 AI 요청을 보내지 않아요" text="진행 중인 요청도 멈춰요 · 이미 만든 카드는 남아요" />
         <Note icon="info" title="ChatGPT Plus · Pro 같은 대상 요금제에서 쓸 수 있어요" />
       </div>
       <div className="sync-foot sync-foot--end">
@@ -346,12 +346,13 @@ export function AiSection() {
             <Button variant="secondary" size="M" icon="external" label="사용량 관리" onClick={openUsage} />
           </div>
           <div className="ai-rows">
-            <Row label="쓰는 곳" value="자료에서 카드 초안 · 서술형 채점 보조 · 성격별로 묶기" />
-            <Row label="보내는 것" value="직접 고른 카드와 자료 구간의 글자" />
+            <Row label="쓰는 곳" value="자료에서 카드 초안 · 서술형 채점 보조 · 비슷한 내용끼리 나누기" />
+            <Row label="보내는 것" value="실행할 때 보여 주는 카드 글자와 자료 구간 발췌" />
+            <Row label="보내지 않는 것" value="원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름" />
             <Row label="보낸 횟수" value={`이번 달 ${n(s.sent_month)}번${s.sent_at ? ` · 마지막 ${when(s.sent_at)}` : ""}`} />
           </div>
           <div className="ai-foot">
-            <span className="t-caption c-tertiary">끊으면 바로 멈춰요. 이미 만든 카드는 그대로예요.</span>
+            <span className="t-caption c-tertiary">끊으면 진행 중인 요청도 멈추고 이후 AI 요청을 보내지 않아요. 이미 만든 카드는 남아요.</span>
             <Button variant="danger" size="M" icon="link-off" label="연결 끊기" busy={busy} onClick={disconnect} />
           </div>
         </>
@@ -363,18 +364,18 @@ export function AiSection() {
             </span>
             <span className="prefs__text">
               <span className="t-body-m-strong">ChatGPT로 카드 만들기 · 고치기 돕기</span>
-              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 성격별로 묶기를 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
+              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 비슷한 내용끼리 나누기를 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
             </span>
             <ChatGptButton onClick={() => setConnecting(true)} />
           </div>
           <div className="sync-facts">
             <span>
               <Icon name="send" size={16} className="c-secondary" />
-              <span className="t-caption c-secondary">직접 고른 카드와 자료 구간만 OpenAI로 보내요</span>
+              <span className="t-caption c-secondary">실행할 때 보여 주는 카드 글자와 자료 구간을 OpenAI로 보내요</span>
             </span>
             <span>
               <Icon name="lock" size={16} className="c-secondary" />
-              <span className="t-caption c-secondary">자료 파일·덱 이름·기록·그림은 안 보내요</span>
+              <span className="t-caption c-secondary">원자료 파일 전체·그림·복습 기록·덱 이름은 보내지 않아요</span>
             </span>
             <span>
               <Icon name="layers" size={16} className="c-secondary" />
@@ -406,7 +407,7 @@ type Copy = Partial<Record<AiError["kind"], [string, string]>>;
  * 사용량 한도는 [사용량 관리]가 주 버튼. 깨진 응답은 한 조각도 쓰지 않고 [다시 …]만 (L4 는 아래에 규칙 제안이 이미 보인다).
  * copy: 기능마다 다른 제목 · 본문 (R1-e)
  */
-export function AiErrorBox({ e, onRule, onClose, onRetry, onReconnect, copy = {}, retryLabel = "다시 묶기" }: {
+export function AiErrorBox({ e, onRule, onClose, onRetry, onReconnect, copy = {}, retryLabel = "다시 나누기" }: {
   e: AiError;
   onRule?: () => void;
   onClose?: () => void;
@@ -428,7 +429,7 @@ export function AiErrorBox({ e, onRule, onClose, onRetry, onReconnect, copy = {}
     : e.kind === "scope" ? ["사용량 권한이 필요해요", `Neo-Anki는 내 ChatGPT 요금제로만 요청해요. 다시 연결할 때 "사용량" 권한을 허락해 주세요.`]
     : e.kind === "not_eligible" ? ["이 요금제에서는 쓸 수 없어요", "지금 계정의 ChatGPT 요금제는 다른 앱에서 요금제로 요청하는 기능을 지원하지 않아요."]
     : e.kind === "unavailable" ? ["지금은 ChatGPT 요금제를 쓸 수 없어요", "잠시 뒤 다시 해 보세요. 규칙으로 나눈 제안은 그대로 쓸 수 있어요."]
-    : ["ChatGPT로 묶지 못했어요", e.message]);
+    : ["ChatGPT로 나누지 못했어요", e.message]);
   const back = onRule ? <Button variant="ghost" size="M" label="규칙으로 나누기" onClick={onRule} /> : onClose && <Button variant="ghost" size="M" label="닫기" onClick={onClose} />;
   return (
     <div className={`ai-error ${grey ? "is-grey" : ""}`} role="alert">

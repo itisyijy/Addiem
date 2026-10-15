@@ -180,6 +180,8 @@ pub struct ExportPreview {
     cards: i64,
     media: usize,
     reviews: i64,
+    /// 목록 회상 · 선택형 카드. Anki 에서는 하나씩 공개하거나 보기를 고를 수 없어 확인 창에 알린다 (Q3)
+    recall_cards: i64,
 }
 
 #[tauri::command]
@@ -216,6 +218,12 @@ pub fn export_preview(state: State<AppState>, deck_id: i64) -> Res<ExportPreview
         cards: count("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?,
         media: media.len(),
         reviews: count("SELECT count(*) FROM review_log WHERE card_id IN (SELECT id FROM card WHERE deck_id IN ($IDS)) AND kind IS NULL")?,
+        recall_cards: count(&format!(
+            "SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
+             WHERE c.deck_id IN ($IDS) AND nt.name IN ('{}', '{}')",
+            crate::recall::LIST,
+            crate::recall::CHOICE
+        ))?,
     })
 }
 
@@ -1210,7 +1218,7 @@ mod tests {
         assert_eq!(std::fs::read(b.data_dir.join("media/voice.mp3")).unwrap(), b"ID3-sound");
         let sound: Vec<&Value> = res["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "missing_sound" || i["kind"] == "sound").collect();
         assert_eq!(sound.len(), 1, "소리가 든 노트 경고(I28)는 없고 빠진 파일 경고만: {sound:?}");
-        assert_eq!(sound[0]["detail"], "소리 파일이 빠진 노트 1개 · 학습할 때 그 자리에 \"파일 없음\"으로 보여요");
+        assert_eq!(sound[0]["detail"], "소리 파일이 빠진 노트 1개 · 학습할 때 그 자리에 \"소리 파일을 찾을 수 없어요\"로 보여요");
     }
 
     /// 내보낸 .apkg 의 그림 가리기 모델 JSON (스키마 11 col.models)
