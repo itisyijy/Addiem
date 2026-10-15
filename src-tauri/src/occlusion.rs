@@ -311,6 +311,8 @@ pub fn place(html: &str, caption: Option<String>) -> String {
     format!("{}<div class=\"io\">{}{layers}</div>{caption}{}", &rest[..i], &rest[i..j], &rest[j..])
 }
 
+pub const DEFAULT_QUESTION: &str = "가린 곳에 들어갈 말은?";
+
 /// 템플릿이 칸을 읽는 필드 ({{cloze:이름}})
 fn cloze_field(qfmt: &str) -> Option<&str> {
     let i = qfmt.find("{{cloze:")? + "{{cloze:".len();
@@ -322,7 +324,11 @@ pub fn finish(front: String, back: String, qfmt: &str, fields: &HashMap<String, 
     let n = ord + 1;
     let shapes = cloze_field(qfmt).and_then(|f| fields.get(f)).map(|v| parse(v).0).unwrap_or_default();
     let label = shapes.iter().filter(|s| s.ordinal == n).map(|s| clean_label(&s.label)).find(|l| !l.is_empty());
-    crate::render::Rendered { front: place(&front, None), back: place(&back, label.map(|l| format!("{n} · {l}"))) }
+    // 질문(머리말)을 비우면 기본 질문 (M1 · M3-q)
+    let ask = |html: String| {
+        if crate::render::strip_tags(&html).is_empty() { format!("<div class=\"io-question\">{DEFAULT_QUESTION}</div>{html}") } else { html }
+    };
+    crate::render::Rendered { front: ask(place(&front, None)), back: ask(place(&back, label.map(|l| format!("{n} · {l}")))) }
 }
 
 // ------------------------------------------------------------------ 편집 (M1 · M2)
@@ -575,6 +581,9 @@ mod tests {
         assert!(!render_card(QFMT, &afmt(), &no_image, 0).front.contains("io-mask"));
         // 목록 글자 (strip_tags) 에 스크립트 글자가 새지 않는다
         assert_eq!(crate::render::strip_tags(&render_card(QFMT, &afmt(), &fields(&field), 0).front), "머리말");
+        let mut no_header = fields(&field);
+        no_header.insert("Header".into(), "<br>".into());
+        assert_eq!(crate::render::strip_tags(&render_card(QFMT, &afmt(), &no_header, 0).front), DEFAULT_QUESTION, "머리말이 비면 기본 질문");
     }
 
     /// 살균(src/cardHtml.ts) 은 class · style 을 남긴다. 그래서 style 에는 우리가 계산한 숫자만 들어가야 한다

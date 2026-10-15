@@ -166,7 +166,8 @@ export type QueueSummary = {
 export type CardView = { id: number; note_id: number; css: string; front: string; back: string; deck_path: string[]; importance: Level; state: string };
 export type NoteEdit = {
   note_id: number;
-  kind: "basic" | "cloze" | "other";
+  /** image_occlusion: 가리기 편집기(M2)로 연다 */
+  kind: "basic" | "cloze" | "image_occlusion" | "other";
   /** 노트 유형 이름 */
   type_name: string;
   names: string[];

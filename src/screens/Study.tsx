@@ -1,6 +1,7 @@
 // D1 학습 시작 전 요약 / D2 질문 / D3 답변과 평가 / D4 접어두기 / C3-e 카드 편집
 // J1~J3 서술형 · H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { OcclusionEdit } from "./Occlusion";
 import { api, errorText, type CardView, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
 import { eul, n, useKey, useNav, useOverlayScope } from "../nav";
@@ -1451,6 +1452,8 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   useKey("Enter", remove, confirming, { modal: true });
 
   const front = note ? Math.max(0, note.roles.indexOf("front")) : 0;
+  // M 그림 가리기: 카드 편집(E)은 가리기 편집기로 연다
+  if (note?.kind === "image_occlusion") return <OcclusionEdit noteId={noteId} onClose={onClose} onSaved={onSaved} />;
   const preview = note && [note.kind === "basic" ? plainText(note.values[1] ?? "") : "", here?.label ?? ""].filter(Boolean).join(" · ");
 
   return (

@@ -3,10 +3,10 @@
 // 표시는 영문 대문자 (KeyE -> "E", Ctrl+KeyZ -> "Ctrl Z")
 import { useSyncExternalStore } from "react";
 
-export type Scope = "study" | "app";
+export type Scope = "study" | "app" | "occlusion";
 export type ActionId = "reveal" | "rate" | "edit" | "bury" | "undo" | "source" | "newDeck" | "import" | "addCard" | "save" | "math";
 
-export const SCOPE_LABEL: Record<Scope, string> = { study: "학습 화면", app: "앱 전체" };
+export const SCOPE_LABEL: Record<Scope, string> = { study: "학습 화면", app: "앱 전체", occlusion: "가리기 편집기" };
 
 /** 표의 순서 그대로. rate 는 한 행에 키 4개 (Again · Hard · Good · Easy) */
 export const ACTIONS: { id: ActionId; label: string; scope: Scope; keys: string[] }[] = [
@@ -31,6 +31,16 @@ export const FIXED_ROWS: { label: string; caption: string; scope: Scope; key: st
   { label: "그만하기", caption: "창 닫기·취소와 같은 키라 고정", scope: "study", key: "Esc" },
   { label: "접어둔 카드 목록", caption: "접어둔 카드가 있을 때 열고 닫아요", scope: "study", key: "B" },
   { label: "이름 바꾸기", caption: "덱 상세에서", scope: "app", key: "F2" },
+  // M 가리기 편집기 (M5). 편집기 안에서만 동작한다
+  { label: "도구 · 선택 / 사각형 / 타원", caption: "", scope: "occlusion", key: "V R O" },
+  { label: "선택한 칸 지우기", caption: "", scope: "occlusion", key: "Delete" },
+  { label: "칸 옮기기", caption: "1px · Shift 10px", scope: "occlusion", key: "방향키" },
+  { label: "복제", caption: "", scope: "occlusion", key: "Ctrl D" },
+  { label: "묶기 · 풀기", caption: "같은 카드로 묻는다", scope: "occlusion", key: "Ctrl G · Ctrl Shift G" },
+  { label: "다음 칸 · 칸 이름", caption: "Shift Tab 이전 칸", scope: "occlusion", key: "Tab · Enter" },
+  { label: "실행 취소 · 다시", caption: "50단계", scope: "occlusion", key: "Ctrl Z · Ctrl Shift Z" },
+  { label: "화면 이동 · 확대", caption: "Ctrl = / − 로도 확대", scope: "occlusion", key: "Space+끌기 · Ctrl+휠" },
+  { label: "완료", caption: "Esc 를 두 번 누르면 마칠지 물어요", scope: "occlusion", key: "Ctrl Enter" },
 ];
 
 /** 바꿀 수 없는 키 (E4): Esc 그만하기 · 닫기, Enter 확인, Tab 초점 이동. 조합 없이 누른 경우만 */
