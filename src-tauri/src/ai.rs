@@ -36,7 +36,7 @@ const SCOPE: &str = "openid profile email offline_access resource.invoke chatgpt
 const USE_SCOPE: &str = "chatgpt.tokens.use.direct";
 const DYNAMIC: &str = "dynamic_agent_client";
 const CALLBACK: &str = "/auth/callback";
-/// 문서 예시와 같은 포트. 쓰고 있으면 아무 포트 (포트만 바뀌어도 된다)
+/// 문서 예시와 같은 포트. 쓰고 있으면 브라우저가 막지 않는 아무 포트 (auth::loopback. 포트만 바뀌어도 된다)
 const PORT: u16 = 1455;
 
 /// 키체인 이름 (sync::auth 와 같은 서비스)
@@ -723,7 +723,7 @@ pub fn ai_connect(app: AppHandle, state: State<AiState>, reconsent: bool, new_ac
         Ok((host, get_meta(c, META_CLIENT).filter(|_| !new_account)))
     })
     .map_err(|e| e.to_string())?;
-    let listener = std::net::TcpListener::bind(("127.0.0.1", PORT)).or_else(|_| std::net::TcpListener::bind("127.0.0.1:0")).map_err(|e| e.to_string())?;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", PORT)).or_else(|_| auth::loopback()).map_err(|e| e.to_string())?;
     let redirect = format!("http://127.0.0.1:{}{CALLBACK}", listener.local_addr().map_err(|e| e.to_string())?.port());
     let p = auth::pkce();
     let nonce = crypto::random_hex(16);
@@ -1062,7 +1062,7 @@ mod tests {
         let Ok(auth::Callback::Code(q)) = auth::parse_callback(line, CALLBACK, "st") else { panic!() };
         assert_eq!((q["code"].as_str(), q["client_id"].as_str()), ("c0de", "oaiapp_9"));
         assert_eq!(auth::parse_callback("GET /?code=c&state=st HTTP/1.1", CALLBACK, "st"), Ok(auth::Callback::Ignore), "다른 경로는 무시");
-        assert!(auth::parse_callback(line, CALLBACK, "other").is_err(), "state 가 다르면 받지 않는다");
+        assert_eq!(auth::parse_callback(line, CALLBACK, "other"), Ok(auth::Callback::Ignore), "state 가 다르면 받지 않고 계속 기다린다");
         assert_eq!(auth::parse_callback("GET /auth/callback?state=st&error=access_denied HTTP/1.1", CALLBACK, "st"), Ok(auth::Callback::Denied));
         // 처음 등록: 새 id 를 받는다. 다시 로그인: 저장한 id 와 달라지면 받지 않는다
         assert_eq!(issued_client(None, Some("oaiapp_9")), Ok("oaiapp_9".into()));
@@ -1075,17 +1075,23 @@ mod tests {
     #[test]
     fn loopback_returns_issued_client() {
         use std::io::{Read, Write};
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l = auth::loopback().unwrap();
         let port = l.local_addr().unwrap().port();
         let t = std::thread::spawn(move || {
-            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-            write!(s, "GET /auth/callback?state=st&code=c0de&client_id=oaiapp_9 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
-            let mut out = String::new();
-            s.read_to_string(&mut out).unwrap();
-            out
+            let get = |target: &str| {
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                write!(s, "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+                let mut out = String::new();
+                s.read_to_string(&mut out).unwrap();
+                out
+            };
+            // state 가 다른 요청(남이 보낸 취소 · 코드)에 끝나지 않고 진짜 리디렉트를 기다린다
+            get("/auth/callback?state=evil&error=access_denied");
+            get("/auth/callback?state=evil&code=bad&client_id=oaiapp_666");
+            get("/auth/callback?state=st&code=c0de&client_id=oaiapp_9")
         });
         let q = auth::wait_callback(l, CALLBACK, "st", "ChatGPT 연결을 마쳤어요", &AtomicBool::new(false)).unwrap();
-        assert_eq!(q["client_id"], "oaiapp_9");
+        assert_eq!((q["client_id"].as_str(), q["code"].as_str()), ("oaiapp_9", "c0de"));
         assert!(t.join().unwrap().contains("ChatGPT 연결을 마쳤어요"));
     }
 
