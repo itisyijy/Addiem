@@ -262,15 +262,15 @@ pub(crate) fn check_fields(nt: &str, names: &[String], values: &[String]) -> Res
     }
 }
 
-/// 노트 하나 + 카드 한 장. 노트 id 를 돌려준다
-pub(crate) fn insert(con: &Connection, nt: &str, deck_id: i64, fields: &[String], importance: Option<i64>) -> Res<i64> {
+/// 노트 하나 + 카드 한 장. 노트 id 를 돌려준다. tags · batch 는 JSON 가져오기 (E2)
+pub(crate) fn insert(con: &Connection, nt: &str, deck_id: i64, fields: &[String], importance: Option<i64>, tags: &str, batch: Option<i64>) -> Res<i64> {
     let now = now_ms();
     let ntid: i64 = con
         .query_row("SELECT id FROM note_type WHERE name = ?1 AND anki_model_id IS NULL ORDER BY id LIMIT 1", [nt], |r| r.get(0))
         .map_err(err)?;
     con.execute(
-        "INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-        params![ntid, serde_json::to_string(fields).map_err(err)?, now],
+        "INSERT INTO note (note_type_id, fields, tags, created_at, updated_at, import_batch_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        params![ntid, serde_json::to_string(fields).map_err(err)?, tags, now, batch],
     )
     .map_err(err)?;
     let nid = con.last_insert_rowid();
@@ -287,14 +287,14 @@ pub(crate) fn insert(con: &Connection, nt: &str, deck_id: i64, fields: &[String]
 pub fn add_list_card(state: State<AppState>, card: ListNew) -> Res<i64> {
     let fields = list_fields(&card)?;
     let con = state.db.lock().map_err(err)?;
-    insert(&con, LIST, card.deck_id, &fields, card.importance)
+    insert(&con, LIST, card.deck_id, &fields, card.importance, "", None)
 }
 
 #[tauri::command]
 pub fn add_choice_card(state: State<AppState>, card: ChoiceNew) -> Res<i64> {
     let fields = choice_fields(&card)?;
     let con = state.db.lock().map_err(err)?;
-    insert(&con, CHOICE, card.deck_id, &fields, card.importance)
+    insert(&con, CHOICE, card.deck_id, &fields, card.importance, "", None)
 }
 
 // ------------------------------------------------------------------ 명령: 전용 편집기 (Q24)

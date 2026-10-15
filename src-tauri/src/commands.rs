@@ -1097,7 +1097,29 @@ pub(crate) fn answer_part(back: &str) -> &str {
     }
 }
 
-/// C2. query 는 필드 원문에서 찾는다 (HTML 포함). buried_only 는 A2-b "접어둔 카드 보기"
+/// C2 검색 대상: 필드 원문 (JSON 의 \" 만 " 로 푼다)
+const SEARCH_TEXT: &str = "replace(n.fields, '\\\"', '\"')";
+
+/// AU6 검색에서 소리 파일 이름은 뺀다. 원문 LIKE 로 걸린 노트 중 [sound:] 가 있는 것만 소리를 지우고 다시 본다.
+/// 걸린 곳이 소리 이름뿐인 노트 id. LIKE 처럼 ASCII 만 대소문자를 가리지 않는다. like 는 이스케이프한 query.
+/// ponytail: 결과를 NOT IN 목록으로 SQL 에 넣는다. "mp3" 처럼 소리 노트 전부가 걸리면 목록이 길어진다 (실측 DECISIONS AU19)
+fn sound_only_hits(con: &Connection, query: &str, like: &str) -> Res<Vec<i64>> {
+    let q = query.to_ascii_lowercase();
+    let mut st = con
+        .prepare(&format!("SELECT n.id, {SEARCH_TEXT} FROM note n WHERE instr(n.fields, '[sound:') > 0 AND {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\'"))
+        .map_err(err)?;
+    let rows = st.query_map([like], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?;
+    let mut out = vec![];
+    for row in rows {
+        let (id, text) = row.map_err(err)?;
+        if !render::strip_sound(&text).to_ascii_lowercase().contains(&q) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). buried_only 는 A2-b "접어둔 카드 보기"
 #[tauri::command]
 pub fn list_cards(
     state: State<AppState>,
@@ -1124,15 +1146,17 @@ pub fn list_cards(
         ids
     };
     let ids = if ids.is_empty() { "-1".to_string() } else { ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",") };
-    let filter = format!(
-        "c.deck_id IN ({ids}) AND (?1 = '' OR replace(n.fields, '\\\"', '\"') LIKE '%' || ?1 || '%' ESCAPE '\\') {} {}",
-        if buried_only.unwrap_or(false) { "AND c.buried_until IS NOT NULL" } else { "" },
-        // C1-xr [카드 보기]: 이 카드들만
-        card_ids.map_or(String::new(), |c| format!("AND c.id IN ({})", if c.is_empty() { "-1".into() } else { id_list(&c) }))
-    );
     // LIKE 의 와일드카드를 글자 그대로 찾게 한다
     let q = query.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     let q = q.as_str();
+    let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(&con, query.trim(), q)? };
+    let filter = format!(
+        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {}",
+        if buried_only.unwrap_or(false) { "AND c.buried_until IS NOT NULL" } else { "" },
+        // C1-xr [카드 보기]: 이 카드들만
+        card_ids.map_or(String::new(), |c| format!("AND c.id IN ({})", if c.is_empty() { "-1".into() } else { id_list(&c) })),
+        if sound_only.is_empty() { String::new() } else { format!("AND n.id NOT IN ({})", id_list(&sound_only)) }
+    );
     let total: i64 = con
         .query_row(&format!("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE {filter}"), [q], |r| r.get(0))
         .map_err(err)?;
@@ -2585,6 +2609,25 @@ mod tests {
         let ords: Vec<i64> =
             con.prepare("SELECT template_ord FROM card ORDER BY template_ord").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert_eq!(ords, [0, 1]);
+    }
+
+    #[test]
+    fn search_skips_sound_file_names() {
+        let con = crate::db::open_in_memory().unwrap();
+        for f in [r#"["abandon [sound:abandon.mp3]","버리다"]"#, r#"["mp3 플레이어","[sound:x.ogg]"]"#] {
+            con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES ((SELECT min(id) FROM note_type), ?1, 0, 0)", [f]).unwrap();
+        }
+        // list_cards 와 같은 조합: 원문 LIKE 에 걸리고 소리 이름뿐인 노트는 뺀다
+        let found = |q: &str| -> Vec<i64> {
+            let hidden = super::sound_only_hits(&con, q, q).unwrap();
+            let sql = format!("SELECT n.id FROM note n WHERE {} LIKE '%' || ?1 || '%' ORDER BY n.id", super::SEARCH_TEXT);
+            con.prepare(&sql).unwrap().query_map([q], |r| r.get(0)).unwrap().map(Result::unwrap).filter(|id| !hidden.contains(id)).collect()
+        };
+        assert_eq!(found("abandon"), [1]);
+        assert_eq!(found("mp3"), [2], "소리 파일 이름은 찾지 않는다. 글자에 있는 mp3 는 찾는다");
+        assert_eq!(found("ABANDON.MP3"), Vec::<i64>::new(), "대소문자를 가리지 않는 것도 LIKE 와 같다");
+        assert_eq!(found("ogg"), Vec::<i64>::new());
+        assert_eq!(found("버리"), [1]);
     }
 
     #[test]
