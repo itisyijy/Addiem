@@ -833,10 +833,22 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
         "req": tmpls.iter().map(|(ord, _, q, _)| json!([ord, "any", referenced(q, &fields)])).collect::<Vec<_>>(),
         "tags": [], "vers": [],
     });
-    // Anki 가 그림 가리기 유형으로 알아보고 IO 편집기를 연다 (rslib notetype/schema11.rs · Anki 26.9.2 가 내보낸 모델과 같다).
+    // Anki 기본 유형 표시 (rslib notetype/schema11.rs). 가져온 유형은 원래 값, 앱 유형은 이름으로 (I78).
+    // 없으면 Anki 가 사용자 정의 유형으로 보고 "기본값으로 되돌리기"를 숨긴다
+    let native = match name.as_str() {
+        "Basic" => Some(1),
+        "Basic (and reversed card)" => Some(2),
+        "Cloze" => Some(5),
+        _ => None,
+    };
+    let stock: Option<i64> = con.query_row("SELECT anki_stock_kind FROM note_type WHERE id = ?1", [ntid], |r| r.get(0)).map_err(err)?;
+    let stock = stock.or(native.filter(|_| anki_id.is_none())).or(io.then_some(crate::occlusion::STOCK_KIND));
+    if let Some(k) = stock.filter(|k| *k > 0) {
+        json["originalStockKind"] = json!(k);
+    }
+    // Anki 가 그림 가리기 유형으로 알아보고 IO 편집기를 연다 (Anki 26.9.2 가 내보낸 모델과 같다).
     // 필드는 tag 로 찾는다: 0 Occlusion · 1 Image · 2 Header · 3 Back Extra · 4 Comments. Comments 만 지울 수 있다
     if io {
-        json["originalStockKind"] = json!(crate::occlusion::STOCK_KIND);
         for (i, f) in json["flds"].as_array_mut().into_iter().flatten().enumerate().take(5) {
             f["tag"] = json!(i);
             f["preventDeletion"] = json!(i < 4);
@@ -1265,5 +1277,85 @@ mod tests {
         let root: i64 = con.query_row("SELECT deck_id FROM card LIMIT 1", [], |r| r.get(0)).unwrap();
         export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
         std::fs::copy(&out, std::env::var("NEOANKI_IO_OUT").unwrap_or_else(|_| format!("{path}.neo.apkg"))).unwrap();
+    }
+
+    /// QA (실제 Anki 26.9.2 왕복, 2026-10-16): Anki 가 내보낸 기본 유형(originalStockKind 1 Basic · 2 앞뒤 · 4 type-in · 5 Cloze)을
+    /// 가져와 다시 내보내면 그 표시가 빠진다. 필드 · 카드 · 기록은 그대로라 Anki 에서 공부는 되지만 유형이 사용자 정의로 보인다
+    /// ("기본값으로 되돌리기"가 사라진다). Anki 처럼 모델에 표시를 붙인 패키지로 확인한다 (I78)
+    #[test]
+    fn imported_stock_kind_survives_export() {
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-stock-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('QA', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        insert_note(&con, &NewCard { deck_id: root, kind: "basic".into(), front: "앞".into(), back: "뒤".into(), importance: None }, "", None).unwrap();
+        let ours = tmp.0.join("ours.apkg");
+        export(&con, &a.data_dir, root, &ours, false, &QUIET).unwrap();
+
+        // Anki 가 내보낸 것처럼: Basic 모델에 originalStockKind 1
+        let mut zip = zip::ZipArchive::new(File::open(&ours).unwrap()).unwrap();
+        let mut raw = vec![];
+        std::io::Read::read_to_end(&mut zip.by_name("collection.anki2").unwrap(), &mut raw).unwrap();
+        let col = tmp.0.join("anki.anki2");
+        std::fs::write(&col, raw).unwrap();
+        {
+            let c = Connection::open(&col).unwrap();
+            let mut models: Value = serde_json::from_str(&c.query_row("SELECT models FROM col", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+            for m in models.as_object_mut().unwrap().values_mut() {
+                m["originalStockKind"] = json!(1);
+            }
+            c.execute("UPDATE col SET models = ?1", [models.to_string()]).unwrap();
+        }
+        let anki = tmp.0.join("anki.apkg");
+        let mut w = zip::ZipWriter::new(File::create(&anki).unwrap());
+        w.start_file("collection.anki2", SimpleFileOptions::default()).unwrap();
+        w.write_all(&std::fs::read(&col).unwrap()).unwrap();
+        w.start_file("media", SimpleFileOptions::default()).unwrap();
+        w.write_all(b"{}").unwrap();
+        w.finish().unwrap();
+
+        let b = state(&tmp.0.join("b"));
+        crate::import::run_import_anki(&|_, _, _| {}, &b, anki.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let bc = b.db.lock().unwrap();
+        let broot: i64 = bc.query_row("SELECT id FROM deck WHERE name = 'QA'", [], |r| r.get(0)).unwrap();
+        let again = tmp.0.join("again.apkg");
+        export(&bc, &b.data_dir, broot, &again, false, &QUIET).unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(&again).unwrap()).unwrap();
+        let mut raw = vec![];
+        std::io::Read::read_to_end(&mut zip.by_name("collection.anki2").unwrap(), &mut raw).unwrap();
+        std::fs::write(&col, raw).unwrap();
+        let models: Value =
+            serde_json::from_str(&Connection::open(&col).unwrap().query_row("SELECT models FROM col", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        let basic = models.as_object().unwrap().values().find(|m| m["name"] == "Basic").unwrap();
+        assert_eq!(basic["originalStockKind"], 1, "가져온 기본 유형의 표시가 다시 내보낼 때도 남아야 한다");
+    }
+
+    /// 실제 Anki 가 만든 .apkg · .colpkg 를 복습 기록과 함께 가져와 요약을 찍고, 맨 위 덱을 기록과 함께 다시 내보낸다 (손으로 돌리는 QA).
+    /// Anki 쪽 비교는 그 결과를 Anki 로 다시 읽어서 한다:
+    ///   NEOANKI_RT_IN=<패키지> NEOANKI_RT_OUT=<내보낼 .apkg> cargo test real_anki_roundtrip -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_anki_roundtrip() {
+        let input = std::env::var("NEOANKI_RT_IN").expect("NEOANKI_RT_IN");
+        let out = PathBuf::from(std::env::var("NEOANKI_RT_OUT").expect("NEOANKI_RT_OUT"));
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0);
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &a, &input, true, &mut vec![]).unwrap()).unwrap();
+        println!("import: {res}");
+        let con = a.db.lock().unwrap();
+        let show = |label: &str, sql: &str| println!("{label}: {:?}", strings(&con, sql));
+        let paths = "WITH RECURSIVE t(id, path) AS (SELECT id, name FROM deck WHERE parent_id IS NULL
+                     UNION ALL SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id)";
+        show("decks", &format!("{paths} SELECT t.path || ' imp=' || d.importance || '/' || d.importance_source FROM t JOIN deck d ON d.id = t.id ORDER BY 1"));
+        show("notes", "SELECT nt.name || ' | tags=' || n.tags || ' | exam=' || coalesce(n.exam_hits, '') || ' | cards=' || (SELECT count(*) FROM card c WHERE c.note_id = n.id)
+                       FROM note n JOIN note_type nt ON nt.id = n.note_type_id ORDER BY 1");
+        show("cards", &format!("{paths} SELECT nt.name || ' ord=' || c.template_ord || ' ' || c.state || ' ivl=' || c.interval_days || ' reps=' || c.reps || ' lapses=' || c.lapses || ' @' || t.path
+                       FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id JOIN t ON t.id = c.deck_id ORDER BY 1"));
+        show("reviews", "SELECT count(*) || ' (card 없음 ' || sum(card_id IS NULL) || ')' FROM review_log");
+        show("media", "SELECT filename || ' ' || byte_size FROM media ORDER BY 1");
+        let root: i64 = con.query_row("SELECT id FROM deck WHERE parent_id IS NULL AND name = 'QA'", [], |r| r.get(0)).unwrap();
+        let r = export(&con, &a.data_dir, root, &out, true, &QUIET).unwrap();
+        println!("export: {}", serde_json::to_value(r).unwrap());
     }
 }
