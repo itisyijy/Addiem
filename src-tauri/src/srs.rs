@@ -4,7 +4,7 @@
 //! fsrs 크레이트는 학습 단계를 다루지 않으므로, 단계 전이는 py-fsrs 6 의 Scheduler 규칙을 그대로 옮겼다
 //! (스파이크 5 에서 검증한 동작: 새 카드 Again 1분, Good 10분, 다음 Good 졸업).
 
-use crate::db::DAY_MS;
+use crate::db::{study_day, DAY_MS};
 use fsrs::{MemoryState, FSRS};
 
 const MIN: i64 = 60_000;
@@ -49,9 +49,10 @@ pub fn review(fsrs: &FSRS, card: &SrsState, rating: u8, now: i64) -> SrsState {
         (Some(s), Some(d)) => Some(MemoryState { stability: s, difficulty: d }),
         _ => None,
     };
+    // 경과일은 24시간 단위가 아니라 학습일 차이다 (Anki 와 같다, I81). 저녁에 본 카드를 다음 날 아침에 보면 1일
     let elapsed_days = card
         .last_reviewed_at
-        .map(|t| ((now - t).max(0) / DAY_MS) as u32)
+        .map(|t| (study_day(now) - study_day(t)).max(0) as u32)
         .unwrap_or(0);
     let next = fsrs
         .next_states(memory, DESIRED_RETENTION, elapsed_days)
@@ -190,6 +191,28 @@ mod tests {
         let i1 = c.interval_days;
         let c = review(&f, &c, 3, c.due_at.unwrap());
         assert!(c.interval_days > i1, "Good 을 이어가면 간격이 늘어난다");
+    }
+
+    #[test]
+    fn elapsed_days_count_study_days_not_24h() {
+        // T1-02: 같은 기억 상태, 둘 다 어제(학습일) 마지막 복습. 23시간 전이든 25시간 전이든 경과 1일로 같은 결과
+        let f = FSRS::default();
+        let day = study_day(T0);
+        let now = crate::db::study_day_end_ms(day) + 1 + 20 * 60 * MIN; // 오늘 학습일이 시작하고 20시간 뒤
+        let card = |ago_h: i64| SrsState {
+            state: "review".into(),
+            stability: Some(2.3065),
+            difficulty: Some(2.118),
+            interval_days: 1.0,
+            last_reviewed_at: Some(now - ago_h * 60 * MIN),
+            due_at: Some(now),
+            reps: 1,
+            ..SrsState::new_card()
+        };
+        assert_eq!(study_day(now - 23 * 60 * MIN), study_day(now - 25 * 60 * MIN), "둘 다 어제");
+        let (a, b) = (review(&f, &card(23), 3, now), review(&f, &card(25), 3, now));
+        assert_eq!((a.stability, a.interval_days), (b.stability, b.interval_days));
+        assert!(a.interval_days > 2.0, "같은 날 복습(단기 공식)으로 보지 않는다");
     }
 
     #[test]
