@@ -273,7 +273,7 @@ const isoOf = (day: number) => new Date(day * DAY).toISOString().slice(0, 10);
 const md = (iso: string) => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
 const longDate = (iso: string) => `${+iso.slice(5, 7)}월 ${+iso.slice(8, 10)}일`;
 const pct = (v: number) => `${Math.round(v * 100)}%`;
-/** 판정에 필요한 기록 일수 (MVP 범위 문서 12장 "2주간") */
+/** 계획 완료율을 보는 기간 (오늘 제외 최근 14일, mvp_metrics 와 같다) */
 const WINDOW = 14;
 const CHART_H = 132;
 
@@ -290,10 +290,8 @@ function Metrics() {
   const today = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY;
   // 오늘은 아직 끝나지 않았으니 지난 날만 센다
   const past = (iso: string | null) => (iso === null ? null : today - dayNum(iso));
-  const left = (days: number | null) => (days === null ? null : Math.max(0, WINDOW - days));
+  // 첫 학습 뒤 지난 날 (기록이 있는 날 수가 아니라 달력 날짜)
   const sessionDays = past(m.first_session_day);
-  const planLeft = left(past(m.first_plan_day));
-  const buryLeft = m.bury_sessions > 0 ? left(sessionDays) : null;
   const byDay = new Map(m.plan_days.map((p) => [p.day, p]));
   const days = Array.from({ length: WINDOW }, (_, i) => isoOf(today - WINDOW + i));
 
@@ -310,9 +308,11 @@ function Metrics() {
         <span className="prefs__text">
           <span className="t-title-s">학습 지표</span>
           <span className="t-body-s c-secondary">
-            {sessionDays !== null && sessionDays >= WINDOW
-              ? `Neo-Anki가 약속한 두 가지가 실제로 지켜지는지 · 최근 ${WINDOW}일 (${md(days[0])} – ${md(days[WINDOW - 1])})`
-              : `판정에는 ${WINDOW}일 기록이 필요해요 · ${sessionDays === null ? "아직 학습 기록이 없어요" : `지금 ${sessionDays + 1}일째`}`}
+            {sessionDays === null
+              ? "아직 학습 기록이 없어요"
+              : sessionDays >= WINDOW
+                ? `최근 ${WINDOW}일 학습 기록 (${md(days[0])} – ${md(days[WINDOW - 1])})`
+                : `첫 학습 뒤 ${sessionDays + 1}일째 · 아직 기록이 적어요. 지금까지의 추이예요`}
           </span>
         </span>
         <Badge>이 기기의 학습 기록으로만 계산</Badge>
@@ -324,7 +324,7 @@ function Metrics() {
             <span className="t-body-m-strong">목표 덱 일일 계획 완료율</span>
             <span className="t-caption c-tertiary">
               {m.target_decks > 0
-                ? `목표일이 있는 덱 ${n(m.target_decks)}개 · 계획이 있던 ${n(m.plan_days.length)}일${planLeft === 0 ? "의 중앙값" : ""}`
+                ? `목표일이 있는 덱 ${n(m.target_decks)}개 · 최근 ${WINDOW}일 중 계획이 있던 ${n(m.plan_days.length)}일`
                 : "목표일까지 계획한 분량을 매일 끝내는지"}
             </span>
           </span>
@@ -333,9 +333,8 @@ function Metrics() {
               <span className="metric__value">
                 <span className={`metric__num ${m.plan_median === null ? "c-tertiary" : ""}`}>{m.plan_median === null ? "—" : pct(m.plan_median)}</span>
                 <span className="t-body-s c-secondary">
-                  {m.plan_median === null ? "아직 계획이 끝난 날이 없어요" : planLeft === 0 ? "중앙값" : "지금까지 중앙값"}
+                  {m.plan_median === null ? "아직 계획이 끝난 날이 없어요" : "하루 완료율의 중앙값"}
                 </span>
-                <Verdict value={m.plan_median} pass={0.7} left={planLeft} />
               </span>
               <div className="metric__chart">
                 <div className="metric__bars">
@@ -352,11 +351,6 @@ function Metrics() {
                       <span key={day} className="metric__bar metric__bar--none" title={`${longDate(day)} · 계획 없음`} />
                     );
                   })}
-                  <span className="metric__line" style={{ bottom: CHART_H * 0.7 }} />
-                  {/* 두 줄 라벨의 첫 줄이 선 높이에 오게 */}
-                  <span className="metric__line-label t-caption c-secondary" style={{ bottom: CHART_H * 0.7 - 24 }}>
-                    합격선 70%
-                  </span>
                 </div>
                 <span className="metric__axis t-caption c-tertiary">
                   <span>{md(days[0])}</span>
@@ -379,18 +373,17 @@ function Metrics() {
 
         <div className="metric">
           <span className="metric__title">
-            <span className="t-body-m-strong">접어둔 카드가 생긴 세션 완주율</span>
-            <span className="t-caption c-tertiary">막힌 카드를 접은 뒤에도 남은 예정을 끝낸 세션</span>
+            <span className="t-body-m-strong">접어둔 카드가 있었던 학습의 완료 비율</span>
+            <span className="t-caption c-tertiary">카드를 접은 뒤에도 그날 예정을 끝까지 마친 학습</span>
           </span>
           <span className="metric__value">
             <span className={`metric__num ${m.bury_rate === null ? "c-tertiary" : ""}`}>{m.bury_rate === null ? "—" : pct(m.bury_rate)}</span>
             <span className="t-body-s c-secondary">
-              {m.bury_sessions > 0 ? `${n(m.bury_sessions)}개 세션 중 ${n(m.bury_completed)}개` : "아직 해당 세션이 없어요"}
+              {m.bury_sessions > 0 ? `학습 ${n(m.bury_sessions)}번 중 ${n(m.bury_completed)}번 끝까지 마침` : "아직 카드를 접은 학습이 없어요"}
             </span>
-            <Verdict value={m.bury_rate} pass={0.8} left={buryLeft} />
           </span>
           {m.bury_sessions === 0 && (
-            <p className="t-body-s c-secondary">같은 학습에서 두 번 막혀 카드를 접은 세션이 생기면, 그 세션을 끝까지 마쳤는지 여기에 점으로 쌓여요.</p>
+            <p className="t-body-s c-secondary">학습 중 카드를 접으면(자동 또는 직접), 그 학습을 끝까지 마쳤는지 여기에 점으로 쌓여요.</p>
           )}
           <span className="metric__dots">
             {m.sessions.length > 0
@@ -410,7 +403,6 @@ function Metrics() {
         </div>
       </div>
       <Heatmap />
-      <p className="t-caption c-tertiary">합격선은 MVP 범위 문서 12장의 초기 가정이에요. 2주 실사용 뒤 조정할 수 있고, 조정하면 이유를 함께 남겨요.</p>
     </section>
   );
 }
@@ -479,7 +471,7 @@ function Heatmap() {
       <header className="heat__head">
         <span className="metric__title">
           <span className="t-body-m-strong">학습 기록</span>
-          <span className="t-caption c-tertiary">최근 {fit}주 · 하루에 평가한 카드 수 · {deck?.name ?? "모든 덱"}</span>
+          <span className="t-caption c-tertiary">최근 {fit}주 · 하루 학습한 카드 수 · 같은 카드는 하루에 한 번 세요 · {deck?.name ?? "모든 덱"}</span>
         </span>
         <span className="menu" onClick={(e) => e.stopPropagation()}>
           <button className="heat__select t-label-m" aria-expanded={menu} onClick={() => setMenu(!menu)}>
@@ -523,7 +515,7 @@ function Heatmap() {
               key={iso}
               className={`heat__cell heat--${heatLevel(count(iso))} ${hover?.iso === iso ? "is-hover" : ""}`}
               style={{ left: LABEL_W + i * CELL, top: 18 + d * CELL }}
-              aria-label={`${longDate(iso)} · 카드 ${n(count(iso))}장`}
+              aria-label={`${longDate(iso)} · 학습한 카드 ${n(count(iso))}장`}
               onMouseEnter={() => setHover({ w: i, d, iso })}
             />
           )),
@@ -533,7 +525,7 @@ function Heatmap() {
             <b>
               {longDate(hover.iso)} ({WEEKDAY[new Date(dayNum(hover.iso) * DAY).getUTCDay()]})
             </b>
-            {tip ? `카드 ${n(tip.cards)}장${tip.decks ? ` · 덱 ${n(tip.decks)}개` : ""}` : "학습 없음"}
+            {tip ? `학습한 카드 ${n(tip.cards)}장${tip.decks ? ` · 덱 ${n(tip.decks)}개` : ""}` : "학습 없음"}
           </span>
         )}
       </div>
@@ -556,7 +548,7 @@ function Heatmap() {
           <thead>
             <tr>
               <th>주 (월요일)</th>
-              <th>카드</th>
+              <th>학습한 카드</th>
             </tr>
           </thead>
           <tbody>
@@ -573,24 +565,6 @@ function Heatmap() {
         </table>
       )}
     </div>
-  );
-}
-
-/** 판정 배지. left: 판정까지 남은 날 (null 이면 아직 셀 기록이 없음) */
-function Verdict({ value, pass, left }: { value: number | null; pass: number; left: number | null }) {
-  if (value === null || left === null || left > 0)
-    return (
-      <span className="metric__verdict">
-        <Icon name="clock" size={14} scaled />
-        {left ? `판정 전 · ${left}일 남음` : "판정 전"}
-      </span>
-    );
-  const ok = value >= pass;
-  return (
-    <span className={`metric__verdict ${ok ? "is-pass" : "is-fail"}`}>
-      <Icon name={ok ? "check-circle" : "alert"} size={14} scaled />
-      합격선 {pct(pass)} {ok ? "넘음" : "아래"}
-    </span>
   );
 }
 
@@ -620,13 +594,13 @@ function Archived({ focus }: { focus: boolean }) {
       const backlog = await api.unarchiveDeck(d.id);
       await load();
       toast({
-        title: `${d.name}${eul(d.name)} 되살렸어요${backlog > 0 ? ` · 밀린 복습 ${n(backlog)}장` : ""}`,
+        title: `${d.name} 보관을 해제했어요${backlog > 0 ? ` · 밀린 복습 ${n(backlog)}장` : ""}`,
         tone: "undo",
         icon: "check-circle",
         action: { label: "덱 열기", onClick: () => nav({ name: "deck", deckId: d.id }) },
       });
     } catch (e) {
-      toast({ title: "되살리지 못했어요", text: errorText(e), tone: "error" });
+      toast({ title: "보관을 해제하지 못했어요", text: errorText(e), tone: "error" });
     } finally {
       setBusy(undefined);
     }
@@ -640,7 +614,7 @@ function Archived({ focus }: { focus: boolean }) {
           {list.length > 0 && <Badge>{n(list.length)}</Badge>}
         </span>
         <span className="t-body-s c-secondary">
-          보관한 덱은 홈과 오늘의 학습에서 빠지고 새 카드도 들어오지 않아요. 되살리면 그동안 쌓인 복습은 밀린 복습으로 돌아와요 (하루 200장까지).
+          보관한 덱은 홈과 오늘의 학습에서 빠져요. 보관을 해제하면 다시 학습에 포함되고, 그동안 쌓인 복습은 밀린 복습으로 올라와요 (앱 전체에서 하루 200장까지).
         </span>
       </header>
       {list.length === 0 && <p className="prefs__empty t-body-s c-tertiary">보관한 덱이 없어요. 시험이 끝난 덱은 덱 메뉴(⋯)에서 보관하면 여기에 모여요.</p>}
@@ -659,7 +633,7 @@ function Archived({ focus }: { focus: boolean }) {
             </span>
           </span>
           <Button variant="ghost" size="M" icon="trash" label="완전히 삭제" className="btn--danger-text" onClick={() => setDeleting(d)} />
-          <Button variant="secondary" size="M" icon="rotate" label="되살리기" busy={busy === d.id} busyLabel="되살리는 중…" onClick={() => restore(d)} />
+          <Button variant="secondary" size="M" icon="rotate" label="보관 해제" busy={busy === d.id} busyLabel="해제하는 중…" onClick={() => restore(d)} />
         </div>
       ))}
       {deleting && (

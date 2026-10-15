@@ -4,6 +4,7 @@ import { api, errorText, type SessionSummary } from "../api";
 import { Badge, Button, Icon, Importance, StatTile } from "../ui";
 import { getCutoff, hourLabel, n, useNav } from "../nav";
 import { SplitLaterChip } from "./StudyParts";
+import { BURY_DAYS, buryReturnDay } from "./Deck";
 import { SplitDialog } from "./Quality";
 import "../styles/done.css";
 
@@ -81,10 +82,10 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
             <span className={`done__folded-icon ${finished ? "done__icon--ok" : ""}`}>
               <Icon name={finished ? "check" : "clock"} size={20} />
             </span>
-            <h2 className="t-title-m">{finished ? "막힌 카드 없이 끝냈어요" : `남은 ${n(remaining)}장은 오늘 안에 이어서 할 수 있어요`}</h2>
+            <h2 className="t-title-m">{finished ? "접어둔 카드가 남지 않았어요" : `남은 ${n(remaining)}장은 오늘 안에 이어서 할 수 있어요`}</h2>
           </header>
           <p className="t-body-s c-secondary">
-            {finished ? "같은 학습에서 두 번 막힌 카드가 없었어요. 내일 계획은 이렇게 잡혀 있어요." : "막힌 카드는 없었어요. 여기서 멈추면 내일 계획은 이렇게 잡혀요."}
+            {finished ? "오늘 예정 학습을 마쳤어요. 내일 예상 분량을 확인해 보세요." : "접어둔 카드가 남지 않았어요. 여기서 멈추면 내일 계획은 이렇게 잡혀요."}
           </p>
           <p className="done__tomorrow">
             <span className="t-body-m c-tertiary">내일</span>
@@ -157,8 +158,8 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
             ))}
           </div>
           <div className="done__actions">
-            <Button className="done__wide" icon="arrow-right" label="다음 학습으로 넘기기" onClick={() => resolve(false)} />
-            <p className="t-caption c-tertiary">3일 뒤 학습 맨 앞에 다시 나와요</p>
+            <Button className="done__wide" icon="arrow-right" label={`${BURY_DAYS}일 뒤 다시 보기`} onClick={() => resolve(false)} />
+            <p className="t-caption c-tertiary">{buryReturnDay()}부터 오늘의 학습에 다시 포함돼요</p>
             <Button
               className="done__wide"
               variant="secondary"

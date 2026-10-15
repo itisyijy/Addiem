@@ -39,8 +39,11 @@ export function ExamDialog({ deckId, notes, cards, title, sub, unit = "노트", 
 
   return (
     <Modal
-      title={title ?? `카드 ${n(cards)}장에 기출 표시`}
-      sub={sub ?? `고른 카드의 노트 ${n(notes.length)}개에 같은 시험을 더해요.`}
+      title={title ?? `선택한 카드 ${n(cards)}장에 기출 시험 표시`}
+      sub={
+        sub ??
+        `같은 내용에서 만들어진 카드들은 기출 표시를 함께 써요(Anki 노트 기준). 고른 카드는 노트 ${n(notes.length)}개에서 나왔어요.`
+      }
       onClose={onClose}
       className="exam-dialog"
     >
@@ -70,12 +73,12 @@ export function ExamDialog({ deckId, notes, cards, title, sub, unit = "노트", 
       {skipped > 0 && name && (
         <p className="exam__note t-caption c-secondary">
           <Icon name="info" size={14} />
-          {n(skipped)}개 {unit}는 이미 "{name}"이 있어서 건너뛰어요. 표시는 {unit}마다 한 번이에요.
+          {n(notes.length)}개 중 {n(skipped)}개는 이미 "{name}" 표시가 있어 건너뛰어요. 표시는 {unit}마다 한 번이에요.
         </p>
       )}
       <div className="modal__actions">
         <Button variant="ghost" label="취소" onClick={onClose} />
-        <Button icon="target" label={notes.length === 1 ? "표시" : `${n(todo.length)}개 ${unit}에 표시`} disabled={!ok} onClick={() => onConfirm(name, todo)} />
+        <Button icon="target" label={notes.length === 1 ? "표시" : `새 시험 표시 ${n(todo.length)}개 추가`} disabled={!ok} onClick={() => onConfirm(name, todo)} />
       </div>
     </Modal>
   );

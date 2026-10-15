@@ -40,8 +40,8 @@ export function KeywordEditor({ keywords, suggestions, onChange, onDismiss }: {
   return (
     <div className="kw">
       <p className="kw__head">
-        <span className="t-label-m">필수 키워드</span>
-        <span className="t-caption c-tertiary">점선은 모범 답안에서 뽑은 제안 · 누르면 확정</span>
+        <span className="t-label-m">핵심어</span>
+        <span className="t-caption c-tertiary">점선은 모범 답안에서 뽑은 제안 · 누르면 등록</span>
       </p>
       <div className="kw__chips">
         {keywords.map((k, i) => (
@@ -56,7 +56,7 @@ export function KeywordEditor({ keywords, suggestions, onChange, onDismiss }: {
           </span>
         ))}
         {suggestions.map((w) => (
-          <button key={w} className="kw-chip kw-chip--suggested t-label-s" aria-label={`${w} 확정`} onClick={() => add(w, "suggested")}>
+          <button key={w} className="kw-chip kw-chip--suggested t-label-s" aria-label={`${w} 등록`} onClick={() => add(w, "suggested")}>
             {w}
             <Icon name="plus" size={12} />
           </button>
@@ -65,8 +65,8 @@ export function KeywordEditor({ keywords, suggestions, onChange, onDismiss }: {
           <input
             ref={addBox}
             className="kw-chip kw-chip--input t-label-s"
-            placeholder="키워드"
-            aria-label="키워드 직접 추가 · Enter 로 넣기"
+            placeholder="핵심어"
+            aria-label="핵심어 직접 추가 · Enter 로 넣기"
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -149,7 +149,7 @@ export function CramHint({ deckIds, dismissible = false }: { deckIds: number[] |
         <span className="t-label-m">시험 전 회독을 할 수 있어요</span>
         <span className="t-caption c-tertiary">
           {plan.name} {plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`} ·{" "}
-          {plan.mode === "mix" ? `이번 회독 ${n(plan.round_seen)} / ${n(plan.learned)}장` : `불안한 카드 ${n(plan.scopes[2])}장`}
+          {plan.mode === "mix" ? `배운 카드 회독 ${n(plan.round_seen)} / ${n(plan.learned)}장` : `불안한 카드 ${n(plan.scopes[2])}장`}
         </span>
       </span>
       <Button variant="secondary" size="M" label="시험 전 회독" onClick={() => nav({ name: "summary", deckIds, cram: true })} />

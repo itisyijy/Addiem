@@ -43,14 +43,17 @@ export function Home() {
 function EmptyHome() {
   const nav = useNav(); // N · I 단축키는 App 에서 전역으로 건다
   useKeymap(); // 설정(E4)에서 키를 바꾸면 칩도 바로 바뀌게
+  const synced = !!useSyncStatus()?.enabled;
   return (
     <main className="a1">
       <span className="pill t-label-s c-secondary">
         <span className="dot dot--local" />
-        모든 데이터는 이 기기에만 저장돼요
+        {synced ? "이 기기에 저장 · Google Drive 동기화 사용 중" : "기본 저장 위치는 이 기기예요"}
       </span>
       <h1 className="t-display-l">아직 학습할 덱이 없어요</h1>
-      <p className="t-body-l c-secondary">덱을 새로 만들거나, 쓰던 Anki 덱을 가져오면 바로 시작할 수 있어요.</p>
+      <p className="t-body-l c-secondary">
+        덱은 학습 카드를 모아 두는 묶음이에요. 과목이나 시험별로 새로 만들거나, 쓰던 Anki 덱을 가져오면 바로 시작할 수 있어요.
+      </p>
       <div className="a1__choices">
         <button className="a1__card a1__card--primary" onClick={() => nav({ name: "newDeck" })}>
           <span className="a1__badge a1__badge--accent c-inverse">
@@ -98,7 +101,7 @@ function ActiveHome({ data, reload }: { data: HomeData; reload: () => void }) {
       <section className="home__today">
         <DatePill />
         <div className="home__gap" />
-        <p className="t-display-l c-tertiary">오늘</p>
+        <p className="t-display-l c-tertiary">오늘 남은 카드</p>
         <BigCount value={total} />
         <div className="home__mix">
           <div className="home__bar">

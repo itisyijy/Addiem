@@ -19,7 +19,7 @@ import "../styles/study.css";
 type Kind = "basic" | "reversed" | "cloze" | "written" | "occlusion" | "list" | "choice";
 const KINDS: [Kind, string][] = [
   ["basic", "질문과 답변"],
-  ["reversed", "앞뒤 둘 다"],
+  ["reversed", "양방향"],
   ["cloze", "빈칸"],
   ["written", "서술형"],
   ["occlusion", "그림 가리기"],
@@ -348,7 +348,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               {ioLink(a)}
               {kind === "reversed" && (
                 <span className="addcard__chips">
-                  <span className="t-caption c-tertiary">만들어질 카드</span>
+                  <span className="t-caption c-tertiary">앞→뒤, 뒤→앞으로 묻는 카드가 각각 생겨요</span>
                   <Badge tone="accent">1 · 앞면 → 뒷면</Badge>
                   <Badge tone="accent">2 · 뒷면 → 앞면</Badge>
                 </span>
@@ -359,7 +359,7 @@ export function AddCard({ deckId }: { deckId: number }) {
             <>
               <span className="addcard__label">
                 <span className="t-label-m">본문</span>
-                <span className="t-caption c-tertiary">단어를 선택하고 빈칸으로 만드세요. 빈칸마다 카드 1장이 생겨요.</span>
+                <span className="t-caption c-tertiary">단어를 선택하고 빈칸으로 만드세요. 빈칸 번호마다 카드 1장이 생기고, 같은 번호는 한 카드에서 함께 물어요.</span>
               </span>
               <RichField
                 key="q-cloze"
@@ -403,7 +403,11 @@ export function AddCard({ deckId }: { deckId: number }) {
           <div className="addcard__importance">
             <span className="addcard__importance-label">
               <span className="t-label-m">중요도</span>
-              <span className="t-caption c-tertiary">비워두면 하위 덱 설정을 따라요 ({LEVEL_LABEL[inherited]})</span>
+              <span className="t-caption c-tertiary">
+                {importance === null
+                  ? `하위 덱 설정을 따르는 중 · ${LEVEL_LABEL[inherited]}`
+                  : `직접 지정 · 같은 칸을 다시 누르면 하위 덱 설정(${LEVEL_LABEL[inherited]})으로`}
+              </span>
             </span>
             <div className="segment segment--boxed">
               {([2, 1, 0] as const).map((lvl) => (

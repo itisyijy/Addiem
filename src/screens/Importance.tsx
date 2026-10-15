@@ -164,7 +164,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
     const key = `${level}:${name}`;
     const split = kids.length < all.length;
     const sug = kids.some(suggested);
-    const caption = `${split ? `${all.length}개 중 ${kids.length}개` : `하위 덱 ${all.length}개`} · ${n(cardsOf(kids))}장`;
+    const caption = `${split ? `하위 덱 ${all.length}개 중 ${LEVEL_LABEL[level]} ${kids.length}개` : `하위 덱 ${all.length}개`} · ${n(cardsOf(kids))}장`;
     const handle = {
       draggable: true,
       onDragStart: (e: DragEvent) => drag(e, all.map((d) => d.id)),
@@ -179,7 +179,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
             <Icon name="chevron-down" size={16} scaled className="c-secondary" />
             <span className="t-label-m">{name}</span>
             <span className="t-caption c-tertiary">{caption}</span>
-            {split && <Badge>나뉨</Badge>}
+            {split && <Badge>중요도 혼합</Badge>}
             {sug && <span className="t-label-s c-accent">제안</span>}
           </button>
           <div className="board__tray-chips">{kids.map((d) => chip(d, d.path.slice(1).join(" · ") || d.label))}</div>
@@ -198,7 +198,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
           <SourceTag key={s} source={s} />
         ))}
         {sug && <span className="t-label-s c-accent">제안</span>}
-        {split && <Badge>나뉨</Badge>}
+        {split && <Badge>중요도 혼합</Badge>}
       </button>,
     ];
   };
@@ -212,7 +212,9 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
       <div className="board__head">
         <div className="deck__title">
           <h1 className="t-title-l">중요도 정하기</h1>
-          <p className="t-body-l c-secondary">태그와 하위 덱 이름으로 먼저 배치했어요. 틀린 것만 옮겨주세요.</p>
+          <p className="t-body-l c-secondary">
+            태그와 하위 덱 이름으로 정한 중요도가 지금 학습에 적용돼요. 신규 카드는 핵심 → 일반 → 보충 순으로 배워요(보충도 학습 범위예요).
+          </p>
         </div>
         <span className="board__legend">
           <span className="chip">
@@ -291,11 +293,12 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
           {isGrouped
             ? "과목을 옮기면 그 안의 하위 덱이 모두 옮겨져요 · 하나만 옮기려면 펼쳐서"
             : "정하지 않은 하위 덱은 일반으로 학습해요 · 카드 한 장만 바꾸려면 카드 목록에서"}
+          {" · 확정한 제안은 자동 제안으로 덮어쓰지 않아요"}
         </span>
         <span className="import__foot-right">
           {error && <span className="t-body-s c-danger">{error}</span>}
-          <Button variant="ghost" label="나중에 하기" onClick={leave} />
-          <Button icon="check" label={next.length ? "확정하고 다음 덱" : "확정하고 덱 열기"} onClick={confirm} />
+          <Button variant="ghost" label="현재 중요도로 계속" onClick={leave} />
+          <Button icon="check" label={next.length ? "제안 확정하고 다음 덱" : "제안 확정하고 덱 열기"} onClick={confirm} />
         </span>
       </div>
     </main>
