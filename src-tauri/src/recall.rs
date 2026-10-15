@@ -299,11 +299,52 @@ pub fn add_choice_card(state: State<AppState>, card: ChoiceNew) -> Res<i64> {
 
 // ------------------------------------------------------------------ 명령: 전용 편집기 (Q24)
 
-/// 추가와 같은 검사 · 같은 값으로 다시 만들고, 저장은 일반 편집과 같은 길 (update_note → save_note_fields)
-/// ponytail: 항목 · 보기는 글자로 다시 쓴다 (Anki 에서 넣은 서식은 빠진다). 지켜야 하면 고치지 않은 칸은 원래 HTML 을 둔다
+/// 편집기에 보인 글자 (special 과 같은 읽기)
+fn view(html: &str) -> String {
+    quality::html_lines(html).join(" ")
+}
+
+/// Q24: 고치지 않은 항목 · 보기 · 칸은 원래 HTML 을 그대로 둔다 (M20 과 같은 생각). 새 값의 글자가 원래 칸의 글자와 같으면 원래 것.
+/// new 는 list_fields · choice_fields 값. 질문 · 추가 설명은 편집기 HTML 이라 건드리지 않는다
+/// ponytail: 항목은 원래 칸을 <br> 로 나눈 조각과 맞춘다. 다른 줄 나눔(div 등)이면 다 같을 때만 지키고, 서식이 <br> 을 넘는 조각은 순서를 바꾸면 태그가 어긋난다
+fn keep_untouched(nt: &str, old: &[String], new: &mut [String]) {
+    let keep = |new: &mut String, old: &str| {
+        if !new.is_empty() && view(old) == view(new) {
+            *new = old.to_string();
+        }
+    };
+    let at = |i: usize| old.get(i).map_or("", String::as_str);
+    if nt == LIST {
+        if quality::html_lines(at(1)) == quality::html_lines(&new[1]) {
+            new[1] = at(1).to_string();
+        } else {
+            let old_items = at(1).replace("<br />", "<br>").replace("<br/>", "<br>");
+            let pieces: Vec<&str> = old_items.split("<br>").collect();
+            new[1] = new[1].split("<br>").map(|t| *pieces.iter().find(|p| view(p) == view(t)).unwrap_or(&t)).collect::<Vec<_>>().join("<br>");
+        }
+        keep(&mut new[2], at(2));
+    } else {
+        for opt in &mut new[1..=MAX_OPTIONS] {
+            if let Some(o) = (1..=MAX_OPTIONS).map(at).find(|o| !opt.is_empty() && view(o) == view(opt)) {
+                *opt = o.to_string();
+            }
+        }
+        keep(&mut new[7], at(7));
+        keep(&mut new[8], at(8));
+    }
+}
+
+fn note_fields(state: &State<AppState>, note_id: i64) -> Res<Vec<String>> {
+    let con = state.db.lock().map_err(err)?;
+    let fields: String = con.query_row("SELECT fields FROM note WHERE id = ?1", [note_id], |r| r.get(0)).map_err(err)?;
+    serde_json::from_str(&fields).map_err(err)
+}
+
+/// 추가와 같은 검사 · 같은 값으로 다시 만들고(고치지 않은 것은 원래 HTML), 저장은 일반 편집과 같은 길 (update_note → save_note_fields)
 #[tauri::command]
 pub fn update_list_note(state: State<AppState>, note_id: i64, question: String, items: Vec<String>, ordered: bool, extra: String) -> Res<()> {
-    let fields = list_fields(&ListNew { deck_id: 0, question, items, ordered, extra, importance: None })?;
+    let mut fields = list_fields(&ListNew { deck_id: 0, question, items, ordered, extra, importance: None })?;
+    keep_untouched(LIST, &note_fields(&state, note_id)?, &mut fields);
     crate::commands::update_note(state, note_id, fields)
 }
 
@@ -317,7 +358,8 @@ pub fn update_choice_note(
     shuffle: bool,
     extra: String,
 ) -> Res<()> {
-    let fields = choice_fields(&ChoiceNew { deck_id: 0, question, options, correct, shuffle, extra, importance: None })?;
+    let mut fields = choice_fields(&ChoiceNew { deck_id: 0, question, options, correct, shuffle, extra, importance: None })?;
+    keep_untouched(CHOICE, &note_fields(&state, note_id)?, &mut fields);
     crate::commands::update_note(state, note_id, fields)
 }
 
@@ -391,6 +433,34 @@ mod tests {
         let g = choice_fields(&c).unwrap();
         assert_eq!((&g[1..4], g[7].as_str(), g[8].as_str()), (&["SYN".to_string(), "ACK &amp; FIN".into(), String::new()][..], "2", "섞지 않음"));
         assert!(check_fields(CHOICE, &names, &g).is_ok());
+    }
+
+    #[test]
+    fn editor_keeps_untouched_html_q24() {
+        let json = |f: &[String]| serde_json::to_string(f).unwrap();
+        // 선택형: 보기3 만 고치면 서식 있는 보기1 · 섞기 칸은 바이트 그대로
+        let names = CHOICE_FIELDS.map(String::from);
+        let old = ["Q", "<b>SYN</b>", "SYN-ACK", "ACK", "", "", "", "2", "<i>섞기</i>", ""].map(String::from);
+        let Some(Special::Choice { question, options, shuffle, extra, .. }) = special(CHOICE, &names, &json(&old)) else { panic!() };
+        let mut texts: Vec<String> = options.into_iter().map(|o| o.1).collect();
+        texts[2] = "ACK & FIN".into();
+        let mut new = choice_fields(&ChoiceNew { deck_id: 0, question, options: texts, correct: vec![1], shuffle, extra, importance: None }).unwrap();
+        keep_untouched(CHOICE, &old, &mut new);
+        assert_eq!(new, ["Q", "<b>SYN</b>", "SYN-ACK", "ACK &amp; FIN", "", "", "", "2", "<i>섞기</i>", ""].map(String::from));
+
+        // 목록: 고친 항목만 글자로, 나머지 조각 · 순서 칸은 원래 HTML
+        let names = LIST_FIELDS.map(String::from);
+        let old = ["Q", "<i>응용</i> 계층<br/>표현 계층<br>세션", "<b>순서대로</b>", ""].map(String::from);
+        let Some(Special::List { question, mut items, ordered, extra }) = special(LIST, &names, &json(&old)) else { panic!() };
+        items[2] = "세션 계층".into();
+        let mut new = list_fields(&ListNew { deck_id: 0, question, items, ordered, extra, importance: None }).unwrap();
+        keep_untouched(LIST, &old, &mut new);
+        assert_eq!((new[1].as_str(), new[2].as_str()), ("<i>응용</i> 계층<br>표현 계층<br>세션 계층", "<b>순서대로</b>"));
+        // 하나도 안 고쳤으면 항목 칸 전체가 그대로 (<br/> · div 줄 나눔도)
+        let old = ["Q", "<div>a</div><div><b>b</b></div>", "순서 없이", ""].map(String::from);
+        let mut new = list_fields(&ListNew { deck_id: 0, question: "Q".into(), items: vec!["a".into(), "b".into()], ordered: false, extra: String::new(), importance: None }).unwrap();
+        keep_untouched(LIST, &old, &mut new);
+        assert_eq!(new, old);
     }
 
     #[test]
