@@ -1252,7 +1252,7 @@ pub fn bury_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     }
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
-    let until = study_day_end_ms(queue::bury_until(study_day(now), false) - 1) + 1;
+    let until = study_day_end_ms(queue::bury_until(study_day(now)) - 1) + 1;
     con.execute(
         &format!("UPDATE card SET buried_until = ?1, buried_reason = 'user', updated_at = ?2 WHERE id IN ({})", id_list(&card_ids)),
         params![until, now],
@@ -1832,7 +1832,7 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
 
     let result = match (action, next) {
         (RatingAction::Bury, _) => {
-            let until = study_day_end_ms(queue::bury_until(today, false) - 1) + 1;
+            let until = study_day_end_ms(queue::bury_until(today) - 1) + 1;
             tx.execute(
                 "UPDATE session_card_state SET is_buried = 1, buried_at = ?3, buried_reason = 'two_again' WHERE session_id = ?1 AND card_id = ?2",
                 params![session_id, card_id, now],
@@ -1871,7 +1871,7 @@ pub fn bury_card(state: State<AppState>, session_id: i64, card_id: i64) -> Res<(
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
     let undo = snapshot(&con, session_id, card_id)?;
-    let until = study_day_end_ms(queue::bury_until(study_day(now), false) - 1) + 1;
+    let until = study_day_end_ms(queue::bury_until(study_day(now)) - 1) + 1;
     con.execute(
         "INSERT INTO session_card_state (session_id, card_id, is_buried, buried_at, buried_reason) VALUES (?1, ?2, 1, ?3, 'user')
          ON CONFLICT(session_id, card_id) DO UPDATE SET is_buried = 1, buried_at = ?3, buried_reason = 'user'",

@@ -246,9 +246,9 @@ def on_rating(session_again_count: int, rating: int) -> tuple[str, bool]:
 def bury_until(today: date, user_choice: str) -> date | None:
     """세션 말에 사용자가 고른 결과 -> 언제 다시 보여줄 것인가.
 
-    user_choice: 'today' 오늘 다시 | 'later' 다음 학습으로
+    user_choice: 'today' 오늘 다시 (기한을 비워 바로 다시 나온다) | 'later' 다음 학습으로
     """
-    return today if user_choice == "today" else today + timedelta(days=BURY_RETURN_DAYS)
+    return None if user_choice == "today" else today + timedelta(days=BURY_RETURN_DAYS)
 
 
 # ================================================================== 테스트
@@ -364,7 +364,7 @@ def test():
     assert on_rating(1, 1) == ("bury", False), "2회차 Again은 보류, 스케줄러에 안 넘김"
     assert on_rating(1, 3) == ("continue", True), "Good이면 카운트와 무관"
     ok += 3
-    assert bury_until(T, "today") == T
+    assert bury_until(T, "today") is None, "오늘 다시는 기한을 비운다 (앱과 같다)"
     assert bury_until(T, "later") == T + timedelta(days=BURY_RETURN_DAYS)
     ok += 2
 
