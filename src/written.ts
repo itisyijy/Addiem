@@ -47,13 +47,26 @@ export type CramPlan = {
   /** 혼합 회독: 배운 카드 · 이번 회독에서 본 카드 */
   learned: number;
   round_seen: number;
+  /** 오늘 이미 일정에 반영해서 이번 분량에서 빼는 카드 */
+  today_seen: number;
 };
 
 /** 혼합 회독 한 자리. weak: 취약 카드로 끼운 자리면 이유 */
 export type MixCard = { id: number; weak: string | null };
 export type MixSummary = { fed: number; learned: number; round_seen: number; hot: { deck_id: number; name: string; again: number } | null };
 /** 혼합 회독 한 번 (P1 → P2 → P3). before: 시작 전 값 (P3 의 "→" 비교) */
-export type MixRun = { deckId: number; name: string; cards: MixCard[]; dueToday: number[]; before: { seen: number; learned: number; today: number } };
+export type MixRun = {
+  deckId: number;
+  name: string;
+  cards: MixCard[];
+  dueToday: number[];
+  before: { seen: number; learned: number; today: number };
+  /** P3 [이어서 N장]이 같은 비율 · 분량으로 다음 묶음을 만든다 */
+  every: number;
+  size: number;
+  /** 이 묶음을 시작한 시각 (P3 이 이 뒤 기록만 센다) */
+  startedAt: number;
+};
 /** P2 에서 센 것 (P3) */
 export type MixStats = { full: [number, number]; weak: [number, number]; again: [number, number]; due: number };
 
@@ -73,8 +86,8 @@ export const written = {
 
 /** 8.4 기출 (exam.rs). target "note" 면 노트 id, "segment" 면 자료 구간 id */
 export const exam = {
-  /** 시험 하나를 더한다. 같은 시험이 이미 있는 것은 건너뛴다. 바뀐 수 */
-  mark: (target: "note" | "segment", ids: number[], name: string | null) => invoke<number>("mark_exam", { target, ids, exam: name }),
+  /** 시험 하나를 더한다. 같은 시험이 이미 있는 것은 건너뛴다. "card" 는 카드의 노트에. 바뀐 수 */
+  mark: (target: "note" | "segment" | "card", ids: number[], name: string | null) => invoke<number>("mark_exam", { target, ids, exam: name }),
   /** 그대로 쓰기: 빼기 (hits null) · 되돌리기 */
   set: (target: "note" | "segment", states: ExamState[]) => invoke<void>("set_exam", { target, states }),
   list: (deckId: number | null) => invoke<{ name: string; cards: number }[]>("exam_list", { deckId }),
@@ -92,7 +105,8 @@ export const cram = {
   mixStart: (deckId: number, every: number, size: number) =>
     invoke<{ session_id: number; cards: MixCard[]; due_today: number[] }>("mix_start", { deckId, every, size }),
   mixRestart: (deckId: number) => invoke<void>("mix_restart", { deckId }),
-  mixSummary: (sessionId: number, deckId: number) => invoke<MixSummary>("mix_summary", { sessionId, deckId }),
+  /** since: 이번 묶음을 시작한 시각 (같은 날 이어 쓴 세션의 앞 묶음은 빼고 센다) */
+  mixSummary: (sessionId: number, deckId: number, since: number) => invoke<MixSummary>("mix_summary", { sessionId, deckId, since }),
 };
 
 // ---------------------------------------------------------------- G3 "나중에 볼 제안" (이 기기에서만)

@@ -343,12 +343,15 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
                 )}
               </div>
               <Progress label="본 카드" value={seen} total={d.total} pct={d.seen_pct} color="ink" />
-              <Progress label="핵심 카드 학습률" value={d.core_seen} total={d.core_total} pct={d.core_learned_pct} color="core" />
+              {d.core_total > 0 ? (
+                <Progress label="핵심 카드 학습률" value={d.core_seen} total={d.core_total} pct={d.core_learned_pct} color="core" />
+              ) : (
+                <p className="t-body-s c-tertiary">핵심 카드 없음 · 중요도 조정에서 정할 수 있어요</p>
+              )}
               {/* H1. 날짜별 분량과 쓸 수 있는 시간 */}
               <Button variant="ghost" size="M" icon="calendar" label="계획 보기" className="deck__plan" onClick={() => nav({ name: "plan", deckId: d.id })} />
-              {/* P0 시험 전 회독 입구 (목표일 14일 전부터) · N4 기출 한 줄 */}
+              {/* P0 시험 전 회독 입구 (목표일 14일 전부터) */}
               <CramHint deckIds={[d.id]} />
-              <ExamLine deckId={d.id} />
             </section>
           ) : (
             showSuggestion && (
@@ -397,6 +400,9 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
         </span>
         <Button variant="ghost" size="M" icon="chevron-right" label="중요도 조정" onClick={() => nav({ name: "importance", deckId: d.id })} />
       </section>
+
+      {/* N4 기출 한 줄 (목표일과 상관없이, 표시가 없으면 숨긴다) */}
+      <ExamLine deckId={d.id} />
 
       <WeakStrip d={d} />
 

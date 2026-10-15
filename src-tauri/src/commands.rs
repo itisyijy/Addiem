@@ -926,6 +926,8 @@ pub struct NoteEdit {
     values: Vec<String>,
     /// 필드마다 앞면 템플릿에 쓰이는가 (툴바 있는 편집기로 보여준다)
     front: Vec<bool>,
+    /// 8.4 N1 기출 줄
+    exam: crate::exam::ExamState,
 }
 
 fn note_is_cloze(con: &Connection, note_id: i64) -> Res<bool> {
@@ -941,12 +943,16 @@ fn note_is_cloze(con: &Connection, note_id: i64) -> Res<bool> {
 #[tauri::command]
 pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let con = state.db.lock().map_err(err)?;
-    let (fields, names, type_name, qfmt): (String, String, String, String) = con
+    let (fields, names, type_name, qfmt, exam): (String, String, String, String, crate::exam::ExamState) = con
         .query_row(
-            "SELECT n.fields, nt.fields, nt.name, (SELECT group_concat(t.qfmt, ' ') FROM card_template t WHERE t.note_type_id = nt.id)
+            "SELECT n.fields, nt.fields, nt.name, (SELECT group_concat(t.qfmt, ' ') FROM card_template t WHERE t.note_type_id = nt.id),
+                    n.exam_hits, n.exam_names
              FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1",
             [note_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?.unwrap_or_default())),
+            |r| {
+                let exam = crate::exam::ExamState::of(note_id, r.get(4)?, r.get(5)?);
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?.unwrap_or_default(), exam))
+            },
         )
         .map_err(err)?;
     let names: Vec<String> = serde_json::from_str(&names).map_err(err)?;
@@ -966,7 +972,7 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
         .iter()
         .map(|n| [format!("{{{{{n}}}}}"), format!(":{n}}}}}"), format!("{{{{#{n}}}}}"), format!("{{{{^{n}}}}}")].iter().any(|t| qfmt.contains(t)))
         .collect();
-    Ok(NoteEdit { note_id, kind: kind.into(), type_name, names, values, front })
+    Ok(NoteEdit { note_id, kind: kind.into(), type_name, names, values, front, exam })
 }
 
 /// 필드를 고친다. 빈칸 노트면 빈칸 번호에 맞춰 카드를 만들거나 지운다 (지운 카드의 기록은 review_log 에 남는다)
@@ -1042,6 +1048,26 @@ pub struct CardRow {
     buried: bool,
     /// 8.4 노트의 기출 (N2 같은 시험 건너뛰기 · 되돌리기)
     exam: crate::exam::ExamState,
+    /// M4 그림 가리기 카드 (축소 그림 · 편집기 칸 선택)
+    occlusion: Option<IoPos>,
+}
+
+/// 그림 가리기 카드의 자리 (M3 배지 "그림 가리기 · n/N", M4 행)
+#[derive(Serialize)]
+pub struct IoPos {
+    /// 칸 번호 cN (편집기 focus)
+    ordinal: u32,
+    /// 노트 카드 중 몇 번째 (1부터)
+    n: u32,
+    /// 노트의 카드 수
+    count: u32,
+}
+
+/// IO 템플릿 카드면 자리. 별칭 c(card) 의 열 (template_ord, 같은 노트 카드 수, 이 카드까지 수)
+const IO_POS: &str = "(SELECT count(*) FROM card x WHERE x.note_id = c.note_id), (SELECT count(*) FROM card x WHERE x.note_id = c.note_id AND x.template_ord <= c.template_ord)";
+
+fn io_pos(qfmt: Option<&str>, ord: u32, count: u32, n: u32) -> Option<IoPos> {
+    qfmt.is_some_and(crate::occlusion::is_template).then_some(IoPos { ordinal: ord + 1, n, count })
 }
 
 #[derive(Serialize)]
@@ -1102,7 +1128,7 @@ pub fn list_cards(
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
-                    c.buried_until IS NOT NULL, c.template_ord, nt.name, t.qfmt, t.afmt, n.exam_hits, n.exam_names
+                    c.buried_until IS NOT NULL, c.template_ord, nt.name, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS}
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
@@ -1118,12 +1144,18 @@ pub fn list_cards(
             let qfmt: Option<String> = r.get(12)?;
             let afmt: Option<String> = r.get(13)?;
             let rendered = render_fields(&field_names, &nt_name, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?);
+            let occlusion = io_pos(qfmt.as_deref(), r.get(10)?, r.get(16)?, r.get(17)?);
+            // 그림 가리기 답은 칸 이름(질문 칸에 보인다)이라 답변 칸에는 덧붙임(Back Extra, 4번째 필드)만
+            let answer = match occlusion {
+                Some(_) => serde_json::from_str::<Vec<String>>(&fields).ok().and_then(|v| v.get(3).map(|x| render::strip_tags(x))).unwrap_or_default(),
+                None => render::strip_tags(answer_part(&rendered.back)),
+            };
             Ok(CardRow {
                 id: r.get(0)?,
                 note_id: r.get(1)?,
                 deck_path: path_of(r.get(2)?, &by_id),
                 question: render::strip_tags(&rendered.front),
-                answer: render::strip_tags(answer_part(&rendered.back)),
+                answer,
                 state: r.get(4)?,
                 importance: r.get(5)?,
                 own_importance: r.get(6)?,
@@ -1131,6 +1163,7 @@ pub fn list_cards(
                 lapses: r.get(8)?,
                 buried: r.get(9)?,
                 exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
+                occlusion,
             })
         })
         .map_err(err)?
@@ -1219,7 +1252,7 @@ pub fn bury_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     }
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
-    let until = study_day_end_ms(queue::bury_until(study_day(now), false) - 1) + 1;
+    let until = study_day_end_ms(queue::bury_until(study_day(now)) - 1) + 1;
     con.execute(
         &format!("UPDATE card SET buried_until = ?1, buried_reason = 'user', updated_at = ?2 WHERE id IN ({})", id_list(&card_ids)),
         params![until, now],
@@ -1504,6 +1537,8 @@ pub struct BoardDeck {
 #[tauri::command]
 pub fn importance_board(state: State<AppState>, deck_id: i64) -> Res<Vec<BoardDeck>> {
     let con = state.db.lock().map_err(err)?;
+    // N3 기출 근거는 카드 이동 · 자료 연결 · 기출 표시로 바뀐다. 볼 때 맞춘다 (바뀐 덱만 고친다)
+    crate::exam::suggest_all(&con)?;
     let decks = load_decks(&con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let base = path_of(deck_id, &by_id);
@@ -1555,6 +1590,8 @@ pub struct QueueSummary {
     new_decks: usize,
     notes: Vec<String>,
     target: Option<TargetInfo>,
+    /// 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수. D1 "시험 전 회독에서 N장을 이미 봤어요" (P9)
+    mixed_today: i64,
 }
 
 /// 목표일이 가장 가까운 덱. D1 "시험이 12일 남아 핵심 신규를 먼저" 문구에 쓴다
@@ -1596,6 +1633,17 @@ pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     };
     let ordered = plan.ordered();
     let roots: std::collections::HashSet<i64> = ordered.iter().map(|c| root_of(c.deck_id, &by_id)).collect();
+    let mixed_today: i64 = con
+        .query_row(
+            &format!(
+                "SELECT count(DISTINCT r.card_id) FROM review_log r JOIN study_session s ON s.id = r.session_id JOIN card c ON c.id = r.card_id
+                 WHERE s.mode = 'mix' AND r.fed_to_scheduler = 1 AND r.reviewed_at >= ?1 AND c.deck_id IN ({})",
+                if wanted.is_empty() { "-1".into() } else { id_list(&wanted) }
+            ),
+            [today_start_ms(today)],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
     Ok(QueueSummary {
         total: ordered.len(),
         learning: plan.learning.len(),
@@ -1612,6 +1660,7 @@ pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
         new_decks: plan.per_deck_new_target.values().filter(|n| **n > 0).count(),
         notes: plan.notes.clone(),
         target,
+        mixed_today,
     })
 }
 
@@ -1664,6 +1713,8 @@ pub struct CardView {
     deck_path: Vec<String>,
     importance: i64,
     state: String,
+    /// M3 그림 가리기 배지
+    occlusion: Option<IoPos>,
 }
 
 #[tauri::command]
@@ -1673,10 +1724,12 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
     let decks = load_decks(&con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     con.query_row(
-        "SELECT c.id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, '')
+        &format!(
+            "SELECT c.id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS}
          FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
-         LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{cloze:%' THEN 0 ELSE c.template_ord END)
-         WHERE c.id = ?1",
+         LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
+         WHERE c.id = ?1"
+        ),
         [card_id],
         |r| {
             let fields: String = r.get(1)?;
@@ -1693,6 +1746,7 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
                 deck_path: path_of(r.get(6)?, &by_id),
                 importance: r.get(7)?,
                 state: r.get(8)?,
+                occlusion: io_pos(q.as_deref(), r.get(5)?, r.get(11)?, r.get(12)?),
             })
         },
     )
@@ -1778,7 +1832,7 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
 
     let result = match (action, next) {
         (RatingAction::Bury, _) => {
-            let until = study_day_end_ms(queue::bury_until(today, false) - 1) + 1;
+            let until = study_day_end_ms(queue::bury_until(today) - 1) + 1;
             tx.execute(
                 "UPDATE session_card_state SET is_buried = 1, buried_at = ?3, buried_reason = 'two_again' WHERE session_id = ?1 AND card_id = ?2",
                 params![session_id, card_id, now],
@@ -1817,7 +1871,7 @@ pub fn bury_card(state: State<AppState>, session_id: i64, card_id: i64) -> Res<(
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
     let undo = snapshot(&con, session_id, card_id)?;
-    let until = study_day_end_ms(queue::bury_until(study_day(now), false) - 1) + 1;
+    let until = study_day_end_ms(queue::bury_until(study_day(now)) - 1) + 1;
     con.execute(
         "INSERT INTO session_card_state (session_id, card_id, is_buried, buried_at, buried_reason) VALUES (?1, ?2, 1, ?3, 'user')
          ON CONFLICT(session_id, card_id) DO UPDATE SET is_buried = 1, buried_at = ?3, buried_reason = 'user'",

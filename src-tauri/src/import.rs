@@ -481,6 +481,7 @@ pub fn import_json(state: State<AppState>, text: String, source: String, deck_id
     }
     suggest_from_tags(&tx, &card_tags)?;
     crate::exam::fill_from_tags(&tx).map_err(err)?;
+    crate::exam::suggest_all(&tx)?;
 
     let roots = roots_of(&tx, &used)?;
     let skipped = issues.iter().filter(|i| i.severity == "skipped").count();
@@ -1353,6 +1354,7 @@ fn run_import_selected(
     emit("cards", total, total);
     suggest_from_tags(&tx, &card_tags)?;
     crate::exam::fill_from_tags(&tx).map_err(err)?;
+    crate::exam::suggest_all(&tx)?;
 
     // 미디어. 새로 쓴 파일은 written 에 남겨, 실패하거나 멈추면 지운다
     let dir = media_dir(&state.data_dir);

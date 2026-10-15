@@ -150,11 +150,21 @@ function BannerText({ title, sub, children }: { title: string; sub: string; chil
   );
 }
 
-const TAG: Record<string, string> = { material: "자료", tag: "태그", rule: "이름 규칙" };
+const TAG: Record<string, string> = { exam: "기출", material: "자료", tag: "태그", rule: "이름 규칙" };
 
-/** 칩의 출처 태그 (I3): 자료(노랑) / 태그 / 이름 규칙. 모델이 있을 때만 붙인다 */
+/**
+ * 제안의 출처들. 데이터 근거 제안(material)은 근거 줄 머리로 나눈다: "기출 · …" 은 기출(N3), 나머지는 자료(I3).
+ * 'exam' 은 저장 값이 아니라 화면 값이다 (exam.rs suggest_all)
+ */
+export function sourcesOf(source: string, reason: string | null): string[] {
+  if (source !== "material") return [source];
+  const lines = (reason ?? "").split("\n").filter(Boolean);
+  return [...new Set(lines.length ? lines.map((l) => (l.startsWith("기출 · ") ? "exam" : "material")) : ["material"])];
+}
+
+/** 칩의 출처 태그 (I3 · N3): 기출 · 자료(노랑) / 태그 / 이름 규칙. 태그 · 이름 규칙은 모델이 있을 때만 붙인다 */
 export function SourceTag({ source }: { source: string }) {
   const model = useModel();
-  if (!TAG[source] || (source !== "material" && !model?.ready)) return null;
+  if (!TAG[source] || (source !== "material" && source !== "exam" && !model?.ready)) return null;
   return <span className={`src-tag src-tag--${source} t-label-s`}>{TAG[source]}</span>;
 }

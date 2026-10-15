@@ -4,11 +4,12 @@
 //! (노트는 태그에서 채운다).
 //! 쓰는 곳은 두 군데이고 둘 다 한 줄로 설명된다:
 //!   - 큐: 같은 중요도 안에서 기출 카드를 먼저 (queue.rs)
-//!   - 자료 기반 중요도 제안(I3): 기출 카드는 강조 구간 하나만큼 더한다 (source.rs)
+//!   - 중요도 제안(N3 · B4): 하위 덱의 기출 비율이 덱 안 상위 25% 이고 기출 카드가 5장 이상이면 핵심 (suggest_all)
 
 use crate::commands::AppState;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tauri::State;
 
 type Res<T> = Result<T, String>;
@@ -22,8 +23,12 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 pub const IS_EXAM: &str = "(COALESCE(n.exam_hits, 0) > 0 OR EXISTS (SELECT 1 FROM source_link xl JOIN source_segment xs ON xs.id = xl.segment_id
      WHERE xl.card_id = c.id AND xl.method != 'rejected' AND xs.exam_hits > 0))";
 
-/// 자료 기반 중요도 제안에서 기출 카드 한 장에 더하는 값. 강조 구간(하이라이트·밑줄·붉은 글씨) 하나와 같다
-pub const EXAM_WEIGHT: f64 = 3.0;
+/// N3 핵심 제안: 덱 안 기출 비율 상위 이 비율 (올림, 같은 비율은 함께)
+const TOP_SHARE: f64 = 0.25;
+/// N3 핵심 제안: 기출 카드가 이보다 적은 하위 덱은 비율이 높아도 제안하지 않는다 (한두 장으로 핵심이 되지 않게)
+const MIN_CARDS: i64 = 5;
+/// 근거 줄 머리. 중요도 근거(importance_reason)는 줄마다 "기출 · …" / "자료 · …" (화면이 출처 태그를 줄에서 읽는다)
+pub const REASON_HEAD: &str = "기출 · ";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct ExamState {
@@ -102,13 +107,24 @@ pub fn set(con: &Connection, target: &str, states: &[ExamState]) -> Res<()> {
     Ok(())
 }
 
+/// target "card" 는 카드의 노트에 단다 (자료 구간 표시를 연결된 카드에 퍼뜨릴 때, N3)
 #[tauri::command]
 pub fn mark_exam(state: State<AppState>, target: String, ids: Vec<i64>, exam: Option<String>) -> Res<usize> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
+    let (target, ids) = if target == "card" { ("note".to_string(), notes_of(&tx, &ids)?) } else { (target, ids) };
     let n = mark(&tx, &target, &ids, exam.as_deref())?;
+    suggest_all(&tx)?;
     tx.commit().map_err(err)?;
     Ok(n)
+}
+
+/// 카드들의 노트 (한 번씩)
+fn notes_of(con: &Connection, card_ids: &[i64]) -> Res<Vec<i64>> {
+    let list = card_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = con.prepare(&format!("SELECT DISTINCT note_id FROM card WHERE id IN ({}) ORDER BY note_id", if list.is_empty() { "-1" } else { &list })).map_err(err)?;
+    let rows = st.query_map([], |r| r.get(0)).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
 }
 
 #[tauri::command]
@@ -116,6 +132,7 @@ pub fn set_exam(state: State<AppState>, target: String, states: Vec<ExamState>) 
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
     set(&tx, &target, &states)?;
+    suggest_all(&tx)?;
     tx.commit().map_err(err)
 }
 
@@ -195,6 +212,84 @@ pub fn exam_summary(state: State<AppState>, deck_id: i64) -> Res<ExamSummary> {
         unseen: rows.iter().filter(|r| r.3).count(),
         card_ids: rows.iter().map(|r| r.0).collect(),
     })
+}
+
+// ------------------------------------------------------------------ N3 중요도 제안
+
+/// (덱, 카드 수, 기출 카드 수, 2회 이상 카드 수)
+type DeckExam = (i64, i64, i64, i64);
+
+/// 덱마다 기출 카드 수. 기출 = IS_EXAM (노트 표시 · 기출 구간과 이은 카드). 2회 이상은 노트 표시 횟수
+fn deck_counts(con: &Connection, ids: &str) -> Res<Vec<DeckExam>> {
+    let mut st = con
+        .prepare(&format!(
+            "SELECT c.deck_id, count(*), sum(CASE WHEN {IS_EXAM} THEN 1 ELSE 0 END), sum(CASE WHEN COALESCE(n.exam_hits, 0) >= 2 THEN 1 ELSE 0 END)
+             FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN ({ids}) GROUP BY c.deck_id ORDER BY c.deck_id"
+        ))
+        .map_err(err)?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
+/// 덱 안(카드가 직접 든 덱끼리) 기출 비율 상위 25% 이면서 기출 카드 5장 이상인 덱 → 근거 한 줄.
+/// 덱이 하나뿐이면 견줄 곳이 없어 제안하지 않는다. 같은 비율은 함께 들어간다
+fn picks(rows: &[DeckExam]) -> HashMap<i64, String> {
+    let ratio = |r: &DeckExam| r.2 as f64 / r.1.max(1) as f64;
+    let mut v: Vec<&DeckExam> = rows.iter().filter(|r| r.1 > 0).collect();
+    if v.len() < 2 {
+        return HashMap::new();
+    }
+    v.sort_by(|a, b| ratio(b).total_cmp(&ratio(a)).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+    let top = ((v.len() as f64) * TOP_SHARE).ceil() as usize;
+    let cut = ratio(v[top - 1]);
+    v.into_iter()
+        .filter(|r| r.2 >= MIN_CARDS && ratio(r) >= cut && ratio(r) > 0.0)
+        .map(|r| {
+            let twice = if r.3 > 0 { format!(" (2회 이상 {}장)", r.3) } else { String::new() };
+            (r.0, format!("{REASON_HEAD}이 하위 덱 카드 {}장 중 {}장에 기출 표시{twice}", r.1, r.2))
+        })
+        .collect()
+}
+
+/// N3 기출 근거를 하위 덱 중요도 제안에 맞춘다 (최상위 덱마다). 확정(user) · 태그 · 이름 규칙 제안은 덮지 않는다.
+/// 근거는 importance_source 'material'(데이터에서 나온 제안)로 남기고 줄 머리로 기출 · 자료를 가른다:
+/// 'exam' 값을 새로 넣으면 deck 표의 CHECK 를 바꿔야 하고(표 다시 만들기), 동기화로 받은 옛 기기가 그 값을 넣지 못한다.
+///   - 기본값 덱이 기준을 넘으면 핵심 + 기출 줄
+///   - 자료 제안이 핵심이면 기출 줄을 앞에 더한다 (근거 2가지). 자료 제안이 핵심이 아니면 기출이 이긴다 (자료 줄은 버린다)
+///   - 기준 밑으로 내려가면 기출 줄만 뺀다. 남는 줄이 없으면 기본값으로
+///
+/// 바뀐 행만 고친다 (동기화 변경 기록이 불지 않게). 고친 덱 수
+pub fn suggest_all(con: &Connection) -> Res<usize> {
+    let decks = crate::commands::load_decks(con)?;
+    let mut changed = 0;
+    for root in decks.iter().filter(|d| d.parent_id.is_none()) {
+        let ids = crate::commands::descendants(root.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let picks = picks(&deck_counts(con, &ids)?);
+        let mut st = con
+            .prepare(&format!("SELECT id, importance, importance_source, importance_reason FROM deck WHERE id IN ({ids}) AND importance_source IN ('default', 'material')"))
+            .map_err(err)?;
+        let rows: Vec<(i64, i64, String, Option<String>)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+        for (id, level, source, reason) in rows {
+            let material: Vec<&str> = reason.as_deref().unwrap_or_default().lines().filter(|l| !l.is_empty() && !l.starts_with(REASON_HEAD)).collect();
+            let want: (i64, &str, Option<String>) = match (picks.get(&id), source.as_str()) {
+                (Some(e), "material") if level == 2 && !material.is_empty() => (2, "material", Some(format!("{e}\n{}", material.join("\n")))),
+                (Some(e), _) => (2, "material", Some(e.clone())),
+                (None, "material") if material.is_empty() => (1, "default", None),
+                (None, "material") => (level, "material", Some(material.join("\n"))),
+                (None, _) => continue,
+            };
+            if want != (level, source.as_str(), reason.clone()) {
+                con.execute(
+                    "UPDATE deck SET importance = ?2, importance_source = ?3, importance_reason = ?4 WHERE id = ?1",
+                    params![id, want.0, want.1, want.2],
+                )
+                .map_err(err)?;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
 }
 
 // ------------------------------------------------------------------ 가져오기의 기출 태그

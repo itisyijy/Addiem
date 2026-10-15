@@ -1,7 +1,8 @@
 // M 그림 가리기: M2 가리기 편집기 · M1 그림 미리보기 · 카드 편집(E)에서 여는 편집기
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { api, errorText } from "../api";
-import { Button, Icon } from "../ui";
+import { Badge, Button, Icon } from "../ui";
+import { plainText } from "../cardHtml";
 import { n, useOverlayScope } from "../nav";
 import { Modal } from "./NewDeck";
 import { boxCount, labelOf, naturalSize, occlusionApi, ordinalsOf, storeImage, type OcclusionNote, type Picture, type Shape } from "../occlusion";
@@ -49,6 +50,44 @@ export function OcclusionPicture({ url, shapes, hideAll, ask, className = "" }: 
   );
 }
 
+// ---------------------------------------------------------------- M4 카드 목록 행
+
+type Thumb = { url: string; shapes: Shape[] };
+const thumbs = new Map<number, Promise<Thumb>>(); // 노트 id → 그림 · 칸. 목록에 같은 노트 카드가 여러 장이라 한 번만 읽는다
+const thumbOf = (noteId: number) => {
+  if (!thumbs.has(noteId))
+    thumbs.set(
+      noteId,
+      occlusionApi.note(noteId).then(async (o) => ({ url: o.image ? await api.readMedia(o.image).catch(() => "") : "", shapes: o.shapes })),
+    );
+  return thumbs.get(noteId)!;
+};
+
+/** M4 행의 질문 칸: 120px 축소 그림(묻는 칸만 파랑) · "그림 가리기 · n/N" · 칸 이름 · 질문 */
+export function OcclusionRow({ noteId, pos, question }: { noteId: number; pos: { ordinal: number; n: number; count: number }; question: string }) {
+  const [t, setT] = useState<Thumb | null>(null);
+  useEffect(() => {
+    let live = true;
+    thumbOf(noteId).then((x) => live && setT(x), () => thumbs.delete(noteId));
+    return () => void (live = false);
+  }, [noteId]);
+  const label = t ? labelOf(t.shapes, pos.ordinal) : "";
+  return (
+    <span className="io-row">
+      <span className="io-row__thumb">{t?.url && <OcclusionPicture url={t.url} shapes={t.shapes} hideAll={false} ask={pos.ordinal} className="io--thumb" />}</span>
+      <span className="io-row__text">
+        <span className="t-body-m io-row__label">{label || `칸 ${n(pos.ordinal)}`}</span>
+        <span className="io-row__head">
+          <Badge tone="accent">
+            그림 가리기 · {n(pos.n)}/{n(pos.count)}
+          </Badge>
+          <span className="t-caption c-tertiary">{question}</span>
+        </span>
+      </span>
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------- M2 편집기
 
 type EShape = Shape & { key: number };
@@ -61,7 +100,10 @@ type Drag =
 const strip = (list: EShape[]): Shape[] => list.map(({ key: _key, ...s }) => s);
 const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
-export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHideAll, knownMax = 0, reviewed = [], focus, onDone, onCancel, onReplaceImage }: {
+/** 카드 편집(E)에서 고치는 질문(머리말) · 추가 설명. 글자만 고친다 (고치지 않으면 원래 HTML 그대로) */
+export type IoTexts = { header: string; backExtra: string };
+
+export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHideAll, knownMax = 0, reviewed = [], focus, texts, onDone, onCancel, onReplaceImage }: {
   /** 비었으면(url "") 가져온 노트에 그림이 없는 것 (M5) */
   picture: Picture;
   shapes: Shape[];
@@ -72,7 +114,9 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   reviewed?: number[];
   /** 이 번호의 칸을 고른 채로 연다 (M4) */
   focus?: number;
-  onDone: (shapes: Shape[], hideAll: boolean) => void;
+  /** 있으면 패널에 질문 · 추가 설명 칸 (이미 있는 노트를 E 로 열 때) */
+  texts?: IoTexts;
+  onDone: (shapes: Shape[], hideAll: boolean, texts?: IoTexts) => void;
   onCancel: () => void;
   onReplaceImage?: () => void;
 }) {
@@ -86,6 +130,8 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   const [naming, setNaming] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
   const [ask, setAsk] = useState<null | "leave" | "reviewed">(null);
+  const [header, setHeader] = useState(() => plainText(texts?.header ?? ""));
+  const [extra, setExtra] = useState(() => plainText(texts?.backExtra ?? ""));
   const past = useRef<EShape[][]>([]);
   const future = useRef<EShape[][]>([]);
   const maxSeen = useRef(Math.max(knownMax, 0, ...initial.map((s) => s.ordinal)));
@@ -294,7 +340,9 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   const finish = (force = false) => {
     if (!groups.length) return;
     if (!force && removed().length) return setAsk("reviewed");
-    onDone(strip(shapes), hideAll);
+    // 글자를 고치지 않았으면 원래 HTML(서식 · 그림)을 그대로 둔다
+    const keep = (text: string, html: string) => (text === plainText(html) ? html : escapeLines(text));
+    onDone(strip(shapes), hideAll, texts && { header: keep(header, texts.header), backExtra: keep(extra, texts.backExtra) });
   };
   const zoomBy = (f: number) => setZoom((z) => Math.min(4, Math.max(0.1, z * f)));
 
@@ -506,6 +554,18 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
           <Button variant="secondary" size="M" icon="layers" label="묶기" shortcut="Ctrl G" disabled={selectedOrdinals.length < 2} onClick={group} />
           <Button variant="ghost" size="M" label="풀기" disabled={!sel.length} onClick={ungroup} />
         </div>
+        {texts && (
+          <>
+            <label className="ioe__text">
+              <span className="t-label-s c-secondary">질문</span>
+              <textarea className="t-body-s" rows={2} value={header} placeholder="비워 두면 “가린 곳에 들어갈 말은?”" onChange={(e) => setHeader(e.target.value)} />
+            </label>
+            <label className="ioe__text">
+              <span className="t-label-s c-secondary">추가 설명 · 답을 본 뒤에만 보여요</span>
+              <textarea className="t-body-s" rows={2} value={extra} onChange={(e) => setExtra(e.target.value)} />
+            </label>
+          </>
+        )}
         <span className="t-label-s c-secondary">단축키</span>
         <dl className="ioe__keys t-caption c-secondary">
           {[
@@ -555,13 +615,16 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   );
 }
 
+const escapeLines = (s: string) =>
+  s.trim().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+
 function shift<T extends Shape>(s: T, dx: number, dy: number): T {
   return { ...s, left: s.left + dx, top: s.top + dy, points: s.points.map(([x, y]) => [x + dx, y + dy] as [number, number]) };
 }
 
 // ---------------------------------------------------------------- 카드 편집 (E) · 카드 목록에서 여는 편집기
 
-/** 가져온 노트처럼 이미 있는 그림 가리기 노트. 칸만 고친다 (머리말 · 덧붙임은 그대로) */
+/** 가져온 노트처럼 이미 있는 그림 가리기 노트. 칸 · 질문(머리말) · 추가 설명(덧붙임)을 고친다 */
 export function OcclusionEdit({ noteId, focus, onClose, onSaved }: { noteId: number; focus?: number; onClose: () => void; onSaved: () => void }) {
   const [note, setNote] = useState<OcclusionNote | null>(null);
   const [picture, setPicture] = useState<Picture | null>(null);
@@ -595,12 +658,25 @@ export function OcclusionEdit({ noteId, focus, onClose, onSaved }: { noteId: num
         knownMax={Math.max(0, ...note.cards.map((c) => c.ordinal))}
         reviewed={note.cards.filter((c) => c.reviewed).map((c) => c.ordinal)}
         focus={focus}
+        texts={{ header: note.header, backExtra: note.back_extra }}
         onCancel={onClose}
         onReplaceImage={() => file.current?.click()}
-        onDone={(shapes, hideAll) =>
+        onDone={(shapes, hideAll, t) =>
           occlusionApi
-            .save({ note_id: noteId, deck_id: note.deck_id, image: picture.name, header: note.header, back_extra: note.back_extra, shapes, hide_all: hideAll, importance: null })
-            .then(onSaved, (e) => setError(errorText(e)))
+            .save({
+              note_id: noteId,
+              deck_id: note.deck_id,
+              image: picture.name,
+              header: t?.header ?? note.header,
+              back_extra: t?.backExtra ?? note.back_extra,
+              shapes,
+              hide_all: hideAll,
+              importance: null,
+            })
+            .then(() => {
+              thumbs.delete(noteId); // M4 축소 그림을 새로 읽게
+              onSaved();
+            }, (e) => setError(errorText(e)))
         }
       />
       <input

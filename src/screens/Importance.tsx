@@ -5,12 +5,29 @@ import { api, errorText, type BoardDeck, type DeckDetail, type Level } from "../
 import { Badge, Button, Icon, Importance as ImportanceBadge, LEVEL_LABEL } from "../ui";
 import { n, useKey, useNav, useOverlayScope } from "../nav";
 import { menuKeys } from "./Deck";
-import { SourceBanner, SourceTag } from "./SourceBanner";
+import { SourceBanner, SourceTag, sourcesOf } from "./SourceBanner";
 
 const LANES: Level[] = [2, 1, 0];
 const GROUP_OVER = 12; // 하위 덱이 이보다 많으면 과목별로 묶어서 연다
 const suggested = (d: BoardDeck) => d.source !== "user" && d.source !== "default";
 const cardsOf = (ds: BoardDeck[]) => ds.reduce((s, d) => s + d.cards, 0);
+
+/** 제안 근거 툴팁. 근거는 줄마다 하나 ("기출 · …", "자료 · …"). 사실만 쓴다 (N3) */
+function ReasonTip({ level, reason }: { level: Level; reason: string }) {
+  const lines = reason.split("\n").filter(Boolean);
+  return (
+    <span className="board__tip" role="tooltip">
+      <span className="t-label-s">
+        왜 {LEVEL_LABEL[level]}인가요?{lines.length > 1 && ` · 근거 ${lines.length}가지`}
+      </span>
+      {lines.map((l) => (
+        <span key={l} className="board__tip-line t-caption">
+          {lines.length > 1 ? `· ${l}` : l}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export function Importance({ deckId, next = [] }: { deckId: number; next?: number[] }) {
   const nav = useNav();
@@ -113,15 +130,10 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
         <Icon name="grip" size={16} />
         <span className="t-label-m">{label}</span>
         <span className="t-caption c-tertiary">{n(d.cards)}장</span>
-        {suggested(d) && <SourceTag source={d.source} /> /* I3 출처 태그 */}
+        {suggested(d) && sourcesOf(d.source, d.reason).map((s) => <SourceTag key={s} source={s} />) /* I3 · N3 출처 태그 */}
         {suggested(d) && <span className="t-label-s c-accent">제안</span>}
       </button>
-      {suggested(d) && d.reason && menu !== d.id && (
-        <span className="board__tip" role="tooltip">
-          <span className="t-label-s">왜 {LEVEL_LABEL[d.importance]}인가요?{d.source === "material" && " · 자료"}</span>
-          <span className="t-caption">{d.reason}</span>
-        </span>
-      )}
+      {suggested(d) && d.reason && menu !== d.id && <ReasonTip level={d.importance} reason={d.reason} />}
       {menu === d.id && (
         <div className="menu__list board__menu" role="menu" aria-label="중요도" onKeyDown={menuKeys} onClick={(e) => e.stopPropagation()}>
           {LANES.map((l, i) => (
@@ -182,7 +194,9 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
           <span className="t-label-m c-primary">{name}</span>
           <span className="t-caption">{caption}</span>
         </span>
-        {kids.some((d) => d.source === "material") && <SourceTag source="material" />}
+        {[...new Set(kids.filter(suggested).flatMap((d) => sourcesOf(d.source, d.reason)))].filter((s) => s === "exam" || s === "material").map((s) => (
+          <SourceTag key={s} source={s} />
+        ))}
         {sug && <span className="t-label-s c-accent">제안</span>}
         {split && <Badge>나뉨</Badge>}
       </button>,
@@ -213,9 +227,10 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
         </span>
       </div>
 
-      {groupable && (
+      {(groupable || pending.length > 0) && (
         <div className="board__bar">
           <span className="board__bar-left">
+            {groupable && (
             <span className="segment segment--boxed">
               {[true, false].map((g) => (
                 <button key={String(g)} className={`segment__item t-label-m ${isGrouped === g ? "is-selected" : ""}`} onClick={() => setGrouped(g)}>
@@ -223,6 +238,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
                 </button>
               ))}
             </span>
+            )}
             <span className="t-body-s c-tertiary">
               하위 덱 {n(board.length)}개{pending.length > 0 && ` · 제안 ${n(pending.length)}개는 아직 확인 전`}
             </span>

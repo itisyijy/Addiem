@@ -137,7 +137,8 @@
 
 /* 칩 출처 태그: 자료(노랑) / 태그 / 이름 규칙 */
 .src-tag { display: inline-flex; padding: 1px 6px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-secondary); white-space: nowrap; }
-.src-tag--material { background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.src-tag--material, .src-tag--exam { background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.board__tip-line { display: block; }
 
 /* 자료 근거는 길어 줄을 바꾼다 (Figma 툴팁 폭 340) */
 .board .board__tip { width: max-content; max-width: 340px; white-space: normal; }
@@ -180,3 +181,12 @@
 /* 선택 막대가 화면 아래에 붙도록 목록 칸은 넘침을 자르지 않는다 (마지막 칸이 모서리를 둥글게 맡는다) */
 .src-list.panel:has(.src-pick) { overflow: visible; }
 .src-pick__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+/* 8.4 기출 구간: ⋯ 메뉴 · 연결된 카드에 퍼뜨릴지 묻는 한 줄 */
+.src-seg__more { display: inline-flex; padding: 6px; border-radius: 8px; color: var(--text-secondary); }
+.src-seg__more:hover { background: var(--bg-subtle); }
+.src-seg__menu { right: 0; left: auto; width: 260px; }
+.src-seg__meta { flex-wrap: wrap; }
+.src-seg__exam { background: var(--importance-core-bg); color: var(--importance-core-fg); }
+.src-spread { display: flex; align-items: center; gap: 8px; padding: 8px 14px 12px 20px; }
+.src-spread > .t-body-s { flex: 1; }

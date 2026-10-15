@@ -136,9 +136,7 @@ media                                  파일명으로 카드 HTML에서 참조
           ↓                              │
   new → learning → review ⇄ relearning ──┘
           │           │
-          └───────────┴──→ buried ──(기한 경과)──→ 원래 상태로 복귀
-                      │
-                      └──→ suspended  (사용자 수동. 큐에 절대 안 나옴)
+          └───────────┴──→ suspended  (사용자 수동. 큐에 절대 안 나옴)
 ```
 
 | 상태 | 큐에 나오는가 |
@@ -146,10 +144,11 @@ media                                  파일명으로 카드 HTML에서 참조
 | `new` | 예산 덱 상한 안에서 |
 | `learning` | 항상. 가장 앞 |
 | `review`, `relearning` | 예정일이 오늘 이하면 |
-| `buried` | `buried_until` 이 지나면 |
 | `suspended` | **절대 나오지 않는다** |
 
-`buried` 는 Neo-Anki 고유 상태다. Anki의 bury와 이름은 같지만 의미가 다르다. 여기서는 반복 루프 방지(6.8)의 결과다.
+보류(접어두기)는 상태가 아니라 기간이다. `state` 는 그대로 두고 `card.buried_until` 과 `buried_reason` (`two_again` | `user`) 만 채운다. 상태로 덮으면 보류 전이 `review` 였는지 `learning` 이었는지 잃는다 ([스파이크 5](spike-05-fsrs.md) 결함 2).
+
+큐는 상태보다 `buried_until` 을 먼저 본다. 그 날이 오기 전에는 상태와 상관없이 나오지 않고, 그 날부터 보류 복귀 그룹으로 나온다. 평가하면 비운다. Anki의 bury와 이름은 같지만 의미가 다르다. 여기서는 반복 루프 방지(6.8)와 사용자 접어두기의 결과다.
 
 ## 7. Anki 매핑
 

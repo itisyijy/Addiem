@@ -286,8 +286,8 @@ pub fn layer(ordinal: u32, body: &str, active: bool, is_back: bool) -> String {
 }
 
 /// IO 템플릿 결과에서 칸(숨긴 div 안)을 걷어 그림 위로 겹친다. Anki 의 스크립트·[Toggle Masks] 버튼은 지운다.
-/// caption 은 답 면 그림 아래 "번호 · 이름" (M6). 그림이 없으면 칸은 버린다
-pub fn place(html: &str, caption: Option<String>) -> String {
+/// caption 은 답 면 그림 아래 "번호 · 이름" (M6, 번호는 배지). 그림이 없으면 칸은 버린다
+pub fn place(html: &str, caption: Option<(u32, String)>) -> String {
     let mut rest = String::with_capacity(html.len());
     let mut layers = String::new();
     let mut s = html;
@@ -307,11 +307,13 @@ pub fn place(html: &str, caption: Option<String>) -> String {
     let from = rest.find("image-occlusion-container").unwrap_or(0);
     let Some(i) = rest[from..].find("<img").map(|i| from + i) else { return rest };
     let Some(j) = rest[i..].find('>').map(|j| i + j + 1) else { return rest };
-    let caption = caption.map_or(String::new(), |c| format!("<div class=\"io-caption\">{}</div>", escape(&c)));
+    let caption = caption.map_or(String::new(), |(n, l)| format!("<div class=\"io-caption\"><span class=\"io-caption__num\">{n}</span>{}</div>", escape(&l)));
     format!("{}<div class=\"io\">{}{layers}</div>{caption}{}", &rest[..i], &rest[i..j], &rest[j..])
 }
 
 pub const DEFAULT_QUESTION: &str = "가린 곳에 들어갈 말은?";
+/// 템플릿이 칸을 숨겨 두는 자리. 그 앞이 머리말이다
+const HIDDEN: &str = "<div style=\"display: none\">";
 
 /// 템플릿이 칸을 읽는 필드 ({{cloze:이름}}). 일반 빈칸 유형도 같다 (CSV 내보내기)
 pub(crate) fn cloze_field(qfmt: &str) -> Option<&str> {
@@ -324,11 +326,18 @@ pub fn finish(front: String, back: String, qfmt: &str, fields: &HashMap<String, 
     let n = ord + 1;
     let shapes = cloze_field(qfmt).and_then(|f| fields.get(f)).map(|v| parse(v).0).unwrap_or_default();
     let label = shapes.iter().filter(|s| s.ordinal == n).map(|s| clean_label(&s.label)).find(|l| !l.is_empty());
-    // 질문(머리말)을 비우면 기본 질문 (M1 · M3-q)
-    let ask = |html: String| {
-        if crate::render::strip_tags(&html).is_empty() { format!("<div class=\"io-question\">{DEFAULT_QUESTION}</div>{html}") } else { html }
+    let front = place(&front, None);
+    let back = place(&back, label.map(|l| (n, l)));
+    // 질문(머리말)을 비우면 기본 질문 (M1 · M3-q). 답 면은 흐린 질문 줄 (M3-a): 머리말(숨긴 칸 앞)을 감싼다
+    if crate::render::strip_tags(&front).is_empty() {
+        let q = |dim: &str| format!("<div class=\"io-question{dim}\">{DEFAULT_QUESTION}</div>");
+        return crate::render::Rendered { front: format!("{}{front}", q("")), back: format!("{}{back}", q(" io-question--back")) };
+    }
+    let back = match back.find(HIDDEN) {
+        Some(i) => format!("<div class=\"io-question io-question--back\">{}</div>{}", &back[..i], &back[i..]),
+        None => back,
     };
-    crate::render::Rendered { front: ask(place(&front, None)), back: ask(place(&back, label.map(|l| format!("{n} · {l}")))) }
+    crate::render::Rendered { front, back }
 }
 
 // ------------------------------------------------------------------ 편집 (M1 · M2)
@@ -586,7 +595,9 @@ mod tests {
         assert!(!r.back.contains("io-caption"), "이름이 없으면 번호 · 이름 줄도 없다");
         // 첫 카드 답 면: "1 · 인터넷 계층"
         let r = render_card(QFMT, &afmt(), &fields(&field), 0);
-        assert!(r.back.contains("</div><div class=\"io-caption\">1 · 인터넷 계층</div>"), "{}", r.back);
+        assert!(r.back.contains("</div><div class=\"io-caption\"><span class=\"io-caption__num\">1</span>인터넷 계층</div>"), "{}", r.back);
+        // 답 면 머리말은 흐린 질문 줄로 감싼다. 머리말이 비면 기본 질문이 양면에
+        assert!(r.back.starts_with("<div class=\"io-question io-question--back\"><div>머리말</div>"), "{}", r.back);
         // 하나만 가림: 묻지 않는 칸은 그리지 않는다
         let r = render_card(QFMT, &afmt(), &fields(&to_field(&[rect(1, 0.1, ""), rect(2, 0.5, "")], false)), 0);
         assert_eq!(r.front.matches("class=\"io-mask").count(), 1, "묻는 칸 하나만: {}", r.front);
@@ -602,6 +613,7 @@ mod tests {
         let mut no_header = fields(&field);
         no_header.insert("Header".into(), "<br>".into());
         assert_eq!(crate::render::strip_tags(&render_card(QFMT, &afmt(), &no_header, 0).front), DEFAULT_QUESTION, "머리말이 비면 기본 질문");
+        assert!(render_card(QFMT, &afmt(), &no_header, 0).back.starts_with(&format!("<div class=\"io-question io-question--back\">{DEFAULT_QUESTION}</div>")));
     }
 
     /// 살균(src/cardHtml.ts) 은 class · style 을 남긴다. 그래서 style 에는 우리가 계산한 숫자만 들어가야 한다
