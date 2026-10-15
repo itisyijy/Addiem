@@ -468,7 +468,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   // P2 혼합 회독: 카드마다 남은 자리 (null 전체, 문자열 취약 이유). 평가할 때 앞 자리부터 센다
   const mixRoles = useRef(new Map<number, (string | null)[]>());
   const mixStats = useRef<MixStats>({ full: [0, 0], weak: [0, 0], again: [0, 0], due: 0 });
-  const mixReplayed = useRef(false); // 접어둔 카드는 회독 끝에 한 번 더
+  const mixReplayed = useRef(false); // 접어둔 카드는 회독(혼합 · 압축) 끝에 한 번 더
   const openedAt = useRef(Date.now()); // P3 "N장 회독 · M분": 이 화면에서 쓴 시간 (같은 날 이어 쓴 세션의 쉬던 시간은 빼고)
   const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
@@ -564,11 +564,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       const now = Date.now();
       const l = later.current.sort((a, b) => a.due - b.due);
       const id = next.current.shift() ?? (l.length && l[0].due <= now ? l.shift()!.id : (queue.current.shift() ?? l.shift()?.id));
-      if (id === undefined && mix && !mixReplayed.current && foldedIds.current.length > 0) {
-        // P2 혼합 회독: 접어둔 카드는 회독 끝에 한 번 더 (두 번째 접히면 그대로 둔다)
+      if (id === undefined && (mix || cram) && !mixReplayed.current && foldedIds.current.length > 0) {
+        // P2 혼합 · H3 압축 회독: 접어둔 카드는 묶음 끝에 한 번 더 (두 번째 접히면 그대로 둔다, P14 · P20)
         mixReplayed.current = true;
         const ids = foldedIds.current;
-        for (const f of ids) await api.unburyCard(session.current!, f);
+        for (const f of ids) {
+          if (cram) cramAgain.current.set(f, 0); // 압축은 접기가 이 화면 안에만 있다
+          else await api.unburyCard(session.current!, f);
+        }
         setFolded([]);
         setDone((d) => d - ids.length);
         queue.current.push(...ids);
@@ -581,7 +584,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         // 편집 중 지워진 빈칸 카드 등. 건너뛴다
       }
     }
-  }, [finish, show, mix]);
+  }, [finish, show, mix, cram]);
   useEffect(() => void (foldedIds.current = folded.map((f) => f.id)), [folded]);
 
   useEffect(() => {
@@ -713,6 +716,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   };
 
   const fold = (c: Shown, auto: boolean) => {
+    // 바로 이어 부르는 advance 가 묶음 끝 다시 보기에 쓴다. 상태(folded)는 다음 그리기에서야 바뀐다 (마지막 카드가 접힐 때)
+    foldedIds.current = [...foldedIds.current, c.view.id];
     setFolded((list) => [
       ...list,
       { id: c.view.id, question: lineOf(c.view.front), importance: c.view.importance, deck_path: c.view.deck_path, auto, at: Date.now() },
@@ -1345,7 +1350,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 ? `두 번 막혔어요. ${toast.reason}, 나눠서 외우는 게 나을 수도 있어요.`
                 : toast.auto
                   ? "같은 학습에서 두 번 기억나지 않았어요. 나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
-                  : "학습을 마치면 다시 볼지 물어볼게요."}
+                  : cram || mix
+                    ? "나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
+                    : "학습을 마치면 다시 볼지 물어볼게요."}
             </span>
           </span>
           {/* G3: 학습을 멈추지 않는다. "나중에 볼 제안"에 넣고 토스트만 닫는다 (D5 접어둔 카드 행에 칩으로 다시 나온다) */}
