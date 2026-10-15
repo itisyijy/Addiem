@@ -510,6 +510,7 @@ pub fn import_json(state: State<AppState>, text: String, source: String, deck_id
 
 enum Pb<'a> {
     Bytes(&'a [u8]),
+    Varint(u64),
     Other,
 }
 
@@ -538,8 +539,8 @@ fn pb_fields(buf: &[u8]) -> Vec<(u64, Pb<'_>)> {
         let (num, wt) = (key >> 3, key & 7);
         match wt {
             0 => {
-                varint(buf, &mut i);
-                out.push((num, Pb::Other));
+                let v = varint(buf, &mut i);
+                out.push((num, Pb::Varint(v)));
             }
             2 => {
                 let len = varint(buf, &mut i) as usize;
@@ -583,8 +584,10 @@ struct AType {
     fields: Vec<String>,
     css: String,
     templates: Vec<(u32, String, String, String)>, // ord, 이름, 앞면, 뒷면
-    /// 원본과 다르게 보일 수 있는 기능 (스크립트, type-in, TTS)
+    /// 원본과 다르게 보일 수 있는 기능 (스크립트, 빈칸 type-in, TTS)
     degraded: Vec<&'static str>,
+    /// Anki originalStockKind (0 = 사용자 정의). 내보낼 때 다시 붙인다 (I78)
+    stock: i64,
 }
 
 struct Package {
@@ -631,8 +634,9 @@ fn degraded_features(body: &str) -> Vec<&'static str> {
     if lower.contains("<script") && !crate::occlusion::is_template(body) {
         out.push("스크립트");
     }
-    if body.contains("{{type:") {
-        out.push("type-in 입력");
+    // type-in 은 J 서술형이 입력칸 · 정답 · 비교로 받는다 (I69). 빈칸 type-in 만 정답이 그 빈칸이 아니라 본문 전체로 잡힌다
+    if body.contains("{{type:cloze:") {
+        out.push("빈칸 입력칸");
     }
     if body.contains("{{tts") {
         out.push("읽어주기(TTS)");
@@ -689,6 +693,12 @@ fn read_modern(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType
         .map_err(err)?;
     for row in rows {
         let (id, name, cfg) = row.map_err(err)?;
+        let cfg = cfg.unwrap_or_default();
+        // NotetypeConfig.original_stock_kind = 9 (proto/anki/notetypes.proto)
+        let stock = pb_fields(&cfg).into_iter().find_map(|(n, v)| match v {
+            Pb::Varint(k) if n == 9 => Some(k as i64),
+            _ => None,
+        });
         let fields: Vec<String> = col
             .prepare("SELECT name FROM fields WHERE ntid = ?1 ORDER BY ord")
             .and_then(|mut s| s.query_map([id], |r| r.get(0))?.collect())
@@ -712,7 +722,7 @@ fn read_modern(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType
                 }
             }
         }
-        types.insert(id, AType { name, fields, css: pb_str(&cfg.unwrap_or_default(), 3), templates, degraded });
+        types.insert(id, AType { name, fields, css: pb_str(&cfg, 3), templates, degraded, stock: stock.unwrap_or(0) });
     }
     Ok((decks, types))
 }
@@ -754,7 +764,8 @@ fn read_legacy(col: &Connection) -> Res<(HashMap<i64, ADeck>, HashMap<i64, AType
                     }
                 }
             }
-            types.insert(id, AType { name: s(&t, "name"), fields, css: s(&t, "css"), templates, degraded });
+            let stock = t.get("originalStockKind").and_then(Value::as_i64).unwrap_or(0);
+            types.insert(id, AType { name: s(&t, "name"), fields, css: s(&t, "css"), templates, degraded, stock });
         }
     }
     Ok((decks, types))
@@ -1166,8 +1177,8 @@ fn run_import_selected(
             Some(id) => id,
             None => {
                 tx.execute(
-                    "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id)
-                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id, anki_stock_kind)
+                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         t.name,
                         serde_json::to_string(&t.fields).map_err(err)?,
@@ -1175,7 +1186,8 @@ fn run_import_selected(
                         now,
                         t.degraded.is_empty() as i64,
                         (!t.degraded.is_empty()).then(|| t.degraded.join(", ")),
-                        aid
+                        aid,
+                        (t.stock > 0).then_some(t.stock)
                     ],
                 )
                 .map_err(err)?;
@@ -1421,7 +1433,7 @@ fn run_import_selected(
     for d in &degraded {
         result.check_cards += d.cards;
         let what = match d.feature.as_str() {
-            "type-in 입력" => "입력칸 없이 앞면·뒷면만 보여요.",
+            "빈칸 입력칸" => "써 넣은 답을 그 빈칸이 아니라 본문 전체와 비교해요. 맞게 써도 틀린 것처럼 보일 수 있어요.",
             "스크립트" => "스크립트는 실행하지 않아요. 스크립트로 바뀌는 부분은 보이지 않아요.",
             _ => "소리 없이 글자만 보여요.",
         };
