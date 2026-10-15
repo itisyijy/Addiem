@@ -7,7 +7,7 @@ import {
   api, errorText, syncApi,
   type DriveBackup, type RestorePreview, type SyncAuthEvent, type SyncConflict, type SyncJoinMode, type SyncProbe, type SyncStatus,
 } from "./api";
-import { Badge, Button, Checkbox, Icon, Input, Spinner, Toggle, type IconName } from "./ui";
+import { Badge, Button, Checkbox, Icon, Input, Segment, Spinner, Toggle, type IconName } from "./ui";
 import { useToast } from "./toast";
 import { n, useKey, useModalScope, useNav, useOverlayScope } from "./nav";
 import { useFocusTrap } from "./screens/NewDeck";
@@ -49,7 +49,6 @@ type Flow =
   | { kind: "conflicts" }
   | { kind: "restore"; backup: DriveBackup }
   | { kind: "disconnect" }
-  | { kind: "lock" }
   | { kind: "unlock" };
 let openFlow: (f: Flow | null) => void = () => {};
 export const syncFlow = (f: Flow) => openFlow(f);
@@ -366,7 +365,6 @@ export function SyncHost({ studying }: { studying: boolean }) {
       {flow?.kind === "conflicts" && <ConflictsModal onClose={close} />}
       {flow?.kind === "restore" && <RestoreModal backup={flow.backup} onClose={close} />}
       {flow?.kind === "disconnect" && <DisconnectModal onClose={close} />}
-      {flow?.kind === "lock" && <LockModal onClose={close} />}
       {flow?.kind === "unlock" && <UnlockModal onClose={close} />}
     </>
   );
@@ -485,10 +483,11 @@ function ConnectModal({ from, onDone }: { from?: "home" | "settings" | "login"; 
 
 // ---------------------------------------------------------------- K3 처음 설정
 
-const BACKUPS: ["daily" | "weekly" | "off", string][] = [
-  ["daily", "매일"],
-  ["weekly", "매주"],
-  ["off", "끄기"],
+type Backup = "daily" | "weekly" | "off";
+const BACKUPS: { value: Backup; label: string }[] = [
+  { value: "daily", label: "매일" },
+  { value: "weekly", label: "매주" },
+  { value: "off", label: "끄기" },
 ];
 
 /** 암호 두 칸 + 잊으면 복구할 수 없다는 확인. 맞으면 비밀번호, 아니면 null */
@@ -510,7 +509,7 @@ function usePassword() {
 function SetupModal({ probe, note, onClose }: { probe: SyncProbe; note?: string; onClose: () => void }) {
   const toast = useToast();
   const [name, setName] = useState(probe.device_name);
-  const [backup, setBackup] = useState<"daily" | "weekly" | "off">("daily");
+  const [backup, setBackup] = useState<Backup>("daily");
   const [lock, setLock] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -548,39 +547,11 @@ function SetupModal({ probe, note, onClose }: { probe: SyncProbe; note?: string;
       />
       {note && <p className="sync-note t-body-s c-secondary">{note} · 이 기기 데이터로 시작해요</p>}
       <DeviceName value={name} onChange={setName} />
-      <div className="sync-field">
-        <span className="t-label-m">올릴 것</span>
-        <div className="sync-list">
-          <Upload icon="cloud-check" tone="c-success" title="덱 · 카드 · 복습 기록 · 설정" text={`항상 · ${size(dbBytes)}`} />
-          <Upload icon="cloud-check" tone="c-success" title="그림 · 미디어" text={`항상 · ${size(probe.local.media_bytes)}`} />
-          <Upload icon="file" tone="c-secondary" title="원자료 파일 (PDF · PPTX)" text="올리지 않아요 · 고르는 것은 다음 버전에서" />
-          <Upload icon="cloud-off" tone="c-tertiary" title="분석 모델" text="올리지 않아요 · 새 기기에서 다시 받으면 돼요" muted />
-        </div>
-      </div>
-      <div className="sync-row">
-        <span className="sync-row__text">
-          <span className="t-label-m">Drive에 자동 백업</span>
-          <span className="t-caption c-tertiary">최근 7일 하루 하나 · 그 전 주 하나 · 최대 12개</span>
-        </span>
-        <span className="segment segment--boxed" role="radiogroup" aria-label="Drive에 자동 백업">
-          {BACKUPS.map(([v, l]) => (
-            <button key={v} role="radio" aria-checked={backup === v} className={`segment__item t-label-m ${backup === v ? "is-selected" : ""}`} onClick={() => setBackup(v)}>
-              {l}
-            </button>
-          ))}
-        </span>
-      </div>
-      <div className="sync-lock">
-        <Icon name="lock" size={18} className="c-secondary" />
-        <span className="sync-row__text">
-          <span className="t-body-m-strong">암호로 잠그기</span>
-          <span className="t-caption c-tertiary">
-            켜면 이 기기에서 암호화한 뒤 올려요. Google도 내용을 볼 수 없어요. 암호를 잊으면 Drive에 올린 데이터는 열 수 없어요 (이 기기 데이터는 그대로).
-          </span>
-          {lock && pw.fields}
-        </span>
-        <Toggle on={lock} onChange={setLock} label="암호로 잠그기" />
-      </div>
+      <Uploads title="올릴 것" db={dbBytes} media={probe.local.media_bytes} />
+      <BackupPick value={backup} onPick={setBackup} />
+      <LockBox on={lock} onChange={setLock}>
+        {lock && pw.fields}
+      </LockBox>
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="sync-foot">
         <span className="t-caption c-tertiary">처음 올릴 양 약 {size(dbBytes + probe.local.media_bytes)} · 올리는 동안 계속 써도 돼요</span>
@@ -605,13 +576,76 @@ function Upload({ icon, tone, title, text, muted }: { icon: IconName; tone: stri
   );
 }
 
-function DeviceName({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+/** K3 "올릴 것" · K4 "올리는 것". 고를 수 있는 것이 없어 스위치를 그리지 않는다 (K20) */
+function Uploads({ title, db, media }: { title: string; db: number | null; media: number | null }) {
+  const always = (b: number | null) => (b === null ? "항상" : `항상 · ${size(b)}`);
+  return (
+    <div className="sync-field">
+      <span className="t-label-m">{title}</span>
+      <div className="sync-list">
+        <Upload icon="cloud-check" tone="c-success" title="덱 · 카드 · 복습 기록 · 설정" text={always(db)} />
+        <Upload icon="cloud-check" tone="c-success" title="그림 · 미디어" text={always(media)} />
+        <Upload icon="file" tone="c-secondary" title="원자료 파일 (PDF · PPTX)" text="올리지 않아요 · 고르는 것은 다음 버전에서" />
+        <Upload icon="cloud-off" tone="c-tertiary" title="분석 모델" text="올리지 않아요 · 새 기기에서 다시 받으면 돼요" muted />
+      </div>
+    </div>
+  );
+}
+
+function BackupPick({ value, onPick }: { value: Backup; onPick: (v: Backup) => void }) {
+  return (
+    <div className="sync-row">
+      <span className="sync-row__text">
+        <span className="t-label-m">Drive에 자동 백업</span>
+        <span className="t-caption c-tertiary">최근 7일 하루 하나 · 그 전 주 하나 · 최대 12개</span>
+      </span>
+      <Segment boxed label="Drive에 자동 백업" options={BACKUPS} value={value} onChange={onPick} />
+    </div>
+  );
+}
+
+function LockBox({ on, onChange, disabled, busy, children }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; busy?: boolean; children?: ReactNode }) {
+  return (
+    <div className="sync-lock">
+      <Icon name="lock" size={18} className="c-secondary" />
+      <span className="sync-row__text">
+        <span className="t-body-m-strong">암호로 잠그기</span>
+        <span className="t-caption c-tertiary">
+          켜면 이 기기에서 암호화한 뒤 올려요. Google도 내용을 볼 수 없어요. 암호를 잊으면 Drive에 올린 데이터는 열 수 없어요 (이 기기 데이터는 그대로).
+        </span>
+        {children}
+      </span>
+      <span className="sync-lock__end">
+        {busy && <span className="t-caption c-secondary">다시 올리는 중</span>}
+        <Toggle on={on} onChange={onChange} label="암호로 잠그기" disabled={disabled} />
+      </span>
+    </div>
+  );
+}
+
+/** onSave 가 있으면 K4: Enter · 칸 밖에서 저장, Esc 는 되돌림 (K20) */
+function DeviceName({ value, onChange, onSave, onRevert }: { value: string; onChange: (v: string) => void; onSave?: () => void; onRevert?: () => void }) {
   return (
     <label className="sync-field">
       <span className="t-label-m">이 기기 이름</span>
       <span className="sync-name">
         <Icon name="laptop" size={16} className="c-secondary" />
-        <input className="t-body-m" value={value} maxLength={40} onChange={(e) => onChange(e.target.value)} />
+        <input
+          className="t-body-m"
+          value={value}
+          maxLength={40}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={onSave}
+          onKeyDown={(e) => {
+            if (!onSave) return;
+            // 한글 조합 중 Enter 는 조합만 끝낸다 (마지막 글자가 아직 value 에 없다)
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) e.currentTarget.blur();
+            else if (e.key === "Escape") {
+              e.preventDefault();
+              onRevert?.();
+            }
+          }}
+        />
       </span>
       <span className="t-caption c-tertiary">다른 기기에서 "어디서 마지막으로 공부했는지" 보여줄 때 써요</span>
     </label>
@@ -1112,29 +1146,18 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
 
 // ---------------------------------------------------------------- 암호로 잠그기 바꾸기 · 잠긴 Drive 열기
 
-function LockModal({ onClose }: { onClose: () => void }) {
-  const s = useSyncStatus();
-  const toast = useToast();
+/** K4 암호로 잠그기 토글이 여는 확인 창. 확인하면 닫히고, 다시 올리기는 설정 행이 보여 준다 (K20) */
+function LockModal({ on, onClose, onConfirm }: { on: boolean; onClose: () => void; onConfirm: (password: string | null) => void }) {
   const pw = usePassword();
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const on = !!s?.lock;
-  const run = async () => {
+  const run = () => {
     if (!on && pw.problem) return setError(pw.problem);
-    setBusy(true);
-    try {
-      await syncApi.setLock(on ? null : pw.pw);
-      await refreshSync();
-      onClose();
-      toast({ title: on ? "암호 잠금을 껐어요" : "Drive 데이터를 암호로 잠갔어요", text: "다른 기기는 다음에 맞출 때 고르는 창을 봐요" });
-    } catch (e) {
-      setError(errorText(e));
-      setBusy(false);
-    }
+    onClose();
+    onConfirm(on ? null : pw.pw);
   };
   return (
     <Sheet label="암호로 잠그기" onClose={onClose} className="sync-k10">
-      <h2 className="t-title-m">{on ? "암호 잠금을 끌까요?" : "Drive 데이터를 암호로 잠글까요?"}</h2>
+      <h2 className="t-title-m">{on ? "잠금을 풀고 Drive에 다시 올릴까요?" : "Drive 데이터를 암호로 잠글까요?"}</h2>
       <p className="t-body-s c-secondary">
         {on
           ? "Drive의 동기화 데이터를 이 기기에서 암호 없이 다시 올려요. 다른 기기는 다음에 맞출 때 고르는 창을 봐요."
@@ -1144,7 +1167,7 @@ function LockModal({ onClose }: { onClose: () => void }) {
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="sync-foot sync-foot--end">
         <Button variant="ghost" size="M" label="취소" onClick={onClose} />
-        <Button size="M" icon="lock" label={on ? "잠금 끄기" : "잠그기"} busy={busy} busyLabel="다시 올리는 중…" onClick={run} />
+        <Button size="M" icon="lock" label={on ? "잠금 풀기" : "잠그기"} onClick={run} />
       </div>
     </Sheet>
   );
@@ -1237,12 +1260,19 @@ function Connected({ s }: { s: SyncStatus }) {
   const l = line(s);
   const [backups, setBackups] = useState<DriveBackup[] | null>(null);
   const [all, setAll] = useState(false);
-  const [edit, setEdit] = useState<"name" | "backup" | null>(null);
   const [name, setName] = useState(s.device_name);
+  const [bytes, setBytes] = useState<[number, number] | null>(null);
+  const [asking, setAsking] = useState(false);
+  /** 잠그기를 바꿔 다시 올리는 동안 토글이 가리키는 값 (K17) */
+  const [relock, setRelock] = useState<boolean | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [busy, setBusy] = useState<string>();
   const [conflicts, setConflicts] = useState(0);
   const joined = s.enabled;
+  useEffect(() => setName(s.device_name), [s.device_name]);
+  useEffect(() => {
+    api.appInfo().then((i) => setBytes([i.db_bytes, i.media_bytes]), () => {});
+  }, [s.last_sync]);
   useOverlayScope(!!menu);
   useKey("Escape", () => setMenu(null), !!menu, { modal: true });
   useEffect(() => {
@@ -1257,13 +1287,30 @@ function Connected({ s }: { s: SyncStatus }) {
     syncApi.conflicts().then((c) => setConflicts(c.length), () => {});
   }, [joined]);
   useEffect(loadBackups, [loadBackups, s.last_sync]);
-  const settings = async (opts: { device_name?: string; backup?: "daily" | "weekly" | "off" }) => {
+  const settings = async (opts: { device_name?: string; backup?: Backup }) => {
     try {
       await syncApi.settings(opts);
       await refreshSync();
-      setEdit(null);
     } catch (e) {
       toast({ title: "바꾸지 못했어요", text: errorText(e), tone: "error" });
+    }
+  };
+  // 비우면 이전 이름 그대로
+  const saveName = () => {
+    const v = name.trim();
+    if (!v || v === s.device_name) setName(s.device_name);
+    else settings({ device_name: v });
+  };
+  const setLock = async (password: string | null) => {
+    setRelock(password !== null);
+    try {
+      await syncApi.setLock(password);
+      await refreshSync();
+      toast({ title: password ? "Drive 데이터를 암호로 잠갔어요" : "암호 잠금을 풀었어요", text: "다른 기기는 다음에 맞출 때 고르는 창을 봐요" });
+    } catch (e) {
+      toast({ title: "바꾸지 못했어요", text: errorText(e), tone: "error" });
+    } finally {
+      setRelock(null);
     }
   };
   const full = async (b: DriveBackup) => {
@@ -1343,58 +1390,23 @@ function Connected({ s }: { s: SyncStatus }) {
         ))}
       </div>
 
-      <div className="sync-block">
-        <div className="sync-set">
-          <span className="t-body-m">이 기기 이름</span>
-          {edit === "name" ? (
-            <span className="sync-set__edit">
-              <input className="sync-input t-body-s" value={name} autoFocus maxLength={40} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && settings({ device_name: name })} />
-              <Button variant="ghost" size="M" label="취소" onClick={() => setEdit(null)} />
-              <Button variant="secondary" size="M" label="저장" disabled={!name.trim()} onClick={() => settings({ device_name: name })} />
-            </span>
-          ) : (
-            <>
-              <span className="t-body-s c-secondary">{s.device_name}</span>
-              <Button variant="ghost" size="M" label="바꾸기" onClick={() => (setName(s.device_name), setEdit("name"))} />
-            </>
-          )}
+      {/* K4-r: 행 모양은 그 행이 하는 일을 따른다 (K20) */}
+      <div className="sync-rows">
+        <DeviceName value={name} onChange={setName} onSave={saveName} onRevert={() => setName(s.device_name)} />
+        <Uploads title="올리는 것" db={bytes?.[0] ?? null} media={bytes?.[1] ?? null} />
+        <BackupPick value={s.backup} onPick={(v) => settings({ backup: v })} />
+        <div>
+          <LockBox on={relock ?? s.lock} busy={relock !== null} disabled={!joined || busyNow || relock !== null} onChange={() => setAsking(true)} />
         </div>
-        <div className="sync-set">
-          <span className="t-body-m">올리는 것</span>
-          <span className="t-body-s c-secondary">덱 · 카드 · 기록 · 그림 · 원자료 꺼짐</span>
-          {/* [바꾸기] 가 없는 행도 값 열을 맞춘다 */}
-          <Button variant="ghost" size="M" label="바꾸기" aria-hidden tabIndex={-1} className="sync-set__pad" />
-        </div>
-        <div className="sync-set">
-          <span className="t-body-m">Drive 자동 백업</span>
-          {edit === "backup" ? (
-            <span className="segment segment--boxed" role="radiogroup" aria-label="Drive 자동 백업">
-              {BACKUPS.map(([v, label]) => (
-                <button key={v} role="radio" aria-checked={s.backup === v} className={`segment__item t-label-m ${s.backup === v ? "is-selected" : ""}`} onClick={() => settings({ backup: v })}>
-                  {label}
-                </button>
-              ))}
-            </span>
-          ) : (
-            <>
-              <span className="t-body-s c-secondary">{s.backup === "off" ? "꺼짐" : `${s.backup === "weekly" ? "매주" : "매일"} · 최대 12개`}</span>
-              <Button variant="ghost" size="M" label="바꾸기" onClick={() => setEdit("backup")} />
-            </>
-          )}
-        </div>
-        <div className="sync-set">
-          <span className="t-body-m">암호로 잠그기</span>
-          <span className="t-body-s c-secondary">{s.lock ? "켜짐" : "꺼짐"}</span>
-          <Button variant="ghost" size="M" label="바꾸기" disabled={!joined || busyNow} onClick={() => syncFlow({ kind: "lock" })} />
-        </div>
-        {conflicts > 0 && (
-          <div className="sync-set">
+        {joined && (
+          <button className="sync-sub" onClick={() => syncFlow({ kind: "conflicts" })}>
             <span className="t-body-m">두 기기에서 고친 카드</span>
-            <span className="t-body-s c-secondary">지난 30일 · {n(conflicts)}장</span>
-            <Button variant="ghost" size="M" label="보기" onClick={() => syncFlow({ kind: "conflicts" })} />
-          </div>
+            <span className={`t-body-s ${conflicts > 0 ? "c-secondary" : "c-tertiary"}`}>지난 30일 · {conflicts > 0 ? `${n(conflicts)}장` : "없음"}</span>
+            <Icon name="chevron-right" size={18} className="c-secondary" />
+          </button>
         )}
       </div>
+      {asking && <LockModal on={s.lock} onClose={() => setAsking(false)} onConfirm={setLock} />}
 
       {joined && (
         <div className="sync-block sync-block--last">
