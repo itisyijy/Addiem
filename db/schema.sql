@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS note (
 );
 CREATE INDEX IF NOT EXISTS idx_note_type ON note(note_type_id);
 CREATE INDEX IF NOT EXISTS idx_note_batch ON note(import_batch_id);
+-- .apkg 가져오기가 노트마다 guid 로 이미 있는지 찾는다 (T2-11 · T7-08: 없으면 노트 수의 제곱으로 느려진다). 기기 안 색인이라 동기화와 무관
+CREATE INDEX IF NOT EXISTS idx_note_guid ON note(anki_guid) WHERE anki_guid IS NOT NULL;
 
 -- ---------------------------------------------------------------- 카드
 
