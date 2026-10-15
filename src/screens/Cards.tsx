@@ -18,6 +18,9 @@ const PAGE = 100;
 const LEVELS: Level[] = [2, 1, 0];
 // Figma 의 8px 점. 데이터 표시라 중요도 글자색을 쓴다 (보충도 border/strong 이 아니라 supp-fg)
 const DOT: Record<Level, string> = { 2: "dot--core", 1: "dot--normal", 0: "dot--supp" };
+/** AU6 목록은 소리 칩 대신 작은 스피커 (재생 없음). 글자 앞에 두어 말줄임에 가려지지 않게 */
+const Snd = () => <Icon name="volume-2" size={14} scaled className="cards__snd c-tertiary" />;
+
 const STATE: Record<CardRow["state"], [string, BadgeTone]> = {
   new: ["신규", "accent"],
   learning: ["학습 중", "neutral"],
@@ -547,9 +550,15 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                   <OcclusionRow noteId={c.note_id} pos={c.occlusion} question={c.question} />
                 </span>
               ) : (
-                <span className="t-body-m">{c.question || "(내용 없음)"}</span>
+                <span className="t-body-m">
+                  {c.sounds[0] && <Snd />}
+                  {c.question || (c.sounds[0] ? "" : "(내용 없음)")}
+                </span>
               )}
-              <span className="t-body-s c-secondary">{c.answer}</span>
+              <span className="t-body-s c-secondary">
+                {c.sounds[1] && <Snd />}
+                {c.answer}
+              </span>
               <span className="t-body-s c-secondary">{relPath(c.deck_path)}</span>
               <span className="cards__imp menu">
                 <button

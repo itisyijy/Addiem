@@ -10,7 +10,7 @@
 
 use crate::commands::{safe_media_name, AppState};
 use crate::db::{self, now_ms};
-use crate::render::{render_card, strip_tags};
+use crate::render::{render_card, sound_names, strip_sound, strip_tags};
 use crate::srs;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -302,7 +302,8 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
     out += &line(cols.iter().map(|(_, h)| h.to_string()).collect());
     let mut n = 0;
     while let Some(r) = rows.next().map_err(err)? {
-        let fields: Vec<String> = serde_json::from_str(&r.get::<_, String>(0).map_err(err)?).map_err(err)?;
+        // CSV 는 글자만: [sound:] 은 지운다 (카드 화면의 소리 칩 자리 표시도 남지 않게 렌더 전에)
+        let fields: Vec<String> = serde_json::from_str::<Vec<String>>(&r.get::<_, String>(0).map_err(err)?).map_err(err)?.iter().map(|f| strip_sound(f)).collect();
         let (ntname, native): (String, bool) = (r.get(2).map_err(err)?, r.get(4).map_err(err)?);
         let (q, a): (Option<String>, Option<String>) = (r.get(9).map_err(err)?, r.get(10).map_err(err)?);
         let q = q.unwrap_or_default();
@@ -895,8 +896,7 @@ pub(crate) fn media_refs(html: &str, out: &mut impl Extend<String>) {
             _ => rest.split([' ', '>']).next().unwrap_or(""),
         }
     });
-    let sounds = html.split("[sound:").skip(1).filter_map(|s| s.split_once(']').map(|(n, _)| n));
-    out.extend(srcs.chain(sounds).filter(|n| safe_media_name(n).is_ok()).map(String::from));
+    out.extend(srcs.chain(sound_names(html)).filter(|n| safe_media_name(n).is_ok()).map(String::from));
 }
 
 /// Anki 의 중복 검사 값(csum). 첫 필드 글자의 sha1 앞 4바이트
@@ -1185,6 +1185,32 @@ mod tests {
         assert_eq!(export(&con, &a.data_dir, root, &out, true, &stop).unwrap_err(), CANCELLED);
         assert!(out.exists());
         assert!(out.exists(), "실패해도 이미 있던 파일은 그대로");
+    }
+
+    /// AU7 소리: 필드의 [sound:] 글자와 소리 파일이 내보내기 · 가져오기를 그대로 지난다. 빠진 파일만 경고 (AU5)
+    #[test]
+    fn sound_round_trip() {
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-sound-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        for (front, back) in [("abandon [sound:voice.mp3]", "버리다 [sound:voice.mp3]"), ("car", "자동차 [sound:gone.mp3]")] {
+            insert_note(&con, &NewCard { deck_id: deck, kind: "basic".into(), front: front.into(), back: back.into(), importance: None }, "", None).unwrap();
+        }
+        std::fs::write(a.data_dir.join("media/voice.mp3"), b"ID3-sound").unwrap();
+        let out = tmp.0.join("sound.apkg");
+        let r = export(&con, &a.data_dir, deck, &out, false, &QUIET).unwrap();
+        assert_eq!((r.media, r.missing_media), (1, 1), "voice.mp3 는 넣고 gone.mp3 는 빠졌다");
+
+        let b = state(&tmp.0.join("b"));
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap()).unwrap();
+        let bc = b.db.lock().unwrap();
+        assert_eq!(strings(&bc, "SELECT fields FROM note ORDER BY 1"), strings(&con, "SELECT fields FROM note ORDER BY 1"), "[sound:] 글자가 그대로");
+        assert_eq!(std::fs::read(b.data_dir.join("media/voice.mp3")).unwrap(), b"ID3-sound");
+        let sound: Vec<&Value> = res["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "missing_sound" || i["kind"] == "sound").collect();
+        assert_eq!(sound.len(), 1, "소리가 든 노트 경고(I28)는 없고 빠진 파일 경고만: {sound:?}");
+        assert_eq!(sound[0]["detail"], "소리 파일이 빠진 노트 1개 · 학습할 때 그 자리에 \"파일 없음\"으로 보여요");
     }
 
     /// 내보낸 .apkg 의 그림 가리기 모델 JSON (스키마 11 col.models)

@@ -289,6 +289,35 @@
 .card-html .cloze { color: var(--accent-default); font-weight: 600; }
 .card-html .cloze-mark { color: var(--accent-text); font-weight: 600; text-decoration: underline; }
 .card-html .missing-media { color: var(--text-tertiary); font-size: 13px; }
+/* AU SoundChip (cardHtml.ts): 높이 30 · 알약 · 14px 아이콘 + Label/S. 글자는 data-label 로 그려 카드 글자에 섞이지 않는다 */
+.card-html .snd {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin-left: 10px;
+  padding: 0 11px 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  vertical-align: middle;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.card-html .snd::before {
+  content: "";
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  mask: url("../assets/icons/play.svg") center / 100% 100% no-repeat;
+}
+.card-html .snd::after { content: attr(data-label); max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.card-html .snd.is-playing { border-color: var(--accent-default); background: var(--accent-subtle); color: var(--accent-text); }
+.card-html .snd.is-playing::before { mask-image: url("../assets/icons/pause.svg"); }
+.card-html .snd:disabled { opacity: 1; border: 1px dashed var(--border-strong); background: none; color: var(--text-tertiary); }
+.card-html .snd:disabled::before { mask-image: url("../assets/icons/volume-x.svg"); }
+.cards__snd { margin-right: 6px; vertical-align: -2px; }
 
 /* ---------------------------------------------------------------- C3 카드 추가 */
 .addcard { display: flex; flex-direction: column; gap: 18px; width: 1120px; margin: 0 auto; padding: 96px 0 48px; }

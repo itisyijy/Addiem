@@ -250,7 +250,7 @@ fn pct(v: f64) -> String {
     format!("{:.2}%", v * 100.0)
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 

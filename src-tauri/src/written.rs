@@ -338,7 +338,8 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
     let html = match &typed {
         Some(f) => {
             let values: Vec<String> = serde_json::from_str(&fields).unwrap_or_default();
-            names.get(&nt).and_then(|n| n.iter().position(|x| x == f)).and_then(|i| values.get(i).cloned()).unwrap_or_default()
+            // AU6 소리 표기는 정답 글자가 아니다
+            names.get(&nt).and_then(|n| n.iter().position(|x| x == f)).and_then(|i| values.get(i)).map(|v| render::strip_sound(v)).unwrap_or_default()
         }
         None => commands::answer_part(&commands::render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), ord).back).to_string(),
     };

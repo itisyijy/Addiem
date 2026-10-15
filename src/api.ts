@@ -118,6 +118,8 @@ export type CardRow = {
   exam: ExamState;
   /** M4 그림 가리기 카드 */
   occlusion: IoPos | null;
+  /** AU6 소리가 있는 칸 [질문, 답]. 목록은 칩 대신 스피커 아이콘만 */
+  sounds: [boolean, boolean];
 };
 /** 그림 가리기 카드의 자리. ordinal: 칸 번호(편집기 focus), n/count: "그림 가리기 · n/N" */
 export type IoPos = { ordinal: number; n: number; count: number };

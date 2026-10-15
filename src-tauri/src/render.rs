@@ -12,22 +12,41 @@ pub struct Rendered {
 }
 
 pub fn render_card(qfmt: &str, afmt: &str, fields: &HashMap<String, String>, ord: u32) -> Rendered {
-    let front = strip_sound(&render(qfmt, fields, ord, false, ""));
-    let back = strip_sound(&render(afmt, fields, ord, true, &front));
+    let front = sound_marks(&render(qfmt, fields, ord, false, ""));
+    let back = sound_marks(&render(afmt, fields, ord, true, &front));
     if crate::occlusion::is_template(qfmt) {
         return crate::occlusion::finish(front, back, qfmt, fields, ord);
     }
     Rendered { front, back }
 }
 
-/// Anki 의 [sound:파일] 표기. MVP 는 소리를 재생하지 않으므로 화면에서 지운다 (가져오기 결과에 보고한다)
+/// 소리 자리 표시의 앞부분. 화면(cardHtml.ts)이 소리 칩으로 바꾼다
+pub const SOUND_MARK: &str = "<span class=\"snd\" data-snd=\"";
+
+/// AU1 Anki 의 [sound:파일] -> 빈 자리 표시 <span class="snd" data-snd="파일"></span>. 글자가 없어서 글자만 쓰는 곳
+/// (목록 · 품질 검사 · AI · 서술형 비교)은 strip_tags 로 그대로 빠진다 (AU6). 이름이 안전하지 않으면 지우고, 닫히지 않은 표기는 글자 그대로
+fn sound_marks(html: &str) -> String {
+    sounds(html, |name| match crate::commands::safe_media_name(name) {
+        Ok(n) => format!("{SOUND_MARK}{}\"></span>", crate::occlusion::escape(n)),
+        Err(_) => String::new(),
+    })
+}
+
+/// [sound:파일] 을 지운다. 템플릿을 거치지 않는 필드 글자(CSV 내보내기, type-in 정답)용
 pub fn strip_sound(html: &str) -> String {
+    sounds(html, |_| String::new())
+}
+
+fn sounds(html: &str, mark: impl Fn(&str) -> String) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(i) = rest.find("[sound:") {
         out.push_str(&rest[..i]);
         match rest[i..].find(']') {
-            Some(j) => rest = &rest[i + j + 1..],
+            Some(j) => {
+                out.push_str(&mark(&rest[i + 7..i + j]));
+                rest = &rest[i + j + 1..];
+            }
             None => {
                 rest = &rest[i..];
                 break;
@@ -36,6 +55,11 @@ pub fn strip_sound(html: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// 필드가 쓰는 소리 파일 이름 (닫히지 않은 표기는 뺀다)
+pub fn sound_names(html: &str) -> impl Iterator<Item = &str> {
+    html.split("[sound:").skip(1).filter_map(|s| s.split_once(']').map(|(n, _)| n))
 }
 
 fn render(tpl: &str, fields: &HashMap<String, String>, ord: u32, is_back: bool, front_side: &str) -> String {
@@ -225,6 +249,25 @@ mod tests {
         assert_eq!(strip_sound("발음 [sound:a.mp3] 끝"), "발음  끝");
         assert_eq!(strip_sound("[sound:a.mp3][sound:b.mp3]"), "");
         assert_eq!(strip_sound("닫히지 않은 [sound:a"), "닫히지 않은 [sound:a");
+        assert_eq!(sound_names("[sound:a.mp3] x [sound:b c.ogg][sound:끝").collect::<Vec<_>>(), ["a.mp3", "b c.ogg"]);
+    }
+
+    #[test]
+    fn sound_tags_become_marks() {
+        let mark = |n: &str| format!("<span class=\"snd\" data-snd=\"{n}\"></span>");
+        assert_eq!(sound_marks("발음 [sound:a.mp3] 끝"), format!("발음 {} 끝", mark("a.mp3")));
+        assert_eq!(sound_marks("[sound:a.mp3][sound:b.mp3]"), format!("{}{}", mark("a.mp3"), mark("b.mp3")), "여러 개는 나온 순서대로");
+        assert_eq!(sound_marks(r#"[sound:a"><img src=x onerror=alert(1)>.mp3]"#), mark("a&quot;&gt;&lt;img src=x onerror=alert(1)&gt;.mp3"), "이름은 이스케이프한다");
+        for bad in ["[sound:../a.mp3]", r"[sound:C:\a.mp3]", r"[sound:..\a.mp3]", "[sound:a/b.mp3]", "[sound:.a.mp3]", "[sound:]", "[sound:https://x.com/a.mp3]"] {
+            assert_eq!(sound_marks(bad), "", "미디어 폴더 밖을 가리키는 이름은 지운다: {bad}");
+        }
+        assert_eq!(sound_marks("닫히지 않은 [sound:a"), "닫히지 않은 [sound:a");
+        // 앞면 소리는 {{FrontSide}} 로 뒷면에도 있다. 글자만 쓰는 곳에는 남지 않는다
+        let r = render_card("{{Front}}[sound:{{Audio}}]", "{{FrontSide}}<hr id=answer>{{Back}}", &f(&[("Front", "Q"), ("Audio", "q.mp3"), ("Back", "A [sound:a.mp3]")]), 0);
+        assert_eq!(r.front, format!("Q{}", mark("q.mp3")));
+        assert_eq!(r.back, format!("Q{}<hr id=answer>A {}", mark("q.mp3"), mark("a.mp3")));
+        assert_eq!((strip_tags(&r.front), strip_tags(&r.back)), ("Q".to_string(), "Q A".to_string()));
+        assert!(!is_blank(&r.front));
     }
 
     #[test]

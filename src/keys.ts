@@ -4,7 +4,7 @@
 import { useSyncExternalStore } from "react";
 
 export type Scope = "study" | "app" | "occlusion";
-export type ActionId = "reveal" | "rate" | "edit" | "bury" | "undo" | "source" | "grade" | "newDeck" | "import" | "addCard" | "save" | "math";
+export type ActionId = "reveal" | "rate" | "edit" | "bury" | "undo" | "source" | "grade" | "replay" | "newDeck" | "import" | "addCard" | "save" | "math";
 
 export const SCOPE_LABEL: Record<Scope, string> = { study: "학습 화면", app: "앱 전체", occlusion: "가리기 편집기" };
 
@@ -19,6 +19,9 @@ export const ACTIONS: { id: ActionId; label: string; scope: Scope; keys: string[
   { id: "source", label: "원자료 보기", scope: "study", keys: ["KeyS"] },
   // R2: 서술형 비교 화면(J2)에서 ChatGPT 채점 보조. 학습 화면 키(Space · 1–4 · E · − · Ctrl Z · S)와 고정 키(Esc · B), 앱 범위 키(N · I · A)와 겹치지 않음 확인 (2026-10-15)
   { id: "grade", label: "ChatGPT 채점 보조", scope: "study", keys: ["KeyG"] },
+  // AU3: 지금 면의 소리 다시 듣기 (Anki 와 같은 R). 학습 화면 키(Space · 1–4 · E · − · Ctrl Z · S · G) · 고정 키(Esc · B) · 앱 범위 키(N · I · A)와 겹치지 않음 확인.
+  // 가리기 편집기의 R(사각형)은 편집기 안에서만이라 따로 (2026-10-15)
+  { id: "replay", label: "소리 다시 듣기", scope: "study", keys: ["KeyR"] },
   { id: "newDeck", label: "새 덱", scope: "app", keys: ["KeyN"] },
   { id: "import", label: "가져오기", scope: "app", keys: ["KeyI"] },
   { id: "addCard", label: "카드 추가", scope: "app", keys: ["KeyA"] },
