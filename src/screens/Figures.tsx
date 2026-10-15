@@ -733,13 +733,15 @@ const blank = (): Cell => ({ text: "", row_span: 1, col_span: 1, merged: false }
 /** 행 · 열을 넣거나 빼면 합친 칸은 푼다 (글자는 왼쪽 위 칸에 남는다) */
 const unmerged = (g: Cell[][]) => g.map((row) => row.map((x) => ({ text: x.merged ? "" : x.text, row_span: 1, col_span: 1, merged: false })));
 
+/** 묻는 칸: 실제 카드 앞면과 같게 (render.rs cloze, 표 칸에는 힌트가 없다) */
+const ASK = `<span class="cloze">[${"\u00a0".repeat(6)}]</span>`;
 /** {{c1::답}} → 묻는 칸 표시 (미리보기만) */
 function DraftView({ d }: { d: RegionCard }) {
   if (d.kind === "cloze") {
     const answer = /\{\{c1::([\s\S]*?)\}\}/.exec(d.front)?.[1] ?? "";
     return (
       <>
-        <div className="card-html tg-card__front" dangerouslySetInnerHTML={{ __html: sanitize(d.front.replace(/\{\{c1::[\s\S]*?\}\}/, '<span class="tg-ask">?</span>')) }} />
+        <div className="card-html tg-card__front" dangerouslySetInnerHTML={{ __html: sanitize(d.front.replace(/\{\{c1::[\s\S]*?\}\}/, ASK)) }} />
         <p className="t-caption c-secondary" dangerouslySetInnerHTML={{ __html: sanitize(`답 · ${answer}`) }} />
       </>
     );

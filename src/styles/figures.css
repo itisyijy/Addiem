@@ -168,4 +168,3 @@
 .tg-card { display: flex; flex-direction: column; gap: 10px; max-height: 340px; padding: 18px; overflow: auto; border-radius: 20px; background: var(--bg-canvas); }
 .tg-card .card-html table { width: 100%; margin: 10px 0 0; background: var(--bg-surface); font-size: 12px; }
 .tg-card__front > div:first-child, .tg-card__q { color: var(--text-primary); font: 600 17px/28px var(--font-sans); letter-spacing: -0.005em; }
-.tg-ask { display: inline-block; min-width: 56px; padding: 0 8px; border-radius: 4px; background: var(--accent-default); color: var(--text-inverse); font-weight: 600; text-align: center; }
