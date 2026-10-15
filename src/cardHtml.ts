@@ -23,10 +23,15 @@ export function sanitize(html: string): string {
 
 const cache = new Map<string, Promise<string>>();
 
+/** read_media 가 너무 커서 data URL 로 주지 않은 파일 (T7-01): "too_large:<바이트>" */
+const TOO_LARGE = "too_large:";
+const largeMb = (v: string) => Math.max(1, Math.round(Number(v.slice(TOO_LARGE.length)) / 2 ** 20));
+
+/** data URL, 너무 큰 파일이면 "too_large:<바이트>", 없으면 "" */
 function mediaUrl(name: string) {
   let p = cache.get(name);
   if (!p) {
-    p = invoke<string>("read_media", { name }).catch(() => "");
+    p = invoke<string>("read_media", { name }).catch((e) => (String(e).startsWith(TOO_LARGE) ? String(e) : ""));
     cache.set(name, p);
   }
   return p;
@@ -40,7 +45,7 @@ function soundLength(name: string) {
   let p = lengths.get(name);
   if (!p) {
     p = mediaUrl(name).then((url) =>
-      !url
+      !url.startsWith("data:")
         ? null
         : new Promise<number | null>((done) => {
             const a = new Audio();
@@ -64,10 +69,12 @@ async function soundChip(mark: Element) {
   const chip = Object.assign(document.createElement("button"), { type: "button", className: "snd t-label-s" });
   chip.dataset.snd = name;
   if (len === null) {
+    const url = await mediaUrl(name);
+    const why = url.startsWith(TOO_LARGE) ? `소리 파일이 너무 커서 재생하지 않아요 (${largeMb(url)} MB)` : "소리 파일을 찾을 수 없어요";
     chip.disabled = true;
     chip.classList.add("is-missing");
-    chip.dataset.label = chip.title = `소리 파일을 찾을 수 없어요 · ${name}`;
-    chip.setAttribute("aria-label", `소리 파일을 찾을 수 없어요: ${name}`);
+    chip.dataset.label = chip.title = `${why} · ${name}`;
+    chip.setAttribute("aria-label", `${why}: ${name}`);
   } else {
     chip.dataset.len = chip.dataset.label = clock(Math.max(1, Math.round(len)));
     chip.setAttribute("aria-label", `소리 듣기 · ${chip.dataset.len}`);
@@ -92,7 +99,7 @@ export async function playSounds(chips: Iterable<Element>) {
     if (!(chip instanceof HTMLButtonElement) || chip.disabled) continue;
     const url = await mediaUrl(chip.dataset.snd ?? "");
     if (me !== run) return;
-    if (!url) continue;
+    if (!url.startsWith("data:")) continue;
     const audio = new Audio(url);
     const c = (current = { audio, chip });
     const len = chip.dataset.len ?? "";
@@ -137,9 +144,14 @@ export async function renderCardHtml(html: string): Promise<string> {
       const src = img.getAttribute("src") ?? "";
       if (!src || src.startsWith("data:")) return;
       const url = await mediaUrl(src);
-      if (url) {
+      if (url.startsWith("data:")) {
         img.setAttribute("data-media", src);
         img.setAttribute("src", url);
+      } else if (url) {
+        // 너무 큰 그림 (T7-01): 자리 표시 글자로. 원래 <img> 를 들고 있어 편집해 저장해도 그림 참조가 그대로다 (toStoredHtml)
+        const ph = Object.assign(document.createElement("span"), { className: "missing-media", textContent: `그림이 너무 커서 보이지 않아요 (${largeMb(url)} MB)` });
+        ph.dataset.img = img.outerHTML;
+        img.replaceWith(ph);
       } else {
         img.replaceWith(Object.assign(document.createElement("span"), { className: "missing-media", textContent: `[그림 없음: ${src}]` }));
       }
@@ -152,6 +164,11 @@ export async function renderCardHtml(html: string): Promise<string> {
 export function toStoredHtml(editorHtml: string): string {
   const tpl = document.createElement("template");
   tpl.innerHTML = editorHtml;
+  tpl.content.querySelectorAll("span.missing-media[data-img]").forEach((ph) => {
+    const img = document.createElement("template");
+    img.innerHTML = ph.getAttribute("data-img") ?? "";
+    ph.replaceWith(img.content);
+  });
   tpl.content.querySelectorAll("img[data-media]").forEach((img) => {
     img.setAttribute("src", img.getAttribute("data-media") ?? "");
     img.removeAttribute("data-media");

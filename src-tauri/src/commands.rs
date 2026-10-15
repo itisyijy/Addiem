@@ -2207,12 +2207,25 @@ pub fn save_media(state: State<AppState>, name: String, data_base64: String) -> 
     Ok(file)
 }
 
-/// 카드 HTML 의 <img src="파일이름"> 을 화면에 띄우기 위한 data URL
+/// data URL 로 화면에 넣는 미디어의 상한 (T7-01). 100MB 그림이면 렌더러가 11분 넘게 멈췄다. 넘으면 화면이 "너무 커서" 자리 표시를 그린다
+const MAX_INLINE: u64 = 20 << 20;
+
+/// 카드 HTML 의 <img src="파일이름"> 을 화면에 띄우기 위한 data URL. MAX_INLINE 을 넘으면 `too_large:<바이트>` 오류 (cardHtml.ts)
 #[tauri::command]
 pub fn read_media(state: State<AppState>, name: String) -> Res<String> {
+    media_data_url(&state.data_dir, &name)
+}
+
+fn media_data_url(data_dir: &std::path::Path, name: &str) -> Res<String> {
     use base64::Engine;
-    let name = safe_media_name(&name)?;
-    let bytes = std::fs::read(media_dir(&state.data_dir).join(name)).map_err(|_| format!("미디어 파일을 찾을 수 없어요: {name}"))?;
+    let name = safe_media_name(name)?;
+    let path = media_dir(data_dir).join(name);
+    let missing = |_| format!("미디어 파일을 찾을 수 없어요: {name}");
+    let size = std::fs::metadata(&path).map_err(missing)?.len();
+    if size > MAX_INLINE {
+        return Err(format!("too_large:{size}"));
+    }
+    let bytes = std::fs::read(&path).map_err(missing)?;
     Ok(format!("data:{};base64,{}", mime_of(name), base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
@@ -2659,5 +2672,18 @@ mod tests {
         assert_eq!(super::write_mode_source(&con, 3).unwrap(), Some((1, "d1".into())), "위 덱을 따른다");
         con.execute("INSERT INTO deck_config (deck_id, write_mode, updated_at) VALUES (3, 1, 0)", []).unwrap();
         assert_eq!(super::write_mode_source(&con, 3).unwrap().map(|s| s.0), Some(3), "가장 가까운 덱");
+    }
+
+    #[test]
+    fn huge_media_is_not_inlined() {
+        // T7-01: 큰 그림을 data URL 로 넣으면 렌더러가 멈춘다. 상한을 넘으면 크기만 알린다 (화면이 "너무 커서" 로 그린다)
+        let dir = std::env::temp_dir().join(format!("neoanki-media-{}-{}", std::process::id(), crate::db::now_ms()));
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        std::fs::write(dir.join("media/small.png"), b"png").unwrap();
+        std::fs::File::create(dir.join("media/big.png")).unwrap().set_len(super::MAX_INLINE + 1).unwrap();
+        assert_eq!(super::media_data_url(&dir, "small.png").unwrap(), "data:image/png;base64,cG5n");
+        assert_eq!(super::media_data_url(&dir, "big.png").unwrap_err(), format!("too_large:{}", super::MAX_INLINE + 1));
+        assert!(super::media_data_url(&dir, "none.png").unwrap_err().contains("찾을 수 없어요"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
