@@ -1312,7 +1312,7 @@ mod tests {
                 extra: "<b>All People Seem To Need Data Processing</b>".into(),
                 importance: Some(2),
             };
-            recall::insert(&con, recall::LIST, deck_id, &recall::list_fields(&card).unwrap(), card.importance).unwrap();
+            recall::insert(&con, recall::LIST, deck_id, &recall::list_fields(&card).unwrap(), card.importance, "", None).unwrap();
             let id: i64 = con.query_row("SELECT id FROM card", [], |r| r.get(0)).unwrap();
             assert_eq!(con.query_row("SELECT count(*) FROM card", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "노트 1개 = 카드 1장");
             assert_eq!(recall::suggest_for(&con, id, &[3, 6]).unwrap(), Some(2), "7개 중 5개 기억 → Hard (Q1-b)");
@@ -1362,7 +1362,7 @@ mod tests {
                 extra: "서버가 SYN을 받으면 SYN-ACK로 답해요.".into(),
                 importance: None,
             };
-            recall::insert(&con, recall::CHOICE, deck_id, &recall::choice_fields(&card).unwrap(), None).unwrap();
+            recall::insert(&con, recall::CHOICE, deck_id, &recall::choice_fields(&card).unwrap(), None, "", None).unwrap();
             let id: i64 = con.query_row("SELECT id FROM card", [], |r| r.get(0)).unwrap();
             assert_eq!(recall::suggest_for(&con, id, &[3]).unwrap(), Some(1), "ACK 를 고름 → Again (Q2)");
             assert_eq!(recall::suggest_for(&con, id, &[2]).unwrap(), Some(3));

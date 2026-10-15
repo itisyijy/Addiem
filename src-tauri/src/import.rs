@@ -10,7 +10,7 @@
 
 use crate::commands::{insert_note, media_dir, mime_of, safe_media_name, AppState, NewCard};
 use crate::db::{self, now_ms};
-use crate::srs;
+use crate::{recall, srs};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
@@ -244,8 +244,10 @@ struct JsonCard {
     deck: Vec<String>,
     tags: String,
     importance: Option<i64>,
-    /// basic | reversed | cloze (NewCard.kind)
+    /// basic | reversed | cloze (NewCard.kind) | recall::LIST · CHOICE (목록 · 선택형 노트 유형 이름)
     kind: &'static str,
+    /// 목록 · 선택형 필드 (Q10). 나머지는 비어 있다
+    fields: Vec<String>,
 }
 
 fn split_path(p: &str) -> Vec<String> {
@@ -254,6 +256,50 @@ fn split_path(p: &str) -> Vec<String> {
 
 fn has_cloze(s: &str) -> bool {
     s.match_indices("{{c").any(|(i, _)| s[i + 3..].starts_with(|c: char| c.is_ascii_digit()) && s[i + 3..].contains("::"))
+}
+
+/// 목록 · 선택형 (Q10). 여기서는 키 모양만 보고, 내용은 앱의 저장 검증(recall::list_fields · choice_fields) 그대로
+fn json_recall(nt: &str, o: &serde_json::Map<String, Value>) -> Result<Vec<String>, (&'static str, String)> {
+    let missing = |key: &str| ("missing_field", format!("{key} 키가 없어요"));
+    let text = |key: &str| match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(("bad_field", format!("{key} 가 문자열이 아니에요"))),
+    };
+    let flag = |key: &str| match o.get(key) {
+        None | Some(Value::Null) => Ok(true),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(("bad_field", format!("{key} 는 true 또는 false 예요"))),
+    };
+    let strings = |key: &str| match o.get(key) {
+        None | Some(Value::Null) => Err(missing(key)),
+        Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(String::from).ok_or(("bad_field", format!("{key} 에 문자열이 아닌 값이 있어요")))).collect(),
+        Some(_) => Err(("bad_field", format!("{key} 가 배열이 아니에요"))),
+    };
+    let question = text("question")?.ok_or_else(|| missing("question"))?;
+    let extra = text("extra")?.unwrap_or_default();
+    let checked = |r: Res<Vec<String>>| r.map_err(|e| ("invalid", e));
+    if nt == recall::LIST {
+        let items = strings("items")?;
+        return checked(recall::list_fields(&recall::ListNew { deck_id: 0, question, items, ordered: flag("ordered")?, extra, importance: None }));
+    }
+    let options: Vec<String> = strings("options")?;
+    // correct 는 보기 번호 (1부터, 화면 · 정답 칸과 같다). 하나면 숫자만 써도 된다.
+    // 앱 화면에서는 없는 보기를 고를 수 없어 choice_fields 가 조용히 버린다. 여기서는 건너뛰고 알린다
+    let correct = match o.get("correct") {
+        None | Some(Value::Null) => return Err(missing("correct")),
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(v) => vec![v],
+    };
+    let correct = correct
+        .iter()
+        .map(|v| match v.as_u64() {
+            Some(n) if n >= 1 && options.get(n as usize - 1).is_some_and(|o| !o.trim().is_empty()) => Ok(n as usize - 1),
+            Some(n) if n >= 1 => Err(("invalid", format!("correct 의 {n}번 보기가 없거나 비어 있어요"))),
+            _ => Err(("bad_field", "correct 는 1부터 세는 보기 번호예요".into())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    checked(recall::choice_fields(&recall::ChoiceNew { deck_id: 0, question, options, correct, shuffle: flag("shuffle")?, extra, importance: None }))
 }
 
 /// 반환: (가져올 카드, 문제 목록, 전체 실패 이유)
@@ -289,44 +335,65 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
             continue;
         };
         let note_type = o.get("note_type").and_then(Value::as_str).unwrap_or(&default_type);
-        let front = o.get("front");
-        let cloze = note_type.eq_ignore_ascii_case("cloze") || front.and_then(Value::as_str).is_some_and(has_cloze);
-        // 빈칸 카드는 back 이 없어도 된다 (추가 설명)
-        let mut bad = None;
-        for (key, val, required) in [("front", front, true), ("back", o.get("back"), !cloze)] {
-            match val {
-                None | Some(Value::Null) => {
-                    if required {
-                        bad = Some((key, "missing_field", format!("{key} 키가 없어요")));
+        // 목록 · 선택형 (Q10): note_type 이 list · choice (또는 앱 유형 이름)이거나 items · options 키가 있으면
+        let is = |short: &str, name: &str, key: &str| note_type.eq_ignore_ascii_case(short) || note_type == name || o.contains_key(key);
+        let special = if is("list", recall::LIST, "items") {
+            Some(recall::LIST)
+        } else if is("choice", recall::CHOICE, "options") {
+            Some(recall::CHOICE)
+        } else {
+            None
+        };
+        let (front, back, kind, fields) = match special {
+            Some(nt) => match json_recall(nt, o) {
+                // 질문은 중복 경고에만 쓴다
+                Ok(f) => (f[0].clone(), String::new(), nt, f),
+                Err((kind, d)) => {
+                    issues.push(at(i, "skipped", kind, d));
+                    continue;
+                }
+            },
+            None => {
+                let front = o.get("front");
+                let cloze = note_type.eq_ignore_ascii_case("cloze") || front.and_then(Value::as_str).is_some_and(has_cloze);
+                // 빈칸 카드는 back 이 없어도 된다 (추가 설명)
+                let mut bad = None;
+                for (key, val, required) in [("front", front, true), ("back", o.get("back"), !cloze)] {
+                    match val {
+                        None | Some(Value::Null) => {
+                            if required {
+                                bad = Some((key, "missing_field", format!("{key} 키가 없어요")));
+                            }
+                        }
+                        Some(Value::String(s)) => {
+                            if required && crate::render::is_blank(s) {
+                                bad = Some((key, "empty_field", format!("{key} 이 비어 있어요")));
+                            }
+                        }
+                        Some(_) => bad = Some((key, "bad_field", format!("{key} 가 문자열이 아니에요"))),
+                    }
+                    if bad.is_some() {
+                        break;
                     }
                 }
-                Some(Value::String(s)) => {
-                    if required && crate::render::is_blank(s) {
-                        bad = Some((key, "empty_field", format!("{key} 이 비어 있어요")));
-                    }
+                if let Some((_, kind, d)) = bad {
+                    issues.push(at(i, "skipped", kind, d));
+                    continue;
                 }
-                Some(_) => bad = Some((key, "bad_field", format!("{key} 가 문자열이 아니에요"))),
+                let front = front.and_then(Value::as_str).unwrap_or_default().to_string();
+                let back = o.get("back").and_then(Value::as_str).unwrap_or_default().to_string();
+                if cloze && !has_cloze(&front) {
+                    issues.push(at(i, "skipped", "no_cloze", "빈칸({{c1::...}})이 없어요".into()));
+                    continue;
+                }
+                // 앞뒤 둘 다: 노트 하나에서 카드 두 장 (앞 → 뒤, 뒤 → 앞)
+                let reversed = ["reversed", "Basic (and reversed card)"].iter().any(|t| note_type.eq_ignore_ascii_case(t));
+                if !cloze && !reversed && !note_type.eq_ignore_ascii_case("basic") {
+                    issues.push(at(i, "info", "note_type", format!("노트타입 '{note_type}' 는 질문과 답변으로 가져왔어요")));
+                }
+                (front, back, if cloze { "cloze" } else if reversed { "reversed" } else { "basic" }, vec![])
             }
-            if bad.is_some() {
-                break;
-            }
-        }
-        if let Some((_, kind, d)) = bad {
-            issues.push(at(i, "skipped", kind, d));
-            continue;
-        }
-        let front = front.and_then(Value::as_str).unwrap_or_default().to_string();
-        let back = o.get("back").and_then(Value::as_str).unwrap_or_default().to_string();
-        if cloze && !has_cloze(&front) {
-            issues.push(at(i, "skipped", "no_cloze", "빈칸({{c1::...}})이 없어요".into()));
-            continue;
-        }
-        // 앞뒤 둘 다: 노트 하나에서 카드 두 장 (앞 → 뒤, 뒤 → 앞)
-        let reversed = ["reversed", "Basic (and reversed card)"].iter().any(|t| note_type.eq_ignore_ascii_case(t));
-        if !cloze && !reversed && !note_type.eq_ignore_ascii_case("basic") {
-            issues.push(at(i, "info", "note_type", format!("노트타입 '{note_type}' 는 질문과 답변으로 가져왔어요")));
-        }
-        let kind = if cloze { "cloze" } else if reversed { "reversed" } else { "basic" };
+        };
 
         let tags = match o.get("tags") {
             Some(Value::Array(a)) => a.iter().map(|t| t.as_str().map(String::from).unwrap_or_else(|| t.to_string())).collect::<Vec<_>>().join(" "),
@@ -360,7 +427,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
             p if p.is_empty() => vec![DEFAULT_DECK.to_string()],
             p => p,
         };
-        out.push(JsonCard { index: i, front, back, deck, tags, importance, kind });
+        out.push(JsonCard { index: i, front, back, deck, tags, importance, kind, fields });
     }
     (out, issues, None)
 }
@@ -466,14 +533,14 @@ pub fn import_json(state: State<AppState>, text: String, source: String, deck_id
             _ => decks.ensure(&tx, target.as_ref().map(|t| t.0), &path, now)?,
         };
         used.insert(did);
-        let card = NewCard {
-            deck_id: did,
-            kind: c.kind.into(),
-            front: c.front.clone(),
-            back: c.back.clone(),
-            importance: c.importance,
-        };
-        let n = insert_note(&tx, &card, &c.tags, Some(batch)).map_err(|e| format!("#{}: {e}", c.index))?;
+        let n = match c.kind {
+            recall::LIST | recall::CHOICE => recall::insert(&tx, c.kind, did, &c.fields, c.importance, &c.tags, Some(batch)).map(|_| 1),
+            kind => {
+                let card = NewCard { deck_id: did, kind: kind.into(), front: c.front.clone(), back: c.back.clone(), importance: c.importance };
+                insert_note(&tx, &card, &c.tags, Some(batch))
+            }
+        }
+        .map_err(|e| format!("#{}: {e}", c.index))?;
         made += n;
         for _ in 0..n {
             card_tags.entry(did).or_default().push(tags_level(&c.tags));
@@ -1659,6 +1726,55 @@ mod tests {
         assert!(parse_json(r#"{"cards":"배열아님"}"#).2.is_some());
         assert!(parse_json("[]").2.is_some());
         assert!(parse_json("{ 깨진").2.is_some());
+    }
+
+    #[test]
+    fn json_list_and_choice() {
+        let names = |nt: &str| serde_json::from_str::<Vec<String>>(if nt == recall::LIST { recall::LIST_FIELDS_JSON } else { recall::CHOICE_FIELDS_JSON }).unwrap();
+        // 목록: items 키로 알아본다. 항목은 글자라 이스케이프한다. 저장한 필드를 학습 화면이 그대로 읽는다
+        let (cs, iss, _) = parse_json(r#"[{"question":"OSI 하위 계층은?","items":["물리"," a<b ","  "],"ordered":false,"extra":"설명","tags":["x"]}]"#);
+        assert!(iss.is_empty());
+        assert_eq!((cs[0].kind, cs[0].front.as_str(), cs[0].tags.as_str()), (recall::LIST, "OSI 하위 계층은?", "x"));
+        assert_eq!(cs[0].fields, ["OSI 하위 계층은?", "물리<br>a&lt;b", "순서 없이", "설명"]);
+        let read = recall::special(recall::LIST, &names(recall::LIST), &serde_json::to_string(&cs[0].fields).unwrap());
+        assert!(matches!(read, Some(recall::Special::List { ordered: false, ref items, .. }) if items == &["물리", "a<b"]));
+        assert_eq!(parse_json(r#"{"note_type":"list","cards":[{"question":"q","items":["a","b"]}]}"#).0[0].fields[2], "순서대로", "ordered 기본은 순서대로");
+
+        // 선택형: 정답은 1부터. 하나면 숫자만. 섞기 기본 켬
+        let (cs, iss, _) = parse_json(r#"[{"question":"3-way 두 번째는?","options":["SYN","SYN-ACK","ACK"],"correct":2}]"#);
+        assert!(iss.is_empty());
+        assert_eq!(cs[0].kind, recall::CHOICE);
+        assert_eq!((&cs[0].fields[1..4], cs[0].fields[7].as_str(), cs[0].fields[8].as_str()), (&["SYN".to_string(), "SYN-ACK".into(), "ACK".into()][..], "2", "섞기"));
+        let f = &parse_json(r#"[{"note_type":"choice","question":"q","options":["a","","b","c"],"correct":[1,3],"shuffle":false}]"#).0[0].fields;
+        assert_eq!((f[7].as_str(), f[8].as_str()), ("1,2", "섞지 않음"), "빈 보기는 당기고 정답 번호도 따라간다 (앱과 같다)");
+        let read = recall::special(recall::CHOICE, &names(recall::CHOICE), &serde_json::to_string(f).unwrap());
+        assert!(matches!(read, Some(recall::Special::Choice { shuffle: false, ref correct, .. }) if correct == &[1, 2]));
+
+        // 잘못된 항목은 그것만 건너뛰고 번호와 이유를 알린다
+        for (card, kind) in [
+            (r#"{"items":["a","b"]}"#, "missing_field"),
+            (r#"{"question":5,"items":["a","b"]}"#, "bad_field"),
+            (r#"{"question":"<br>","items":["a","b"]}"#, "invalid"),
+            (r#"{"note_type":"list","question":"q"}"#, "missing_field"),
+            (r#"{"question":"q","items":"a b"}"#, "bad_field"),
+            (r#"{"question":"q","items":["a",2]}"#, "bad_field"),
+            (r#"{"question":"q","items":["a"," "]}"#, "invalid"),
+            (r#"{"question":"q","items":["a","b"],"ordered":"yes"}"#, "bad_field"),
+            (r#"{"question":"q","items":["a","b"],"extra":1}"#, "bad_field"),
+            (r#"{"question":"q","options":["a"],"correct":1}"#, "invalid"),
+            (r#"{"question":"q","options":["1","2","3","4","5","6","7"],"correct":1}"#, "invalid"),
+            (r#"{"question":"q","options":["a","b"]}"#, "missing_field"),
+            (r#"{"question":"q","options":["a","b"],"correct":[]}"#, "invalid"),
+            (r#"{"question":"q","options":["a","b"],"correct":0}"#, "bad_field"),
+            (r#"{"question":"q","options":["a","b"],"correct":"1"}"#, "bad_field"),
+            (r#"{"question":"q","options":["a","b"],"correct":[1,3]}"#, "invalid"),
+            (r#"{"question":"q","options":["a","","b"],"correct":2}"#, "invalid"),
+            (r#"{"question":"q","options":["a","b"],"correct":1,"shuffle":0}"#, "bad_field"),
+        ] {
+            let (cs, iss, err) = parse_json(&format!(r#"[{{"front":"a","back":"b"}},{card}]"#));
+            assert_eq!((cs.len(), err), (1, None), "{card}");
+            assert_eq!((iss.len(), iss[0].index, iss[0].severity, iss[0].kind), (1, Some(2), "skipped", kind), "{card}: {}", iss[0].detail);
+        }
     }
 
     #[test]
