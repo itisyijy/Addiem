@@ -1,0 +1,95 @@
+/* 8.4 그림 · 표로 카드 만들기. IT1-p PPTX 슬라이드별 목록(Figma 176:14681) · IT3 표 → 카드(168:13918). 색은 토큰만 */
+
+/* ---------------------------------------------------------------- IT1-p 가운데 열: 슬라이드 카드 (타일 두 개씩) */
+.fig-slides { display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; width: 346px; }
+.fig-slide { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--border-default); border-radius: 14px; background: var(--bg-surface); }
+.fig-slide__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.fig-slide__head > .t-label-m { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fig-slide__head > .t-caption { flex-shrink: 0; }
+.fig-tiles { display: flex; flex-wrap: wrap; gap: 12px; }
+.fig-tile { position: relative; display: flex; flex-direction: column; gap: 6px; width: 150px; }
+.fig-tile > .t-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fig-thumb {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 150px;
+  height: 96px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+}
+.fig-thumb:hover:not(:disabled), .fig-thumb[aria-expanded="true"] { border-color: var(--accent-default); box-shadow: inset 0 0 0 1px var(--accent-default); }
+.fig-thumb img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+/* IT11 EMF · WMF: 점선, 누를 수 없다 */
+.fig-thumb.is-off { border-style: dashed; border-color: var(--border-strong); background: var(--bg-surface); cursor: default; }
+.fig-thumb__count { position: absolute; top: 6px; left: 6px; }
+
+/* 표 타일: 글자 없는 작은 격자 */
+.fig-mini { width: 122px; height: 68px; border-collapse: collapse; table-layout: fixed; }
+.fig-mini td { padding: 0; border: 1px solid var(--border-strong); }
+.fig-mini tr:first-child td { background: var(--border-default); }
+
+/* 그림 메뉴 (IT2): 타일 아래 · 목록 행 오른쪽 */
+.menu__list.fig-menu { top: 100px; right: auto; left: 0; width: 268px; }
+.fig-row .menu__list.fig-menu { top: 56px; right: 16px; left: auto; }
+.src-list.panel:has(.fig-menu) { overflow: visible; }
+
+/* ---------------------------------------------------------------- IT1-p 오른쪽 목록 */
+.fig-row { position: relative; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border-default); }
+.fig-row:last-of-type { border-bottom: 0; }
+.fig-row__thumb { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 60px; height: 42px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--bg-subtle); color: var(--text-secondary); }
+.fig-row__text { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
+.fig-row__text > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fig-row__top { display: flex; align-items: center; gap: 8px; }
+.fig-row__top .badge { padding: 2px 8px; }
+.fig-row__count { cursor: pointer; }
+.fig-row__count:hover { box-shadow: inset 0 0 0 1px var(--accent-default); }
+.fig-row + .src-list__note { border-top: 1px solid var(--border-default); }
+
+/* ---------------------------------------------------------------- 그림을 앞면에 둔 카드 */
+.modal.fig-front { top: 50%; width: 560px; max-height: calc(100vh - 48px); overflow: auto; transform: translate(-50%, -50%); }
+.fig-front__img { align-self: center; max-width: 100%; max-height: 220px; border: 1px solid var(--border-default); border-radius: 8px; object-fit: contain; }
+.fig-front__img--wait { width: 100%; height: 160px; background: var(--bg-subtle); }
+.field__input.fig-front__answer { height: 96px; padding: 12px 16px; resize: vertical; }
+.field__input.fig-front__answer:focus { padding: 11px 15px; }
+
+/* 창 아래 줄: 넣을 곳 + 버튼 */
+.fig-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.fig-foot__where { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.fig-foot .modal__actions { flex-shrink: 0; }
+
+/* ---------------------------------------------------------------- IT3 표 → 카드 (960) */
+.modal.tg-modal { top: 50%; width: 960px; max-height: calc(100vh - 48px); overflow: auto; transform: translate(-50%, -50%); gap: 18px; padding: 28px 32px 24px; }
+.tg-mode { display: flex; align-items: center; gap: 14px; }
+.tg-body { display: flex; align-items: flex-start; gap: 24px; }
+.tg-editor { display: flex; flex-direction: column; flex-shrink: 0; gap: 10px; width: 500px; }
+.tg-editor__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tg__grid { max-height: 300px; overflow: auto; border: 1px solid var(--border-strong); border-radius: 10px; }
+.tg { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.tg td { padding: 0; border-top: 1px solid var(--border-default); border-left: 1px solid var(--border-default); }
+.tg tr:first-child td { border-top: 0; }
+.tg td:first-child { border-left: 0; }
+.tg__headrow td, .tg__pick td { background: var(--bg-subtle); }
+.tg td.is-asked { background: var(--accent-subtle); }
+.tg td:focus-within { box-shadow: inset 0 0 0 2px var(--accent-default); }
+.tg__cell { display: flex; align-items: center; gap: 8px; min-height: 38px; padding-left: 12px; }
+.tg__headrow .tg__cell { min-height: 42px; }
+.tg__input { flex: 1; width: 100%; min-width: 0; height: 36px; padding: 0 10px 0 0; border: 0; outline: none; background: transparent; color: var(--text-primary); }
+.tg__headrow .tg__input { font-weight: 600; }
+.tg td.is-asked .tg__input { color: var(--accent-text); }
+.tg-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.tg-hide { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+.tg-preview { display: flex; flex: 1; flex-direction: column; gap: 10px; min-width: 0; }
+.tg-preview__head { display: flex; align-items: center; justify-content: space-between; }
+.tg-preview__nav { display: flex; gap: 6px; }
+.tg-card { display: flex; flex-direction: column; gap: 10px; max-height: 340px; padding: 18px; overflow: auto; border-radius: 20px; background: var(--bg-canvas); }
+.tg-card .card-html table { width: 100%; margin: 10px 0 0; background: var(--bg-surface); font-size: 12px; }
+.tg-card__front > div:first-child, .tg-card__q { color: var(--text-primary); font: 600 17px/28px var(--font-sans); letter-spacing: -0.005em; }
+.tg-ask { display: inline-block; min-width: 56px; padding: 0 8px; border-radius: 4px; background: var(--accent-default); color: var(--text-inverse); font-weight: 600; text-align: center; }

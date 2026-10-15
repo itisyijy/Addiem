@@ -57,6 +57,8 @@
 .src-mark--highlight, .src-mark--underline { background: var(--src-mark-highlight); }
 .src-mark--red { background: var(--src-mark-red); }
 .src-mark--star, .src-mark--bold { background: var(--src-mark-other); }
+/* 8.4 그림 · 표 영역 (IT9): 칠하지 않고 테두리만 */
+.src-mark--figure, .src-mark--table { background: none; box-shadow: inset 0 0 0 2px var(--accent-default); mix-blend-mode: normal; }
 .src-mark.is-active { outline: 2px solid var(--accent-default); outline-offset: 1px; }
 
 /* PPTX 미리보기: 그림 없이 슬라이드 글만 (16:9 폭 300) */
@@ -76,6 +78,7 @@
 .src-slide__para.is-active { outline: 2px solid var(--accent-default); }
 
 .src-list { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.src-list[hidden] { display: none; }
 .src-list__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px 20px; white-space: nowrap; }
 .src-list__note { padding: 12px 20px 16px; }
 .src-seg { border-bottom: 1px solid var(--border-default); }

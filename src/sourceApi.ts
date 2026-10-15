@@ -53,12 +53,14 @@ export const ragApi = {
 /** "3장_빅데이터분석.pdf · p.13" */
 export const placeOf = (s: { material: string; page: number }) => `${s.material} · p.${s.page}`;
 
-/** 신뢰도 순 (source.rs SIGNALS) */
-export type Signal = "highlight" | "underline" | "red" | "star" | "bold";
-export const SIGNAL_LABEL: Record<Signal, string> = { highlight: "하이라이트", underline: "밑줄", red: "붉은 글씨", star: "★", bold: "볼드" };
+/** 신뢰도 순 (source.rs SIGNALS). figure · table 은 8.4 그림 · 표로 만든 카드의 영역 (강조가 아니다, 빠진 범위에서 뺀다) */
+export type Signal = "highlight" | "underline" | "red" | "star" | "bold" | "figure" | "table";
+export const SIGNAL_LABEL: Record<Signal, string> = { highlight: "하이라이트", underline: "밑줄", red: "붉은 글씨", star: "★", bold: "볼드", figure: "그림", table: "표" };
 /** 밑줄은 하이라이트와 구분되게 회색 + 글자 밑줄 (SignalBadge) */
-export const SIGNAL_TONE: Record<Signal, string> = { highlight: "warn", underline: "neutral", red: "danger", star: "accent", bold: "neutral" };
-export const SIGNAL_ORDER: Signal[] = ["highlight", "underline", "red", "star", "bold"];
+export const SIGNAL_TONE: Record<Signal, string> = { highlight: "warn", underline: "neutral", red: "danger", star: "accent", bold: "neutral", figure: "neutral", table: "neutral" };
+export const SIGNAL_ORDER: Signal[] = ["highlight", "underline", "red", "star", "bold", "figure", "table"];
+/** 그림 · 표 영역 구간 (IT9) */
+export const isRegion = (s: { signals: Signal[] }) => s.signals.includes("figure") || s.signals.includes("table");
 
 export type Material = {
   id: number;
@@ -94,6 +96,22 @@ export type Segment = {
 };
 export type NewSegment = Omit<Segment, "id" | "weight" | "links" | "exam">;
 export type Para = { text: string; signals: Signal[] };
+
+// ---------------------------------------------------------------- 8.4 그림 · 표 (source.rs · table.rs)
+
+/** 표 한 칸. merged: 다른 칸에 합쳐진 자리 (글자는 합친 칸의 왼쪽 위에) */
+export type Cell = { text: string; row_span: number; col_span: number; merged: boolean };
+/** supported: false 면 EMF · WMF 처럼 미리 볼 수 없는 형식 (IT11) */
+export type SlideImage = { index: number; name: string; descr: string; rect: Rect; ext: string; supported: boolean };
+export type SlideTable = { name: string; rect: Rect; rows: Cell[][] };
+/** deck_id: 넣을 곳 기본값 (R8) */
+export type SlideObjects = { page: number; title: string; deck_id: number; images: SlideImage[]; tables: SlideTable[] };
+/** 카드가 나온 곳 (구간 하나). text: 대체 글 · 표 글자 */
+export type Region = { material_id: number; page: number; rects: Rect[]; kind: "figure" | "table"; text: string };
+/** 만들 노트 하나 (필드 HTML). list 의 back 은 <br> 로 나눈 항목 */
+export type RegionCard = { kind: "basic" | "cloze" | "list"; front: string; back: string };
+export type TableMethod = "cloze" | "rows" | "list";
+export type TableSpec = { rows: Cell[][]; header: boolean; method: TableMethod; cols: number[]; hide_same_col: boolean; source: string };
 /** method "": 근거 칩으로 구간을 열었다 (카드 연결이 아님) */
 export type CardSource = { material: Material; segment: Segment; method: "manual" | "auto" | "" };
 /** "source-analyze" 이벤트. step 0 은 카드, 그다음 자료 하나씩 */
@@ -114,6 +132,16 @@ export const sourceApi = {
   forCard: (cardId: number) => invoke<CardSource | null>("source_for_card", { cardId }),
   /** R 근거 칩: 구간 하나를 I2 패널로 */
   segment: (segmentId: number) => invoke<CardSource>("source_segment", { segmentId }),
+  /** IT1-p. page 를 빼면 그림 · 표가 있는 슬라이드 전부 */
+  slideObjects: (materialId: number, page?: number) => invoke<SlideObjects[]>("source_slide_objects", { materialId, page: page ?? null }),
+  slideImage: (materialId: number, page: number, index: number) => invoke<ArrayBuffer>("source_slide_image", { materialId, page, index }),
+  /** 다른 경로로 만든 노트(그림 가리기 · 목록)를 영역에 잇는다. 구간 id */
+  regionLink: (r: Region, noteIds: number[]) =>
+    invoke<number>("source_region_link", { materialId: r.material_id, page: r.page, rects: r.rects, kind: r.kind, text: r.text, noteIds }),
+  /** 초안을 저장하고 영역에 잇는다. 되돌리기는 qualityApi.undo(변경 id) */
+  regionCards: (deckId: number, region: Region, cards: RegionCard[]) => invoke<number>("source_region_cards", { deckId, region, cards }),
+  /** IT3 미리보기 · 카드 수 (저장하지 않는다) */
+  tableCards: (table: TableSpec) => invoke<RegionCard[]>("source_table_cards", { table }),
   analyze: (deckId: number) => invoke<{ linked: number; suggested: number }>("source_analyze", { deckId }),
   /** 이 기기에서 분석한 뒤에 생긴 카드 수 (분석한 적이 없으면 0) */
   unanalyzed: (deckId: number) => invoke<number>("source_unanalyzed", { deckId }),
