@@ -320,7 +320,7 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
             icon: "alert" as IconName,
             tone: "c-warn",
             label: `${d.feature}을 쓰는 템플릿`,
-            value: `${n(s.types)}종 · ${n(s.cards)}장은 ${d.feature === "type-in 입력" ? "앞면만 표시돼요" : "일부가 다르게 보여요"}`,
+            value: `${n(s.types)}종 · ${n(s.cards)}장은 ${d.feature === "빈칸 입력칸" ? "써 넣은 답을 본문 전체와 비교해요" : "일부가 다르게 보여요"}`,
           };
     }),
     // D3-m: [latex] 는 수식만 들었으면 KaTeX 로 그리고, LaTeX 문서 전체면 원문으로 둔다
