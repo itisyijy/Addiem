@@ -480,18 +480,32 @@ pub(crate) fn clone_type(con: &Connection, id: i64, name: Option<&str>) -> Res<i
     let shown = |n: String| renames.iter().find(|(o, _)| *o == n).map_or(n.clone(), |(_, x)| x.to_string());
     let fields: Vec<String> = src.visible().into_iter().map(|(_, n)| shown(n)).collect();
     let refs_renamed = |t: &str| renames.iter().fold(t.to_string(), |t, (o, x)| rename_refs(&t, o, x));
+    // 앱 유형은 쉬운 편집 모양으로 새로 쓴다: 처음부터 모든 줄이 줄 상자라 미리보기 · 학습 답 면이 줄 설정대로다 (NT57).
+    // 쉬운 편집이 못 읽는 앱 템플릿(서술형 뒷면의 조건 구간)은 그대로. 사용자 · 가져온 유형은 그대로 복사한다
+    let templates: Vec<(String, String)> = src
+        .templates
+        .iter()
+        .map(|t| {
+            let (q, a) = (refs_renamed(&t.qfmt), refs_renamed(&t.afmt));
+            match layout_of(&q, &a) {
+                Ok(l) if src.native_kind.is_some() => build_layout(&l),
+                _ => (q, a),
+            }
+        })
+        .collect();
+    let css = with_layout_css(&src.css, templates.iter().any(|(q, a)| q.contains(BOX) || a.contains(BOX)));
     let now = now_ms();
     con.execute(
         "INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id, anki_stock_kind, user_made, next_ord)
          VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, 1, ?7)",
-        params![name, serde_json::to_string(&fields).map_err(err)?, src.css, now, new_model_id(con)?, stock, src.templates.len() as i64],
+        params![name, serde_json::to_string(&fields).map_err(err)?, css, now, new_model_id(con)?, stock, src.templates.len() as i64],
     )
     .map_err(err)?;
     let new = con.last_insert_rowid();
-    for (ord, t) in src.templates.iter().enumerate() {
+    for (ord, (t, (q, a))) in src.templates.iter().zip(templates).enumerate() {
         con.execute(
             "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![new, ord as i64, t.name, refs_renamed(&t.qfmt), refs_renamed(&t.afmt), now],
+            params![new, ord as i64, t.name, q, a, now],
         )
         .map_err(err)?;
     }
@@ -1967,16 +1981,37 @@ mod tests {
         let b = clone_type(&con, id("basic"), None).unwrap();
         let (na, nb) = (load(&con, a).unwrap(), load(&con, b).unwrap());
         assert_eq!((na.name.as_str(), nb.name.as_str()), ("내 질문과 답변", "내 질문과 답변 2"), "세그먼트에서 앞부분으로 구분되게 (NT55)");
-        // 앱 유형 복제본은 필드를 화면 이름으로, 템플릿 참조도 같이 (NT54). 원본 · 그 카드는 그대로
-        assert_eq!((na.slots.clone(), na.templates[0].qfmt.as_str(), na.templates[0].afmt.as_str()), (s(&["질문", "답변"]), "{{질문}}", "{{FrontSide}}<hr id=answer>{{답변}}"));
-        assert_eq!(load(&con, id("basic")).unwrap().slots, ["Front", "Back"]);
+        // 앱 유형 복제본은 필드를 화면 이름으로, 템플릿 참조도 같이 (NT54). 쉬운 편집 모양으로 새로 써 처음부터 모든 줄이 줄 상자이고
+        // 노트 CSS 에 줄 상자 CSS 가 들어간다 (NT57). 원본 · 그 카드는 그대로
+        let (lq, la) = (|x: &str| format!(r#"<div class="nt-l nt-center">{x}</div>"#), |x: &str| format!(r#"<div class="nt-m nt-left">{x}</div>"#));
+        assert_eq!(na.slots, ["질문", "답변"]);
+        assert_eq!((na.templates[0].qfmt.clone(), na.templates[0].afmt.clone()), (lq("{{질문}}"), format!("{{{{FrontSide}}}}<hr id=answer>{}", la("{{답변}}"))));
+        assert_eq!(na.css, LAYOUT_CSS);
+        assert!(parse_layout(&na.templates[0].qfmt, &na.templates[0].afmt).is_some(), "쉬운 편집으로 열린다");
+        let basic = load(&con, id("basic")).unwrap();
+        assert_eq!((basic.slots.clone(), basic.templates[0].qfmt.as_str(), basic.css.as_str()), (s(&["Front", "Back"]), "{{Front}}", ""));
         let r = load(&con, clone_type(&con, id("reversed"), None).unwrap()).unwrap();
         assert_eq!(r.name, "내 양방향");
-        assert_eq!(r.templates.iter().map(|t| (t.qfmt.as_str(), t.afmt.as_str())).collect::<Vec<_>>(), [("{{질문}}", "{{FrontSide}}<hr id=answer>{{답변}}"), ("{{답변}}", "{{FrontSide}}<hr id=answer>{{질문}}")]);
+        assert_eq!(
+            r.templates.iter().map(|t| (t.qfmt.clone(), t.afmt.clone())).collect::<Vec<_>>(),
+            [(lq("{{질문}}"), format!("{{{{FrontSide}}}}<hr id=answer>{}", la("{{답변}}"))), (lq("{{답변}}"), format!("{{{{FrontSide}}}}<hr id=answer>{}", la("{{질문}}")))]
+        );
         let c = load(&con, clone_type(&con, id("cloze"), None).unwrap()).unwrap();
-        assert_eq!((c.slots.clone(), c.templates[0].qfmt.as_str(), c.templates[0].afmt.as_str()), (s(&["본문", "추가 설명"]), "{{cloze:본문}}", "{{cloze:본문}}<br>{{추가 설명}}"));
+        assert_eq!(c.slots, ["본문", "추가 설명"]);
+        assert_eq!((c.templates[0].qfmt.clone(), c.templates[0].afmt.clone()), (lq("{{cloze:본문}}"), format!("{}{}", la("{{cloze:본문}}"), la("{{추가 설명}}"))));
         assert!(c.cloze(), "빈칸 유형 그대로");
         assert_eq!(load(&con, id("cloze")).unwrap().templates[0].qfmt, "{{cloze:Text}}");
+        // 쉬운 편집이 못 읽는 앱 템플릿(서술형 뒷면의 조건 구간)은 그대로 복사하고, 줄 상자가 없으니 CSS 도 그대로
+        let wc = load(&con, clone_type(&con, id("written"), Some("서술형 복제 확인")).unwrap()).unwrap();
+        let wo = load(&con, id("written")).unwrap();
+        assert!(parse_layout(&wo.templates[0].qfmt, &wo.templates[0].afmt).is_none());
+        assert_eq!((wc.name.as_str(), wc.templates[0].qfmt.as_str(), wc.templates[0].afmt.as_str(), wc.css.as_str()), ("서술형 복제 확인", wo.templates[0].qfmt.as_str(), wo.templates[0].afmt.as_str(), wo.css.as_str()));
+        // 가져온 유형은 그대로 복사한다 (Anki 공백 그대로)
+        con.execute("INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id) VALUES ('가져온 Basic', '[\"Front\",\"Back\"]', '.card {}', 0, 0, 42)", []).unwrap();
+        let imp = con.last_insert_rowid();
+        con.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, 0, 'Card 1', '{{Front}}', ?2)", params![imp, "{{FrontSide}}\n\n<hr id=answer>\n\n{{Back}}"]).unwrap();
+        let ic = load(&con, clone_type(&con, imp, None).unwrap()).unwrap();
+        assert_eq!((ic.name.as_str(), ic.slots.clone(), ic.templates[0].afmt.as_str(), ic.css.as_str()), ("가져온 Basic 복사본", s(&["Front", "Back"]), "{{FrontSide}}\n\n<hr id=answer>\n\n{{Back}}", ".card {}"));
         assert!(na.user_made && na.native_kind.is_none() && na.stock == Some(1));
         assert!(na.anki_model_id.is_some() && na.anki_model_id != nb.anki_model_id, "만들 때 모델 id 를 정한다");
         assert_eq!(clone_type(&con, a, Some("내 질문과 답변 2")), Err("'내 질문과 답변 2' 유형이 이미 있어요.".into()));
@@ -2012,7 +2047,7 @@ mod tests {
         assert!(add_field(&con, nt, "a:b").is_err() && add_field(&con, nt, "#x").is_err() && add_field(&con, nt, "Tags").is_err() && add_field(&con, nt, " ").is_err());
         // 이름 바꾸기: 템플릿 참조도
         rename_field(&con, nt, 1, "뜻").unwrap();
-        assert_eq!(load(&con, nt).unwrap().templates[0].afmt, "{{FrontSide}}<hr id=answer>{{뜻}}");
+        assert_eq!(load(&con, nt).unwrap().templates[0].afmt, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{뜻}}</div>"#);
         // 순서: 보이는 순서만
         reorder_fields(&con, nt, &[2, 0, 1]).unwrap();
         assert!(reorder_fields(&con, nt, &[0, 1]).is_err());
