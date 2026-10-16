@@ -367,7 +367,7 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
   const rows: FigRow[] = items.map((it) => ({
     key: it.key,
     kind: it.kind,
-    where: `p.${it.page}`,
+    where: `${it.page}쪽`,
     text: [label(it), it.size ?? ""].filter(Boolean).join(" · "),
     note: it.sugg ? "표일 수 있어요 · 확인 전" : undefined,
     seg: it.seg,

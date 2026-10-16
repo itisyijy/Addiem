@@ -6,6 +6,7 @@ import { useToast } from "../toast";
 import { actionKey, useKeymap } from "../keys";
 import { CramHint } from "./StudyParts";
 import { PlanConflictBanner } from "./Plan";
+import { addDays } from "./Deck";
 import { dateLabel, n, useKey, useNav } from "../nav";
 import { DriveLoadLink, useSyncStatus } from "../sync";
 
@@ -262,7 +263,7 @@ function DeckPanel({ title, caption, data, mode, reload }: PanelProps) {
             <>
               {paused.map((d) => (
                 <IdleRow key={d.id} name={d.name} onOpen={open(d.id)}>
-                  <Badge>{d.paused_until ? `쉬는 중 · ${md(d.paused_until)}까지` : "쉬는 중"}</Badge>
+                  <Badge>{d.paused_until ? `쉬는 중 · ${md(d.paused_until)}까지 · ${md(addDays(d.paused_until, 1))}부터 다시` : "쉬는 중"}</Badge>
                   <span className="home__idle-fill" />
                   <Button
                     variant="ghost"

@@ -337,7 +337,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
         {sum && (
           <p className="cram__note t-caption c-secondary">
             <Icon name="info" size={14} />
-            평가 {n(sum.fed)}개가 복습 일정에 반영됐어요
+            평가 {n(sum.fed)}회가 복습 일정에 반영됐어요
             {stats.due > 0 && today !== undefined && ` · 오늘 예정이던 ${n(stats.due)}장을 여기서 봐서 오늘의 학습이 ${n(run.before.today)} → ${n(today)}장으로 줄었어요`}
           </p>
         )}

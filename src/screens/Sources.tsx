@@ -36,6 +36,9 @@ import {
   type Segment,
   type Signal,
   type SlideObjects,
+  pageOf,
+  pagesOf,
+  pageWord,
 } from "../sourceApi";
 
 /** 덱 상세 헤더의 [자료 N] (I1 노트). 미연결 강조 구간이 있으면 숫자를 붙이고 그 탭(R1-a)으로 연다 */
@@ -49,7 +52,7 @@ export function SourcesButton({ deckId }: { deckId: number }) {
       .catch(() => setList([]));
   }, [deckId]);
   const gaps = list.reduce((t, m) => t + m.gaps, 0);
-  const label = list.length ? `자료 ${n(list.length)}${gaps ? ` · 미연결 ${n(gaps)}` : ""}` : "자료";
+  const label = list.length ? `자료 ${n(list.length)}${gaps ? ` · 미연결 ${n(gaps)}곳` : ""}` : "자료";
   return <Button variant="secondary" size="M" icon="file" label={label} onClick={() => nav({ name: "sources", deckId, gaps: gaps > 0 })} />;
 }
 
@@ -76,8 +79,8 @@ const metaOf = (m: Material, gaps: boolean) =>
     : m.status === "pending"
       ? "읽는 중…"
       : gaps
-        ? `미연결 ${n(m.gaps)} · 강조 ${n(m.segments)}곳`
-        : `${n(m.pages)}${m.kind === "pptx" ? "장" : "쪽"} · 강조 ${n(m.segments)}곳`;
+        ? `미연결 ${n(m.gaps)}곳 · 강조 ${n(m.segments)}곳`
+        : `${pagesOf(m.kind, n(m.pages))} · 강조 ${n(m.segments)}곳`;
 
 /** 분석 진행 (I3 노트 "분석 중 2/3 · 기출_2023_필기.pdf"). 이벤트를 듣고, 이미 돌고 있으면 그 상태로 시작한다 */
 export function useAnalyzeProgress(initial: AnalyzeProgress | null | undefined) {
@@ -337,7 +340,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
       ]
         .filter(Boolean)
         .join(" · ")
-    : `그림 ${n(objImages.length)} · 표 ${n(objTables)}${objOff ? ` · 미리 볼 수 없음 ${n(objOff)}` : ""}`;
+    : `그림 ${n(objImages.length)} · 표 ${n(objTables)}${objOff ? ` · 카드로 만들 수 없음 ${n(objOff)}` : ""}`;
   // 그림·표 탭은 왼쪽 파일 열 대신 알약에서 자료를 바꾼다 (IT1)
   const pill = current && (
     <span className="menu">
@@ -439,7 +442,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           <Icon name="file" size={24} className="c-tertiary" />
           <p className="t-title-s">아직 자료가 없어요</p>
           <p className="t-body-s c-secondary">텍스트를 고를 수 있는 PDF나 PPTX를 넣으면 강조된 곳을 찾아 보여줘요.</p>
-          <p className="t-caption c-tertiary">손으로 그린 별표·밑줄과 스캔본(글자를 고를 수 없는 PDF)은 읽지 못해요.</p>
+          <p className="t-caption c-tertiary">손으로 그린 별표·밑줄과 스캔본(글자를 고를 수 없는 PDF)의 강조는 찾지 못해요. 스캔본은 그림·표 탭에서 영역을 잡아 그림 카드로 만들 수 있어요.</p>
         </div>
       ) : (
         <div className="src-cols">
@@ -481,7 +484,8 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                 </div>
               );
             })}
-            <p className="t-caption c-tertiary">손으로 그린 별표·밑줄과 스캔본(글자를 고를 수 없는 PDF)은 읽지 못해요.</p>
+            {/* 배경 블롭 위라 secondary (tertiary 는 블롭 가장자리에서 4.5:1 경계) */}
+            <p className="t-caption c-secondary">손으로 그린 별표·밑줄과 스캔본(글자를 고를 수 없는 PDF)의 강조는 찾지 못해요. 스캔본은 그림·표 탭에서 영역을 잡아 그림 카드로 만들 수 있어요.</p>
             {model?.ready && <p className="src-model t-caption c-tertiary">분석 모델 있음 · 설정에서 지울 수 있어요</p>}
           </div>
 
@@ -576,7 +580,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                         <SignalBadge key={g} signal={g} />
                       ))}
                       {s.exam.hits !== null && <span className="badge src-seg__exam t-label-s">기출{s.exam.names.length ? ` · ${s.exam.names.join(" · ")}` : ""}</span>}
-                      <span className="t-caption c-tertiary">p.{s.page}</span>
+                      <span className="t-caption c-tertiary">{pageOf(current?.kind ?? "pdf", s.page)}</span>
                       {s.exam.hits === null && examHint(s.text) && (
                         <button
                           className="exam-chip exam-chip--suggest t-label-s"
@@ -705,17 +709,16 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
 
 /** R1-a 쪽 지도: 한 칸이 한 쪽. 카드 있음(accent) · 강조됐는데 카드 없음(warn) · 강조 없음(회색). 칸을 누르면 그 쪽만 */
 function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page: number | null; onPage: (p: number | null) => void }) {
-  const unit = m.kind === "pptx" ? "장" : "쪽";
   const state = (p: number) => {
     const on = segs.filter((s) => s.page === p && !isRegion(s));
     return !on.length ? "none" : on.some((s) => !s.links.length) ? "gap" : "linked";
   };
   const label = { linked: "카드가 있는 강조 구간", gap: "카드 미연결 강조", none: "강조 없음" } as const;
   return (
-    <div className="panel src-map" aria-label="쪽 지도">
+    <div className="panel src-map" aria-label={`${pageWord(m.kind)} 지도`}>
       <span className="t-label-m">
-        쪽 지도 · {n(m.pages)}
-        {unit}
+        {pageWord(m.kind)} 지도 · {n(m.pages)}
+        {m.kind === "pptx" ? "장" : "쪽"}
       </span>
       <div className="src-map__pages">
         {Array.from({ length: m.pages }, (_, i) => i + 1).map((p) => {
@@ -725,7 +728,7 @@ function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page
               key={p}
               type="button"
               className={`src-map__page is-${st} ${page === p ? "is-selected" : ""} t-caption`}
-              aria-label={`${p}${unit} · ${label[st]}`}
+              aria-label={`${pageOf(m.kind, p)} · ${label[st]}`}
               aria-pressed={page === p}
               onClick={() => onPage(page === p ? null : p)}
             >
@@ -743,7 +746,7 @@ function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page
         ))}
       </div>
       <p className="t-caption c-tertiary">
-        칸을 누르면 그 {unit}의 구간만 보여요{page !== null ? ` · ${n(page)}${unit} 선택됨` : ""}
+        칸을 누르면 그 {pageWord(m.kind)}의 구간만 보여요{page !== null ? ` · ${pageOf(m.kind, n(page))} 선택됨` : ""}
       </p>
     </div>
   );
@@ -820,14 +823,13 @@ function Preview({
       )}
       {shown && (
         <span className="src-preview__nav">
-          <button className="src-icon-btn" aria-label="이전 쪽" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+          <button className="src-icon-btn" aria-label={`이전 ${pageWord(m.kind)}`} disabled={page <= 1} onClick={() => onPage(page - 1)}>
             <Icon name="chevron-left" size={16} scaled />
           </button>
           <span className="t-caption c-tertiary">
-            {n(page)}
-            {m.kind === "pptx" ? "장" : "쪽"} / {n(m.pages)}
+            {pageOf(m.kind, n(page))} / {n(m.pages)}
           </span>
-          <button className="src-icon-btn" aria-label="다음 쪽" disabled={page >= m.pages} onClick={() => onPage(page + 1)}>
+          <button className="src-icon-btn" aria-label={`다음 ${pageWord(m.kind)}`} disabled={page >= m.pages} onClick={() => onPage(page + 1)}>
             <Icon name="chevron-right" size={16} />
           </button>
         </span>
@@ -885,7 +887,7 @@ export function PdfPage({
   const top = height && size && focus?.rects?.length ? Math.max(0, Math.min(size.h - height, focus.rects[0][1] * size.h - height / 2)) : 0;
   return (
     <div className="src-page" style={{ width, height: height ?? size?.h ?? width * 1.33 }}>
-      {failed && <span className="src-page__fail t-body-s c-tertiary">이 기기에는 자료 파일이 없어요</span>}
+      {failed && <span className="src-page__fail t-body-s c-tertiary">이 기기에는 원자료 파일이 없어요</span>}
       <div className="src-page__inner" style={{ transform: `translateY(${-top}px)` }}>
         <canvas ref={canvas} />
         {segs.flatMap((s) =>

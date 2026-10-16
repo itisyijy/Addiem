@@ -766,7 +766,7 @@ function FoundModal({ probe, onClose }: { probe: SyncProbe; onClose: () => void 
       </div>
       <DeviceName value={name} onChange={setName} />
       {r.locked && (
-        <Input type="password" label="암호를 입력하세요" value={password} autoFocus onChange={(e) => setPassword(e.target.value)} helper="Drive 데이터를 잠근 암호예요" />
+        <Input type="password" label="암호" value={password} autoFocus onChange={(e) => setPassword(e.target.value)} helper="Drive 데이터를 잠근 암호예요" />
       )}
       {wrong >= 3 ? (
         <div className="sync-note sync-note--row">

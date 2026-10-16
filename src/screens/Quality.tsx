@@ -7,7 +7,7 @@ import { n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { Badge, Button, Checkbox, Icon, Spinner } from "../ui";
 import { AiConnect, AiErrorBox, ScopeLine, SendList, UsingPlan, refreshAi, sendConfirmed, sentRows, setSendConfirmed, useAiStatus } from "../ai";
-import { ragApi, type Sent } from "../sourceApi";
+import { placeOf, ragApi, type Sent } from "../sourceApi";
 import { SegmentPanel } from "./SourcePanel";
 import { DiscardModal, Modal } from "./NewDeck";
 import { splitLater } from "../written";
@@ -56,7 +56,7 @@ function useSplitActions(reload: () => void) {
   const undo = (changeId: number) =>
     qualityApi.undo(changeId).then(() => {
       reload();
-      toast({ title: "나누기를 되돌렸어요", text: "새 카드를 지우고 원래 카드를 나누기 전 상태로 되돌렸어요." });
+      toast({ title: "나누기를 되돌렸어요", text: "나눈 카드를 지우고 원래 카드를 나누기 전 상태로 되돌렸어요." });
     }, fail);
   const done = (cardId: number, changeId: number, count: number, archived: boolean) => {
     splitLater.remove(cardId);
@@ -457,7 +457,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
           {aiP.evidence.map((s) => (
             <button key={s.id} type="button" className="src-chip src-chip--surface t-label-s" onClick={() => setPanelSeg(s.id)}>
               <Icon name="file" size={12} />
-              {s.material} p.{s.page}
+              {placeOf(s)}
               {s.signals[0] === "highlight" ? " · 하이라이트" : ""}
             </button>
           ))}
@@ -617,8 +617,9 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
                   { key: "card", icon: "layers", meta: <span className="t-label-s c-secondary">카드 앞·뒷면</span>, text: `${p.question} / ${p.answer.join(" · ")}` },
                   ...(asking
                     ? sentRows(segs, (id) => setSegs(segs.filter((s) => s.id !== id)), true)
-                    : sentRows(aiP?.sent ?? [], () => {}, true).map((r) => ({ ...r, remove: undefined }))),
+                    : sentRows(aiP?.sent ?? [], () => {}, true)),
                 ]}
+                sent={!asking}
                 foot={
                   <div className="grade__confirm-foot">
                     <UsingPlan />

@@ -50,8 +50,14 @@ export const ragApi = {
   grade: (cardId: number, answer: string, segmentIds: number[]) => invoke<Grade>("rag_grade", { cardId, answer, segmentIds }),
 };
 
-/** "3장_빅데이터분석.pdf · p.13" */
-export const placeOf = (s: { material: string; page: number }) => `${s.material} · p.${s.page}`;
+/** 자료 안 위치. PPTX 는 "슬라이드 4", PDF 는 "4쪽" (범위 "4–6" 도 받는다) */
+export const pageOf = (kind: "pdf" | "pptx", p: number | string) => (kind === "pptx" ? `슬라이드 ${p}` : `${p}쪽`);
+/** 자료 안 위치를 부르는 말 ("쪽 지도" · "이전 슬라이드") */
+export const pageWord = (kind: "pdf" | "pptx") => (kind === "pptx" ? "슬라이드" : "쪽");
+/** 자료 전체 분량. PPTX "슬라이드 12장", PDF "12쪽" */
+export const pagesOf = (kind: "pdf" | "pptx", count: string) => (kind === "pptx" ? `슬라이드 ${count}장` : `${count}쪽`);
+/** "3장_빅데이터분석.pdf · 13쪽" · "4장_회귀분석.pptx · 슬라이드 4" */
+export const placeOf = (s: { material: string; kind: "pdf" | "pptx"; page: number }) => `${s.material} · ${pageOf(s.kind, s.page)}`;
 
 /** 신뢰도 순 (source.rs SIGNALS). figure · table 은 8.4 그림 · 표로 만든 카드의 영역 (강조가 아니다, 빠진 범위에서 뺀다) */
 export type Signal = "highlight" | "underline" | "red" | "star" | "bold" | "figure" | "table";

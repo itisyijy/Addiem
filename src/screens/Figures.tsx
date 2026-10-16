@@ -216,7 +216,7 @@ export function FigMenu({ entries, tail, className = "", style, onClose }: {
 export type FigRow = {
   key: string;
   kind: "figure" | "table";
-  /** "슬라이드 7" · "p.12" */
+  /** "슬라이드 7" · "12쪽" */
   where: string;
   text: string;
   /** "표일 수 있어요 · 확인 전" (warn) */
