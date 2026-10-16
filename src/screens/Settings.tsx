@@ -5,10 +5,11 @@ import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
 import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useOverlayScope } from "../nav";
 import {
-  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
+  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
   type ActionId,
 } from "../keys";
 import { Modal } from "./NewDeck";
+import { HIDDEN as FIGURES_HIDDEN } from "./PdfFigures";
 import { DeleteDeckConfirm } from "./Deck";
 import { NO_AUTOPLAY, SKIP_SUMMARY, TTS_AUTOPLAY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
@@ -303,6 +304,7 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
     setBusy(true);
     try {
       await api.wipeAll(backup);
+      localStorage.removeItem(FIGURES_HIDDEN); // 새 자료가 지운 자료의 id 를 다시 쓴다
       onDone();
     } catch (e) {
       setError(errorText(e));
@@ -758,6 +760,8 @@ function KeysTable() {
       const chord = chordOf(e);
       if (!chord) return; // Ctrl · Shift 만 누른 상태
       if (FIXED.has(chord)) return setNote("Esc · Enter · Tab 은 바꿀 수 없어요");
+      const fixed = reservedLabel(rec.id, chord);
+      if (fixed) return setNote(`${keyLabel(chord)}${eun(keyLabel(chord))} '${fixed}'에 고정된 키예요`);
       const me = actionOf(rec.id);
       const other = ACTIONS.find((a) => a.id !== rec.id && map[a.id].includes(chord));
       if (rec.id === "rate") {

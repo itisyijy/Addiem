@@ -577,6 +577,12 @@ pub(crate) fn fake_mode() -> Option<String> {
     std::env::var("NEOANKI_AI_FAKE").ok().filter(|v| !v.is_empty())
 }
 
+/// 가짜 모드에서 [연결 끊기]를 누른 뒤 (앱을 다시 켤 때까지). 끊긴 화면(L1)과 "끊은 뒤에는 보내지 않음"을 가짜 모드로도 보게 (QA T5-06)
+static FAKE_OFF: AtomicBool = AtomicBool::new(false);
+fn fake_off() -> bool {
+    fake_mode().is_some() && FAKE_OFF.load(Ordering::Relaxed)
+}
+
 /// 가짜 응답: 기다린 뒤 오류 모드면 그 오류, malformed 면 깨진 JSON, 아니면 ok() 의 글자.
 /// 실제 응답과 같은 검증을 거친다. slow 는 30초 넘김 안내를 보려고 35초 기다린다
 fn fake_text(st: &AiState, run: u64, mode: &str, ok: impl FnOnce() -> String) -> Result<String, AiError> {
@@ -615,6 +621,9 @@ pub(crate) fn generate(app: &AppHandle, body: &dyn Fn(&str, bool) -> J, fake: im
     let st = app.state::<AiState>();
     let run = st.run.load(Ordering::Relaxed);
     if let Some(mode) = fake_mode() {
+        if fake_off() {
+            return Err(AiError::NotConnected);
+        }
         let text = fake_text(&st, run, &mode, fake)?;
         let _ = with_db(app, count_sent);
         return Ok(text);
@@ -788,7 +797,7 @@ pub fn ai_status(app: AppHandle) -> Res<AiStatus> {
     with_db(&app, |c| {
         let email = get_meta(c, META_EMAIL);
         let sent_at = get_meta(c, META_SENT_AT).and_then(|v| v.parse().ok());
-        let email = email.or_else(|| fake_mode().map(|m| format!("개발용 가짜 연결 ({m})")));
+        let email = if fake_off() { None } else { email.or_else(|| fake_mode().map(|m| format!("개발용 가짜 연결 ({m})"))) };
         Ok(AiStatus { connected: email.is_some(), email, model: get_meta(c, META_MODEL), sent_month: sent_this_month(c), sent_at })
     })
     .map_err(|e| e.to_string())
@@ -939,6 +948,11 @@ pub fn ai_connect_cancel(state: State<AiState>) {
 #[tauri::command]
 pub async fn ai_disconnect(app: AppHandle, state: State<'_, AiState>) -> Res<bool> {
     state.run.fetch_add(1, Ordering::Relaxed);
+    // 가짜 모드는 키체인 · 네트워크를 쓰지 않는다. 끊긴 상태로만 바꾼다
+    if fake_mode().is_some() {
+        FAKE_OFF.store(true, Ordering::Relaxed);
+        return Ok(true);
+    }
     state.auth_cancel.store(true, Ordering::Relaxed);
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<AiState>();

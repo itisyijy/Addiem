@@ -121,6 +121,9 @@
 .modal.split.has-panel { top: 24px; left: 24px; width: calc(100vw - 492px); max-height: calc(100vh - 48px); overflow: hidden; transform: none; }
 .split.has-panel .split__cols { flex: 1; min-height: 0; align-items: stretch; }
 .split.has-panel .split__orig, .split.has-panel .split__parts { max-height: none; min-height: 0; }
+/* 좁아진 창에서는 아래 줄을 두 줄로: 나누기 버튼이 창 밖으로 밀리지 않게 (QA T5-03, 1280×800 에서 65px 넘침) */
+.split.has-panel .split__foot { flex-wrap: wrap; row-gap: 12px; }
+.split.has-panel .split__actions { margin-left: auto; }
 .split__source { position: fixed; top: 24px; right: 24px; z-index: 30; width: 420px; max-height: calc(100vh - 48px); overflow-y: auto; }
 
 /* ---------------------------------------------------------------- R2 서술형 채점 보조 (J2 카드 안, Figma 81:9865 · 81:10044) */

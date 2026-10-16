@@ -230,10 +230,10 @@
 /* 제안된 행은 위험 배경으로 눈에 띄게 */
 .subdecks__row.is-suggested,
 .subdecks__row.is-suggested:hover { background: var(--status-danger-bg); }
-/* [약함 표시]는 행에 올리거나 초점이 있을 때만 */
-.subdecks__mark { visibility: hidden; }
+/* [취약 지정]은 행에 올리거나 초점이 있을 때만. 숨길 때 visibility 가 아니라 투명도라 Tab 으로 갈 수 있다 (QA T6-13) */
+.subdecks__mark { opacity: 0; }
 .subdecks__row:hover .subdecks__mark,
-.subdecks__mark:focus-visible { visibility: visible; }
+.subdecks__mark:focus-visible { opacity: 1; }
 
 /* 약함(실선) · 약해 보여요?(점선) 배지 */
 .weak { position: relative; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 3px 10px 3px 8px; border-radius: 999px; color: var(--status-danger-fg); white-space: nowrap; }
