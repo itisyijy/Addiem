@@ -1286,7 +1286,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 aria-keyshortcuts={writing ? actionKey("save") : actionKey("reveal")}
                 onClick={reveal}
               />
-              {!toast && <p className={`study__keys t-caption c-tertiary ${pushKeys}`}>{keyLine(keysQ)}</p>}
+              {(!toast || undoTop) && <p className={`study__keys t-caption c-tertiary ${pushKeys}`}>{keyLine(keysQ)}</p>}
             </>
           ) : (
             <>
@@ -1374,7 +1374,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   />
                 ))}
               </div>
-              {!toast && <p className={`study__keys study__keys--a t-caption c-tertiary ${pushKeys}`}>{keyLine(keysA)}</p>}
+              {(!toast || undoTop) && <p className={`study__keys study__keys--a t-caption c-tertiary ${pushKeys}`}>{keyLine(keysA)}</p>}
             </>
           )}
           {error && <p className="t-body-s c-danger">{error}</p>}
@@ -1383,13 +1383,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       {!card && error && <p className="study__error t-body-m c-danger">{error}</p>}
 
       {toast ? (
-        <div className="study__toast" role="status">
+        // Q1 목록: 되돌리기 토스트처럼 위(top 70)에 한 줄 (아래에 두면 [다음 항목]을 가린다)
+        <div className={`study__toast ${undoTop ? "is-top" : ""}`} role="status">
           <span className="study__toast-icon">
             <Icon name="archive" size={18} />
           </span>
           <span className="study__toast-text">
             <span className="t-body-m-strong">{toast.auto ? "방금 카드를 잠시 접어둘게요" : "방금 카드를 접어뒀어요"}</span>
-            <span className="t-body-s c-on-inverse">
+            {!undoTop && <span className="t-body-s c-on-inverse">
               {toast.reason
                 ? `두 번 막혔어요. ${toast.reason}, 나눠서 외우는 게 나을 수도 있어요.`
                 : toast.auto
@@ -1397,7 +1398,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   : cram || mix
                     ? "나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
                     : "학습을 마치면 다시 볼지 물어볼게요."}
-            </span>
+            </span>}
           </span>
           {/* G3: 학습을 멈추지 않는다. "나중에 볼 제안"에 넣고 토스트만 닫는다 (D5 접어둔 카드 행에 칩으로 다시 나온다) */}
           {toast.reason && (

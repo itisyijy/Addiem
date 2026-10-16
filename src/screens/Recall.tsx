@@ -1,7 +1,7 @@
 // Q 목록 회상 · 선택형 (Figma Row Q): 부품 RecallSlot · ChoiceOption, C3 편집 칸 · 미리보기 (Q0), 학습 면 (Q1-a · Q1-b · Q2)
 import { useEffect, useRef } from "react";
 import { Checkbox, Icon, Kbd, Segment, type Rating } from "../ui";
-import { eul, n, ro } from "../nav";
+import { eul, gwa, iga, n, ro } from "../nav";
 import { plainText } from "../cardHtml";
 import { CIRCLED, choiceLabel, listLabel, type ChoiceDraft, type ListDraft, type Special } from "../recall";
 import "../styles/recall.css";
@@ -137,15 +137,15 @@ export function recallTip(s: Special, marks: number[], order: number[], r: Ratin
     const names = missed.slice(0, 3).join(", ") + (missed.length > 3 ? " 등" : "");
     return `${n(total)}개 중 ${n(total - missed.length)}개를 기억했어요${missed.length ? ` (${names}${eul(names)} 빠뜨렸어요)` : ""}.`;
   }
-  const text = new Map(s.options);
-  const list = (nums: number[]) =>
-    order
-      .filter((x) => nums.includes(x))
-      .map((x) => `${CIRCLED[order.indexOf(x)]} ${text.get(x)}`)
-      .join(", ");
-  if (r === 1) return `고른 답(${list(marks.filter((m) => !s.correct.includes(m)))})이 정답(${list(s.correct)})과 달라요.`;
+  // 보기 번호만 (보기 글자를 쓰면 줄이 카드보다 넓어졌다)
+  const list = (nums: number[]) => order.flatMap((x, i) => (nums.includes(x) ? [CIRCLED[i]] : [])).join(", ");
+  const right = list(s.correct);
+  if (r === 1) {
+    const wrong = list(marks.filter((m) => !s.correct.includes(m)));
+    return `고른 답 ${wrong}${iga(wrong)} 정답 ${right}${gwa(right)} 달라요.`;
+  }
   if (r === 2) return `정답 ${n(s.correct.length)}개 중 ${n(marks.length)}개를 골랐어요 (놓친 정답: ${list(s.correct.filter((c) => !marks.includes(c)))}).`;
-  return s.correct.length > 1 ? `정답 ${n(s.correct.length)}개를 모두 골랐어요.` : `정답(${list(s.correct)})을 골랐어요.`;
+  return s.correct.length > 1 ? `정답 ${n(s.correct.length)}개를 모두 골랐어요.` : `정답 ${right}${eul(right)} 골랐어요.`;
 }
 
 // ---------------------------------------------------------------- C3 편집 칸 (Q0)

@@ -94,6 +94,8 @@
 /* Q2 답 면: 보기 4개 + 해설이 스크롤 없이 (800 기준 카드 96–530, 평가 줄 588) */
 .study .study__col.is-choice.is-answer.has-tip .study__card { height: calc(100vh - 366px); }
 .study .study__col.is-recall.has-tip .study__tipwrap { height: 58px; }
+/* 선택형 추천 줄은 카드 폭(880)까지, 넘치면 줄을 바꾼다 */
+.study .study__col.is-choice .study__tip { max-width: 100%; white-space: normal; }
 
 /* ---------------------------------------------------------------- C3 편집 칸 (Q0) */
 .lc__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
