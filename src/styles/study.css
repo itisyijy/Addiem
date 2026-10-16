@@ -235,6 +235,35 @@
 .addcard__note .icon { margin-top: 1px; }
 .edit__card .deckmenu { left: auto; right: 0; } /* C3-e 는 알약이 창 오른쪽 끝이라 오른쪽에 맞춰 편다 */
 
+/* ---------------------------------------------------------------- NT6 노트 유형 고르기 · NT7 유형 추천 칩 · 카드 편집 머리 (Figma 230:15374 · 231:15475) */
+.addcard__seg { max-width: 100%; }
+.segment__item.addcard__typed { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.addcard__more { display: inline-flex; }
+.addcard__more-btn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid var(--border-default); border-radius: 999px; background: var(--bg-surface); color: var(--text-primary); }
+.addcard__more-btn[aria-expanded="true"] { border: 1.5px solid var(--accent-default); }
+.menu__list.addcard__types { top: 42px; right: 0; left: auto; width: 300px; max-height: min(460px, calc(100vh - 320px)); overflow-y: auto; }
+.addcard__types .menu__item { width: 100%; }
+.addcard__type { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.addcard__type > .t-label-m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.addcard__type-edit { display: inline-flex; flex: none; align-items: center; gap: 4px; }
+.addcard__type-edit:hover { text-decoration: underline; text-underline-offset: 3px; }
+.addcard__hint { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; padding: 6px 6px 6px 10px; border-radius: 999px; background: var(--accent-subtle); color: var(--text-primary); }
+.addcard__hint-act { padding: 3px 10px; border: 1px solid var(--accent-default); border-radius: 999px; background: var(--bg-surface); color: var(--accent-text); }
+.addcard__hint-act:hover { background: var(--accent-subtle); }
+.addcard__hint-x { display: inline-flex; padding: 2px; border-radius: 999px; color: var(--text-secondary); }
+.addcard__hint-x:hover { background: var(--bg-surface); }
+/* 카드 종류마다 앞면 (첫 장은 질문 크기, 다음 장은 답 크기) */
+.preview.addcard__nt { align-items: center; gap: 12px; padding: 20px; text-align: center; }
+.preview.addcard__nt[data-theme="light"] { background: var(--bg-canvas); color: var(--text-primary); color-scheme: light; }
+.addcard__nt-rule { align-self: stretch; }
+.addcard__nt-card { width: 100%; font: 400 30px/46px var(--font-sans); letter-spacing: -0.015em; word-break: keep-all; overflow-wrap: anywhere; }
+.addcard__nt-card.is-sub { font: 400 20px/34px var(--font-sans); letter-spacing: -0.005em; }
+.addcard__nt-empty { padding: 24px 0; }
+.edit__meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.edit__type { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 8px; border-radius: 8px; background: var(--bg-subtle); }
+.edit__type-edit { display: inline-flex; align-items: center; gap: 3px; padding-left: 4px; font: inherit; }
+.edit__type-edit:hover { text-decoration: underline; text-underline-offset: 3px; }
+
 /* ---------------------------------------------------------------- 다크 테마의 덱 스타일 카드 (Figma Dark · D3-s 40:4911) */
 /*
  * 밝은 바탕을 칠한 덱은 카드 면 전체를 밝은 토큰으로 그린다 (Study.tsx deckFace, tokens.css [data-theme="light"]).

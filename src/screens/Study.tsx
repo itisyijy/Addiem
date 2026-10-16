@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { OcclusionEdit } from "./Occlusion";
 import { api, errorText, type CardView, type ExamState, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
-import { eul, n, ro, useKey, useNav, useOverlayScope } from "../nav";
+import { eul, n, ro, useKey, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, getKeys, matchAction, useKeymap } from "../keys";
 import { useToast } from "../toast";
 import { plainText, playSounds, renderCardHtml, stopSounds, toStoredHtml } from "../cardHtml";
@@ -12,9 +12,9 @@ import { findMath, withMath } from "../math";
 import {
   cram as cramApi, exam as examApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
 } from "../written";
-import { Modal } from "./NewDeck";
+import { DiscardModal, Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
-import { RichField, makeCloze, toCloze, fromCloze, type FieldHandle } from "./AddCard";
+import { RichField, makeCloze, toCloze, fromCloze, TYPE_LABEL, type FieldHandle } from "./AddCard";
 import { CramHint, KeywordEditor } from "./StudyParts";
 import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
@@ -313,7 +313,7 @@ function ago(at: number) {
   return m < 1 ? "방금" : m < 60 ? `${m}분 전` : `${Math.floor(m / 60)}시간 전`;
 }
 
-export function Study(props: { deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun }) {
+export function Study(props: { deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun; edit?: number }) {
   const { deckIds, scale, mix } = props;
   const cram = !!props.cram;
   const nav = useNav();
@@ -359,6 +359,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [zoom, setZoom] = useState<{ src: string } | { html: string } | null>(null);
   const [fit, setFit] = useState({ overflow: false, more: false });
   const [editing, setEditing] = useState(false);
+  // NT13 노트 유형 편집기에서 돌아왔다: 그 카드가 먼저 나오면 카드 편집을 다시 연다 (바뀐 배치가 바로 보이게)
+  const reopen = useRef(props.edit);
+  useEffect(() => {
+    if (!card || reopen.current === undefined) return;
+    if (card.view.id === reopen.current) setEditing(true);
+    reopen.current = undefined;
+  }, [card]);
   const [hints, setHints] = useState(() => !pref(HINTS_SEEN));
   const [soundTip, setSoundTip] = useState<{ id: number; tts: boolean } | null>(null); // AU1 · AU21 이 카드에서 한 번 안내
   const [error, setError] = useState<string>();
@@ -1321,6 +1328,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         <EditNote
           noteId={card.view.note_id}
           card={card.view}
+          // 편집기에서 돌아오면 같은 덱을 이어서 (새 세션, 평가한 카드는 다시 나오지 않는다). 회독 · 혼합 · 다시 보기 묶음은 처음 화면으로
+          back={cram || mix || props.cardIds ? { name: "summary", deckIds, cram: cram || !!mix } : { name: "study", deckIds, scale, edit: card.view.id }}
           onClose={() => setEditing(false)}
           onSaved={async () => {
             setEditing(false);
@@ -1368,8 +1377,10 @@ function fieldRoles(note: NoteEdit): FieldRole[] {
   );
 }
 
-export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
+export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   noteId: number;
+  /** NT13 [편집] 으로 노트 유형 편집기에 갔다가 돌아올 곳 */
+  back?: Route;
   /** 이 카드만의 중요도 · 하위 덱 이동 · 삭제 (아래 줄). 없으면 노트 내용만 고친다 */
   card?: Pick<CardView, "id" | "importance" | "deck_path" | "occlusion">;
   onClose: () => void;
@@ -1399,9 +1410,15 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   // Q24 목록 · 선택형은 카드 추가(Q0)와 같은 편집기. 질문 · 추가 설명은 첫 칸 · 마지막 칸
   const [list, setList] = useState<ListDraft | null>(null);
   const [choice, setChoice] = useState<ChoiceDraft | null>(null);
+  // NT13 머리 "노트 유형 · 이름 [편집]". touched: 무엇이든 고쳤다 ([편집]으로 떠나기 전에 묻는다)
+  const [typeLabel, setTypeLabel] = useState<string>();
+  const touched = useRef(false);
+  const [leaving, setLeaving] = useState<Route | null>(null);
+  const nav = useNav();
 
   useEffect(() => {
     Promise.all([api.noteEdit(noteId), writtenApi.note(noteId).catch(() => null)]).then(([n, w]) => {
+      api.noteTypeDetail(n.note_type_id).then((d) => setTypeLabel(d.native_kind ? (TYPE_LABEL[d.native_kind] ?? d.name) : d.name), () => setTypeLabel(n.type_name));
       setExam(n.exam);
       const roles = fieldRoles(n);
       if (w?.native) roles.splice(0, 3, "front", "rich", "rich"); // 질문 · 모범 답안 · 채점 메모
@@ -1469,7 +1486,7 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
     try {
       if (list) await recall.updateList(note.note_id, { ...edit(), ...list });
       else if (choice) await recall.updateChoice(note.note_id, { ...edit(), ...choice });
-      else await api.updateNote(note.note_id, values);
+      else await api.updateNote(note.note_id, values, note.slots); // 보이는 순서의 값을 제 자리로 (순서를 바꾼 유형)
       if (wn) await writtenApi.saveNote(note.note_id, write, kws, dismissed);
       if (exam && JSON.stringify(exam) !== JSON.stringify(note.exam)) await examApi.set("note", [exam]);
       if (card && target && target.id !== here?.id) await api.moveCard(card.id, target.id);
@@ -1480,6 +1497,20 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
       setError(errorText(e));
       setSaving(false);
     }
+  };
+
+  /** NT13 [편집]: 그 노트 유형 편집기로. 고친 것이 있으면 버릴지 먼저 묻는다 */
+  const toType = () => {
+    if (!note) return;
+    const to: Route = { name: "noteTypeEdit", id: note.note_type_id, back };
+    const changed =
+      touched.current ||
+      (level !== null && level !== card?.importance) ||
+      (deckId !== undefined && deckId !== here?.id) ||
+      JSON.stringify(exam) !== JSON.stringify(note.exam) ||
+      (!!wn && (write !== wn.write || JSON.stringify(kws) !== JSON.stringify(wn.keywords)));
+    if (changed) setLeaving(to);
+    else nav(to);
   };
 
   const remove = async () => {
@@ -1521,24 +1552,41 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
       {/* 확인 창이 떠 있으면 Esc 는 확인 창만 닫는다 (두 창의 Esc 중 어느 쪽이 먼저 받아도 같게). 하위 덱 드롭다운은 제 Esc 를 먼저 가로챈다 */}
       <Modal
         title="카드 편집"
-        sub={`${
-          wn?.native
-            ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
-            : note?.kind === "list" || note?.kind === "choice"
-              ? `${note.kind === "list" ? "목록 회상" : "선택형"} · `
-              : note?.kind === "other"
-              ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
-              : reversed
-                ? "양방향 · 카드 2장 · "
-                : ""
-        }저장해도 복습 일정은 그대로예요`}
+        sub={
+          <span className="edit__meta">
+            <span>
+              {`${
+                wn?.native
+                  ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
+                  : note?.kind === "list" || note?.kind === "choice"
+                    ? `${note.kind === "list" ? "목록 회상" : "선택형"} · `
+                    : note?.kind === "other"
+                      ? `필드 ${note.names.length}개 · `
+                      : reversed
+                        ? "양방향 · 카드 2장 · "
+                        : ""
+              }저장해도 복습 일정은 그대로예요`}
+            </span>
+            {note && typeLabel && (
+              <span className="edit__type t-label-s c-secondary">
+                <Icon name="layers" size={12} />
+                노트 유형 · {typeLabel}
+                <button className="edit__type-edit c-accent" onClick={toType}>
+                  <Icon name="pencil" size={12} />
+                  편집
+                </button>
+              </span>
+            )}
+          </span>
+        }
         className={`modal--edit ${wn || list || choice ? "modal--written" : ""}`}
-        onClose={() => (confirming ? setConfirming(false) : onClose())}
+        onClose={() => (confirming ? setConfirming(false) : leaving ? setLeaving(null) : onClose())}
       >
         <div
           className="edit"
+          onInput={() => (touched.current = true)}
           onKeyDown={(e) => {
-            if (confirming) return;
+            if (confirming || leaving) return;
             if (matchAction("save", e.nativeEvent) >= 0) {
               e.preventDefault();
               save();
@@ -1666,6 +1714,16 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
             <Button variant="danger" size="M" icon="trash" label="삭제" shortcut="Enter" onClick={remove} busy={saving} />
           </div>
         </Modal>
+      )}
+      {leaving && (
+        <DiscardModal
+          title="고친 내용이 있어요"
+          text="저장하지 않고 노트 유형 편집으로 갈까요?"
+          keep="계속 고치기"
+          discard="버리고 이동"
+          onKeep={() => setLeaving(null)}
+          onDiscard={() => nav(leaving)}
+        />
       )}
     </>
   );

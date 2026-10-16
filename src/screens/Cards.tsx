@@ -721,6 +721,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
         <EditNote
           noteId={editing.note_id}
           card={editing}
+          back={{ name: "cards", deckId, buriedOnly, cardIds, weakOnly }}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
