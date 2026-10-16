@@ -12,9 +12,9 @@ import { findMath, withMath } from "../math";
 import {
   cram as cramApi, exam as examApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
 } from "../written";
-import { DiscardModal, Modal } from "./NewDeck";
+import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
-import { RichField, makeCloze, toCloze, fromCloze, TYPE_LABEL, type FieldHandle } from "./AddCard";
+import { RichField, makeCloze, toCloze, fromCloze, tagRefs, TYPE_LABEL, type FieldHandle } from "./AddCard";
 import { CramHint, KeywordEditor } from "./StudyParts";
 import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
@@ -1388,7 +1388,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   /** 카드를 지운 뒤. 없으면 onSaved 를 부른다 */
   onDeleted?: () => void;
 }) {
-  const [note, setNote] = useState<(NoteEdit & { roles: FieldRole[] }) | null>(null);
+  // own: 사용자 · 가져온 유형 (카드 추가 NT6 과 같은 칸). clozeAt: [빈칸 만들기]를 붙일 칸
+  const [note, setNote] = useState<(NoteEdit & { roles: FieldRole[]; own: boolean; clozeAt: boolean[] }) | null>(null);
   const [choices, setChoices] = useState<DeckChoice[] | null>(null);
   const [deckId, setDeckId] = useState<number>();
   const [level, setLevel] = useState<Level | null>(null);
@@ -1417,13 +1418,21 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   const nav = useNav();
 
   useEffect(() => {
-    Promise.all([api.noteEdit(noteId), writtenApi.note(noteId).catch(() => null)]).then(([n, w]) => {
-      api.noteTypeDetail(n.note_type_id).then((d) => setTypeLabel(d.native_kind ? (TYPE_LABEL[d.native_kind] ?? d.name) : d.name), () => setTypeLabel(n.type_name));
+    api
+      .noteEdit(noteId)
+      .then((n) => Promise.all([n, writtenApi.note(noteId).catch(() => null), api.noteTypeDetail(n.note_type_id).catch(() => null)] as const))
+      .then(([n, w, d]) => {
+      setTypeLabel(d ? (d.native_kind ? (TYPE_LABEL[d.native_kind] ?? d.name) : d.name) : n.type_name);
       setExam(n.exam);
-      const roles = fieldRoles(n);
+      // 사용자 · 가져온 유형은 카드 추가(NT6)와 같은 칸: 필드 순서대로 세로로, 앞면 템플릿이 쓰는 필드는 툴바 있는 편집기 (I44).
+      // 같은 노트를 추가할 때와 고칠 때 칸 자리가 같다. 앱 기본 유형은 C3-e 배치 그대로
+      const own = !!d && !d.native_kind && !n.special;
+      const roles: FieldRole[] = own ? n.front.map((f) => (f ? "front" : "rich")) : fieldRoles(n);
       if (w?.native) roles.splice(0, 3, "front", "rich", "rich"); // 질문 · 모범 답안 · 채점 메모
-      else if (w?.capable && w.answer_field !== null) roles[w.answer_field] = "rich"; // 제안 칩을 뽑는 칸
-      setNote({ ...n, roles });
+      else if (!own && w?.capable && w.answer_field !== null) roles[w.answer_field] = "rich"; // 제안 칩을 뽑는 칸
+      const clozeRefs = own && d ? d.templates.flatMap((t) => tagRefs(t.qfmt)).filter((r) => r.cloze).map((r) => r.name) : [];
+      const clozeAt = n.names.map((name, i) => (own ? clozeRefs.includes(name) : n.kind === "cloze" && i === 0));
+      setNote({ ...n, roles, own, clozeAt });
       if (n.special?.kind === "list") setList({ items: n.special.items.length ? n.special.items : [""], ordered: n.special.ordered });
       else if (n.special?.kind === "choice") setChoice(choiceDraft(n.special));
       if (w?.capable) {
@@ -1460,7 +1469,9 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   const cloze = note?.kind === "cloze";
   const reversed = !!note && isReversed(note);
   const label = (i: number) =>
-    wn?.native
+    note?.own
+      ? note.names[i]
+      : wn?.native
       ? (["질문", "모범 답안", "채점 메모"][i] ?? note?.names[i] ?? "")
       : note?.kind === "basic"
       ? (reversed ? ["앞면", "뒷면"] : ["질문", "답변"])[i]
@@ -1470,7 +1481,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
           ? "추가 설명"
           : (note?.names[i] ?? "");
 
-  const save = async () => {
+  /** after: 저장한 뒤 onSaved 대신 (NT13 [저장하고 이동]). 실패하면 부르지 않고 오류를 남긴다 */
+  const save = async (after?: () => void) => {
     if (!note || saving) return;
     // 새 빈칸은 원래 노트에 있던 가장 큰 번호 다음부터. 지운 번호를 다시 쓰면 그 카드의 학습 기록이 엉뚱한 빈칸에 붙는다
     const firstFree = Math.max(0, ...note.values.flatMap((v) => [...v.matchAll(/\{\{c(\d+)::/g)].map((m) => Number(m[1])))) + 1;
@@ -1492,7 +1504,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
       if (card && target && target.id !== here?.id) await api.moveCard(card.id, target.id);
       // 옮길 덱의 기본값과 같으면 개별 지정을 풀어 덱 설정을 따르게 한다
       if (card && level !== null && level !== card.importance) await api.setCardImportance(card.id, level === target?.importance ? null : level);
-      onSaved();
+      (after ?? onSaved)();
     } catch (e) {
       setError(errorText(e));
       setSaving(false);
@@ -1509,6 +1521,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
       (deckId !== undefined && deckId !== here?.id) ||
       JSON.stringify(exam) !== JSON.stringify(note.exam) ||
       (!!wn && (write !== wn.write || JSON.stringify(kws) !== JSON.stringify(wn.keywords)));
+    setError(undefined);
     if (changed) setLeaving(to);
     else nav(to);
   };
@@ -1592,7 +1605,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
               save();
             } else if (cloze && e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") {
               e.preventDefault();
-              makeCloze(fields.current[0]?.el());
+              // 사용자 빈칸 유형은 지금 쓰는 칸
+              makeCloze(((note?.own && fields.current.find((f) => f?.el()?.contains(document.activeElement))) || fields.current[0])?.el());
             }
           }}
         >
@@ -1629,14 +1643,14 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
                     toolbar={note.roles[i] === "front"}
                     onInput={() => i === wn?.answer_field && setAnswerHtml(fields.current[i]?.html() ?? "")}
                     extraTool={
-                      cloze && i === 0 ? (
+                      note.clozeAt[i] ? (
                         <Button
                           variant="secondary"
                           size="M"
                           label="빈칸 만들기"
                           shortcut="Ctrl Shift C"
                           onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => makeCloze(fields.current[0]?.el())}
+                          onClick={() => makeCloze(fields.current[i]?.el())}
                         />
                       ) : undefined
                     }
@@ -1697,7 +1711,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
             {card && <Button variant="ghost" size="M" icon="trash" label="카드 삭제" className="edit__delete" onClick={() => setConfirming(true)} />}
             <span className="edit__msg t-body-s c-danger">{error}</span>
             <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
-            <Button size="M" icon="check" label="저장" shortcut={actionKey("save")} onClick={save} disabled={!note} busy={saving} busyLabel="저장 중…" />
+            <Button size="M" icon="check" label="저장" shortcut={actionKey("save")} onClick={() => save()} disabled={!note} busy={saving} busyLabel="저장 중…" />
           </div>
         </div>
       </Modal>
@@ -1716,14 +1730,20 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
         </Modal>
       )}
       {leaving && (
-        <DiscardModal
-          title="고친 내용이 있어요"
-          text="저장하지 않고 노트 유형 편집으로 갈까요?"
-          keep="계속 고치기"
-          discard="버리고 이동"
-          onKeep={() => setLeaving(null)}
-          onDiscard={() => nav(leaving)}
-        />
+        // 주 버튼은 [저장하고 이동]. 저장이 안 되면 이동하지 않고 이 창에 이유를 보인다
+        <Modal title="고친 내용이 있어요" onClose={() => setLeaving(null)} className="edit__leave">
+          <p className="t-body-m c-secondary">노트 유형 편집으로 가기 전에 고친 내용을 저장할까요?</p>
+          {error && (
+            <p className="edit__leave-error t-body-s c-danger" role="alert">
+              저장하지 못했어요 · {error}
+            </p>
+          )}
+          <div className="modal__actions">
+            <Button variant="ghost" size="M" label="계속 고치기" shortcut="Esc" onClick={() => setLeaving(null)} />
+            <Button variant="secondary" size="M" label="버리고 이동" onClick={() => nav(leaving)} />
+            <Button size="M" icon="check" label="저장하고 이동" onClick={() => save(() => nav(leaving))} busy={saving} busyLabel="저장 중…" />
+          </div>
+        </Modal>
       )}
     </>
   );

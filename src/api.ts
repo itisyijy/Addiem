@@ -486,7 +486,8 @@ export const api = {
   /** 사용자 · 가져온 유형으로 노트 추가. 만든 카드 수 */
   addTypedNote: (note: { deck_id: number; note_type_id: number; values: string[]; importance: Level | null }) =>
     invoke<number>("add_typed_note", { note }),
-  suggestCardKind: (text: string) => invoke<CardKindHint | null>("suggest_card_kind", { text }),
+  /** answer: 답 칸 HTML. 괄호 빈칸은 답이 있을 때만 빈칸으로 권한다 */
+  suggestCardKind: (text: string, answer: string) => invoke<CardKindHint | null>("suggest_card_kind", { text, answer }),
   readMedia: (name: string) => invoke<string>("read_media", { name }),
   appInfo: () => invoke<AppInfo>("app_info"),
   /** AU20 내장 읽어주기 음성이 읽는 언어 (음성 파일이 없는 빌드면 빈 목록) · 설정의 라이선스 전문 */

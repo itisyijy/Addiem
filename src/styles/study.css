@@ -247,7 +247,7 @@
 .addcard__type > .t-label-m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .addcard__type-edit { display: inline-flex; flex: none; align-items: center; gap: 4px; }
 .addcard__type-edit:hover { text-decoration: underline; text-underline-offset: 3px; }
-.addcard__hint { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; padding: 6px 6px 6px 10px; border-radius: 999px; background: var(--accent-subtle); color: var(--text-primary); }
+.addcard__hint { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; justify-self: start; padding: 6px 6px 6px 10px; border-radius: 999px; background: var(--accent-subtle); color: var(--text-primary); }
 .addcard__hint-act { padding: 3px 10px; border: 1px solid var(--accent-default); border-radius: 999px; background: var(--bg-surface); color: var(--accent-text); }
 .addcard__hint-act:hover { background: var(--accent-subtle); }
 .addcard__hint-x { display: inline-flex; padding: 2px; border-radius: 999px; color: var(--text-secondary); }
@@ -454,3 +454,6 @@
 .exam-pop__new input { flex: 1; min-width: 0; border: 0; background: none; color: inherit; outline: none; }
 .cram-hint__x { display: inline-flex; padding: 6px; border-radius: 999px; color: var(--accent-text); }
 .cram-hint__x:hover { background: color-mix(in srgb, var(--accent-default) 12%, transparent); }
+/* NT13 [편집] 으로 떠날 때 확인 (저장하고 이동 · 버리고 이동 · 계속 고치기) */
+.modal.edit__leave { top: 220px; width: 500px; gap: 18px; }
+.edit__leave-error { padding: 10px 12px; border-radius: 12px; background: var(--status-danger-bg); }
