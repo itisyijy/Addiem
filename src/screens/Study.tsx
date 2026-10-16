@@ -953,7 +953,19 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   // 답을 열면 정답 영역으로 초점을 옮겨 화면 읽기 프로그램이 읽게 한다 (단축키는 버튼이 아니라 그대로 동작)
   const answerBox = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (phase === "a") answerBox.current?.focus({ preventScroll: true });
+    const box = answerBox.current;
+    if (phase !== "a" || !box) return;
+    box.focus({ preventScroll: true });
+    // Q2: 낮은 창(640)에서는 보기가 두어 개만 보여 고른 오답이 아래에 숨는다. 정답, 그다음 고른 보기(여럿이면 첫째)를 카드 안에서 보이게 내린다.
+    // 둘 다 안 들어가면 고른 보기가 보인다. 넘침 표시(is-overflow)로 스크롤 칸 높이가 바뀐 뒤에 잰다
+    if (special?.kind !== "choice") return;
+    const opts = box.querySelectorAll(".opt");
+    const at = (nums: number[]) => opts[order.findIndex((x) => nums.includes(x))];
+    const f = requestAnimationFrame(() => {
+      at(special.correct)?.scrollIntoView({ block: "nearest" });
+      at(marks)?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(f);
   }, [phase, card]);
 
   const position = Math.min(done + 1, total);
@@ -980,6 +992,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT 검토 · 직접 평가해 주세요`
       : null;
   const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip?.id === card.view.id);
+  // D2-u 되돌리기 토스트 자리. Q1 목록은 카드가 길어 [다음 항목] · 평가 줄이 토스트 자리(아래에서 70)까지 내려온다 (창 높이와 상관없이).
+  // 목록에서는 진행 막대 아래에 띄우고 단축키 줄은 비키지 않는다
+  const undoTop = special?.kind === "list";
+  const pushKeys = rated && !undoTop ? "is-pushed" : "";
   // AU21 읽어주기 첫 안내는 칩이 처음 나온 면에 (질문 면에 칩이 있으면 질문 면부터, 답 면에서도 이어서)
   const qTip = phase === "q" && !special && !writing && !!card && !!soundTip?.tts && soundTip.id === card.view.id && card.front.includes("data-tts");
   const ttsTip = (
@@ -1270,7 +1286,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 aria-keyshortcuts={writing ? actionKey("save") : actionKey("reveal")}
                 onClick={reveal}
               />
-              {!toast && <p className={`study__keys t-caption c-tertiary ${rated ? "is-pushed" : ""}`}>{keyLine(keysQ)}</p>}
+              {!toast && <p className={`study__keys t-caption c-tertiary ${pushKeys}`}>{keyLine(keysQ)}</p>}
             </>
           ) : (
             <>
@@ -1358,7 +1374,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   />
                 ))}
               </div>
-              {!toast && <p className={`study__keys study__keys--a t-caption c-tertiary ${rated ? "is-pushed" : ""}`}>{keyLine(keysA)}</p>}
+              {!toast && <p className={`study__keys study__keys--a t-caption c-tertiary ${pushKeys}`}>{keyLine(keysA)}</p>}
             </>
           )}
           {error && <p className="t-body-s c-danger">{error}</p>}
@@ -1416,7 +1432,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         </div>
       ) : (
         rated && (
-          <div className="study__undo" role="status">
+          <div className={`study__undo ${undoTop ? "is-top" : ""}`} role="status">
             <span className={`dot dot--${RATING_DOT[rated.rating]}`} />
             <span className="t-label-m">{RATING_NAME[rated.rating]}</span>
             <span className="study__undo-q t-caption c-on-inverse">{rated.question}</span>

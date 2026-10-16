@@ -1,5 +1,6 @@
 // E1 백업과 기본 설정 / E1-b 데이터 삭제 확인 / E2 학습 지표 (E2-0 데이터 모자람) / E3 보관한 덱
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { api, errorText, type AppInfo, type ArchivedDeck, type HeatDay, type MvpMetrics } from "../api";
 import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
@@ -46,10 +47,12 @@ export function Settings({ focus }: { focus?: "archived" }) {
   const [autoplay, setAutoplay] = useState(() => !pref(NO_AUTOPLAY));
   const [ttsAutoplay, setTtsAutoplay] = useState(() => pref(TTS_AUTOPLAY));
   const [theme, setTheme] = useState(getThemePref);
+  const [version, setVersion] = useState<string>();
 
   const load = useCallback(() => api.appInfo().then(setInfo), []);
   useEffect(() => {
     load().catch((e) => setError(errorText(e)));
+    getVersion().then(setVersion, () => {});
   }, [load]);
   const back = useCallback(() => nav({ name: "home" }), [nav]);
   useKey("Escape", back, !wiping);
@@ -237,6 +240,7 @@ export function Settings({ focus }: { focus?: "archived" }) {
       </section>
 
       <Licenses />
+      {version && <p className="prefs__version t-caption c-tertiary">Neo-Anki {version}</p>}
 
       {wiping && <WipeConfirm info={info} onClose={() => setWiping(false)} onDone={() => nav({ name: "home" })} />}
     </main>
