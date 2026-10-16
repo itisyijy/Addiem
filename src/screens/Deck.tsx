@@ -363,7 +363,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
               {/* H1. 날짜별 분량과 쓸 수 있는 시간 */}
               <Button variant="ghost" size="M" icon="calendar" label="계획 보기" className="deck__plan" onClick={() => nav({ name: "plan", deckId: d.id })} />
               {/* P0 시험 전 회독 입구 (목표일 14일 전부터) */}
-              <CramHint deckIds={[d.id]} />
+              <CramHint deckIds={[d.id]} named={false} />
             </section>
           ) : (
             showSuggestion && (

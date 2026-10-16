@@ -169,13 +169,18 @@ export const n = (v: number) => v.toLocaleString("ko-KR");
  * 영문·숫자는 읽는 소리로: L(엘) R(알) 1(일) 7(칠) 8(팔) → ㄹ, M(엠) N(엔) 0(영) 3(삼) 6(육) → 받침. 괄호·기호는 건너뛴다
  */
 function jong(word: string) {
-  const ch = [...word.replace(/[\s)\]}"'.·…-]+$/, "")].pop() ?? "";
+  let ch = [...word.replace(/[\s)\]}"'.·…-]+$/, "")].pop() ?? "";
+  if (ch && "①②③④⑤⑥⑦⑧⑨".includes(ch)) ch = String("①②③④⑤⑥⑦⑧⑨".indexOf(ch) + 1); // 선택형 보기 번호
   const c = ch.charCodeAt(0);
   if (c >= 0xac00 && c <= 0xd7a3) return (c - 0xac00) % 28;
   return /[lr178]/i.test(ch) ? 8 : /[mn036]/i.test(ch) ? 1 : 0;
 }
 /** 을/를 */
 export const eul = (word: string) => (jong(word) ? "을" : "를");
+/** 이/가 */
+export const iga = (word: string) => (jong(word) ? "이" : "가");
+/** 과/와 */
+export const gwa = (word: string) => (jong(word) ? "과" : "와");
 /** 으로/로 (ㄹ 받침은 "로") */
 export const ro = (word: string) => {
   const j = jong(word);

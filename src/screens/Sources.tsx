@@ -944,11 +944,13 @@ function CardSummary({ c, how }: { c: CardRow; how?: string }) {
     };
   }, [c.note_id, io]);
   const deck = c.deck_path.slice(1).join(" › ") || c.deck_path[0];
-  const title = io ? `그림 가리기 · ${n(io.n)}/${n(io.count)} · ${name || `칸 ${n(io.ordinal)}`}` : c.question;
-  const sub = [!io && c.answer && `답 · ${c.answer}`, how, deck].filter(Boolean).join(" · ");
+  const q = io ? `그림 가리기 · ${n(io.n)}/${n(io.count)} · ${name || `칸 ${n(io.ordinal)}`}` : c.question;
+  // T4-13: 질문 없이 그림만 앞면에 둔 카드는 답이 첫 줄. 둘 다 비면 첫 줄을 그리지 않는다
+  const title = q || c.answer;
+  const sub = [!io && q && c.answer && `답 · ${c.answer}`, how, deck].filter(Boolean).join(" · ");
   return (
     <span className="src-link__text">
-      <span className="t-body-s c-primary">{title}</span>
+      {title && <span className="t-body-s c-primary">{title}</span>}
       <span className="t-caption c-tertiary">{sub}</span>
     </span>
   );

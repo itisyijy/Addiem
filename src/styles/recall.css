@@ -86,10 +86,16 @@
 .recall__extra { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 16px; background: var(--bg-subtle); }
 /* Q1 목록은 칸 7개가 들어가게 카드가 길다 (800 기준 카드 96–620, 평가 줄 678. 칸 7개 + 머리 · 질문 · 요약이 스크롤 없이 들어간다) */
 .study .study__col.is-list { padding-top: 96px; }
-.study .study__col.is-list .study__card, .study .study__col.is-list.is-answer.has-tip .study__card { height: calc(100vh - 276px); }
+.study .study__col.is-list .study__card { height: calc(100vh - 276px); }
+/* 답 면: 칸 36 · 간격 6 (7칸에서 40px). 안내 pill 자리(58, 없으면 32)만큼 카드를 줄여 평가 줄이 창 안에 (800 기준 카드 96–594, 평가 줄 652) */
+.study .study__col.is-list.is-answer .slot { min-height: 36px; padding-block: 3px; }
+.study .study__col.is-list.is-answer .recall__list { gap: 6px; }
+.study .study__col.is-list.is-answer.has-tip .study__card { height: calc(100vh - 302px); }
 /* Q2 답 면: 보기 4개 + 해설이 스크롤 없이 (800 기준 카드 96–530, 평가 줄 588) */
 .study .study__col.is-choice.is-answer.has-tip .study__card { height: calc(100vh - 366px); }
 .study .study__col.is-recall.has-tip .study__tipwrap { height: 58px; }
+/* 선택형 추천 줄은 카드 폭(880)까지, 넘치면 줄을 바꾼다 */
+.study .study__col.is-choice .study__tip { max-width: 100%; white-space: normal; }
 
 /* ---------------------------------------------------------------- C3 편집 칸 (Q0) */
 .lc__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
