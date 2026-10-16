@@ -15,6 +15,7 @@ import { deckFace, scopeCss } from "../cardCss";
 import { splitBack } from "./Study";
 import { DiscardModal, Modal } from "./NewDeck";
 import { CloneDialog, typeLabel } from "./NoteTypes";
+import { nativeLabels } from "./AddCard";
 import { menuKeys } from "./Deck";
 import "../styles/notetypes.css";
 import "../styles/study.css";
@@ -26,7 +27,7 @@ type Draft = { fields: DField[]; tpls: DTpl[]; css: string };
 
 const SIDE_LABEL: Record<Side, string> = { front: "앞면", back: "뒷면" };
 /** 면의 기본 줄 모양 (notetype.rs Look::base: 학습 화면의 질문 · 답 글자) */
-const BASE_LOOK: Record<Side, Look> = { front: { size: "l", align: "center" }, back: { size: "m", align: "left" } };
+const BASE_LOOK: Record<Side, Look> = { front: { size: "l", align: "left" }, back: { size: "m", align: "left" } };
 const SPECIAL = ["FrontSide", "Card", "CardFlag", "CardID", "Deck", "Subdeck", "Tags", "Type"];
 /** 읽어주기 언어 (Anki {{tts 언어:필드}}) */
 const TTS_LANGS: [string, string][] = [
@@ -57,18 +58,21 @@ function fieldNameError(name: string, others: string[]) {
 }
 
 /** 카드 종류 탭 이름 "카드 1 · 단어 → 뜻". Anki 기본 이름(Card 1 · Cloze)이면 앞면 첫 필드 → 뒷면 첫 필드로 */
-function tplTitle(t: DTpl, i: number, cloze: boolean) {
-  return `카드 ${i + 1} · ${tplName(t, cloze)}`;
+/** show: 화면 필드 이름 (앱 기본 유형은 "질문 · 답변" 처럼, NT51) */
+type Show = (name: string) => string;
+const same: Show = (x) => x;
+function tplTitle(t: DTpl, i: number, cloze: boolean, show: Show = same) {
+  return `카드 ${i + 1} · ${tplName(t, cloze, show)}`;
 }
-function tplName(t: DTpl, cloze: boolean) {
+function tplName(t: DTpl, cloze: boolean, show: Show = same) {
   if (t.name && !/^(Card \d+|Cloze)$/.test(t.name)) return t.name;
-  return autoName(t, cloze);
+  return autoName(t, cloze, show);
 }
-function autoName(t: DTpl, cloze: boolean) {
+function autoName(t: DTpl, cloze: boolean, show: Show = same) {
   const f = refsOf(t.qfmt);
-  if (cloze) return `빈칸${f[0] ? ` · ${f[0]}` : ""}`;
+  if (cloze) return `빈칸${f[0] ? ` · ${show(f[0])}` : ""}`;
   const b = refsOf(t.afmt).find((x) => !f.includes(x));
-  return f[0] ? `${f[0]}${b ? ` → ${b}` : ""}` : "앞면 없음";
+  return f[0] ? `${show(f[0])}${b ? ` → ${show(b)}` : ""}` : "앞면 없음";
 }
 
 // ---------------------------------------------------------------- 쉬운 편집 줄 (칸 묶음)
@@ -141,6 +145,12 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
   const curIndex = draft.tpls.indexOf(cur);
   const effMode = cur?.layout ? mode : "html";
   const names = draft.fields.map((f) => f.name);
+  // 앱 기본 유형은 카드 추가 · 편집과 같은 칸 이름을 보인다 (DB 이름 Front · Back 은 필드 행 오른쪽 태그 · HTML 탭 그대로, NT51)
+  const shown = useMemo(() => {
+    const labels = d.native_kind ? nativeLabels(d.native_kind) : undefined;
+    return new Map(labels ? d.fields.map((f, i) => [f.name, labels[i] ?? f.name]) : []);
+  }, [d]);
+  const show: Show = (x) => shown.get(x) ?? x;
 
   useLeaveGuard((to) => {
     if (!dirty) return false;
@@ -183,13 +193,11 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
 
   // ---------------------------------------------------------------- 필드
 
-  const usedWhere = (name: string): { tpl: DTpl; i: number; side: Side } | null => {
-    for (const [i, t] of draft.tpls.entries()) {
-      if (refsOf(t.qfmt).includes(name)) return { tpl: t, i, side: "front" };
-      if (refsOf(t.afmt).includes(name)) return { tpl: t, i, side: "back" };
-    }
-    return null;
-  };
+  /** 이 필드를 쓰는 곳 "카드 1 뒷면 · 카드 2 앞면" (없으면 빈 목록) */
+  const usedWhere = (name: string) =>
+    draft.tpls.flatMap((t, i) =>
+      (["front", "back"] as Side[]).filter((side) => refsOf(side === "front" ? t.qfmt : t.afmt).includes(name)).map((side) => `카드 ${i + 1} ${SIDE_LABEL[side]}`),
+    );
   const renameField = async (key: number, value: string) => {
     const f = draft.fields.find((x) => x.key === key);
     if (!f) return;
@@ -347,7 +355,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     setRenaming(null);
     const v = value.trim();
     // 자동 이름 그대로면 이름을 바꾸지 않는다
-    if (!v || v === autoName(t, d.cloze)) return;
+    if (!v || v === autoName(t, d.cloze, show)) return;
     setTpl(key, { name: v });
   };
 
@@ -575,13 +583,13 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
                 className="t-label-m"
                 title={readOnly ? undefined : "두 번 눌러 이름 바꾸기"}
                 onClick={() => setCurKey(t.key)}
-                onDoubleClick={() => !readOnly && setRenaming({ what: "tpl", key: t.key, value: tplName(t, d.cloze) })}
-                onKeyDown={(e) => e.key === "F2" && !readOnly && setRenaming({ what: "tpl", key: t.key, value: tplName(t, d.cloze) })}
+                onDoubleClick={() => !readOnly && setRenaming({ what: "tpl", key: t.key, value: tplName(t, d.cloze, show) })}
+                onKeyDown={(e) => e.key === "F2" && !readOnly && setRenaming({ what: "tpl", key: t.key, value: tplName(t, d.cloze, show) })}
               >
-                {tplTitle(t, i, d.cloze)}
+                {tplTitle(t, i, d.cloze, show)}
               </button>
               {!readOnly && t.key === cur?.key && draft.tpls.length > 1 && (
-                <button className="nte__kind-x" aria-label={`${tplTitle(t, i, d.cloze)} 지우기`} title="카드 종류 지우기" onClick={() => removeTpl(t.key)}>
+                <button className="nte__kind-x" aria-label={`${tplTitle(t, i, d.cloze, show)} 지우기`} title="카드 종류 지우기" onClick={() => removeTpl(t.key)}>
                   <Icon name="x" size={14} />
                 </button>
               )}
@@ -683,27 +691,26 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
                   onClick={() => html && !readOnly && insertRef(f.name)}
                   onDoubleClick={() => !readOnly && setRenaming({ what: "field", key: f.key, value: f.name })}
                 >
-                  {f.name}
+                  {show(f.name)}
                 </button>
               )}
               {!editing && <span className="t-caption c-tertiary">{use}</span>}
+              {!editing && show(f.name) !== f.name && <span className="nte__dbname t-mono-key c-tertiary" title="템플릿 · Anki 에 쓰는 필드 이름">{f.name}</span>}
               {!readOnly && !editing && (
                 <span className="nte__trash-wrap">
                   <button
                     className="nte__trash"
                     aria-label={`${f.name} 필드 지우기`}
-                    aria-disabled={!!where || draft.fields.length < 2}
-                    aria-describedby={where ? tipId : undefined}
-                    onClick={() => !where && draft.fields.length > 1 && removeField(f.key)}
+                    aria-disabled={where.length > 0 || draft.fields.length < 2}
+                    aria-describedby={where.length ? tipId : undefined}
+                    onClick={() => !where.length && draft.fields.length > 1 && removeField(f.key)}
                   >
                     <Icon name="trash" size={14} />
                   </button>
-                  {where && (
+                  {where.length > 0 && (
                     <span id={tipId} role="tooltip" className="nte__tip">
-                      <span className="t-label-s">{SIDE_LABEL[where.side]}에서 쓰고 있어 지울 수 없어요</span>
-                      <span className="t-caption c-on-inverse">
-                        {tplTitle(where.tpl, where.i, d.cloze)} {SIDE_LABEL[where.side]}에서 먼저 빼면 지울 수 있어요
-                      </span>
+                      <span className="t-label-s">카드에서 쓰고 있어 지울 수 없어요</span>
+                      <span className="t-caption c-on-inverse">{where.join(" · ")}에서 먼저 빼면 지울 수 있어요</span>
                     </span>
                   )}
                 </span>
@@ -745,7 +752,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
                 </div>
               );
             const look = lookOf(p) ?? BASE_LOOK[side];
-            const label = p.kind === "cloze" ? `빈칸 · ${p.name}` : p.kind === "type" ? `써서 답하기 · ${p.name}` : p.kind === "tts" ? `읽어주기 · ${p.name}` : p.name;
+            const label = p.kind === "cloze" ? `빈칸 · ${show(p.name)}` : p.kind === "type" ? `써서 답하기 · ${show(p.name)}` : p.kind === "tts" ? `읽어주기 · ${show(p.name)}` : show(p.name);
             const styled = p.kind === "field" || p.kind === "cloze";
             return (
               <div
@@ -859,7 +866,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
             {typePart ? (
               pill(
                 "type",
-                `정답 · ${typePart.name}`,
+                `정답 · ${show(typePart.name)}`,
                 names.filter(Boolean).map((x) => ({ label: x, onPick: () => setType(x) })),
                 readOnly,
               )
@@ -877,7 +884,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
             {ttsPart ? (
               pill(
                 "tts",
-                `${ttsPart.name} · ${ttsLang}`,
+                `${show(ttsPart.name)} · ${ttsLang}`,
                 [
                   ...names.filter(Boolean).map((x) => ({ label: x, hint: "필드", onPick: () => setTts({ name: x, opts: ttsPart.opts }) })),
                   ...TTS_LANGS.map(([k, v]) => ({ label: v, hint: k, onPick: () => setTts({ name: ttsPart.name, opts: k }) })),
@@ -924,7 +931,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
         <section className={`nte__panel nte__pane ${err ? "is-error" : ""}`} aria-label={side ? SIDE_LABEL[side] : "CSS"}>
           <div className="nte__side-head">
             <span className="t-label-m">{side ? SIDE_LABEL[side] : "CSS"}</span>
-            <span className="t-caption c-tertiary">{side ? tplTitle(cur, curIndex, d.cloze) : "이 유형의 모든 카드 종류에 써요"}</span>
+            <span className="t-caption c-tertiary">{side ? tplTitle(cur, curIndex, d.cloze, show) : "이 유형의 모든 카드 종류에 써요"}</span>
           </div>
           <CodeArea
             label={side ? `${SIDE_LABEL[side]} HTML` : "CSS"}
@@ -1165,7 +1172,7 @@ function SaveConfirm({ impact, labels, busy, onBack, onSave }: {
       icon: "alert",
       tone: "warn",
       title: `카드 ${n(impact.empty_fronts)}장의 앞면이 비어요`,
-      text: "이 카드들은 학습할 때 앞면이 빈 채로 나와요. 필드를 채우거나 앞면을 고치면 다시 보여요. 카드와 복습 기록은 지우지 않아요.",
+      text: "앞면이 빈 카드는 학습에 나오지 않고, 필드를 채우면 다시 나와요. 카드와 복습 기록은 그대로예요.",
     });
   for (const t of impact.templates) {
     const label = labels.get(t.name) ?? t.name;

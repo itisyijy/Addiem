@@ -103,6 +103,7 @@ function Screen({ route }: { route: Route }) {
           buriedOnly={route.buriedOnly}
           cardIds={route.cardIds}
           weakOnly={route.weakOnly}
+          edit={route.edit}
         />
       );
     case "import":

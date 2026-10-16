@@ -94,6 +94,7 @@ class Card:
     position: int = 0               # 같은 그룹 안의 원래 순서 (Anki의 due 필드)
     buried_until: date | None = None
     sibling: int | None = None      # 형제 묶음 (빈칸이 아닌 노트의 id). 같은 묶음은 하루에 한 장
+    front_empty: bool = False       # 앞면이 빈 카드 (Anki 의 빈 카드). 큐에 내지 않는다. 상태 · 일정은 그대로 (NT49)
 
 
 @dataclass
@@ -198,7 +199,8 @@ def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0
     skipped = _with_descendants([i for i in paused_ids if i not in chosen], decks)
 
     pool = [c for c in cards
-            if c.deck_id in wanted and c.deck_id not in skipped and c.state != "suspended"]
+            if c.deck_id in wanted and c.deck_id not in skipped and c.state != "suspended"
+            and not c.front_empty]
 
     # --- 1단계. 후보 수집
     for c in pool:
@@ -449,6 +451,19 @@ def test():
     p = build_queue(T, [Deck(1, "d")], [rv, Card(5, 1, "new", sibling=7), Card(6, 1, "new", sibling=10)])
     assert [c.id for c in p.ordered] == [2, 6], "복습이 남고 형제 신규는 빠진다. 빠진 자리는 다음 신규가 채운다"
     ok += 2
+
+    # ---- 앞면이 빈 카드 (NT49). 어느 상태든 빠지고 신규 몫 · 형제 자리를 쓰지 않는다
+    empties = [Card(1, 1, "review", due_day=T, front_empty=True),
+               Card(2, 1, "learning", due_day=T, front_empty=True),
+               Card(3, 1, "review", due_day=T - timedelta(days=3), front_empty=True),
+               Card(4, 1, "new", front_empty=True),
+               Card(5, 1, "new"),
+               Card(6, 1, "review", due_day=T, buried_until=T, front_empty=True),
+               Card(7, 1, "review", due_day=T, sibling=9, front_empty=True),
+               Card(8, 1, "review", due_day=T, sibling=9)]
+    p = build_queue(T, [Deck(1, "d", daily_new_limit=1)], empties)
+    assert [c.id for c in p.ordered] == [8, 5], "빈 앞면 카드만 빠진다"
+    ok += 1
 
     # ---- 쉬는 덱 (T1-04, I84)
     parent, child = Deck(1, "쉼", paused=True), Deck(2, "하위", parent_id=1)

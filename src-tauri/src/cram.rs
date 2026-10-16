@@ -63,20 +63,26 @@ fn target<'a>(decks: &'a [queue::Deck], deck_ids: Option<&[i64]>, today: i64) ->
 }
 
 /// 범위 안에서 한 번이라도 본 카드 (신규 · 보류 상태 제외). 순서: 핵심 먼저, 안정도 낮은 것 먼저
+/// 앞면이 빈 카드는 빼고 (NT49, 오늘의 학습과 같다)
 fn items(con: &Connection, scope_ids: &[i64], weak_ids: &HashSet<i64>) -> Res<Vec<Item>> {
     let ids = scope_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let fronts = crate::notetype::Fronts::load(con)?;
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.eff_importance, COALESCE(c.stability, c.interval_days), c.deck_id,
-                    EXISTS (SELECT 1 FROM review_log r WHERE r.card_id = c.id AND r.rating = 1 AND r.reviewed_at >= ?1), c.note_id
-             FROM card_effective c WHERE c.deck_id IN ({ids}) AND c.state IN ('learning', 'review', 'relearning')
+                    EXISTS (SELECT 1 FROM review_log r WHERE r.card_id = c.id AND r.rating = 1 AND r.reviewed_at >= ?1), c.note_id,
+                    n.note_type_id, c.template_ord, n.fields
+             FROM card_effective c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN ({ids}) AND c.state IN ('learning', 'review', 'relearning')
              ORDER BY c.eff_importance DESC, COALESCE(c.stability, c.interval_days), c.id"
         ))
         .map_err(err)?;
     let rows = st
         .query_map([now_ms() - AGAIN_DAYS * DAY_MS], |r| {
             let (importance, stability, deck): (i64, f64, i64) = (r.get(1)?, r.get(2)?, r.get(3)?);
-            Ok(Item {
+            if fronts.empty(r.get(6)?, r.get(7)?, &r.get::<_, String>(8)?) {
+                return Ok(None);
+            }
+            Ok(Some(Item {
                 id: r.get(0)?,
                 note: r.get(5)?,
                 core: importance == 2 && stability < SHAKY_DAYS,
@@ -84,10 +90,10 @@ fn items(con: &Connection, scope_ids: &[i64], weak_ids: &HashSet<i64>) -> Res<Ve
                 again: r.get(4)?,
                 stable: stability >= STABLE_DAYS,
                 core_card: importance == 2,
-            })
+            }))
         })
         .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    rows.filter_map(Result::transpose).collect::<Result<_, _>>().map_err(err)
 }
 
 /// 대상 덱 아래에서 약한 챕터(하위 덱까지)와, 화면에 보일 약한 챕터 이름 (대상 덱 아래 경로)
@@ -548,7 +554,8 @@ mod tests {
             (4, 3, 1, "review", 12.0, today + 3),
             (5, 1, 2, "new", 0.0, today),         // 신규는 혼합에 넣지 않는다 (P8)
         ] {
-            con.execute("INSERT INTO note (id, note_type_id, fields, created_at, updated_at) VALUES (?1, 1, '[]', 0, 0)", [id]).unwrap();
+            // 앞면이 빈 노트는 회독에서 빠지므로(NT49) 앞면 필드를 채운다
+            con.execute("INSERT INTO note (id, note_type_id, fields, created_at, updated_at) VALUES (?1, 1, '[\"q\",\"a\"]', 0, 0)", [id]).unwrap();
             con.execute(
                 "INSERT INTO card (id, note_id, deck_id, template_ord, state, stability, importance, due_at, created_at, updated_at)
                  VALUES (?1, ?1, ?2, 0, ?3, ?4, ?5, ?6, 0, 0)",

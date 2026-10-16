@@ -1709,7 +1709,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
           )}
           <div className="edit__actions">
             {card && <Button variant="ghost" size="M" icon="trash" label="카드 삭제" className="edit__delete" onClick={() => setConfirming(true)} />}
-            <span className="edit__msg t-body-s c-danger">{error}</span>
+            {/* 떠날 때 묻는 창이 떠 있으면 오류는 그 창 안에만 */}
+            <span className="edit__msg t-body-s c-danger">{leaving ? null : error}</span>
             <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
             <Button size="M" icon="check" label="저장" shortcut={actionKey("save")} onClick={() => save()} disabled={!note} busy={saving} busyLabel="저장 중…" />
           </div>
