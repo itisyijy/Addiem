@@ -81,6 +81,9 @@ export type DeckDetail = {
   core_learned_pct: number;
   per_day: number;
   finish_days: number | null;
+  /** 앞면이 빈 카드 (학습에 나오지 않는다). 그중 신규 수 (unseen 에 들지 않는다) */
+  front_empty: number[];
+  unseen_empty: number;
   learnable_days: number | null;
   on_track: boolean | null;
   subdeck_count: number;
@@ -236,7 +239,12 @@ export type NoteTypeRow = {
   cards: number;
   /** 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저) */
   decks: string[];
+  /** 만든 시각 · 이 기기에서 만들었나 (이름이 같은 유형을 가린다) */
+  created_at: number;
+  made_here: boolean;
 };
+/** K39 두 기기에서 고쳐 진 쪽 정의 (편집기 안내) */
+export type NoteTypeConflict = { what: string; at: number; winner: string; winner_device: string; loser: string; loser_device: string; seen: boolean };
 /** note_type_detail. fields 는 보이는 순서 (add_typed_note 의 values 순서) */
 export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   css: string;
@@ -245,6 +253,8 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   templates: { ord: number; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null }[];
   /** 줄 상자 CSS. 템플릿이 쓰는데 CSS 에 없으면 저장할 때 붙는다 (편집기 미리보기도 붙여 그린다) */
   layout_css: string;
+  /** 정의의 지문. 저장할 때 넘기면 그 사이 (동기화로) 바뀐 유형은 저장하지 않는다 */
+  version: string;
 };
 /** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽). 쉬운 편집이 쓰는 줄은 늘 상자 (NT41) */
 export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };
@@ -373,6 +383,8 @@ export type ExportResult = {
   path: string;
   /** 찾지 못한 미디어를 쓰는 카드 (C1-xr [카드 보기]) */
   missing_cards: number[];
+  /** 카드 종류가 없어 뺀 카드 수 (Anki 가 받지 않는다) */
+  skipped_cards: number;
 };
 /** C1-xe 덱 상자 */
 /** recall_cards: 목록 회상 · 선택형 카드 수 (Anki 에서는 보기만 해요) */
@@ -499,7 +511,7 @@ export const api = {
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
   /** C1-xc. columns: front | back | deck | tags | importance | due. plainText: 서식 빼고 글자만 */
   exportCsv: (deckId: number, path: string, columns: string[], plainText: boolean) =>
-    invoke<{ rows: number; path: string }>("export_csv", { deckId, path, columns, plainText }),
+    invoke<{ rows: number; path: string; empty_fronts: number }>("export_csv", { deckId, path, columns, plainText }),
   importanceBoard: (deckId: number) => invoke<BoardDeck[]>("importance_board", { deckId }),
   noteEdit: (noteId: number) => invoke<NoteEdit>("note_edit", { noteId }),
   /** slots: noteEdit 의 자리 번호. 없으면 지금 보이는 순서 */
@@ -516,13 +528,16 @@ export const api = {
   cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
   renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),
   deleteNoteType: (id: number) => invoke<void>("delete_note_type", { id }),
-  noteTypeSamples: (id: number) => invoke<NoteTypeSample[]>("note_type_samples", { id }),
+  /** first: 먼저 보일 노트 (E 에서 연 카드의 노트) */
+  noteTypeSamples: (id: number, first?: number) => invoke<NoteTypeSample[]>("note_type_samples", { id, first }),
   /** HTML 전용이면 이유 문자열로 거부한다 ("뒷면에 조건문 {{#예문}}") */
   templateLayout: (qfmt: string, afmt: string) => invoke<Layout>("template_layout", { qfmt, afmt }),
   buildTemplateLayout: (layout: Layout) => invoke<{ qfmt: string; afmt: string }>("build_template_layout", { layout }),
   renameFieldRefs: (texts: string[], old: string, name: string) => invoke<string[]>("rename_field_refs", { texts, old, new: name }),
-  /** dryRun: 확인 창의 수만 세고 되돌린다 */
-  saveNoteType: (id: number, edit: NoteTypeEdit, dryRun: boolean) => invoke<NoteTypeImpact>("save_note_type", { id, edit, dryRun }),
+  /** dryRun: 확인 창의 수만 세고 되돌린다. version: 연 때의 note_type_detail.version (다르면 저장하지 않는다) */
+  saveNoteType: (id: number, edit: NoteTypeEdit, dryRun: boolean, version?: string) => invoke<NoteTypeImpact>("save_note_type", { id, edit, dryRun, version }),
+  noteTypeConflicts: (id: number) => invoke<NoteTypeConflict[]>("note_type_conflicts", { id }),
+  noteTypeConflictsSeen: (id: number) => invoke<void>("note_type_conflicts_seen", { id }),
   /** 사용자 · 가져온 유형으로 노트 추가. 만든 카드 수 */
   addTypedNote: (note: { deck_id: number; note_type_id: number; values: string[]; importance: Level | null }) =>
     invoke<number>("add_typed_note", { note }),

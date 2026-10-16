@@ -638,6 +638,9 @@ pub struct DeckDetail {
     /// 하루 신규 분량과 그 분량으로 끝내는 데 걸리는 날
     per_day: i64,
     finish_days: Option<i64>,
+    /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). 큰 카드의 이유 줄 · [카드 목록에서 보기]. 그중 신규 수 (unseen 에 들지 않는다)
+    front_empty: Vec<i64>,
+    unseen_empty: i64,
     learnable_days: Option<i64>,
     /// 목표일이 있을 때만. 이 분량으로 목표일 안에 끝나는가
     on_track: Option<bool>,
@@ -699,7 +702,10 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
     let path = path_of(deck_id, &by_id);
 
     let total = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?;
-    let unseen = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND state = 'new'")?;
+    // 앞면이 빈 카드(NT49)는 학습에 나오지 않는다: 남은 신규 · 하루 몫에서 빼고, 큰 카드가 "오늘 0장"인 이유로 보인다 (Q1-01)
+    let empties = crate::notetype::front_empty_cards(&con, &id_list)?;
+    let empty_new = empties.iter().filter(|(_, s)| s == "new").count() as i64;
+    let unseen = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND state = 'new'")? - empty_new;
     let hard = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND buried_until IS NOT NULL")?;
     let hard_auto = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND buried_until IS NOT NULL AND buried_reason = 'two_again'")?;
     let hard_next: Option<i64> =
@@ -716,7 +722,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         unseen
     } else {
         let ids = descendants(owner.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({ids}) AND state = 'new'"), [], |r| r.get(0)).map_err(err)?
+        crate::notetype::new_left(&con, &ids)?
     };
     let (per_day, _) = queue::new_target_for_deck(owner, today, owner_unseen);
     let finish_days = (per_day > 0 && owner_unseen > 0).then(|| (owner_unseen + per_day - 1) / per_day);
@@ -754,11 +760,8 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         let d = by_id[&id];
         let sub = descendants(id, &decks);
         let sub_ids = sub.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let (cards, unseen): (i64, i64) = con
-            .query_row(&format!("SELECT count(*), coalesce(sum(state = 'new'), 0) FROM card WHERE deck_id IN ({sub_ids})"), [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .map_err(err)?;
+        let cards: i64 = con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({sub_ids})"), [], |r| r.get(0)).map_err(err)?;
+        let unseen = crate::notetype::new_left(&con, &sub_ids)?;
         let (importance, importance_source, weak, dismissed, recovery_shown): (i64, String, bool, Option<String>, bool) = con
             .query_row(
                 "SELECT importance, importance_source, weak, weak_dismissed_until, weak_recovery_shown FROM deck WHERE id = ?1",
@@ -835,7 +838,10 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         include_target_day: include_target_day == 1,
         daily_new_limit,
         today_new_override: me.today_new,
-        seen_pct: if total > 0 { (total - unseen) * 100 / total } else { 0 },
+        // 학습을 시작한 카드 = 신규가 아닌 카드 (앞면이 빈 신규도 아직 시작하지 않았다)
+        seen_pct: if total > 0 { (total - unseen - empty_new) * 100 / total } else { 0 },
+        front_empty: empties.into_iter().map(|(id, _)| id).collect(),
+        unseen_empty: empty_new,
         core_total,
         core_seen,
         core_learned_pct: if core_total > 0 { core_seen * 100 / core_total } else { 0 },
@@ -1014,7 +1020,9 @@ pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String])
     let mut values = values.to_vec();
     values.resize(nt.slots.len(), String::new());
     crate::recall::check_fields(&nt.name, &nt.slots, &values)?;
-    if nt.visible().first().is_none_or(|(s, _)| render::is_blank(&values[*s])) {
+    // 앱 기본 유형은 첫 칸이 질문이라 비울 수 없다. 사용자 · 가져온 유형의 기존 노트는 막지 않는다 (Anki 처럼, Q1-02):
+    // 새 필드를 맨 앞에 두거나 앞면에 쓰면 그 칸이 빈 노트를 다른 칸만 고쳐도 저장할 수 없었다. 앞면이 비면 그 카드는 학습에서 빠진다 (NT49)
+    if nt.native_kind.is_some() && nt.visible().first().is_none_or(|(s, _)| render::is_blank(&values[*s])) {
         return Err("첫 칸을 비울 수 없어요.".into());
     }
     let now = now_ms();
@@ -1493,9 +1501,7 @@ pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> R
     let con = state.db.lock().map_err(err)?;
     let decks = load_decks(&con)?;
     let ids = descendants(config.deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let remaining_new: i64 = con
-        .query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({ids}) AND state = 'new'"), [], |r| r.get(0))
-        .map_err(err)?;
+    let remaining_new = crate::notetype::new_left(&con, &ids)?;
     let today = study_day(now_ms());
     let target = config.target_date.as_deref().and_then(db::day_from_date);
     let current = decks.iter().find(|d| d.id == config.deck_id);
@@ -1696,9 +1702,7 @@ pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     {
         Some((d, dday)) => {
             let ids = descendants(d.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-            let remaining_new: i64 = con
-                .query_row(&format!("SELECT count(*) FROM card WHERE state = 'new' AND deck_id IN ({ids})"), [], |r| r.get(0))
-                .map_err(err)?;
+            let remaining_new = crate::notetype::new_left(&con, &ids)?;
             let days = queue::learnable_days(today, d.target_day, d.include_target_day).unwrap_or(1).max(1);
             Some(TargetInfo { name: d.name.clone(), dday, remaining_new, days })
         }
@@ -2643,8 +2647,8 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
     let tx = con.transaction().map_err(err)?;
     // Drive 동기화 중이면 "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 먼저 끊는다 (Drive 데이터는 그대로, K10)
     crate::sync::forget_local(&tx).map_err(err)?;
-    // K7 두 기기에서 고친 카드의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
-    tx.execute_batch("DROP TABLE IF EXISTS sync_conflict;").map_err(err)?;
+    // K7 두 기기에서 고친 카드 · K39 노트 유형의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
+    tx.execute_batch("DROP TABLE IF EXISTS sync_conflict; DROP TABLE IF EXISTS sync_type_conflict;").map_err(err)?;
     tx.execute_batch(
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
