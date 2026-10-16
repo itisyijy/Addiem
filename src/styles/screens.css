@@ -189,9 +189,12 @@
 /* ---------------------------------------------------------------- C1 덱 상세 */
 .deck { display: flex; flex-direction: column; gap: 20px; width: 1120px; margin: 0 auto; padding: 96px 0 48px; }
 .deck--empty { width: 1080px; padding-top: 104px; }
-.deck__head { display: flex; align-items: flex-end; justify-content: space-between; }
-.deck__title { display: flex; flex-direction: column; gap: 4px; white-space: nowrap; }
-.deck__actions { display: flex; align-items: center; gap: 8px; }
+.deck__head { display: flex; align-items: flex-end; justify-content: space-between; column-gap: 24px; }
+/* 긴 덱 이름: 제목은 줄을 바꾸고 아래 한 줄은 말줄임. 오른쪽 버튼은 줄지 않고 화면 안에 남는다 (QA T6-05) */
+.deck__title { display: flex; flex-direction: column; gap: 4px; min-width: 0; white-space: nowrap; }
+.deck__title > h1 { white-space: normal; overflow-wrap: anywhere; }
+.deck__title > p { overflow: hidden; text-overflow: ellipsis; }
+.deck__actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
 .deck__row { display: flex; gap: 20px; align-items: flex-start; }
 
 .deck__today {
@@ -380,12 +383,13 @@
 .modal--wide { top: 96px; width: 680px; max-height: calc(100vh - 140px); overflow-y: auto; }
 
 /* ---------------------------------------------------------------- D1 학습 시작 전 요약 */
+/* 80 + 500 + 40 + 580 = 1200 이라 창 최소 폭(1180)에서 가로로 넘쳤다 (QA T6-07). 좁으면 왼쪽 여백(80 → 40)부터, 그다음 왼쪽 열이 준다 */
 .summary {
   display: grid;
-  grid-template-columns: 500px 580px;
+  grid-template-columns: minmax(0, 500px) 580px;
   column-gap: 40px;
   align-items: start;
-  padding: 104px 0 48px 80px;
+  padding: 104px 0 48px clamp(40px, 100vw - 1140px, 80px);
 }
 .summary__left { display: flex; flex-direction: column; align-items: flex-start; }
 .summary__gap { height: 20px; }
@@ -546,10 +550,10 @@
 /* ---------------------------------------------------------------- D5 학습 완료 */
 .done {
   display: grid;
-  grid-template-columns: 520px 560px;
+  grid-template-columns: minmax(0, 520px) 560px; /* .summary 와 같이 최소 창 폭에서 왼쪽 열이 준다 */
   column-gap: 40px;
   align-items: start;
-  padding: 120px 0 48px 80px;
+  padding: 120px 0 48px clamp(40px, 100vw - 1140px, 80px);
 }
 .done__left { display: flex; flex-direction: column; align-items: flex-start; }
 .done__gap { height: 24px; }
