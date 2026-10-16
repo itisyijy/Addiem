@@ -907,11 +907,12 @@ fn blank_mark(text: &str) -> bool {
     })
 }
 
-/// 붙여 넣은 글(HTML) -> 제안할 카드 유형 (AddCard KINDS: cloze · choice · list · occlusion) 또는 없음. 자동으로 바꾸지 않는다
-pub fn suggest_kind(html: &str) -> Option<&'static str> {
+/// 붙여 넣은 글(HTML) -> 제안할 카드 유형 (AddCard KINDS: cloze · choice · list · occlusion) 또는 없음. 자동으로 바꾸지 않는다.
+/// answer: 답 칸에 글이 있다. 괄호 빈칸 · ___ 은 그 답을 넣어 {{c1::답}} 으로 바꾸므로 답이 있을 때만 빈칸을 권한다 ({{c1::}} 은 늘)
+pub fn suggest_kind(html: &str, answer: bool) -> Option<&'static str> {
     let lines = quality::html_lines(html);
     let text = lines.join("\n");
-    if !render::cloze_numbers(html).is_empty() || blank_mark(&text) {
+    if !render::cloze_numbers(html).is_empty() || (answer && blank_mark(&text)) {
         return Some("cloze");
     }
     let circled = ['①', '②', '③', '④'].iter().all(|c| text.contains(*c));
@@ -1152,8 +1153,8 @@ pub fn build_template_layout(layout: Layout) -> Built {
 }
 
 #[tauri::command]
-pub fn suggest_card_kind(text: String) -> Option<String> {
-    suggest_kind(&text).map(String::from)
+pub fn suggest_card_kind(text: String, answer: Option<String>) -> Option<String> {
+    suggest_kind(&text, answer.as_deref().is_some_and(|a| !render::is_blank(a))).map(String::from)
 }
 
 #[cfg(test)]
@@ -1260,17 +1261,20 @@ mod tests {
 
     #[test]
     fn suggest_kind_rules() {
-        assert_eq!(suggest_kind("{{c1::서울}}은 수도"), Some("cloze"));
-        assert_eq!(suggest_kind("대한민국의 수도는 (   )이다"), Some("cloze"));
-        assert_eq!(suggest_kind("수도는 ___ 이다"), Some("cloze"));
-        assert_eq!(suggest_kind("다음 중 옳은 것은?<br>① 가<br>② 나<br>③ 다<br>④ 라"), Some("choice"));
-        assert_eq!(suggest_kind("옳은 것은? 1) 가 2) 나 3) 다 4) 라"), Some("choice"));
-        assert_eq!(suggest_kind("<div>OSI 하위 계층</div><div>1. 물리</div><div>2. 데이터 링크</div><div>3. 네트워크</div>"), Some("list"));
-        assert_eq!(suggest_kind("- 가\n- 나\n- 다"), Some("list"));
-        assert_eq!(suggest_kind("<img src=\"heart.png\">"), Some("occlusion"));
-        assert_eq!(suggest_kind("결측값 처리 방법은?"), None);
-        assert_eq!(suggest_kind("- 가<br>- 나"), None, "두 줄은 목록이 아니다");
-        assert_eq!(suggest_kind("f(x) = (x)"), None, "괄호 안에 글자가 있으면 빈칸이 아니다");
+        assert_eq!(suggest_kind("{{c1::서울}}은 수도", false), Some("cloze"), "빈칸 문법은 답 칸이 비어도");
+        assert_eq!(suggest_kind("대한민국의 수도는 (   )이다", true), Some("cloze"));
+        assert_eq!(suggest_kind("대한민국의 수도는 (   )이다", false), None, "괄호 빈칸은 넣을 답이 있어야");
+        assert_eq!(suggest_kind("수도는 ___ 이다", true), Some("cloze"));
+        assert_eq!(suggest_kind("수도는 ___ 이다", false), None);
+        assert_eq!(suggest_kind("다음 중 옳은 것은?<br>① 가<br>② 나<br>③ 다<br>④ 라", false), Some("choice"));
+        assert_eq!(suggest_kind("옳은 것은? 1) 가 2) 나 3) 다 4) 라", false), Some("choice"));
+        assert_eq!(suggest_kind("<div>OSI 하위 계층</div><div>1. 물리</div><div>2. 데이터 링크</div><div>3. 네트워크</div>", false), Some("list"));
+        assert_eq!(suggest_kind("- 가\n- 나\n- 다", false), Some("list"));
+        assert_eq!(suggest_kind("( )를 고르면<br>- 가<br>- 나<br>- 다", false), Some("list"), "답이 없으면 괄호 빈칸은 건너뛰고 다음 규칙");
+        assert_eq!(suggest_kind("<img src=\"heart.png\">", false), Some("occlusion"));
+        assert_eq!(suggest_kind("결측값 처리 방법은?", true), None);
+        assert_eq!(suggest_kind("- 가<br>- 나", false), None, "두 줄은 목록이 아니다");
+        assert_eq!(suggest_kind("f(x) = (x)", true), None, "괄호 안에 글자가 있으면 빈칸이 아니다");
     }
 
     #[test]
