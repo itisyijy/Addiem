@@ -9,6 +9,7 @@ import {
   type ActionId,
 } from "../keys";
 import { Modal } from "./NewDeck";
+import { HIDDEN as FIGURES_HIDDEN } from "./PdfFigures";
 import { DeleteDeckConfirm } from "./Deck";
 import { NO_AUTOPLAY, SKIP_SUMMARY, TTS_AUTOPLAY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
@@ -303,6 +304,7 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
     setBusy(true);
     try {
       await api.wipeAll(backup);
+      localStorage.removeItem(FIGURES_HIDDEN); // 새 자료가 지운 자료의 id 를 다시 쓴다
       onDone();
     } catch (e) {
       setError(errorText(e));

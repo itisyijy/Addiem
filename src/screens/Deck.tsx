@@ -144,7 +144,8 @@ function Header({ d, reload, variant }: { d: DeckDetail; reload: Reload; variant
           {variant === "full" && (
             <Button variant="secondary" size="M" icon="list" label="카드 보기" onClick={() => nav({ name: "cards", deckId: d.id })} />
           )}
-          {variant === "full" && <SourcesButton deckId={d.id} /> /* I1 [자료 N] (screens/Sources.tsx) */}
+          {/* I1 [자료 N] (screens/Sources.tsx). 빈 덱에도 둔다: 강의 PDF 부터 넣고 그림·표 · 초안으로 첫 카드를 만들 수 있게 (QA T4-03) */}
+          <SourcesButton deckId={d.id} />
           <Button
             variant={variant === "full" ? "secondary" : "ghost"}
             size="M"
