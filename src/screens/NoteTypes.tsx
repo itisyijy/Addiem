@@ -288,7 +288,8 @@ export function CloneDialog({ rows: given, from, back, onClose }: {
   const pick = src ?? choices[0];
   // 고른 유형이 바뀌면 이름도 따라간다 (직접 고쳤으면 그대로)
   useEffect(() => {
-    if (pick && !edited) setName(uniqueName(`${typeLabel(pick)} 복사본`, rows));
+    // 앱 유형은 "내 질문과 답변" (세그먼트에서 앞부분으로 구분된다, NT55), 그 밖은 "X 복사본" (엔진 clone_type 과 같다)
+    if (pick && !edited) setName(uniqueName(pick.native_kind ? `내 ${typeLabel(pick)}` : `${pick.name} 복사본`, rows));
   }, [pick, edited, rows]);
 
   const submit = async () => {
