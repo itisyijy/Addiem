@@ -854,7 +854,12 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
             c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [n]).map_err(store::other)?;
         }
         engine::set_local(c, "account", &account)?;
-        engine::set_local(c, "backup", o.backup.as_deref().unwrap_or("daily"))?;
+        // 고르는 창 · 다시 시작은 백업 설정을 보내지 않는다: 사용자가 끈 백업을 "매일"로 되돌리지 않는다. 처음 연결이면 매일
+        match o.backup.as_deref() {
+            Some(b) => engine::set_local(c, "backup", b)?,
+            None if engine::local(c, "backup")?.is_none() => engine::set_local(c, "backup", "daily")?,
+            None => {}
+        }
         engine::set_local(c, "enabled", if o.later { "0" } else { "1" })
     })?;
     if o.later {

@@ -271,7 +271,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     text = "Drive 데이터를 어떻게 할지 고르면 다시 맞춰요. 그때까지 이 기기 데이터는 그대로예요.";
     actions = <Button size="M" label="고르기" onClick={act(() => syncFlow({ kind: "choice", probe: null }))} />;
   } else if (s.state === "gone") {
-    text = "다른 기기에서 Drive 데이터를 지웠어요. 이 기기 데이터는 그대로예요.";
+    text = "다른 기기나 Drive 설정에서 지워졌어요. 이 기기 데이터는 그대로예요.";
     actions = (
       <>
         <Button variant="ghost" size="M" label="연결 끊기" onClick={act(() => syncFlow({ kind: "disconnect" }))} />
@@ -811,7 +811,7 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
     ? `Drive에는 ${dev}에서 맞춘 데이터가 있어요. 어떻게 할까요?`
     : kind === "unlock"
       ? `${named ? `${named}에서` : "다른 기기에서"} 잠금을 풀고 Drive에 다시 올렸어요. 이 기기에 저장된 암호는 더 이상 쓰지 않아요. 어떻게 할까요?`
-      : `이 기기에는 ${kind === "restore" ? "복구" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
+      : `이 기기에는 ${kind === "restore" ? "복구" : kind === "lock" ? "잠그기" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
   // 이 기기 잠금으로 새로 시작하면 암호가 필요 없다. 다른 기기가 잠근 Drive 를 새로 시작하면 그 암호로 잠근 채 (T3-11)
   const locked = (choice?.locked || remote?.locked) && !(mode === "fresh" && s?.lock);
   // 다시 연결하면 기기 목록 기억이 없다: Drive 의 기기 파일 이름 (T3-18)
@@ -872,7 +872,19 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
       </div>
       {/* 처음 연결: K3 · K6-f 처럼 이 기기 이름을 정한다 (같은 PC 이름끼리 구분, T3-16) */}
       {!choice && <DeviceName value={name} onChange={setName} />}
-      {locked && <Input type="password" label="Drive 데이터 암호" value={password} onChange={(e) => setPassword(e.target.value)} />}
+      {locked && (
+        <>
+          <Input
+            type="password"
+            label="Drive 데이터 암호"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            // 이 기기가 잠근 채라면 [Drive 새로 시작]은 이 기기 키로 잠금을 이어 가 암호가 필요 없다
+            helper={s?.lock ? "잠근 기기에서 정한 암호예요" : "잠근 기기에서 정한 암호예요 · 세 방법 모두 필요해요"}
+          />
+          <p className="t-caption c-tertiary">암호를 모르면 [취소] 뒤 설정에서 연결을 끊고 이 기기만 쓸 수 있어요</p>
+        </>
+      )}
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="sync-foot">
         <span className="t-caption c-tertiary">어느 쪽이든 바꾸기 전에 이 기기 백업을 먼저 만들어요</span>
@@ -965,7 +977,12 @@ function ConflictsModal({ onClose }: { onClose: () => void }) {
     <Sheet label="두 기기에서 고친 카드" onClose={onClose} className="sync-k7">
       <Head
         title={`두 기기에서 고친 카드 ${list ? n(list.length) : ""}장`}
-        sub="나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+        sub={
+          // 저절로 맞춘 그대로인 카드만 있으면 규칙을, 직접 고른(또는 다른 기기에서 고른) 카드가 있으면 그 말을 빼고
+          list?.some((c) => c.picked || !c.versions.some((v) => v.current && v.winner))
+            ? "내용이 다른 카드예요. 지금 내용은 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+            : "나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+        }
         onClose={onClose}
       />
       <div className="sync-k7__list">

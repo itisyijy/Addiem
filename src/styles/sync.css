@@ -157,6 +157,8 @@
   text-align: left;
 }
 .sync-pop__title { display: flex; align-items: center; gap: 8px; }
+/* 짧은 두 문장을 text-wrap: pretty 가 2/3 폭에서 접었다 (05-a). 창 폭을 다 쓴다 */
+.sync-pop p { text-wrap: wrap; }
 .sync-pop__device { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border-default); }
 .sync-pop__device > .t-body-s { flex: 1; min-width: 0; }
 .sync-pop__actions { display: flex; justify-content: flex-end; gap: 8px; }
