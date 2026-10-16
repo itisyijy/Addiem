@@ -124,9 +124,9 @@ const hiddenToday = () => {
 
 /**
  * P0 목표일 14일 전부터 "시험 전 회독을 할 수 있어요" 한 줄 + [시험 전 회독]. 열 수 없으면 아무것도 그리지 않는다.
- * dismissible: 홈의 줄은 × 로 오늘 하루 접는다
+ * dismissible: 홈의 줄은 × 로 오늘 하루 접는다. named: 덱 상세(C1)는 머리에 덱 이름이 있어 빼고 "시험까지 n일 · …"만
  */
-export function CramHint({ deckIds, dismissible = false }: { deckIds: number[] | null; dismissible?: boolean }) {
+export function CramHint({ deckIds, dismissible = false, named = true }: { deckIds: number[] | null; dismissible?: boolean; named?: boolean }) {
   const nav = useNav();
   const [plan, setPlan] = useState<CramPlan | null>(null);
   const [hidden, setHidden] = useState(() => dismissible && hiddenToday());
@@ -148,7 +148,7 @@ export function CramHint({ deckIds, dismissible = false }: { deckIds: number[] |
       <span className="cram-hint__text">
         <span className="t-label-m">시험 전 회독을 할 수 있어요</span>
         <span className="t-caption c-tertiary">
-          {plan.name} {plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`} ·{" "}
+          {named && `${plan.name} `}{plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`} ·{" "}
           {plan.mode === "mix" ? `배운 카드 회독 ${n(plan.round_seen)} / ${n(plan.learned)}장` : `불안한 카드 ${n(plan.scopes[2])}장`}
         </span>
       </span>

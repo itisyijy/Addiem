@@ -202,6 +202,8 @@
 }
 /* Q1 목록 (Study.tsx undoTop): 진행 막대(아래 끝 64) 아래 가운데. 카드 위 테두리에 걸치지만 머리글(125~)은 가리지 않는다 */
 .study__undo.is-top { top: 70px; bottom: auto; }
+/* D4 접어두기 토스트도 Q1 목록에서는 같은 자리(70–120)에 한 줄 (설명 줄 없이 높이 50) */
+.study__toast.is-top { top: 70px; bottom: auto; z-index: 10; gap: 12px; padding: 6px 6px 6px 7px; }
 .study__undo-q { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 .study__undo-btn, .study .study__toast-btn:has(.kbd) {
   display: inline-flex;
@@ -295,6 +297,8 @@
   letter-spacing: -0.005em;
 }
 .write__input:focus-visible { outline: none; } /* 초점은 상자 테두리(accent 2px)가 보여준다 */
+/* 640 높이: 카드가 최소 높이(160)라 되돌리기 토스트가 뜨면 14px 넘쳤다 */
+@media (max-height: 640px) { .write__input { height: 42px; } }
 
 /* ---------------------------------------------------------------- J2 비교와 평가 추천 (Figma 53:7329) */
 .cmp__kw { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
