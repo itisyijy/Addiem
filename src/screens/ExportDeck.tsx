@@ -241,7 +241,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
             <span className="export__switch-text">
               <span className="t-body-m-strong">복습 기록 포함</span>
               <span className="t-body-s c-secondary">
-                켜면 간격·기한과 복습 기록 {n(info.reviews)}건이 함께 나가요. 끄면 모든 카드가 새 카드로 나가고, 일시 중지한 카드만 그대로예요.
+                켜면 간격·기한과 복습 기록 {n(info.reviews)}건이 함께 나가요. 끄면 모든 카드가 신규 카드로 나가고, 학습을 중지한 카드만 그대로예요.
               </span>
             </span>
             <Toggle on={history} onChange={setHistory} label="복습 기록 포함" />

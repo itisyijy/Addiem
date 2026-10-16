@@ -388,7 +388,7 @@ fn record_daily_plan(con: &Connection, today: i64, roots: &[&queue::Deck], per_r
 pub fn create_deck(state: State<AppState>, name: String, parent_id: Option<i64>) -> Res<i64> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("덱 이름을 입력해주세요.".into());
+        return Err("덱 이름을 입력해 주세요.".into());
     }
     if name.contains("::") {
         return Err("이름에 :: 는 쓸 수 없어요. 하위 덱은 덱 안에서 만들어요.".into());
@@ -418,7 +418,7 @@ pub fn create_deck(state: State<AppState>, name: String, parent_id: Option<i64>)
 pub fn rename_deck(state: State<AppState>, deck_id: i64, name: String) -> Res<()> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("덱 이름을 입력해주세요.".into());
+        return Err("덱 이름을 입력해 주세요.".into());
     }
     if name.contains("::") {
         return Err("이름에 :: 는 쓸 수 없어요. 하위 덱은 덱 안에서 만들어요.".into());
@@ -896,7 +896,7 @@ pub(crate) fn insert_note(con: &Connection, card: &NewCard, tags: &str, batch: O
         _ => (vec![0], "Basic"),
     };
     if ords.is_empty() {
-        return Err("빈칸을 하나 이상 만들어주세요.".into());
+        return Err("빈칸을 하나 이상 만들어 주세요.".into());
     }
     let ntid = note_type_id(con, type_name)?;
     let fields = serde_json::to_string(&[&card.front, &card.back]).map_err(err)?;
@@ -921,10 +921,10 @@ pub(crate) fn insert_note(con: &Connection, card: &NewCard, tags: &str, batch: O
 pub fn add_card(state: State<AppState>, card: NewCard) -> Res<usize> {
     // 편집기는 빈 칸에도 &nbsp; 나 <br> 를 남긴다. 화면에 보이는 글자로 판단한다
     if render::is_blank(&card.front) {
-        return Err(if card.kind == "cloze" { "본문을 입력해주세요." } else { "질문을 입력해주세요." }.into());
+        return Err(if card.kind == "cloze" { "본문을 입력해 주세요." } else { "질문을 입력해 주세요." }.into());
     }
     if card.kind != "cloze" && render::is_blank(&card.back) {
-        return Err("답변을 입력해주세요.".into());
+        return Err("답변을 입력해 주세요.".into());
     }
     let con = state.db.lock().map_err(err)?;
     insert_note(&con, &card, "", None)
@@ -1033,7 +1033,7 @@ pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String])
     if note_is_cloze(tx, note_id)? {
         let nums: std::collections::BTreeSet<u32> = values.iter().flat_map(|v| render::cloze_numbers(v)).collect();
         if nums.is_empty() {
-            return Err("빈칸을 하나 이상 만들어주세요.".into());
+            return Err("빈칸을 하나 이상 만들어 주세요.".into());
         }
         let existing: Vec<(i64, u32, i64)> = {
             let mut st = tx.prepare("SELECT id, template_ord, deck_id FROM card WHERE note_id = ?1").map_err(err)?;
@@ -1073,6 +1073,8 @@ pub struct CardRow {
     due_at: Option<i64>,
     lapses: i64,
     buried: bool,
+    /// 접어둔 카드가 돌아오는 학습일 "2026-10-19" (C2 상태 배지. 덱 상세 hard_next 와 같은 계산)
+    buried_until: Option<String>,
     /// 8.4 노트의 기출 (N2 같은 시험 건너뛰기 · 되돌리기)
     exam: crate::exam::ExamState,
     /// M4 그림 가리기 카드 (축소 그림 · 편집기 칸 선택)
@@ -1194,7 +1196,7 @@ pub fn list_cards(
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
-                    c.buried_until IS NOT NULL, c.template_ord, nt.name, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS}
+                    c.buried_until, c.template_ord, nt.name, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS}
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
@@ -1217,6 +1219,7 @@ pub fn list_cards(
                 None => render::strip_tags(answer_part(&rendered.back)),
             };
             let (question, answer) = table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer));
+            let buried_until: Option<i64> = r.get(9)?;
             Ok(CardRow {
                 id: r.get(0)?,
                 note_id: r.get(1)?,
@@ -1228,7 +1231,8 @@ pub fn list_cards(
                 own_importance: r.get(6)?,
                 due_at: r.get(7)?,
                 lapses: r.get(8)?,
-                buried: r.get(9)?,
+                buried: buried_until.is_some(),
+                buried_until: buried_until.map(|ms| db::date_from_day(study_day(ms))),
                 exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
                 occlusion,
                 sounds: [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK)),

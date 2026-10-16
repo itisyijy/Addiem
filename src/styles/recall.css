@@ -33,13 +33,13 @@
 .slot__mark { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .slot__mark, .slot > .icon { margin-top: 6px; }
 .slot--missed { background: var(--status-danger-bg); color: var(--status-danger-fg); }
-.slot--missed .slot__num { background: var(--status-danger-fg); color: var(--text-inverse); }
-/* 지금 = M3 묻는 칸과 같은 파랑 + "?" */
+/* 번호는 danger-bg 색 (흰 글자는 다크의 밝은 빨강 위에서 2.5:1 이었다) */
+.slot--missed .slot__num { background: var(--status-danger-fg); color: var(--status-danger-bg); }
+/* 지금 = M3 묻는 칸과 같은 파랑 + "?". "Space로 열기"도 흰 글자 (accent-on-inverse 는 파랑 위에서 4:1 아래) */
 .slot--now { padding: 4px 13px; border: 2px solid var(--accent-text); background: var(--accent-default); color: var(--text-inverse); }
 /* 흰 원 + accent 번호 (두 테마 모두. on-inverse 위 accent-text 는 다크에서 대비가 1.8 이었다) */
 .slot--now .slot__num { background: var(--text-inverse); color: var(--accent-default); }
 .slot--now .slot__text { font-weight: 600; }
-.slot--now .slot__mark { color: var(--accent-on-inverse); }
 .slot--hidden { border: 1px dashed var(--border-strong); }
 .slot--hidden .slot__num { background: var(--bg-surface); color: var(--text-tertiary); }
 

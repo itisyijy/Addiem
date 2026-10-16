@@ -323,7 +323,7 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
       </p>
       <Checkbox checked={backup} label="지우기 전에 백업 파일 만들기 (권장)" onChange={setBackup} />
       <Input
-        label="확인을 위해 '삭제'를 입력하세요"
+        label="확인을 위해 '삭제'를 입력해 주세요"
         value={typed}
         autoFocus
         onChange={(e) => setTyped(e.target.value)}

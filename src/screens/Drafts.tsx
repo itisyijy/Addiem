@@ -6,7 +6,7 @@ import "../styles/drafts.css";
 import { useEffect, useRef, useState } from "react";
 import { aiApi, aiError, api, errorText, qualityApi, type AiError, type CardView } from "../api";
 import { AiConnect, AiErrorBox, SendList, UsingPlan, refreshAi, sentRows } from "../ai";
-import { ragApi, SIGNAL_LABEL, type Draft, type DraftAmount, type DraftCard, type Sent } from "../sourceApi";
+import { pageOf, placeOf, ragApi, SIGNAL_LABEL, type Draft, type DraftAmount, type DraftCard, type Sent } from "../sourceApi";
 import { renderCardHtml } from "../cardHtml";
 import { eul, n, useKey, useLeaveGuard, useNav, type Route } from "../nav";
 import { useToast } from "../toast";
@@ -182,9 +182,8 @@ function whereFrom(sent: Sent[]) {
   if (!first) return "";
   const same = sent.filter((s) => s.material_id === first.material_id).map((s) => s.page);
   const [lo, hi] = [Math.min(...same), Math.max(...same)];
-  const unit = first.kind === "pptx" ? "장" : "쪽";
   const others = new Set(sent.map((s) => s.material_id)).size - 1;
-  return `${first.material} ${lo === hi ? lo : `${lo}–${hi}`}${unit}${others ? ` 외 ${others}개` : ""}에서`;
+  return `${first.material} ${pageOf(first.kind, lo === hi ? lo : `${lo}–${hi}`)}${others ? ` 외 ${others}개` : ""}에서`;
 }
 
 type Panel = { seg: number } | { card: number };
@@ -276,10 +275,10 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
       {draft.missing.length > 0 && (
         <p className="drafts__note t-body-s c-secondary">
           <Icon name="info" size={16} />
-          초안이 안 나온 구간 {n(draft.missing.length)} · {draft.missing.map((id) => seg(id)).filter(Boolean).map((s) => `p.${s!.page}`).join(", ")} · 다시 만들거나 [기존 카드 연결]로 직접 연결해 주세요.
+          초안이 안 나온 구간 {n(draft.missing.length)} · {draft.missing.map((id) => seg(id)).filter(Boolean).map((s) => pageOf(s!.kind, s!.page)).join(", ")} · 다시 만들거나 [기존 카드 연결]로 직접 연결해 주세요.
         </p>
       )}
-      {!draft.checked && <p className="t-caption c-tertiary">분석 모델이 없어 비슷한 카드·근거 검사는 하지 않았어요. 중요도 화면에서 모델을 받을 수 있어요.</p>}
+      {!draft.checked && <p className="t-caption c-secondary">분석 모델이 없어 비슷한 카드·근거 검사는 하지 않았어요. 중요도 화면에서 모델을 받을 수 있어요.</p>}
 
       <div className="drafts__body">
         <div className="drafts__list">
@@ -321,7 +320,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
                     {s && (
                       <button type="button" className="src-chip t-label-s" onClick={() => setPanel({ seg: s.id })}>
                         <Icon name="file" size={12} />
-                        {s.material} p.{s.page}
+                        {placeOf(s)}
                         {s.signals[0] ? ` · ${SIGNAL_LABEL[s.signals[0]]}` : ""}
                       </button>
                     )}

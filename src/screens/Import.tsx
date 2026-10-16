@@ -412,9 +412,9 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
                   <input type="radio" name="history" checked={!history} onChange={() => setHistory(false)} />
                   <span className="import__radio" />
                   <span className="import__option-text">
-                    <span className="t-body-m-strong">새 카드로 시작</span>
+                    <span className="t-body-m-strong">신규 카드로 시작</span>
                     <span className="t-body-s c-secondary">
-                      모든 카드를 처음 보는 카드로 시작해요. 목표일이 있으면 신규로 다시 나눠요. 원본 기록은 Anki에 그대로 남아요.
+                      Anki에서 학습한 카드도 복습 기록 없이 신규 카드로 시작해요. 목표일이 있으면 신규로 다시 나눠요. 원본 기록은 Anki에 그대로 남아요.
                     </span>
                   </span>
                 </label>
@@ -1231,7 +1231,7 @@ function report(r: ImportResult) {
     ``,
     `가져온 덱 ${n(r.decks)}개 (새 하위 덱 ${n(r.subdecks)}개)`,
     `가져온 카드 ${n(r.cards)}장 · 노트 ${n(r.notes)}개 · 미디어 ${n(r.media)}개`,
-    `건너뜀 ${n(r.skipped)}건 · 확인이 필요한 카드 ${n(r.check_cards)}장`,
+    `건너뛴 항목 ${n(r.skipped)}개 · 확인이 필요한 카드 ${n(r.check_cards)}장`,
   ];
   if (r.kind !== "json")
     lines.push(

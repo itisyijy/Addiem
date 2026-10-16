@@ -1388,7 +1388,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           </span>
           <span className="study__toast-text">
             <span className="t-body-m-strong">{toast.auto ? "방금 카드를 잠시 접어둘게요" : "방금 카드를 접어뒀어요"}</span>
-            <span className="t-body-s c-tertiary">
+            <span className="t-body-s c-on-inverse">
               {toast.reason
                 ? `두 번 막혔어요. ${toast.reason}, 나눠서 외우는 게 나을 수도 있어요.`
                 : toast.auto
@@ -1434,7 +1434,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           <div className={`study__undo ${undoTop ? "is-top" : ""}`} role="status">
             <span className={`dot dot--${RATING_DOT[rated.rating]}`} />
             <span className="t-label-m">{RATING_NAME[rated.rating]}</span>
-            <span className="study__undo-q t-caption c-tertiary">{rated.question}</span>
+            <span className="study__undo-q t-caption c-on-inverse">{rated.question}</span>
             <button className="study__undo-btn t-label-m" onClick={undo}>
               <Icon name="rotate" size={14} />
               되돌리기

@@ -156,7 +156,7 @@
 .settings__pause-date input { position: absolute; left: 0; bottom: 0; width: 100%; height: 0; opacity: 0; pointer-events: none; }
 
 /* ---------------------------------------------------------------- C2-b 체크박스 열 (36px). 질문 열을 그만큼 줄여 표 폭을 지킨다 */
-.cards__table .cards__row { grid-template-columns: 36px 338px 290px 170px 110px 90px 60px; padding-left: 16px; }
+.cards__table .cards__row { grid-template-columns: 36px 336px 290px 170px 110px 92px 60px; padding-left: 16px; }
 .cards__row > .cards__check { display: flex; align-items: center; overflow: visible; }
 .cards__cb { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 1.5px solid var(--border-strong); border-radius: 6px; background: var(--bg-surface); color: var(--text-inverse); }
 .cards__cb.is-on { border-color: var(--accent-default); background: var(--accent-default); }

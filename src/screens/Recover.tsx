@@ -33,7 +33,7 @@ export function Recover({ info, onRecovered }: { info: AppInfo; onRecovered: () 
       <div className="recover__actions">
         <Button variant="secondary" size="M" icon="rotate" label="다시 시도" busy={busy === "retry"} busyLabel="여는 중…" onClick={() => run("retry")} />
         {info.last_backup && (
-          <Button size="M" icon="download" label="백업에서 복구" busy={busy === "restore"} busyLabel="복구하는 중…" onClick={() => run("restore")} />
+          <Button size="M" icon="download" label="백업으로 복구" busy={busy === "restore"} busyLabel="복구하는 중…" onClick={() => run("restore")} />
         )}
       </div>
       <p className="recover__detail t-caption c-tertiary">{error ?? info.startup_error}</p>

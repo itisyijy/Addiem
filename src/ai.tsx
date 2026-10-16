@@ -483,7 +483,7 @@ export function ScopeLine({ text, open, onToggle }: { text: string; open?: boole
   );
 }
 
-/** 보낼 내용 한 행. remove 가 있으면 ✕ 로 뺄 수 있고, 없으면 "필수" */
+/** 보낼 내용 한 행. remove 가 있으면 ✕ 로 뺄 수 있고, 없으면 "필수" (이미 보낸 기록 sent 에서는 둘 다 없다) */
 export type SendRow = { key: string | number; icon: IconName; meta: ReactNode; text: string; remove?: () => void };
 
 /** 자료 구간 행 (자료 이름 · 쪽 · 연결 방식 · 신호 칩). 구간 글은 보내는 글자 그대로 */
@@ -513,13 +513,15 @@ const HOW: Record<Sent["how"], string> = { manual: "직접 연결", auto: "자�
  * "OpenAI로 보낼 내용" (Row R 공통). 머리 오른쪽 "자료 N구간 · 약 N자", 행마다 ✕, 아래 한 줄 안내.
  * compact: 첫 전송 확인 팝오버처럼 발췌를 한 줄로 줄인다
  */
-export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foot, locked }: {
+export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foot, locked, sent }: {
   title?: string;
   rows: SendRow[];
   compact?: boolean;
   foot?: ReactNode;
   /** 보내는 중: ✕ 를 끈다 */
   locked?: boolean;
+  /** 이미 보낸 기록 (L4 · R2 "보낸 것"): 뺄 수도 없고 "필수"도 아니라 행 끝을 비운다 (QA T5-09) */
+  sent?: boolean;
 }) {
   const segs = rows.filter((r) => r.icon === "file");
   const chars = rows.reduce((t, r) => t + r.text.length, 0);
@@ -542,7 +544,7 @@ export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foo
             <span className="ai-send__meta">{r.meta}</span>
             <span className="ai-send__body t-body-s">{r.text}</span>
           </span>
-          {r.remove ? (
+          {sent ? null : r.remove ? (
             <button type="button" className="src-icon-btn" aria-label="이 구간 빼기" disabled={locked} onClick={r.remove}>
               <Icon name="x" size={compact ? 14 : 16} />
             </button>

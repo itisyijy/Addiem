@@ -129,7 +129,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
 
   const formula = (() => {
     const r = after.remaining_new;
-    if (paused && !after.resume_date) return `쉬는 동안은 새 카드가 들어오지 않아요. 다시 시작하면 남은 신규 ${n(r)}장을 남은 날로 다시 나눠요`;
+    if (paused && !after.resume_date) return `쉬는 동안은 신규 카드가 들어오지 않아요. 다시 시작하면 남은 신규 ${n(r)}장을 남은 날로 다시 나눠요`;
     if (!hasDate) return `목표일이 없어서 하루 ${n(after.per_day)}장씩 꾸준히 넣어요. 남은 신규 ${n(r)}장`;
     if (after.days === null || after.days <= 0) return `목표일이 지났거나 오늘이에요. 남은 신규 ${n(r)}장을 상한만큼 넣어요`;
     if (warn && after.never_finish) return `남은 신규 ${n(r)}장 ÷ ${n(after.days)}일 = 하루 ${n(after.needed_per_day ?? 0)}장 필요 · 상한이 0장이라 끝나지 않아요`;
@@ -257,7 +257,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
               <span className="settings__label">
                 <span className="t-body-m-strong">이 덱 잠시 쉬기</span>
                 <span className="t-body-s c-secondary">
-                  쉬는 동안 오늘의 학습에서 빠지고 새 카드도 들어오지 않아요. 목표일은 그대로라 다시 시작하면 하루 분량이 늘어요.
+                  쉬는 동안 오늘의 학습에서 빠지고 신규 카드도 들어오지 않아요. 목표일은 그대로라 다시 시작하면 하루 분량이 늘어요.
                 </span>
               </span>
               <Toggle on={paused} label="이 덱 잠시 쉬기" onChange={(v) => set({ paused: v, paused_until: null })} />
@@ -378,10 +378,10 @@ export function DeckSettings({ deckId }: { deckId: number }) {
                 <span className="recalc__warn-text">
                   <span className="t-body-m-strong c-warn">
                     {pausedDays === null
-                      ? "다시 시작할 때까지 새 카드가 들어오지 않아요"
+                      ? "다시 시작할 때까지 신규 카드가 들어오지 않아요"
                       : hasDate && (after.days ?? 0) < (before.days ?? 0) // 목표일을 같이 미뤘으면 몰리지 않는다
                         ? `쉬는 ${n(pausedDays)}일만큼 남은 날에 몰려요`
-                        : `${n(pausedDays)}일 동안 새 카드가 들어오지 않아요`}
+                        : `${n(pausedDays)}일 동안 신규 카드가 들어오지 않아요`}
                   </span>
                   <span className="t-body-s c-secondary">
                     그동안 예정된 복습{after.paused_reviews === null ? "은" : ` 약 ${n(after.paused_reviews)}장은`} 다시 시작하는 날 밀린 복습으로 올라와요 (앱 전체에서

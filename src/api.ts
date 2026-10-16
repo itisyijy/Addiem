@@ -119,6 +119,8 @@ export type CardRow = {
   due_at: number | null;
   lapses: number;
   buried: boolean;
+  /** 접어둔 카드가 돌아오는 학습일 "2026-10-19" */
+  buried_until: string | null;
   /** 8.4 노트의 기출. id 는 노트 id */
   exam: ExamState;
   /** M4 그림 가리기 카드 */
