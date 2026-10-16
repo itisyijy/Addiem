@@ -161,3 +161,5 @@
 .nte-ask__item--danger .nte-ask__icon { background: var(--status-danger-bg); color: var(--status-danger-fg); }
 .nte-ask__item--info .nte-ask__icon { background: var(--accent-subtle); color: var(--accent-text); }
 .nte-ask__text { display: flex; flex-direction: column; gap: 2px; }
+/* 이름 고치는 입력칸은 테두리가 초점 표시다 (전역 :focus-visible 링과 겹치지 않게) */
+.nte__field .nte__fname-input:focus-visible, .nte__kinds .nte__kind-input:focus-visible { outline: none; }
