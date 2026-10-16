@@ -890,10 +890,15 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
     let ords: HashMap<i64, i64> = if cloze { HashMap::new() } else { nt.templates.iter().enumerate().map(|(i, t)| (t.ord as i64, i as i64)).collect() };
     let io = tmpls.iter().any(|t| crate::occlusion::is_template(&t.2));
     let id = unique(used, anki_id.unwrap_or(created + ntid));
-    let css = match (css.trim().is_empty(), io) {
+    // 쉬운 편집 줄 상자 CSS 만 있는 유형(앱 유형 복제본)도 빈 CSS 처럼 Anki 기본 CSS 를 쓰고 그 뒤에 붙인다
+    let css = match (crate::notetype::without_layout_css(&css).trim().is_empty(), io) {
         (false, _) => css,
         (true, true) => crate::occlusion::CSS.into(),
-        (true, false) => format!("{CSS}{}{}", if cloze { CLOZE_CSS } else { "" }, if crate::recall::is_special(&name, &fields) { crate::recall::CSS } else { "" }),
+        (true, false) => format!(
+            "{CSS}{}{}{css}",
+            if cloze { CLOZE_CSS } else { "" },
+            if crate::recall::is_special(&name, &fields) { crate::recall::CSS } else { "" }
+        ),
     };
     let mut json = json!({
         "id": id, "name": name, "type": i64::from(cloze), "mod": updated / 1000, "usn": -1, "sortf": 0, "did": did,
@@ -1289,6 +1294,45 @@ mod tests {
         let models: String = Connection::open(&path).unwrap().query_row("SELECT models FROM col", [], |r| r.get(0)).unwrap();
         let models: Value = serde_json::from_str(&models).unwrap();
         models.as_object().unwrap().values().find(|m| m["originalStockKind"] == 6).cloned().expect("그림 가리기 모델")
+    }
+
+    /// 쉬운 편집 줄 모양: 앱 유형 복제본(빈 CSS)에 줄 상자를 쓰면 노트 CSS 는 줄 상자 CSS 뿐이다. Anki 에는 기본 CSS 뒤에 붙여 같은 모양으로 나간다
+    #[test]
+    fn layout_css_exports_after_anki_default() {
+        use crate::notetype as nt;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-ntcss-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('줄', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("줄 모양")).unwrap();
+        let field = |slot, name: &str| nt::FieldEdit { slot: Some(slot), name: name.into() };
+        let edit = nt::TypeEdit {
+            fields: vec![field(0, "Front"), field(1, "Back")],
+            templates: vec![nt::TemplateEdit {
+                ord: Some(0),
+                name: None,
+                qfmt: "<div class=\"nt-s nt-left\">{{Front}}</div>".into(),
+                afmt: "{{FrontSide}}<hr id=answer>{{Back}}".into(),
+            }],
+            css: String::new(),
+        };
+        nt::apply_edit(&con, id, &edit).unwrap();
+        assert_eq!(nt::load(&con, id).unwrap().css, nt::LAYOUT_CSS);
+        let typed = nt::TypedNote { deck_id: root, note_type_id: id, values: vec!["q".into(), "a".into()], importance: None };
+        nt::add_note(&con, &typed).unwrap();
+        let model_id: i64 = con.query_row("SELECT anki_model_id FROM note_type WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        let out = tmp.0.join("css.apkg");
+        export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        let mut raw = vec![];
+        std::io::Read::read_to_end(&mut zip.by_name("collection.anki2").unwrap(), &mut raw).unwrap();
+        let col = tmp.0.join("css.anki2");
+        std::fs::write(&col, raw).unwrap();
+        let c = Connection::open(&col).unwrap();
+        let models: Value = serde_json::from_str(&c.query_row("SELECT models FROM col", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        let css = models[model_id.to_string()]["css"].as_str().unwrap().to_string();
+        assert!(css.starts_with(CSS) && css.ends_with(nt::LAYOUT_CSS), "{css}");
     }
 
     /// 8.1 사용자 유형 (필드 순서 바꿈 · 지운 필드 · 더한 템플릿 · 지운 템플릿 번호) -> .apkg -> 새 DB 와 같은 DB 로 가져오기

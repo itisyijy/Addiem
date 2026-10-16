@@ -674,25 +674,186 @@ pub struct Preview {
 }
 
 /// 초안 템플릿 미리보기 (render.rs 그대로). values 는 보이는 순서. 없으면 이 유형의 가장 최근 노트, 그것도 없으면 필드 이름
-/// (빈칸으로 쓰는 필드는 "{{c1::이름}}")
-pub(crate) fn preview(con: &Connection, id: i64, qfmt: &str, afmt: &str, ord: u32, values: Option<&[String]>) -> Res<Preview> {
+/// (빈칸으로 쓰는 필드는 "{{c1::이름}}"). names 를 주면 편집 중인 필드 이름 (이름을 바꾸거나 더한 초안): values 는 그 순서, 없으면 이름 샘플
+pub(crate) fn preview(con: &Connection, id: i64, qfmt: &str, afmt: &str, ord: u32, values: Option<&[String]>, names: Option<&[String]>) -> Res<Preview> {
     let nt = load(con, id)?;
-    let slots = match values {
-        Some(v) => nt.to_slots(v)?,
-        None => {
+    let cz = cloze_refs(qfmt);
+    let sample = |n: &String| if cz.contains(n) { format!("{{{{c1::{n}}}}}") } else { format!("({n})") };
+    let map = match (names, values) {
+        (Some(names), Some(v)) if v.len() != names.len() => return Err("필드 수가 노트 유형과 달라요.".into()),
+        (Some(names), Some(v)) => names.iter().cloned().zip(v.iter().cloned()).collect(),
+        (Some(names), None) => names.iter().map(|n| (n.clone(), sample(n))).collect(),
+        (None, Some(v)) => nt.field_map(&nt.to_slots(v)?),
+        (None, None) => {
             let latest: Option<String> =
                 con.query_row("SELECT fields FROM note WHERE note_type_id = ?1 ORDER BY id DESC LIMIT 1", [id], |r| r.get(0)).optional().map_err(err)?;
-            match latest {
+            let slots = match latest {
                 Some(f) => serde_json::from_str(&f).unwrap_or_default(),
-                None => {
-                    let cz = cloze_refs(qfmt);
-                    nt.slots.iter().map(|n| if cz.contains(n) { format!("{{{{c1::{n}}}}}") } else { format!("({n})") }).collect()
-                }
-            }
+                None => nt.slots.iter().map(sample).collect::<Vec<_>>(),
+            };
+            nt.field_map(&slots)
         }
     };
-    let r = render::render_card(qfmt, afmt, &nt.field_map(&slots), ord);
+    let r = render::render_card(qfmt, afmt, &map, ord);
     Ok(Preview { front: r.front, back: r.back })
+}
+
+#[derive(Serialize)]
+pub struct Sample {
+    note_id: i64,
+    /// 그 노트의 첫 카드 덱
+    deck: String,
+    /// 자리 순서 값 (편집 중인 필드는 자리로 찾는다)
+    slots: Vec<String>,
+}
+
+/// 미리보기 카드 고르기 (디자인 NT5 "지금 덱의 카드"): 이 유형의 최근 노트
+pub(crate) fn samples(con: &Connection, id: i64, limit: i64) -> Res<Vec<Sample>> {
+    let mut st = con
+        .prepare(
+            "SELECT n.id, n.fields, coalesce((SELECT d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = n.id ORDER BY c.id LIMIT 1), '')
+             FROM note n WHERE n.note_type_id = ?1 ORDER BY n.id DESC LIMIT ?2",
+        )
+        .map_err(err)?;
+    let rows = st
+        .query_map(params![id, limit], |r| {
+            Ok(Sample { note_id: r.get(0)?, slots: serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default(), deck: r.get(2)? })
+        })
+        .map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
+// ------------------------------------------------------------------ 편집기 저장 (한 트랜잭션, 먼저 dry-run 으로 확인 창의 수를 센다)
+
+#[derive(Deserialize)]
+pub struct FieldEdit {
+    /// None = 새 필드
+    pub(crate) slot: Option<usize>,
+    pub(crate) name: String,
+}
+
+#[derive(Deserialize)]
+pub struct TemplateEdit {
+    /// None = 새 카드 종류
+    pub(crate) ord: Option<u32>,
+    /// None 또는 빈 이름 = 지금 이름 (새것은 "Card N")
+    pub(crate) name: Option<String>,
+    pub(crate) qfmt: String,
+    pub(crate) afmt: String,
+}
+
+/// 편집기 초안. fields 는 보이는 순서, 빠진 자리는 지운다. templates 에서 빠진 카드 종류도 지운다
+#[derive(Deserialize)]
+pub struct TypeEdit {
+    pub(crate) fields: Vec<FieldEdit>,
+    pub(crate) templates: Vec<TemplateEdit>,
+    pub(crate) css: String,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct RemovedTemplate {
+    name: String,
+    #[serde(flatten)]
+    impact: TemplateImpact,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct HiddenField {
+    name: String,
+    /// 그 필드에 내용이 있는 노트 (지우지 않고 숨긴다, NT10)
+    notes: i64,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct SaveImpact {
+    /// 지금은 앞면이 있는데 저장하면 비는 카드 (NT26 · 디자인 NT8 ①)
+    empty_fronts: i64,
+    /// 새로 생기는 카드 (카드 종류를 더했거나 앞면이 새로 생겼다)
+    made: usize,
+    templates: Vec<RemovedTemplate>,
+    fields: Vec<HiddenField>,
+}
+
+/// 앞면이 비지 않은 카드 id (빈칸 카드는 그 번호가 {{cloze:}} 필드에 있는지)
+fn live_fronts(con: &Connection, nt: &Nt) -> Res<BTreeSet<i64>> {
+    let mut st = con
+        .prepare("SELECT c.id, c.template_ord, n.fields FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1")
+        .map_err(err)?;
+    let rows = st.query_map([nt.id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?, r.get::<_, String>(2)?))).map_err(err)?;
+    let cloze = nt.cloze();
+    let mut out = BTreeSet::new();
+    for row in rows {
+        let (cid, ord, fields) = row.map_err(err)?;
+        let map = nt.field_map(&serde_json::from_str::<Vec<String>>(&fields).unwrap_or_default());
+        let Ok(t) = nt.template(if cloze { 0 } else { ord }) else { continue };
+        if if cloze { cloze_front(&t.qfmt, &map, ord) } else { has_front(&t.qfmt, &map) } {
+            out.insert(cid);
+        }
+    }
+    Ok(out)
+}
+
+/// 초안을 한 번에 저장한다 (부르는 쪽이 트랜잭션). 순서: 필드 이름 · 추가 → 카드 종류 저장 · 추가 → 카드 종류 지우기 → 필드 지우기 → 순서 → CSS.
+/// 바꾸지 않은 템플릿은 다시 쓰지 않는다 (Anki 가 만든 템플릿의 공백을 그대로 둔다)
+/// ponytail: 지운 필드와 같은 이름을 새로 더하거나 두 이름을 맞바꾸면 "이미 있어요"로 거부한다. 두 번 나눠 저장하면 된다
+pub(crate) fn apply_edit(con: &Connection, id: i64, edit: &TypeEdit) -> Res<SaveImpact> {
+    let nt = load(con, id)?;
+    nt.editable()?;
+    let before = live_fronts(con, &nt)?;
+    for f in &edit.fields {
+        if let Some(s) = f.slot
+            && nt.slots.get(s).is_some_and(|n| n != f.name.trim())
+        {
+            rename_field(con, id, s, &f.name)?;
+        }
+    }
+    let mut order = vec![];
+    for f in &edit.fields {
+        order.push(match f.slot {
+            Some(s) => s,
+            None => add_field(con, id, &f.name)?,
+        });
+    }
+    let cur = load(con, id)?;
+    let mut made = 0;
+    for t in &edit.templates {
+        let name = t.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        match t.ord {
+            Some(ord) => {
+                let old = cur.template(ord)?;
+                let rename = name.filter(|n| *n != old.name);
+                if rename.is_some() || t.qfmt != old.qfmt || t.afmt != old.afmt {
+                    made += save_template(con, id, ord, rename, &t.qfmt, &t.afmt)?;
+                }
+            }
+            None => made += add_template(con, id, name, &t.qfmt, &t.afmt)?.cards,
+        }
+    }
+    let mut templates = vec![];
+    for t in nt.templates.iter().filter(|t| !edit.templates.iter().any(|e| e.ord == Some(t.ord))) {
+        templates.push(RemovedTemplate { name: t.name.clone(), impact: delete_template(con, id, t.ord, false)? });
+    }
+    let mut fields = vec![];
+    for (slot, name) in nt.visible().into_iter().filter(|(s, _)| !order.contains(s)) {
+        let notes = notes_of(con, id)?.iter().filter(|(_, v)| v.get(slot).is_some_and(|x| !blank_field(x))).count() as i64;
+        delete_field(con, id, slot)?;
+        fields.push(HiddenField { name, notes });
+    }
+    let now = load(con, id)?;
+    if now.visible().iter().map(|(s, _)| *s).ne(order.iter().copied()) {
+        reorder_fields(con, id, &order)?;
+    }
+    let css = with_layout_css(&edit.css, now.templates.iter().any(uses_box));
+    if css != now.css {
+        save_css(con, id, &css)?;
+    }
+    let after = live_fronts(con, &load(con, id)?)?;
+    let alive: BTreeSet<i64> = {
+        let mut st = con.prepare("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1").map_err(err)?;
+        st.query_map([id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
+    };
+    let empty_fronts = before.iter().filter(|c| alive.contains(c) && !after.contains(c)).count() as i64;
+    Ok(SaveImpact { empty_fronts, made, templates, fields })
 }
 
 #[derive(Deserialize)]
@@ -762,17 +923,135 @@ pub fn incoming_ords(nt: &Nt, tmpls: &[(u32, String)]) -> HashMap<u32, u32> {
 
 // ------------------------------------------------------------------ 쉬운 편집기 (필드를 앞 · 뒷면에 놓기)
 
-/// 쉬운 편집기의 칸 하나. FrontSide 는 뒷면 첫 칸에만 (뒤에 <hr id=answer>)
+/// 줄 글자 크기 (쉬운 편집 S/M/L). 학습 화면 글자와 같은 px: L 30 질문 · M 20 답 · S 13 보조 글
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum Size {
+    S,
+    M,
+    L,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum Align {
+    Left,
+    Center,
+}
+
+/// 줄 모양 (디자인 NT5). 그 면의 기본(앞면 L · 가운데, 뒷면 M · 왼쪽 = 학습 화면의 질문 · 답 글자)과 다르면
+/// 그 줄을 `<div class="nt-크기 nt-정렬">` 로 감싸고, 클래스의 CSS(LAYOUT_CSS)는 노트 유형 CSS 에 넣는다 (Anki 로 내보내도 같은 모양)
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Look {
+    pub size: Size,
+    pub align: Align,
+}
+
+impl Look {
+    pub const fn base(back: bool) -> Look {
+        if back { Look { size: Size::M, align: Align::Left } } else { Look { size: Size::L, align: Align::Center } }
+    }
+
+    fn class(self) -> String {
+        let s = match self.size {
+            Size::S => "s",
+            Size::M => "m",
+            Size::L => "l",
+        };
+        let a = match self.align {
+            Align::Left => "left",
+            Align::Center => "center",
+        };
+        format!("nt-{s} nt-{a}")
+    }
+
+    /// "nt-크기 nt-정렬" 그대로일 때만
+    fn parse(class: &str) -> Option<Look> {
+        let (s, a) = class.strip_prefix("nt-")?.split_once(" nt-")?;
+        let size = match s {
+            "s" => Size::S,
+            "m" => Size::M,
+            "l" => Size::L,
+            _ => return None,
+        };
+        let align = match a {
+            "left" => Align::Left,
+            "center" => Align::Center,
+            _ => return None,
+        };
+        Some(Look { size, align })
+    }
+}
+
+const LAYOUT_MARK: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */";
+/// 줄 상자의 CSS. 템플릿이 줄 상자를 쓰면 저장할 때 노트 유형 CSS 끝에 붙인다 (첫 줄로 이미 있는지 본다).
+/// 학습 화면은 노트 CSS 를 카드 안에 가두므로(cardCss.ts scopeCss) 앱 화면은 그대로다
+pub const LAYOUT_CSS: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */\n.nt-s { font-size: 13px; }\n.nt-m { font-size: 20px; }\n.nt-l { font-size: 30px; }\n.nt-left { text-align: left; }\n.nt-center { text-align: center; }\n";
+const BOX: &str = "<div class=\"nt-";
+
+/// 템플릿이 줄 상자를 쓰는데 CSS 에 없으면 붙인다
+pub fn with_layout_css(css: &str, used: bool) -> String {
+    if !used || css.contains(LAYOUT_MARK) {
+        css.to_string()
+    } else if css.trim().is_empty() {
+        LAYOUT_CSS.into()
+    } else {
+        format!("{}\n\n{LAYOUT_CSS}", css.trim_end())
+    }
+}
+
+/// 내보내기: 줄 상자 CSS 만 있는 유형은 빈 CSS 처럼 Anki 기본 CSS 를 쓴다 (그 뒤에 줄 상자 CSS)
+pub fn without_layout_css(css: &str) -> String {
+    css.replace(LAYOUT_CSS, "")
+}
+
+fn uses_box(t: &Tpl) -> bool {
+    t.qfmt.contains(BOX) || t.afmt.contains(BOX)
+}
+
+/// 쉬운 편집기의 칸 하나. FrontSide 는 뒷면 첫 칸에만 (뒤에 <hr id=answer>). 필드 · 빈칸이 줄을 시작하고 look 은 그 줄의 모양 (없으면 면의 기본)
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Part {
-    Field { name: String },
-    Cloze { name: String },
+    Field {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        look: Option<Look>,
+    },
+    Cloze {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        look: Option<Look>,
+    },
     /// 입력칸 {{type:X}}
     Type { name: String },
     /// 읽어주기 {{tts 언어 옵션:X}}
     Tts { opts: String, name: String },
     FrontSide,
+}
+
+impl Part {
+    fn look(&self) -> Option<Look> {
+        match self {
+            Part::Field { look, .. } | Part::Cloze { look, .. } => *look,
+            _ => None,
+        }
+    }
+
+    /// 입력칸 · 읽어주기는 앞 줄에 붙는다
+    fn attaches(&self) -> bool {
+        matches!(self, Part::Type { .. } | Part::Tts { .. })
+    }
+
+    fn text(&self) -> String {
+        match self {
+            Part::Field { name, .. } => format!("{{{{{name}}}}}"),
+            Part::Cloze { name, .. } => format!("{{{{cloze:{name}}}}}"),
+            Part::Type { name } => format!("{{{{type:{name}}}}}"),
+            Part::Tts { opts, name } => format!("{{{{tts {opts}:{name}}}}}"),
+            Part::FrontSide => "{{FrontSide}}".into(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -797,94 +1076,186 @@ fn gap(mut s: &str) -> (&str, usize) {
     }
 }
 
-/// 한 면을 칸으로. build_side 가 다시 쓴 것이 같게 보일 때만 (공백 차이만 받는다):
-/// 필드 · 빈칸은 한 줄에 하나(<br> 하나로 나눔), 입력칸 · 읽어주기는 앞 칸에 붙음, FrontSide 는 뒷면 첫 칸이고 뒤에 칸이 있으면 <hr id=answer>.
-/// 한 줄에 필드 여럿 · 서식 · 조건 구간은 None (HTML 전용, 디자인 NT 결정)
-fn parse_side(tpl: &str, back: bool) -> Option<Vec<Part>> {
+/// {{…}} 안쪽 -> 칸. 쉬운 편집이 모르는 태그면 Err(이유: HTML 탭의 잠금 줄)
+fn tag_part(tag: &str, side: &str) -> Result<Part, String> {
+    let why = || format!("{side}에 {{{{{tag}}}}}");
+    if tag == "FrontSide" {
+        return Ok(Part::FrontSide);
+    }
+    if tag.starts_with(['#', '^', '/']) {
+        return Err(format!("{side}에 조건문 {{{{{tag}}}}}"));
+    }
+    if SPECIAL.contains(&tag) {
+        return Err(why());
+    }
+    Ok(match tag.rsplit_once(':') {
+        None => Part::Field { name: tag.to_string(), look: None },
+        Some((f, n)) => {
+            let name = n.trim().to_string();
+            match f.trim() {
+                "cloze" => Part::Cloze { name, look: None },
+                "type" => Part::Type { name },
+                f => Part::Tts { opts: f.strip_prefix("tts ").ok_or_else(why)?.trim().to_string(), name },
+            }
+        }
+    })
+}
+
+/// 칸이 아닌 것 (이유 줄): 태그는 "직접 쓴 <b> 태그", 글자는 "글자 「Q:」"
+fn stray(rest: &str, side: &str) -> String {
+    match rest.strip_prefix('<') {
+        Some(t) => format!("{side}에 직접 쓴 <{}> 태그", t.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '/').collect::<String>()),
+        None if rest.starts_with("{{") => format!("{side}에 닫히지 않은 {{{{"),
+        None => format!("{side}에 글자 「{}」", rest.chars().take_while(|c| *c != '{' && *c != '<').take(12).collect::<String>().trim()),
+    }
+}
+
+/// 맨 앞의 {{…}} 하나 -> (칸, 남은 글)
+fn take_tag<'a>(rest: &'a str, side: &str) -> Result<(Part, &'a str), String> {
+    let inner = rest.strip_prefix("{{").ok_or_else(|| stray(rest, side))?;
+    let end = inner.find("}}").ok_or_else(|| stray(rest, side))?;
+    Ok((tag_part(inner[..end].trim(), side)?, &inner[end + 2..]))
+}
+
+/// 줄 상자 <div class="nt-크기 nt-정렬">…</div> -> (모양, 안쪽, 남은 글)
+fn take_box(rest: &str) -> Option<(Look, &str, &str)> {
+    let (class, body) = rest.strip_prefix("<div class=\"")?.split_once("\">")?;
+    let (inner, after) = body.split_once("</div>")?;
+    Some((Look::parse(class)?, inner, after))
+}
+
+/// 한 면을 칸으로. build_side 가 다시 쓴 것이 같게 보일 때만 (공백 차이만 받는다), 아니면 Err(이유):
+/// 필드 · 빈칸은 한 줄에 하나(<br> 하나로 나눔, 줄 상자 앞뒤에는 <br> 없음), 입력칸 · 읽어주기는 앞 줄에 붙음,
+/// FrontSide 는 뒷면 첫 칸이고 뒤에 칸이 있으면 <hr id=answer>. 한 줄에 필드 여럿 · 서식 · 조건 구간은 HTML 전용 (디자인 NT 결정)
+fn parse_side(tpl: &str, back: bool) -> Result<Vec<Part>, String> {
+    let side = if back { "뒷면" } else { "앞면" };
+    let html_div = || format!("{side}에 직접 쓴 <div> 태그");
     let mut parts: Vec<Part> = vec![];
-    let (mut rest, lead) = gap(tpl);
-    let mut brs = lead;
+    let (mut rest, mut brs) = gap(tpl);
     let mut hr = false;
+    // 앞 줄을 줄 상자로 감쌌다
+    let mut boxed = false;
     while !rest.is_empty() {
-        let inner = rest.strip_prefix("{{")?;
-        let end = inner.find("}}")?;
-        let tag = inner[..end].trim();
-        let part = if tag == "FrontSide" {
-            Part::FrontSide
-        } else if tag.starts_with(['#', '^', '/']) || SPECIAL.contains(&tag) {
-            return None;
-        } else {
-            match tag.rsplit_once(':') {
-                None => Part::Field { name: tag.to_string() },
-                Some((f, n)) => {
-                    let name = n.trim().to_string();
-                    match f.trim() {
-                        "cloze" => Part::Cloze { name },
-                        "type" => Part::Type { name },
-                        f => Part::Tts { opts: f.strip_prefix("tts ")?.trim().to_string(), name },
-                    }
+        let (line, after): (Vec<Part>, &str) = match take_box(rest) {
+            Some((look, inner, after)) => {
+                if look == Look::base(back) {
+                    return Err(html_div()); // 기본 모양 상자는 다시 쓰면 사라진다
                 }
+                let (inner, lead) = gap(inner);
+                let (mut first, mut r) = take_tag(inner, side)?;
+                match &mut first {
+                    Part::Field { look: l, .. } | Part::Cloze { look: l, .. } if lead == 0 => *l = Some(look),
+                    _ => return Err(html_div()),
+                }
+                let mut line = vec![first];
+                loop {
+                    let (t, b) = gap(r);
+                    if t.is_empty() {
+                        break;
+                    }
+                    let (p, next) = take_tag(t, side)?;
+                    if b > 0 || !p.attaches() {
+                        return Err(html_div());
+                    }
+                    line.push(p);
+                    r = next;
+                }
+                (line, after)
+            }
+            None if rest.starts_with(BOX) => return Err(html_div()),
+            None => {
+                let (p, after) = take_tag(rest, side)?;
+                (vec![p], after)
             }
         };
+        let part = &line[0];
+        let is_box = part.look().is_some();
         // 이 칸 앞에 와야 하는 것 (build_side 와 같은 규칙)
-        let ok = match (parts.last(), &part) {
-            (_, Part::FrontSide) => back && parts.is_empty() && brs == 0,
-            (None, _) => brs == 0,
-            (Some(Part::FrontSide), _) => hr && brs == 0,
-            (Some(_), Part::Type { .. } | Part::Tts { .. }) => brs == 0,
-            (Some(_), _) => brs == 1,
+        let why = match (parts.last(), part) {
+            (_, Part::FrontSide) if !(back && parts.is_empty() && brs == 0) => Some(if back { "뒷면 중간의 {{FrontSide}}".into() } else { "앞면에 {{FrontSide}}".into() }),
+            (_, Part::FrontSide) => None,
+            (None, _) => (brs > 0).then(|| format!("{side} 맨 앞의 줄바꿈")),
+            (Some(Part::FrontSide), _) if !hr => Some("{{FrontSide}} 뒤에 <hr id=answer> 없이 붙은 칸".into()),
+            (Some(Part::FrontSide), _) => (brs > 0).then(|| format!("{side}에 빈 줄")),
+            (Some(_), p) if p.attaches() => (brs > 0 || boxed).then(|| format!("{side}에 따로 놓인 {}", p.text())),
+            (Some(_), _) => {
+                let want = usize::from(!boxed && !is_box);
+                (brs != want).then(|| if brs < want { format!("{side} 한 줄에 필드 여러 개") } else { format!("{side}에 빈 줄") })
+            }
         };
-        if !ok {
-            return None;
+        if let Some(w) = why {
+            return Err(w);
         }
-        rest = &inner[end + 2..];
+        rest = after;
         hr = false;
-        if part == Part::FrontSide {
+        if *part == Part::FrontSide {
             let t = rest.trim_start();
             if let Some(after) = ["<hr id=answer>", "<hr id=\"answer\">"].into_iter().find_map(|h| t.strip_prefix(h)) {
                 rest = after;
                 hr = true;
             }
         }
-        parts.push(part);
+        if !part.attaches() || parts.last() == Some(&Part::FrontSide) {
+            boxed = is_box;
+        }
+        parts.extend(line);
         (rest, brs) = gap(rest);
     }
     // 끝에 남은 <br> · 뒤에 칸이 없는 <hr> 는 다시 쓰면 사라진다
-    if brs > 0 || hr {
-        return None;
+    if brs > 0 {
+        return Err(format!("{side} 끝의 줄바꿈"));
     }
-    (back || !parts.is_empty()).then_some(parts)
+    if hr {
+        return Err("뒷면 끝의 <hr id=answer>".into());
+    }
+    if !back && parts.is_empty() {
+        return Err("빈 앞면".into());
+    }
+    Ok(parts)
 }
 
-/// 앞 · 뒷면이 칸 줄로만 되어 있으면 구조, 아니면 None (= HTML 전용). 공백 · <br> 차이는 받는다
+/// 앞 · 뒷면이 칸 줄로만 되어 있으면 구조, 아니면 Err(이유) (= HTML 전용). 공백 · <br> 차이는 받는다
+pub fn layout_of(qfmt: &str, afmt: &str) -> Result<Layout, String> {
+    Ok(Layout { front: parse_side(qfmt, false)?, back: parse_side(afmt, true)? })
+}
+
 pub fn parse_layout(qfmt: &str, afmt: &str) -> Option<Layout> {
-    Some(Layout { front: parse_side(qfmt, false)?, back: parse_side(afmt, true)? })
+    layout_of(qfmt, afmt).ok()
 }
 
-fn build_side(parts: &[Part]) -> String {
+fn build_side(parts: &[Part], back: bool) -> String {
     let mut out = String::new();
+    // 지금 줄을 줄 상자로 감쌌다
+    let mut boxed = false;
     for (i, p) in parts.iter().enumerate() {
-        if i > 0 {
-            match (&parts[i - 1], p) {
-                (Part::FrontSide, _) => out.push_str("<hr id=answer>"),
-                (_, Part::Type { .. } | Part::Tts { .. }) => {}
-                _ => out.push_str("<br>"),
+        let prev = i.checked_sub(1).map(|j| &parts[j]);
+        if !(p.attaches() && prev.is_some_and(|q| *q != Part::FrontSide)) {
+            // 새 줄
+            if boxed {
+                out.push_str("</div>");
+            }
+            let look = p.look().filter(|l| *l != Look::base(back));
+            match prev {
+                Some(Part::FrontSide) => out.push_str("<hr id=answer>"),
+                Some(_) if !boxed && look.is_none() => out.push_str("<br>"),
+                _ => {}
+            }
+            boxed = look.is_some();
+            if let Some(l) = look {
+                out.push_str(&format!("<div class=\"{}\">", l.class()));
             }
         }
-        out.push_str(&match p {
-            Part::Field { name } => format!("{{{{{name}}}}}"),
-            Part::Cloze { name } => format!("{{{{cloze:{name}}}}}"),
-            Part::Type { name } => format!("{{{{type:{name}}}}}"),
-            Part::Tts { opts, name } => format!("{{{{tts {opts}:{name}}}}}"),
-            Part::FrontSide => "{{FrontSide}}".into(),
-        });
+        out.push_str(&p.text());
+    }
+    if boxed {
+        out.push_str("</div>");
     }
     out
 }
 
-/// 구조 -> (qfmt, afmt). 칸 사이 <br>, 입력칸 · 읽어주기는 앞 칸에 붙인다. 앱 Basic · 앞뒤 · Cloze 템플릿과 같은 모양
+/// 구조 -> (qfmt, afmt). 칸 사이 <br>, 입력칸 · 읽어주기는 앞 줄에 붙인다, 기본과 다른 모양의 줄만 줄 상자로. 앱 Basic · 앞뒤 · Cloze 템플릿과 같은 모양
 pub fn build_layout(layout: &Layout) -> (String, String) {
-    (build_side(&layout.front), build_side(&layout.back))
+    (build_side(&layout.front, false), build_side(&layout.back, true))
 }
 
 // ------------------------------------------------------------------ 카드 유형 추천 (규칙만, 2단계 제안 칩)
@@ -1001,6 +1372,8 @@ pub struct TemplateView {
     afmt: String,
     /// 쉬운 편집기로 열 수 있으면 구조, 아니면 None (HTML 탭만)
     layout: Option<Layout>,
+    /// HTML 전용인 이유 ("뒷면에 조건문 {{#예문}}")
+    reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1011,6 +1384,8 @@ pub struct Detail {
     /// 보이는 순서
     fields: Vec<FieldView>,
     templates: Vec<TemplateView>,
+    /// 줄 상자 CSS (미리보기가 초안 CSS 에 없으면 붙인다. 저장은 apply_edit 가 붙인다)
+    layout_css: &'static str,
 }
 
 pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
@@ -1022,8 +1397,15 @@ pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
         templates: nt
             .templates
             .iter()
-            .map(|t| TemplateView { ord: t.ord, name: t.name.clone(), qfmt: t.qfmt.clone(), afmt: t.afmt.clone(), layout: parse_layout(&t.qfmt, &t.afmt) })
+            .map(|t| {
+                let (layout, reason) = match layout_of(&t.qfmt, &t.afmt) {
+                    Ok(l) => (Some(l), None),
+                    Err(e) => (None, Some(e)),
+                };
+                TemplateView { ord: t.ord, name: t.name.clone(), qfmt: t.qfmt.clone(), afmt: t.afmt.clone(), layout, reason }
+            })
             .collect(),
+        layout_css: LAYOUT_CSS,
     })
 }
 
@@ -1125,8 +1507,31 @@ pub fn note_type_empty_fronts(state: State<AppState>, id: i64, drafts: Vec<Draft
 }
 
 #[tauri::command]
-pub fn preview_template(state: State<AppState>, id: i64, qfmt: String, afmt: String, ord: u32, values: Option<Vec<String>>) -> Res<Preview> {
-    preview(&*state.db.lock().map_err(err)?, id, &qfmt, &afmt, ord, values.as_deref())
+pub fn preview_template(state: State<AppState>, id: i64, qfmt: String, afmt: String, ord: u32, values: Option<Vec<String>>, names: Option<Vec<String>>) -> Res<Preview> {
+    preview(&*state.db.lock().map_err(err)?, id, &qfmt, &afmt, ord, values.as_deref(), names.as_deref())
+}
+
+#[tauri::command]
+pub fn note_type_samples(state: State<AppState>, id: i64) -> Res<Vec<Sample>> {
+    samples(&*state.db.lock().map_err(err)?, id, 20)
+}
+
+/// 편집기 [저장]. dry_run 이면 확인 창의 수만 세고 되돌린다 (같은 트랜잭션을 버린다)
+#[tauri::command]
+pub fn save_note_type(state: State<AppState>, id: i64, edit: TypeEdit, dry_run: bool) -> Res<SaveImpact> {
+    let mut con = state.db.lock().map_err(err)?;
+    let tx = con.transaction().map_err(err)?;
+    let out = apply_edit(&tx, id, &edit)?;
+    if !dry_run {
+        tx.commit().map_err(err)?;
+    }
+    Ok(out)
+}
+
+/// 편집 중인 템플릿들의 필드 이름 바꾸기 (저장할 때 rename_field 와 같은 규칙)
+#[tauri::command]
+pub fn rename_field_refs(texts: Vec<String>, old: String, new: String) -> Vec<String> {
+    texts.iter().map(|t| rename_refs(t, &old, &new)).collect()
 }
 
 #[tauri::command]
@@ -1134,9 +1539,10 @@ pub fn add_typed_note(state: State<AppState>, note: TypedNote) -> Res<usize> {
     write(&state, |c| add_note(c, &note))
 }
 
+/// 쉬운 편집 구조. HTML 전용이면 Err(이유: "뒷면에 조건문 {{#예문}}")
 #[tauri::command]
-pub fn template_layout(qfmt: String, afmt: String) -> Option<Layout> {
-    parse_layout(&qfmt, &afmt)
+pub fn template_layout(qfmt: String, afmt: String) -> Result<Layout, String> {
+    layout_of(&qfmt, &afmt)
 }
 
 #[derive(Serialize)]
@@ -1160,6 +1566,10 @@ pub fn suggest_card_kind(text: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::db;
+
+    fn f(name: &str, look: Option<(Size, Align)>) -> Part {
+        Part::Field { name: name.into(), look: look.map(|(size, align)| Look { size, align }) }
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
@@ -1228,7 +1638,7 @@ mod tests {
         }
         // Anki 가 만든 Basic 은 공백만 다르다: 구조로 열고 다시 쓰면 정해진 모양
         let l = parse_layout("{{Front}}", "{{FrontSide}}\n\n<hr id=answer>\n\n{{Back}}").unwrap();
-        assert_eq!(l.back, [Part::FrontSide, Part::Field { name: "Back".into() }]);
+        assert_eq!(l.back, [Part::FrontSide, f("Back", None)]);
         // HTML 전용: 조건 구간 · 서식 · 한 줄에 필드 여럿 · 빈 줄 · FrontSide 위치 · 특수 필드
         for (q, a) in [
             ("{{Front}}", "{{FrontSide}}<hr id=answer>{{모범 답안}}{{#채점 메모}}<div>{{채점 메모}}</div>{{/채점 메모}}"),
@@ -1250,12 +1660,137 @@ mod tests {
         }
         // 구조 -> 글 -> 구조
         let l = Layout {
-            front: vec![Part::Field { name: "단어".into() }, Part::Tts { opts: "en_US speed=1.2".into(), name: "단어".into() }, Part::Field { name: "품사".into() }],
-            back: vec![Part::FrontSide, Part::Field { name: "뜻".into() }, Part::Type { name: "뜻".into() }, Part::Field { name: "예문".into() }],
+            front: vec![f("단어", None), Part::Tts { opts: "en_US speed=1.2".into(), name: "단어".into() }, f("품사", None)],
+            back: vec![Part::FrontSide, f("뜻", None), Part::Type { name: "뜻".into() }, f("예문", None)],
         };
         let (q, a) = build_layout(&l);
         assert_eq!(a, "{{FrontSide}}<hr id=answer>{{뜻}}{{type:뜻}}<br>{{예문}}");
         assert_eq!(parse_layout(&q, &a), Some(l));
+    }
+
+    #[test]
+    fn layout_line_looks_round_trip() {
+        use Align::*;
+        use Size::*;
+        // 면의 기본(앞면 L 가운데 · 뒷면 M 왼쪽)과 다른 줄만 줄 상자로. 상자 앞뒤에는 <br> 이 없고, 읽어주기 · 입력칸은 상자 안에 붙는다
+        let l = Layout {
+            front: vec![f("단어", None), Part::Tts { opts: "en_US".into(), name: "단어".into() }, f("소리", Some((S, Center)))],
+            back: vec![Part::FrontSide, f("뜻", Some((M, Center))), Part::Type { name: "뜻".into() }, f("예문", Some((S, Left))), f("발음", None), f("메모", None)],
+        };
+        let (q, a) = build_layout(&l);
+        assert_eq!(q, r#"{{단어}}{{tts en_US:단어}}<div class="nt-s nt-center">{{소리}}</div>"#);
+        assert_eq!(a, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-center">{{뜻}}{{type:뜻}}</div><div class="nt-s nt-left">{{예문}}</div>{{발음}}<br>{{메모}}"#);
+        assert_eq!(parse_layout(&q, &a), Some(l.clone()));
+        // 공백 · 줄바꿈 글자는 받는다
+        assert_eq!(parse_layout(&q.replace("<div", "\n<div"), &a.replace("</div>", "</div>\n")), Some(l));
+        // 기본 모양을 고르면 상자 없이 (앱 Basic 과 바이트까지 같다)
+        let basic = Layout { front: vec![f("Front", Some((L, Center)))], back: vec![Part::FrontSide, f("Back", Some((M, Left)))] };
+        assert_eq!(build_layout(&basic), ("{{Front}}".into(), "{{FrontSide}}<hr id=answer>{{Back}}".into()));
+        // JSON: 모양이 없으면 look 키도 없다 (화면 Part 타입)
+        assert_eq!(serde_json::to_string(&f("A", None)).unwrap(), r#"{"kind":"field","name":"A"}"#);
+        assert_eq!(serde_json::to_string(&f("A", Some((S, Left)))).unwrap(), r#"{"kind":"field","name":"A","look":{"size":"s","align":"left"}}"#);
+        // HTML 전용: 기본 모양 상자 · 모르는 클래스 · 상자 뒤 <br> · 상자 밖에 붙은 입력칸 · 상자 안 필드 둘
+        for (q, a) in [
+            ("{{A}}", r#"<div class="nt-m nt-left">{{B}}</div>"#),
+            (r#"<div class="nt-x nt-left">{{A}}</div>"#, ""),
+            (r#"<div class="nt-s nt-left">{{A}}</div><br>{{B}}"#, ""),
+            (r#"<div class="nt-s nt-left">{{A}}</div>{{type:A}}"#, ""),
+            (r#"<div class="nt-s nt-left">{{A}}<br>{{B}}</div>"#, ""),
+            (r#"<div class="nt-s nt-left">{{A}}{{B}}</div>"#, ""),
+        ] {
+            assert_eq!(parse_layout(q, a), None, "{q} | {a}");
+        }
+    }
+
+    #[test]
+    fn html_only_reasons() {
+        let why = |q: &str, a: &str| layout_of(q, a).unwrap_err();
+        assert_eq!(why("{{단어}}", "{{FrontSide}}<hr id=answer>{{뜻}}<br>{{#예문}}{{예문}}{{/예문}}"), "뒷면에 조건문 {{#예문}}");
+        assert_eq!(why("<b>{{Front}}</b>", ""), "앞면에 직접 쓴 <b> 태그");
+        assert_eq!(why("{{Front}}", r#"{{FrontSide}}<hr id=answer><div class="grading-memo">{{Back}}</div>"#), "뒷면에 직접 쓴 <div> 태그");
+        assert_eq!(why("Q: {{Front}}", ""), "앞면에 글자 「Q:」");
+        assert_eq!(why("{{Front}} {{Back}}", ""), "앞면 한 줄에 필드 여러 개");
+        assert_eq!(why("{{Front}}<br><br>{{Back}}", ""), "앞면에 빈 줄");
+        assert_eq!(why("{{Tags}}", ""), "앞면에 {{Tags}}");
+        assert_eq!(why("{{text:Front}}", ""), "앞면에 {{text:Front}}");
+        assert_eq!(why("{{Front}}", "{{Back}}<br>{{FrontSide}}"), "뒷면 중간의 {{FrontSide}}");
+        assert_eq!(why("{{Front}}<br>{{type:Back}}", ""), "앞면에 따로 놓인 {{type:Back}}");
+        assert_eq!(why("{{Front", ""), "앞면에 닫히지 않은 {{");
+    }
+
+    #[test]
+    fn apply_edit_in_one_go() {
+        let (con, deck) = setup();
+        let nt = clone_type(&con, db::native_type_id(&con, "reversed").unwrap(), Some("단어")).unwrap();
+        add_field(&con, nt, "메모").unwrap();
+        note(&con, deck, nt, &["apple", "사과", "비밀"]);
+        note(&con, deck, nt, &["pear", "배", ""]);
+        let c2: i64 = con.query_row("SELECT min(id) FROM card WHERE template_ord = 1", [], |r| r.get(0)).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 1, 3)", [c2]).unwrap();
+        let fe = |slot: Option<usize>, name: &str| FieldEdit { slot, name: name.into() };
+        let te = |ord: Option<u32>, qfmt: &str, afmt: &str| TemplateEdit { ord, name: None, qfmt: qfmt.into(), afmt: afmt.into() };
+        // 이름 바꾸기 + 새 필드 + 순서 + 메모 지우기 + 카드 2 지우기 + 카드 1 앞면을 새 필드로 (앞면이 빈다) + 줄 상자
+        let edit = TypeEdit {
+            fields: vec![fe(None, "예문"), fe(Some(1), "뜻"), fe(Some(0), "Front")],
+            templates: vec![te(Some(0), "{{예문}}", r#"{{FrontSide}}<hr id=answer><div class="nt-s nt-center">{{뜻}}</div>"#)],
+            css: ".card { color: red; }".into(),
+        };
+        let dry = {
+            let tx = con.unchecked_transaction().unwrap();
+            let out = apply_edit(&tx, nt, &edit).unwrap();
+            drop(tx); // dry-run: 되돌린다
+            out
+        };
+        assert_eq!(
+            dry,
+            SaveImpact {
+                empty_fronts: 2,
+                made: 0,
+                templates: vec![RemovedTemplate { name: "Card 2".into(), impact: TemplateImpact { cards: 2, reviews: 1, notes: 0 } }],
+                fields: vec![HiddenField { name: "메모".into(), notes: 1 }],
+            }
+        );
+        assert_eq!(load(&con, nt).unwrap().slots, ["Front", "Back", "메모"], "dry-run 은 남기지 않는다");
+        assert_eq!(apply_edit(&con, nt, &edit).unwrap(), dry);
+        let t = load(&con, nt).unwrap();
+        assert_eq!(t.slots, ["Front", "뜻", "", "예문"]);
+        assert_eq!(t.visible().iter().map(|(s, _)| *s).collect::<Vec<_>>(), [3, 1, 0]);
+        assert_eq!(t.templates.len(), 1);
+        assert_eq!(t.css, format!(".card {{ color: red; }}\n\n{LAYOUT_CSS}"), "줄 상자를 쓰면 CSS 를 붙인다");
+        assert_eq!(q(&con, "SELECT count(*) || '' FROM review_log WHERE card_id IS NULL"), ["1"]);
+        // 바꾸지 않은 템플릿은 다시 쓰지 않는다 (Anki 공백 그대로). 카드 종류를 더하면 기존 노트에 카드가 생긴다
+        let spaced = "{{FrontSide}}\n\n<hr id=answer>\n<div class=\"nt-s nt-center\">{{뜻}}</div>";
+        con.execute("UPDATE card_template SET afmt = ?2 WHERE note_type_id = ?1", params![nt, spaced]).unwrap();
+        let keep = TypeEdit {
+            fields: vec![fe(Some(3), "예문"), fe(Some(1), "뜻"), fe(Some(0), "Front")],
+            templates: vec![te(Some(0), "{{예문}}", spaced), te(None, "{{Front}}", "{{FrontSide}}<hr id=answer>{{뜻}}")],
+            css: t.css.clone(),
+        };
+        let out = apply_edit(&con, nt, &keep).unwrap();
+        assert_eq!((out.made, out.empty_fronts), (2, 0));
+        assert_eq!(load(&con, nt).unwrap().templates[0].afmt, spaced);
+        // 앱 유형은 거부
+        assert_eq!(apply_edit(&con, db::native_type_id(&con, "basic").unwrap(), &keep), Err(APP_TYPE.to_string()));
+    }
+
+    #[test]
+    fn preview_with_draft_names_and_samples() {
+        let (con, deck) = setup();
+        let nt = clone_type(&con, db::native_type_id(&con, "basic").unwrap(), None).unwrap();
+        let names = s(&["앞", "새 필드"]);
+        let p = preview(&con, nt, "{{앞}}<br>{{새 필드}}", "", 0, None, Some(&names)).unwrap();
+        assert_eq!(p.front, "(앞)<br>(새 필드)");
+        let p = preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값", ""])), Some(&names)).unwrap();
+        assert_eq!(p.front, "값");
+        assert!(preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값"])), Some(&names)).is_err());
+        note(&con, deck, nt, &["q1", "a1"]);
+        note(&con, deck, nt, &["q2", "a2"]);
+        let got = samples(&con, nt, 1).unwrap();
+        assert_eq!((got.len(), got[0].deck.as_str(), got[0].slots.clone()), (1, "덱", s(&["q2", "a2"])));
+        assert!(LAYOUT_CSS.starts_with(LAYOUT_MARK));
+        assert_eq!(with_layout_css("", false), "");
+        assert_eq!(with_layout_css(LAYOUT_CSS, true), LAYOUT_CSS, "두 번 붙이지 않는다");
+        assert_eq!(without_layout_css(&with_layout_css(".a {}", true)).trim(), ".a {}");
     }
 
     #[test]
@@ -1452,11 +1987,11 @@ mod tests {
     fn preview_and_deck_type() {
         let (con, deck) = setup();
         let nt = clone_type(&con, db::native_type_id(&con, "cloze").unwrap(), None).unwrap();
-        let p = preview(&con, nt, "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", 0, None).unwrap();
+        let p = preview(&con, nt, "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", 0, None, None).unwrap();
         assert!(p.front.contains("class=\"cloze\"") && p.back.contains("(Back Extra)"), "{p:?}");
-        let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"]))).unwrap();
+        let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"])), None).unwrap();
         assert_eq!(p.front, "덧붙임");
-        assert!(preview(&con, nt, "", "", 0, Some(&s(&["t"]))).is_err());
+        assert!(preview(&con, nt, "", "", 0, Some(&s(&["t"])), None).is_err());
         assert!(deck_types(&con, deck).unwrap().is_empty());
         note(&con, deck, nt, &["{{c1::a}}", ""]);
         con.execute("INSERT INTO deck (name, parent_id, created_at, updated_at) VALUES ('하위', ?1, 0, 0)", [deck]).unwrap();
@@ -1472,7 +2007,7 @@ mod tests {
         assert_eq!(rows.iter().find(|r| r.id == basic).unwrap().decks, ["하위"]);
         assert!(rows.iter().find(|r| r.id == nt).is_some_and(|r| r.user_made && r.decks == ["덱"]));
         // 미리보기 기본값: 가장 최근 노트 (이 유형의)
-        let p = preview(&con, nt, "{{cloze:Text}}", "", 0, None).unwrap();
+        let p = preview(&con, nt, "{{cloze:Text}}", "", 0, None, None).unwrap();
         assert!(p.front.starts_with("<span class=\"cloze\">["), "{p:?}");
     }
 

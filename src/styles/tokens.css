@@ -99,7 +99,9 @@
 }
 
 /* Dark (Figma 35:4975). 구조는 그대로, 값만 바뀐다. bg/inverse 는 흰색으로 뒤집지 않고 남색 면으로 둔다 */
-:root[data-theme="dark"] {
+/* [data-theme="dark"]: 밝은 테마 안에서 다크로 그릴 한 덩어리 (NT2 미리보기 [다크]) */
+:root[data-theme="dark"],
+[data-theme="dark"] {
   color-scheme: dark;
   --bg-canvas: #121117;
   --bg-surface: #1b1a21;

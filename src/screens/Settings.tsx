@@ -17,6 +17,7 @@ import { getThemePref, setThemePref, type ThemePref } from "../theme";
 import { ModelRow } from "./Sources";
 import { DriveSection } from "../sync";
 import { AiSection } from "../ai";
+import { NoteTypesEntry } from "./NoteTypes";
 
 const HOURS = [0, 1, 2, 3, 4, 5, 6];
 const THEMES: [ThemePref, string][] = [
@@ -116,6 +117,8 @@ export function Settings({ focus }: { focus?: "archived" }) {
 
       <Metrics />
       <Archived focus={focus === "archived"} />
+      {/* NT1 노트 유형 (입구. 목록은 따로) */}
+      <NoteTypesEntry />
 
       <section className="prefs__section">
         <p className="prefs__label t-label-s c-tertiary">학습</p>
