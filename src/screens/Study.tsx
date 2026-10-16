@@ -643,11 +643,31 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   // D3-l 넘칠 때만 페이드 · "아래에 더 있어요" · 스크롤 안내
   const measure = useCallback(() => {
     const el = scroller.current;
-    if (!el) return;
+    const box = el?.parentElement;
+    if (!el || !box) return;
+    // 넘침은 넘침 모양(is-overflow: 아래 48px 비움) 없이 잰다. 앞 카드의 모양이 남은 채로 재면 들어가는 카드도 넘친다고 본다.
+    // 모양은 바로 되돌리고, 모양을 빼는 동안 줄어든 스크롤 위치도 되돌린다
+    const had = box.classList.contains("is-overflow");
+    const top = el.scrollTop;
+    box.classList.remove("is-overflow");
     const overflow = el.scrollHeight > el.clientHeight + 1;
-    const more = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+    if (had) {
+      box.classList.add("is-overflow");
+      el.scrollTop = top;
+    }
+    const more = overflow && el.scrollHeight - el.scrollTop - el.clientHeight > 1;
     setFit((f) => (f.overflow === overflow && f.more === more ? f : { overflow, more }));
   }, []);
+  // 스크롤로는 넘침이 바뀌지 않는다. "아래에 더 있어요"만 다시 잰다
+  const onScroll = () => {
+    const el = scroller.current;
+    if (!el) return;
+    const left = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+    setFit((f) => {
+      const more = f.overflow && left;
+      return f.more === more ? f : { ...f, more };
+    });
+  };
   // 새 카드나 답을 열면 맨 위부터. 그림이 늦게 그려지거나 창 크기가 바뀌면 다시 잰다
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -1146,7 +1166,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 </button>
               </span>
             </header>
-            <div ref={scroller} className="study__scroll" onScroll={measure}>
+            <div ref={scroller} className="study__scroll" onScroll={onScroll}>
               <div className="study__card-content" onClick={zoomImage}>
                 <div className={face === "night" ? "nightMode night_mode" : undefined}>
                 {special ? (
