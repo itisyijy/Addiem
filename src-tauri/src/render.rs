@@ -1,5 +1,6 @@
 //! Anki 템플릿 -> HTML. MVP 6.4.2 의 지원 범위만 다룬다:
 //! {{필드}}, {{FrontSide}}, {{#필드}}..{{/필드}}, {{^필드}}..{{/필드}}, {{cloze:필드}}, {{필터:필드}}.
+//! AU20 {{tts 언어:필드}} 는 읽어주기 자리 표시로 바꾼다 (tts_mark).
 //! 스파이크 1: 실측 컬렉션의 템플릿은 전부 이 범위 안이었다. 그림 가리기(Anki IO) 칸은 occlusion.rs 가 그린다.
 //!
 //! 결과 HTML 은 신뢰하지 않는다. 화면에서 반드시 살균한 뒤 넣는다 (ADR 0001 2장).
@@ -30,6 +31,35 @@ fn sound_marks(html: &str) -> String {
         Ok(n) => format!("{SOUND_MARK}{}\"></span>", crate::occlusion::escape(n)),
         Err(_) => String::new(),
     })
+}
+
+/// AU20 {{tts en_US speed=1.2:필드}} -> <span class="snd" data-tts="en_US" data-text="글자" data-speed="1.2"></span>. 화면이 읽어주기 칩으로 바꾼다.
+/// 읽을 글자는 화면 글자만 (AU25: HTML · [sound:] · 수식을 뺀다). 글자는 속성에만 있어 strip_tags 를 쓰는 곳(목록 · 검색 · AI · 서술형 비교)에 섞이지 않는다.
+/// voices= 는 따르지 않는다 (AU24). 읽을 글자가 없으면 칩도 없다
+fn tts_mark(opts: &str, html: &str) -> String {
+    let mut words = opts.split_whitespace();
+    let lang = words.next().unwrap_or_default();
+    let text = strip_tags(&strip_math(&strip_sound(html)));
+    if lang.is_empty() || !text.chars().any(char::is_alphanumeric) {
+        return String::new();
+    }
+    let speed = words.find_map(|w| w.strip_prefix("speed=")?.parse::<f32>().ok()).filter(|s| s.is_finite() && *s > 0.0);
+    // [ 도 바꾼다. 뒤에 도는 sound_marks 가 속성 안의 "[sound:" 를 잡지 않게
+    let esc = |s: &str| crate::occlusion::escape(s).replace('[', "&#91;");
+    let speed = speed.map(|s| format!(" data-speed=\"{s}\"")).unwrap_or_default();
+    format!("<span class=\"snd\" data-tts=\"{}\" data-text=\"{}\"{speed}></span>", esc(lang), esc(&text))
+}
+
+/// 수식 구간을 지운다 (구분자는 math.ts 와 같다)
+fn strip_math(s: &str) -> String {
+    let mut out = s.to_string();
+    for (open, close) in [("\\(", "\\)"), ("\\[", "\\]"), ("[$$]", "[/$$]"), ("[$]", "[/$]"), ("[latex]", "[/latex]")] {
+        while let Some(i) = out.find(open) {
+            let Some(j) = out[i + open.len()..].find(close) else { break };
+            out.replace_range(i..i + open.len() + j + close.len(), " ");
+        }
+    }
+    out
 }
 
 /// [sound:파일] 을 지운다. 템플릿을 거치지 않는 필드 글자(CSV 내보내기, type-in 정답)용
@@ -88,17 +118,22 @@ fn tag_value(tag: &str, fields: &HashMap<String, String>, ord: u32, is_back: boo
         Some((filters, field)) => {
             let value = fields.get(field.trim()).cloned().unwrap_or_default();
             // type-in 입력칸은 앞면에서 비운다 (답이 새지 않게. 입력은 학습 화면의 J1 칸이 받는다).
-            // 뒷면에서는 Anki 처럼 정답을 보여준다. 읽어주기는 지원하지 않는다 (가져오기 결과에 보고한다)
+            // 뒷면에서는 Anki 처럼 정답을 보여준다
             if filters.split(':').any(|f| f.trim() == "type") {
                 return if is_back { value } else { String::new() };
             }
-            if filters.split(':').any(|f| f.trim().starts_with("tts")) {
-                return String::new();
-            }
-            if filters.split(':').any(|f| f.trim() == "cloze") {
+            let has = |name: &str| filters.split(':').any(|f| f.trim() == name);
+            let value = if has("cloze") {
                 cloze(&value, ord + 1, is_back)
+            } else if has("cloze-only") {
+                cloze_only(&value, ord + 1, is_back)
             } else {
                 value
+            };
+            // AU20 읽어주기: Anki 처럼 빈칸을 먼저 푼 뒤 읽는다 (질문 면은 가린 말을 읽지 않는다, AU22)
+            match filters.split(':').find_map(|f| f.trim().strip_prefix("tts ")) {
+                Some(opts) => tts_mark(opts, &value),
+                None => value,
             }
         }
         None => fields.get(tag).cloned().unwrap_or_default(),
@@ -160,6 +195,19 @@ pub fn cloze(text: &str, n: u32, is_back: bool) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// {{cloze-only:필드}} (읽어주기용, rslib reveal_cloze_text_only): 이 카드 빈칸의 답만 ", " 로. 질문 면은 힌트, 없으면 "..."
+fn cloze_only(text: &str, n: u32, is_back: bool) -> String {
+    let mut out = vec![];
+    let mut rest = text;
+    while let Some((_, num, answer, hint, end)) = next_cloze(rest) {
+        if num == n && !answer.starts_with("image-occlusion:") {
+            out.push(if is_back { answer } else { hint.unwrap_or("...") });
+        }
+        rest = &rest[end..];
+    }
+    out.join(", ")
 }
 
 /// 카드를 만드는 빈칸 번호. c0 은 카드가 없다 (Anki IO 의 글자 칸). 번호 - 1 이 template_ord 라 0 이 들어가면 넘친다
@@ -304,6 +352,31 @@ mod tests {
         assert_eq!(c1.back, "<span class=\"cloze\">서울</span>은 한국의 수도");
         let c2 = render_card("{{cloze:Text}}", "{{cloze:Text}}", &fields, 1);
         assert_eq!(c2.front, "서울은 <span class=\"cloze\">[나라]</span>의 수도");
+    }
+
+    #[test]
+    fn tts_tags_become_marks() {
+        let mark = |lang: &str, text: &str| format!("<span class=\"snd\" data-tts=\"{lang}\" data-text=\"{text}\"></span>");
+        let fields = f(&[("Front", "abandon"), ("Back", "버리다,&nbsp;<b>포기하다</b> [sound:a.mp3] \\(x^2\\)")]);
+        let r = render_card("{{Front}}{{tts en_US:Front}}", "{{FrontSide}}<hr id=answer>{{Back}}{{tts ko_KR voices=Heami speed=1.2:Back}}", &fields, 0);
+        assert_eq!(r.front, format!("abandon{}", mark("en_US", "abandon")));
+        assert!(r.back.ends_with("<span class=\"snd\" data-tts=\"ko_KR\" data-text=\"버리다, 포기하다\" data-speed=\"1.2\"></span>"), "HTML · 소리 · 수식은 읽지 않는다: {}", r.back);
+        // AU25 글자만 쓰는 곳에는 읽어주기 글자가 섞이지 않는다
+        assert_eq!(strip_tags(&r.front), "abandon");
+        assert_eq!(strip_tags(&r.back).matches("포기하다").count(), 1);
+        // 이스케이프. [ 는 sound_marks 가 속성 안을 건드리지 않게 바꾼다
+        let evil = f(&[("F", "a\"&lt;img src=x&gt; [sound:x")]);
+        assert_eq!(render_card("{{tts en_US:F}}", "", &evil, 0).front, mark("en_US", "a&quot;&lt;img src=x&gt; &#91;sound:x"));
+        assert_eq!(render_card("{{tts en\"x:F}}", "", &evil, 0).front.matches('"').count(), 6, "언어도 이스케이프한다");
+        // 읽을 글자가 없으면 칩이 없다. 빈칸은 이 면에 보이는 대로 (질문 면은 가린 말을 읽지 않는다)
+        assert_eq!(render_card("{{tts en_US:F}}", "", &f(&[("F", "<img src=\"a.png\">")]), 0).front, "");
+        let cz = f(&[("Text", "{{c1::Seoul}} is the capital {{c2::Korea::country}}")]);
+        let c1 = render_card("{{tts en_US:cloze:Text}}", "{{tts en_US:cloze:Text}}", &cz, 0);
+        assert_eq!(c1.front, mark("en_US", "&#91; ] is the capital Korea"));
+        assert_eq!(c1.back, mark("en_US", "Seoul is the capital Korea"));
+        let only = render_card("{{tts en_US:cloze-only:Text}}", "{{tts en_US:cloze-only:Text}}", &cz, 1);
+        assert_eq!((only.front.as_str(), only.back), (mark("en_US", "country").as_str(), mark("en_US", "Korea")));
+        assert_eq!(render_card("{{tts en_US:cloze-only:Text}}", "", &cz, 0).front, "", "힌트 없는 질문 면은 읽을 것이 없다");
     }
 
     #[test]

@@ -22,7 +22,7 @@ export type IconName =
   // G2 성격별로 묶기 · ChatGPT (Figma Row L)
   | "sparkles" | "gauge" | "wifi-off" | "send"
   // AU 소리 재생 (Figma Row AU)
-  | "volume-2" | "volume-x" | "play" | "pause";
+  | "volume-2" | "volume-x" | "play" | "pause" | "speech";
 
 /**
  * Figma 는 작은 크기에서도 선 두께를 2px 로 유지한다. 그래서 크기별 원본(plus-16.svg)이

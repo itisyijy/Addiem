@@ -36,6 +36,9 @@ const HINTS_SEEN = "neo.ratingHintsSeen";
 /** AU4 소리 자동 재생 끔 (기본은 켬) · AU1 처음 본 소리 카드 안내 */
 export const NO_AUTOPLAY = "neo.soundAutoplayOff";
 const SOUND_TIP_SEEN = "neo.soundTipSeen";
+/** AU21 읽어주기 자동 재생 켬 (기본은 끔) · 처음 본 읽어주기 카드 안내 */
+export const TTS_AUTOPLAY = "neo.ttsAutoplay";
+const TTS_TIP_SEEN = "neo.ttsTipSeen";
 export function pref(key: string) {
   try {
     return localStorage.getItem(key) === "1";
@@ -504,7 +507,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [fit, setFit] = useState({ overflow: false, more: false });
   const [editing, setEditing] = useState(false);
   const [hints, setHints] = useState(() => !pref(HINTS_SEEN));
-  const [soundTip, setSoundTip] = useState<number | null>(null); // AU1 이 카드에서 한 번 안내
+  const [soundTip, setSoundTip] = useState<{ id: number; tts: boolean } | null>(null); // AU1 · AU21 이 카드에서 한 번 안내
   const [error, setError] = useState<string>();
   // R2 채점 보조: 학습 세션마다 한 번 확인 · 근거 칩으로 연 구간 (I2 패널 자리)
   const gradeOk = useRef(false);
@@ -543,9 +546,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       renderCardHtml(parts.answer),
     ])).map(withMath);
     setCard({ view, front, question, answer, written, source });
-    if (!pref(SOUND_TIP_SEEN) && !pref(NO_AUTOPLAY) && (view.front + view.back).includes('class="snd"')) {
+    const html = view.front + view.back;
+    if (!pref(TTS_TIP_SEEN) && !pref(TTS_AUTOPLAY) && html.includes("data-tts=")) {
+      setPref(TTS_TIP_SEEN, true);
+      setSoundTip({ id, tts: true });
+    } else if (!pref(SOUND_TIP_SEEN) && !pref(NO_AUTOPLAY) && html.includes("data-snd=")) {
       setPref(SOUND_TIP_SEEN, true);
-      setSoundTip(id);
+      setSoundTip({ id, tts: false });
     }
     setOpened(0);
     setMarks([]);
@@ -888,18 +895,21 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
   /*
    * AU2 자동 재생은 Anki 와 같게: 질문은 카드를 열 때, 답을 열면 뒷면에만 있는 소리(정답 부분)를 차례로.
-   * Anki 도 {{FrontSide}} 로 들어온 앞면 소리는 답 면에서 다시 틀지 않는다. AU3 R 은 지금 면 (답 면은 앞면 소리부터)
+   * Anki 도 {{FrontSide}} 로 들어온 앞면 소리는 답 면에서 다시 틀지 않는다. AU3 R 은 지금 면 (답 면은 앞면 소리부터).
+   * AU21 · AU22 읽어주기도 같은 때 나온 순서대로 섞는다. 자동 재생은 소리(기본 켬)와 읽어주기(기본 끔)를 따로 따르고, R 은 둘 다
    */
   const playSide = useCallback(
     (auto: boolean) => {
       const el = scroller.current;
-      if (el) playSounds(el.querySelectorAll(phase === "q" ? ".study__q .snd" : auto ? ".study__a-body .snd, .cmp__snd .snd" : ".study__a .snd"));
+      if (!el) return;
+      const chips = Array.from(el.querySelectorAll(phase === "q" ? ".study__q .snd" : auto ? ".study__a-body .snd, .cmp__snd .snd" : ".study__a .snd"));
+      playSounds(auto ? chips.filter((c) => (c.hasAttribute("data-tts") ? pref(TTS_AUTOPLAY) : !pref(NO_AUTOPLAY))) : chips);
     },
     [phase],
   );
   useEffect(() => {
     stopSounds(); // 다음 카드로 넘어가면 멈춘다
-    if (card && !pref(NO_AUTOPLAY)) playSide(true);
+    if (card) playSide(true);
   }, [card, playSide]);
   useEffect(() => stopSounds, []);
 
@@ -958,7 +968,21 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     : gptSuggest !== null
       ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT 검토 · 직접 평가해 주세요`
       : null;
-  const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip === card.view.id);
+  const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip?.id === card.view.id);
+  // AU21 읽어주기 첫 안내는 칩이 처음 나온 면에 (질문 면에 칩이 있으면 질문 면부터, 답 면에서도 이어서)
+  const qTip = phase === "q" && !special && !writing && !!card && !!soundTip?.tts && soundTip.id === card.view.id && card.front.includes("data-tts");
+  const ttsTip = (
+    <span className="study__tip">
+      <Icon name="speech" size={16} className="c-accent" />
+      <span className="t-label-s c-accent">
+        읽어주기는 눌러야 읽어요 (자동 재생 꺼짐) · {actionKey("replay")}
+        {ro(actionKey("replay"))} 들어요 · 설정에서 켤 수 있어요
+      </span>
+      <button className="study__tip-x c-accent" aria-label="읽어주기 안내 숨기기" onClick={() => setSoundTip(null)}>
+        <Icon name="x" size={14} />
+      </button>
+    </span>
+  );
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
   const replayHint = (html = "") => html.includes('class="snd') && `${actionKey("replay")} 다시 듣기`;
   const keysQ = special
@@ -1050,7 +1074,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       </div>
 
       {card && (
-        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${writing ? "is-writing" : ""} ${special ? `is-recall is-${special.kind}` : ""}`}>
+        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${qTip ? "has-qtip" : ""} ${writing ? "is-writing" : ""} ${special ? `is-recall is-${special.kind}` : ""}`}>
           {/* 밝은 덱 카드는 카드 면만 밝은 토큰으로 (tokens.css [data-theme="light"]) */}
           <article className={`study__card ${fit.overflow ? "is-overflow" : ""}`} data-theme={face === "light" ? "light" : undefined}>
             {noteCss && <style>{noteCss}</style>}
@@ -1198,6 +1222,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
           {phase === "q" ? (
             <>
+              {qTip && <div className="study__tipwrap">{ttsTip}</div>}
               {writing && (
                 <div className="write">
                   <p className="write__head">
@@ -1267,7 +1292,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                       답의 의미를 확인하고 직접 평가해 주세요.
                     </span>
                   </span>
-                ) : soundTip === card.view.id ? (
+                ) : soundTip?.id === card.view.id && soundTip.tts ? (
+                  ttsTip
+                ) : soundTip?.id === card.view.id ? (
                   <span className="study__tip">
                     <Icon name="volume-2" size={16} className="c-accent" />
                     <span className="t-label-s c-accent">

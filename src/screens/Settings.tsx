@@ -10,7 +10,7 @@ import {
 } from "../keys";
 import { Modal } from "./NewDeck";
 import { DeleteDeckConfirm } from "./Deck";
-import { NO_AUTOPLAY, SKIP_SUMMARY, pref, setPref } from "./Study";
+import { NO_AUTOPLAY, SKIP_SUMMARY, TTS_AUTOPLAY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
 import { ModelRow } from "./Sources";
 import { DriveSection } from "../sync";
@@ -43,6 +43,7 @@ export function Settings({ focus }: { focus?: "archived" }) {
   const [error, setError] = useState<string>();
   const [skipSummary, setSkipSummary] = useState(() => pref(SKIP_SUMMARY));
   const [autoplay, setAutoplay] = useState(() => !pref(NO_AUTOPLAY));
+  const [ttsAutoplay, setTtsAutoplay] = useState(() => pref(TTS_AUTOPLAY));
   const [theme, setTheme] = useState(getThemePref);
 
   const load = useCallback(() => api.appInfo().then(setInfo), []);
@@ -181,6 +182,21 @@ export function Settings({ focus }: { focus?: "archived" }) {
             }}
           />
         </div>
+        {/* AU21 읽어주기({{tts}}) 자동 재생은 따로, 기본 꺼짐. 꺼도 칩이나 R 로 읽는다 */}
+        <div className="prefs__row">
+          <span className="prefs__text">
+            <span className="t-body-m-strong">읽어주기 자동 재생</span>
+            <span className="t-body-s c-secondary">켜면 카드의 읽어주기도 소리처럼 저절로 읽어요. 끄면 칩을 누르거나 다시 듣기 키로 들어요.</span>
+          </span>
+          <Toggle
+            on={ttsAutoplay}
+            label="읽어주기 자동 재생"
+            onChange={(v) => {
+              setPref(TTS_AUTOPLAY, v);
+              setTtsAutoplay(v);
+            }}
+          />
+        </div>
         <div className="prefs__row">
           <span className="prefs__text">
             <span className="t-body-m-strong">화면 테마</span>
@@ -219,8 +235,59 @@ export function Settings({ focus }: { focus?: "archived" }) {
         </div>
       </section>
 
+      <Licenses />
+
       {wiping && <WipeConfirm info={info} onClose={() => setWiping(false)} onDone={() => nav({ name: "home" })} />}
     </main>
+  );
+}
+
+/** 라이선스 원문은 80–100자에서 줄을 바꿔 두었다. 문단 안의 줄바꿈만 이어 상자 너비로 감싸게 한다 (빈 줄 · 목록 (a) · 1. · 구분선은 둔다) */
+const reflow = (t: string) =>
+  t.replace(/\r\n/g, "\n").replace(/^(.{60,})\n(?!\s|\([a-z0-9]{1,4}\)|[•*-]|\d+\.)/gim, (m, line: string) => (/[a-z]/i.test(line) ? `${line} ` : m));
+
+/** 읽어주기 음성(tts.rs)과 함께 설치되는 것의 라이선스. 음성 파일이 없는 빌드에서는 보이지 않는다 */
+function Licenses() {
+  const [shown, setShown] = useState(false);
+  const [texts, setTexts] = useState<Record<string, string>>({});
+  useEffect(() => {
+    api.ttsLangs().then((l) => setShown(l.length > 0), () => setShown(false));
+  }, []);
+  if (!shown) return null;
+  // 전문(특히 ONNX Runtime 의 ThirdPartyNotices 340KB)은 펼칠 때 읽는다
+  const open = (which: "supertonic" | "onnxruntime") =>
+    texts[which] === undefined &&
+    api.ttsLicense(which).then(
+      (t) => setTexts((x) => ({ ...x, [which]: reflow(t) })),
+      (e) => setTexts((x) => ({ ...x, [which]: errorText(e) })),
+    );
+  const items = [
+    {
+      which: "supertonic" as const,
+      name: "Supertonic 3 음성 모델 · Supertone",
+      license: "OpenRAIL-M",
+      desc: "읽어주기 음성이에요. 라이선스 부록 A의 용도(법 위반, 남을 해치거나 속이는 일, 사칭, 기계가 만든 내용임을 밝히지 않고 퍼뜨리기 등)로는 쓸 수 없어요. 읽어 준 소리는 이 기기에서 재생만 하고 노트나 내보내기 파일에 넣지 않아요.",
+    },
+    { which: "onnxruntime" as const, name: "ONNX Runtime 1.31.0 · Microsoft", license: "MIT", desc: "음성 모델을 이 기기의 CPU에서 돌려요. 함께 쓰는 오픈소스의 고지도 전문에 있어요." },
+  ];
+  return (
+    <section className="prefs__section">
+      <p className="prefs__label t-label-s c-tertiary">오픈소스 라이선스</p>
+      {items.map((it) => (
+        <div key={it.which} className="prefs__row">
+          <span className="prefs__text">
+            <span className="t-body-m-strong">
+              {it.name} <Badge>{it.license}</Badge>
+            </span>
+            <span className="t-body-s c-secondary">{it.desc}</span>
+            <details className="prefs__license" onToggle={(e) => e.currentTarget.open && open(it.which)}>
+              <summary className="t-label-s c-secondary">라이선스 전문</summary>
+              <pre className="t-caption c-secondary">{texts[it.which] ?? "읽는 중…"}</pre>
+            </details>
+          </span>
+        </div>
+      ))}
+    </section>
   );
 }
 

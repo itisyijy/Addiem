@@ -19,6 +19,10 @@
 .study .is-answer .study__card { height: calc(100vh - 344px); min-height: 160px; } /* D3-l: 위 96 + 카드 + 32 + 216 */
 .study .is-answer.has-tip .study__card { height: calc(100vh - 380px); } /* D3 첫 학습: 안내 pill 자리 68 */
 .study .study__col:not(.has-tip) .study__tipwrap { height: 32px; padding: 0; }
+/* AU21 질문 면의 읽어주기 첫 안내: 안내 자리(68)만큼 카드를 줄여 [답 보기]는 제자리 */
+.study .study__col.has-qtip .study__card { height: calc(100vh - 388px); }
+.study .study__col.has-qtip .study__tipwrap { height: 68px; padding-top: 16px; }
+.study .study__col.has-qtip .study__reveal { margin-top: 0; }
 .study .study__card-head { margin-right: 34px; }
 
 /* 카드 안쪽 스크롤. 머리글(중요도 · 편집 · 접어두기)만 고정하고 질문은 답과 함께 올라간다 */
