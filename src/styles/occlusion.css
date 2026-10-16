@@ -12,11 +12,11 @@
 .card-html .io > img { width: auto; max-height: min(480px, 45vh); }
 /*
  * M3 학습: 그림을 자르지 않고 통째로. 폭과 높이 상한 둘 다에 맞춰 비율대로 줄인다. 질문 면과 답 면은 같은 크기 (면을 넘길 때 그림이 뛰지 않게).
- * 높이 상한은 답 면에 남는 높이: 카드 100vh-344 − 머리 · 흐린 질문 · 번호 이름 · 덧붙임 한 줄 · 여백 266.
+ * 높이 상한은 답 면에 남는 높이: 카드 100vh-344 − 머리 · 흐린 질문 · 번호 이름 · 덧붙임 한 줄 · 여백 266. 최소 창(640)에서도 150px 아래로는 줄이지 않고 카드 안에서 스크롤한다.
  * 그래도 넘치는 아주 긴 그림만 카드 안에서 스크롤한다 (Study.tsx 가 묻는 칸으로 스크롤)
  */
 .study .study__card-content .io { cursor: zoom-in; }
-.study .study__card-content .io > img { width: auto; max-width: 100%; max-height: min(480px, 45vh, calc(100vh - 610px)); object-fit: contain; }
+.study .study__card-content .io > img { width: auto; max-width: 100%; max-height: min(480px, 45vh, max(150px, calc(100vh - 610px))); object-fit: contain; }
 /* 확대 보기 (덮개 그대로) */
 .study__zoom-io { line-height: 0; }
 .study__zoom-io .io { margin: 0; border-radius: 12px; background: var(--bg-surface); box-shadow: 0 24px 64px rgba(23, 23, 28, 0.18); }
