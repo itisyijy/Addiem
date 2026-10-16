@@ -36,6 +36,9 @@ const HINTS_SEEN = "neo.ratingHintsSeen";
 /** AU4 소리 자동 재생 끔 (기본은 켬) · AU1 처음 본 소리 카드 안내 */
 export const NO_AUTOPLAY = "neo.soundAutoplayOff";
 const SOUND_TIP_SEEN = "neo.soundTipSeen";
+/** AU21 읽어주기 자동 재생 켬 (기본은 끔) · 처음 본 읽어주기 카드 안내 */
+export const TTS_AUTOPLAY = "neo.ttsAutoplay";
+const TTS_TIP_SEEN = "neo.ttsTipSeen";
 export function pref(key: string) {
   try {
     return localStorage.getItem(key) === "1";
@@ -468,7 +471,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   // P2 혼합 회독: 카드마다 남은 자리 (null 전체, 문자열 취약 이유). 평가할 때 앞 자리부터 센다
   const mixRoles = useRef(new Map<number, (string | null)[]>());
   const mixStats = useRef<MixStats>({ full: [0, 0], weak: [0, 0], again: [0, 0], due: 0 });
-  const mixReplayed = useRef(false); // 접어둔 카드는 회독 끝에 한 번 더
+  const mixReplayed = useRef(false); // 접어둔 카드는 회독(혼합 · 압축) 끝에 한 번 더
   const openedAt = useRef(Date.now()); // P3 "N장 회독 · M분": 이 화면에서 쓴 시간 (같은 날 이어 쓴 세션의 쉬던 시간은 빼고)
   const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
@@ -504,7 +507,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [fit, setFit] = useState({ overflow: false, more: false });
   const [editing, setEditing] = useState(false);
   const [hints, setHints] = useState(() => !pref(HINTS_SEEN));
-  const [soundTip, setSoundTip] = useState<number | null>(null); // AU1 이 카드에서 한 번 안내
+  const [soundTip, setSoundTip] = useState<{ id: number; tts: boolean } | null>(null); // AU1 · AU21 이 카드에서 한 번 안내
   const [error, setError] = useState<string>();
   // R2 채점 보조: 학습 세션마다 한 번 확인 · 근거 칩으로 연 구간 (I2 패널 자리)
   const gradeOk = useRef(false);
@@ -543,9 +546,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       renderCardHtml(parts.answer),
     ])).map(withMath);
     setCard({ view, front, question, answer, written, source });
-    if (!pref(SOUND_TIP_SEEN) && !pref(NO_AUTOPLAY) && (view.front + view.back).includes('class="snd"')) {
+    const html = view.front + view.back;
+    if (!pref(TTS_TIP_SEEN) && !pref(TTS_AUTOPLAY) && html.includes("data-tts=")) {
+      setPref(TTS_TIP_SEEN, true);
+      setSoundTip({ id, tts: true });
+    } else if (!pref(SOUND_TIP_SEEN) && !pref(NO_AUTOPLAY) && html.includes("data-snd=")) {
       setPref(SOUND_TIP_SEEN, true);
-      setSoundTip(id);
+      setSoundTip({ id, tts: false });
     }
     setOpened(0);
     setMarks([]);
@@ -564,11 +571,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       const now = Date.now();
       const l = later.current.sort((a, b) => a.due - b.due);
       const id = next.current.shift() ?? (l.length && l[0].due <= now ? l.shift()!.id : (queue.current.shift() ?? l.shift()?.id));
-      if (id === undefined && mix && !mixReplayed.current && foldedIds.current.length > 0) {
-        // P2 혼합 회독: 접어둔 카드는 회독 끝에 한 번 더 (두 번째 접히면 그대로 둔다)
+      if (id === undefined && (mix || cram) && !mixReplayed.current && foldedIds.current.length > 0) {
+        // P2 혼합 · H3 압축 회독: 접어둔 카드는 묶음 끝에 한 번 더 (두 번째 접히면 그대로 둔다, P14 · P20)
         mixReplayed.current = true;
         const ids = foldedIds.current;
-        for (const f of ids) await api.unburyCard(session.current!, f);
+        for (const f of ids) {
+          if (cram) cramAgain.current.set(f, 0); // 압축은 접기가 이 화면 안에만 있다
+          else await api.unburyCard(session.current!, f);
+        }
         setFolded([]);
         setDone((d) => d - ids.length);
         queue.current.push(...ids);
@@ -581,7 +591,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         // 편집 중 지워진 빈칸 카드 등. 건너뛴다
       }
     }
-  }, [finish, show, mix]);
+  }, [finish, show, mix, cram]);
   useEffect(() => void (foldedIds.current = folded.map((f) => f.id)), [folded]);
 
   useEffect(() => {
@@ -713,6 +723,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   };
 
   const fold = (c: Shown, auto: boolean) => {
+    // 바로 이어 부르는 advance 가 묶음 끝 다시 보기에 쓴다. 상태(folded)는 다음 그리기에서야 바뀐다 (마지막 카드가 접힐 때)
+    foldedIds.current = [...foldedIds.current, c.view.id];
     setFolded((list) => [
       ...list,
       { id: c.view.id, question: lineOf(c.view.front), importance: c.view.importance, deck_path: c.view.deck_path, auto, at: Date.now() },
@@ -735,6 +747,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       const c = card!;
       if (c.view.special) recall.saveMarks(c.view.id, marks).catch(() => {}); // Q9 이 기기에만
       const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current);
+      if (res.action === "day_rollover") {
+        // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 세션은 닫혔고 방금 평가는 남지 않았다. 새 날의 학습을 다시 짠다
+        notify({ title: "새 학습일이 시작됐어요", text: "오늘의 학습을 새로 만들었어요. 방금 평가는 남기지 않았어요." });
+        return nav(mix ? { name: "home" } : { name: "summary", deckIds });
+      }
       if (mix) {
         const role = mixRoles.current.get(c.view.id)?.shift();
         const st = mixStats.current;
@@ -888,18 +905,21 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
   /*
    * AU2 자동 재생은 Anki 와 같게: 질문은 카드를 열 때, 답을 열면 뒷면에만 있는 소리(정답 부분)를 차례로.
-   * Anki 도 {{FrontSide}} 로 들어온 앞면 소리는 답 면에서 다시 틀지 않는다. AU3 R 은 지금 면 (답 면은 앞면 소리부터)
+   * Anki 도 {{FrontSide}} 로 들어온 앞면 소리는 답 면에서 다시 틀지 않는다. AU3 R 은 지금 면 (답 면은 앞면 소리부터).
+   * AU21 · AU22 읽어주기도 같은 때 나온 순서대로 섞는다. 자동 재생은 소리(기본 켬)와 읽어주기(기본 끔)를 따로 따르고, R 은 둘 다
    */
   const playSide = useCallback(
     (auto: boolean) => {
       const el = scroller.current;
-      if (el) playSounds(el.querySelectorAll(phase === "q" ? ".study__q .snd" : auto ? ".study__a-body .snd, .cmp__snd .snd" : ".study__a .snd"));
+      if (!el) return;
+      const chips = Array.from(el.querySelectorAll(phase === "q" ? ".study__q .snd" : auto ? ".study__a-body .snd, .cmp__snd .snd" : ".study__a .snd"));
+      playSounds(auto ? chips.filter((c) => (c.hasAttribute("data-tts") ? pref(TTS_AUTOPLAY) : !pref(NO_AUTOPLAY))) : chips);
     },
     [phase],
   );
   useEffect(() => {
     stopSounds(); // 다음 카드로 넘어가면 멈춘다
-    if (card && !pref(NO_AUTOPLAY)) playSide(true);
+    if (card) playSide(true);
   }, [card, playSide]);
   useEffect(() => stopSounds, []);
 
@@ -958,7 +978,21 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     : gptSuggest !== null
       ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT 검토 · 직접 평가해 주세요`
       : null;
-  const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip === card.view.id);
+  const tip = hints || undone !== null || suggest !== null || recLine !== null || (!!card && soundTip?.id === card.view.id);
+  // AU21 읽어주기 첫 안내는 칩이 처음 나온 면에 (질문 면에 칩이 있으면 질문 면부터, 답 면에서도 이어서)
+  const qTip = phase === "q" && !special && !writing && !!card && !!soundTip?.tts && soundTip.id === card.view.id && card.front.includes("data-tts");
+  const ttsTip = (
+    <span className="study__tip">
+      <Icon name="speech" size={16} className="c-accent" />
+      <span className="t-label-s c-accent">
+        읽어주기는 눌러야 읽어요 (자동 재생 꺼짐) · {actionKey("replay")}
+        {ro(actionKey("replay"))} 들어요 · 설정에서 켤 수 있어요
+      </span>
+      <button className="study__tip-x c-accent" aria-label="읽어주기 안내 숨기기" onClick={() => setSoundTip(null)}>
+        <Icon name="x" size={14} />
+      </button>
+    </span>
+  );
   const rateKeys = getKeys("rate").map((_, i) => actionKey("rate", i));
   const replayHint = (html = "") => html.includes('class="snd') && `${actionKey("replay")} 다시 듣기`;
   const keysQ = special
@@ -1050,7 +1084,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       </div>
 
       {card && (
-        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${writing ? "is-writing" : ""} ${special ? `is-recall is-${special.kind}` : ""}`}>
+        <div className={`study__col ${phase === "a" ? "is-answer" : ""} ${tip ? "has-tip" : ""} ${qTip ? "has-qtip" : ""} ${writing ? "is-writing" : ""} ${special ? `is-recall is-${special.kind}` : ""}`}>
           {/* 밝은 덱 카드는 카드 면만 밝은 토큰으로 (tokens.css [data-theme="light"]) */}
           <article className={`study__card ${fit.overflow ? "is-overflow" : ""}`} data-theme={face === "light" ? "light" : undefined}>
             {noteCss && <style>{noteCss}</style>}
@@ -1198,6 +1232,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
           {phase === "q" ? (
             <>
+              {qTip && <div className="study__tipwrap">{ttsTip}</div>}
               {writing && (
                 <div className="write">
                   <p className="write__head">
@@ -1267,7 +1302,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                       답의 의미를 확인하고 직접 평가해 주세요.
                     </span>
                   </span>
-                ) : soundTip === card.view.id ? (
+                ) : soundTip?.id === card.view.id && soundTip.tts ? (
+                  ttsTip
+                ) : soundTip?.id === card.view.id ? (
                   <span className="study__tip">
                     <Icon name="volume-2" size={16} className="c-accent" />
                     <span className="t-label-s c-accent">
@@ -1340,7 +1377,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 ? `두 번 막혔어요. ${toast.reason}, 나눠서 외우는 게 나을 수도 있어요.`
                 : toast.auto
                   ? "같은 학습에서 두 번 기억나지 않았어요. 나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
-                  : "학습을 마치면 다시 볼지 물어볼게요."}
+                  : cram || mix
+                    ? "나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
+                    : "학습을 마치면 다시 볼지 물어볼게요."}
             </span>
           </span>
           {/* G3: 학습을 멈추지 않는다. "나중에 볼 제안"에 넣고 토스트만 닫는다 (D5 접어둔 카드 행에 칩으로 다시 나온다) */}

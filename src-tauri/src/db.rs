@@ -50,6 +50,8 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("deck_config", "write_mode", "INTEGER"),
         // H3 압축 회독: 'cram' 이면 SRS 에 넘기지 않은 기록. 오늘의 계획 · 지표 쿼리는 kind IS NULL 만 센다 (히트맵은 함께 센다)
         ("review_log", "kind", "TEXT"),
+        // 큐 명세 4.6: 접어둔 카드 복귀의 평가. 오늘 넣은 신규로 세지 않는다 (I82)
+        ("review_log", "from_buried", "INTEGER"),
         // Anki 기본 유형 표시 (originalStockKind: 1 Basic · 2 앞뒤 · 4 type-in · 5 Cloze · 6 IO). 가져온 유형만, 내보낼 때 다시 쓴다 (I78)
         ("note_type", "anki_stock_kind", "INTEGER"),
         // R1 "초안에서 만듦": 'draft' 면 초안을 승인해 만든 카드의 연결. method 는 manual 이라 연결 규칙은 직접 연결과 같다.

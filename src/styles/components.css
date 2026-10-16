@@ -238,7 +238,11 @@
     color-mix(in srgb, var(--c) 12%, transparent) 84%, transparent);
   opacity: var(--o);
   mix-blend-mode: multiply;
-  animation: 61s steps(120) infinite alternate;
+  /* 롱핸드로 쓴다. 이름 없는 shorthand 는 lightningcss 가 animation: none 으로 줄여 버린다 (QA T6-01) */
+  animation-duration: 61s;
+  animation-timing-function: steps(120);
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
 }
 .backdrop > i:nth-child(1) { --c: var(--blob-lilac); --o: 0.85; left: -400px; top: -440px; width: 1060px; height: 920px; animation-name: backdrop-1; }
 .backdrop > i:nth-child(2) { --c: var(--blob-apricot); --o: 0.7; right: -400px; top: -420px; width: 980px; height: 880px; animation-name: backdrop-2; animation-duration: 73s; }

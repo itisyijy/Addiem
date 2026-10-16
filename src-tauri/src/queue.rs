@@ -222,9 +222,20 @@ pub fn build_queue_with_progress(
         Some(ids) => with_descendants(ids, decks),
         None => by_id.keys().copied().collect(),
     };
-    let paused = with_descendants(&decks.iter().filter(|d| d.paused).map(|d| d.id).collect::<Vec<_>>(), decks);
+    // 쉬는 덱은 하위 덱까지 뺀다. 다만 쉬는 덱(또는 그 안의 덱)을 직접 골라 학습하면 그 범위의 복습은 보여주고
+    // 신규만 넣지 않는다 (C1-p "쉬는 중에도 학습하기", I84). 고른 덱과 그 조상이 "직접 고른" 쪽이다
+    let mut chosen = HashSet::new();
+    for &id in deck_ids.unwrap_or_default() {
+        let mut cur = Some(id);
+        while let Some(d) = cur.filter(|d| chosen.insert(*d)) {
+            cur = by_id.get(&d).and_then(|x| x.parent_id);
+        }
+    }
+    let paused_ids: Vec<i64> = decks.iter().filter(|d| d.paused).map(|d| d.id).collect();
+    let paused = with_descendants(&paused_ids, decks);
+    let skipped = with_descendants(&paused_ids.iter().copied().filter(|id| !chosen.contains(id)).collect::<Vec<_>>(), decks);
     let weak = with_descendants(&decks.iter().filter(|d| d.weak).map(|d| d.id).collect::<Vec<_>>(), decks);
-    let active = cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && !paused.contains(&c.deck_id) && c.state != "suspended");
+    let active = cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && !skipped.contains(&c.deck_id) && c.state != "suspended");
 
     // 1단계. 후보 수집. 밀린 복습만은 범위 밖 덱까지 모은다: 하루 상한은 전체 계획에서 고르고
     // 범위로 거른다. 그래야 덱 하나만 학습해도 홈의 그 덱 분량과 같다
@@ -246,7 +257,7 @@ pub fn build_queue_with_progress(
                 Some(d) if d == today && mine => plan.review.push(c.clone()),
                 _ => {}
             },
-            "new" if mine => new_by_owner.entry(budget_owner(c.deck_id, &by_id)).or_default().push(c.clone()),
+            "new" if mine && !paused.contains(&c.deck_id) => new_by_owner.entry(budget_owner(c.deck_id, &by_id)).or_default().push(c.clone()),
             _ => {}
         }
     }
@@ -258,10 +269,12 @@ pub fn build_queue_with_progress(
     plan.learning.sort_by_key(key);
     plan.returning.sort_by_key(|c| (-c.importance, c.position, c.id));
 
-    // 형제 카드는 하루에 한 장. 학습 중인 카드는 끊지 않고, 앞선 것(복귀 > 오늘 복습 > 밀린 복습 > 신규)이 남는다
+    // 형제 카드는 하루에 한 장. 학습 단계를 밟는 카드(학습 중 · 재학습)는 끊지 않고, 앞선 것(복귀 > 오늘 복습 > 밀린 복습 > 신규)이 남는다.
+    // 오늘 Again 을 받은 복습 카드는 자기 노트가 siblings_seen 에 있다. 재학습을 빼면 오늘 안에 다시 나오지 않는다 (I80)
+    let stepping = |c: &Card| c.state == "learning" || c.state == "relearning";
     let mut seen = done.siblings_seen.clone();
-    seen.extend(plan.learning.iter().filter_map(|c| c.sibling));
-    let mut first = |c: &Card| c.sibling.is_none_or(|n| seen.insert(n));
+    seen.extend(plan.learning.iter().chain(&plan.returning).chain(&plan.review).chain(&all_backlog).filter(|c| stepping(c)).filter_map(|c| c.sibling));
+    let mut first = |c: &Card| stepping(c) || c.sibling.is_none_or(|n| seen.insert(n));
     plan.returning.retain(&mut first);
     plan.review.retain(&mut first);
     all_backlog.retain(&mut first);
@@ -496,6 +509,35 @@ mod tests {
         let done = Today { siblings_seen: [7].into(), ..Default::default() };
         let p = build_queue_with_progress(T, &[deck(1)], &c, None, 1.0, &done);
         assert_eq!(p.ordered().iter().map(|c| c.id).collect::<Vec<_>>(), [100, 4]);
+    }
+
+    #[test]
+    fn relearning_survives_its_own_note_seen_today() {
+        // T1-01: 오늘 예정 복습(노트 7)에서 Again -> 재학습 10분 뒤. 오늘 평가했으니 노트 7 은 siblings_seen 에 있다
+        let mut c = cards(&[("relearning", 1, Some(0)), ("review", 1, Some(0)), ("relearning", 1, Some(-1))], 1, 1);
+        c[0].sibling = Some(7);
+        c[1].sibling = Some(7); // 같은 노트의 다른 카드는 다음 날로
+        c[2].sibling = Some(8); // 어제 Again 받고 끝내지 못한 재학습도 끊지 않는다
+        let done = Today { siblings_seen: [7, 8].into(), ..Default::default() };
+        let p = build_queue_with_progress(T, &[deck(1)], &c, None, 1.0, &done);
+        assert_eq!(p.ordered().iter().map(|c| c.id).collect::<Vec<_>>(), [1, 3]);
+    }
+
+    #[test]
+    fn paused_deck_studied_directly_shows_reviews_only() {
+        // T1-04: 쉬는 덱을 직접 골라 학습하면 복습(학습 중 · 예정 · 밀린)만, 신규는 넣지 않는다
+        let parent = Deck { paused: true, ..deck(1) };
+        let child = Deck { parent_id: Some(1), ..deck(2) };
+        let mut c = cards(&[("review", 1, Some(0)), ("learning", 1, Some(0)), ("review", 1, Some(-2))], 2, 1);
+        c.extend(news(5, 1, 100));
+        let decks = [parent, child, deck(3)];
+        assert_eq!(build_queue(T, &decks, &c, None, 1.0).ordered().len(), 0, "전체 학습에서는 빠진다");
+        let p = build_queue(T, &decks, &c, Some(&[1]), 1.0);
+        assert_eq!((p.learning.len(), p.review.len(), p.backlog.len(), p.new.len()), (1, 1, 1, 0));
+        assert_eq!(build_queue(T, &decks, &c, Some(&[2]), 1.0).ordered().len(), 3, "쉬는 덱 안의 덱을 골라도 같다");
+        // 쉬지 않는 위 덱을 고르면 쉬는 하위 덱은 그대로 빠진다
+        let decks = [deck(1), Deck { parent_id: Some(1), paused: true, ..deck(2) }];
+        assert_eq!(build_queue(T, &decks, &c, Some(&[1]), 1.0).ordered().iter().map(|c| c.deck_id).collect::<Vec<_>>(), [1; 5]);
     }
 
     #[test]

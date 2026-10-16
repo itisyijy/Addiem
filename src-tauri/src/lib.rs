@@ -15,8 +15,10 @@ mod recall;
 mod queue;
 mod render;
 mod source;
+mod table;
 mod srs;
 mod sync;
+mod tts;
 
 use tauri::Manager;
 
@@ -32,6 +34,8 @@ pub fn run() {
                 None => app.path().app_data_dir()?,
             };
             std::fs::create_dir_all(&data_dir)?;
+            // 지난 실행이 가져오는 중에 끊겨 남긴 임시 컬렉션 (T7-05)
+            import::clean_stale(&data_dir);
             // 열지 못해도 앱은 뜬다. 빈 메모리 DB 로 시작하고 화면이 S1-6 안내(다시 시도 / 백업에서 복구)를 띄운다.
             // 자동 복구는 하지 않는다. 원본 파일을 건드리기 전에 사용자가 고른다
             let (con, startup_error) = match db::open(&data_dir.join("neoanki.sqlite")) {
@@ -127,7 +131,8 @@ pub fn run() {
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
             source::source_list, source::source_add, source::source_delete, source::source_bytes, source::source_save_pdf,
             source::source_segments, source::source_slide, source::source_link, source::source_unlink, source::source_for_card,
-            source::source_analyze, source::source_unanalyzed, source::source_segment, rag::rag_preview, rag::rag_draft, rag::rag_draft_apply, rag::rag_grade_scope, rag::rag_grade, rag::rag_linked, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
+            source::source_analyze, source::source_unanalyzed, source::source_segment, source::source_region_link, source::source_region_cards,
+            source::source_slide_objects, source::source_slide_image, source::source_region_deck, table::source_table_cards, rag::rag_preview, rag::rag_draft, rag::rag_draft_apply, rag::rag_grade_scope, rag::rag_grade, rag::rag_linked, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
             quality::quality_check,
             quality::hide_quality,
             quality::split_suggest,
@@ -147,6 +152,8 @@ pub fn run() {
             sync::sync_probe, sync::sync_join, sync::sync_disconnect, sync::sync_settings, sync::sync_set_lock, sync::sync_unlock,
             sync::sync_backups, sync::sync_restore_preview, sync::sync_restore, sync::sync_backup_full, sync::sync_delete_backup,
             sync::sync_prune_backups, sync::sync_open_folder, sync::sync_conflicts, sync::sync_conflict_use, sync::sync_conflicts_seen,
+            // AU20 읽어주기
+            tts::tts_langs, tts::tts_preload, tts::tts_speak, tts::tts_license,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

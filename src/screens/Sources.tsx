@@ -14,9 +14,13 @@ import { readPdf, renderPage } from "../pdf";
 import { Modal } from "./NewDeck";
 import { menuKeys } from "./Deck";
 import { ExamDialog, examHint } from "./Exam";
+import { Figures } from "./Figures";
+import { PdfFigures, pdfItems, useHidden, usePdfScan } from "./PdfFigures";
+import { labelOf, occlusionApi } from "../occlusion";
 import { exam as examApi } from "../written";
 import {
   cardSource,
+  isRegion,
   MAX_PICK,
   mb,
   refreshModel,
@@ -31,9 +35,10 @@ import {
   type Para,
   type Segment,
   type Signal,
+  type SlideObjects,
 } from "../sourceApi";
 
-/** 덱 상세 헤더의 [자료 N] (I1 노트). 빠진 곳이 있으면 숫자를 붙이고 빠진 범위(R1-a)로 연다 */
+/** 덱 상세 헤더의 [자료 N] (I1 노트). 미연결 강조 구간이 있으면 숫자를 붙이고 그 탭(R1-a)으로 연다 */
 export function SourcesButton({ deckId }: { deckId: number }) {
   const nav = useNav();
   const [list, setList] = useState<Material[]>([]);
@@ -44,12 +49,12 @@ export function SourcesButton({ deckId }: { deckId: number }) {
       .catch(() => setList([]));
   }, [deckId]);
   const gaps = list.reduce((t, m) => t + m.gaps, 0);
-  const label = list.length ? `자료 ${n(list.length)}${gaps ? ` · 빠진 곳 ${n(gaps)}` : ""}` : "자료";
+  const label = list.length ? `자료 ${n(list.length)}${gaps ? ` · 미연결 ${n(gaps)}` : ""}` : "자료";
   return <Button variant="secondary" size="M" icon="file" label={label} onClick={() => nav({ name: "sources", deckId, gaps: gaps > 0 })} />;
 }
 
 /** R1-a 정렬: ★ · 붉은 글씨 · 기출 구간 > 하이라이트 > 밑줄 > 볼드, 같은 등급은 쪽 순서 */
-const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underline: 2, bold: 3 };
+const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underline: 2, bold: 3, figure: 3, table: 3 };
 const gapRank = (s: Segment) => (s.exam.hits ? 0 : Math.min(...s.signals.map((g) => GAP_RANK[g] ?? 3)));
 /** 보내는 글자 수 어림 (1구간 600자에서 자른다, rag.rs) */
 const sentChars = (s: Segment) => Math.min(s.text.trim().length, 600);
@@ -69,7 +74,7 @@ const metaOf = (m: Material, gaps: boolean) =>
     : m.status === "pending"
       ? "읽는 중…"
       : gaps
-        ? `빠진 곳 ${n(m.gaps)} · 강조 ${n(m.segments)}곳`
+        ? `미연결 ${n(m.gaps)} · 강조 ${n(m.segments)}곳`
         : `${n(m.pages)}${m.kind === "pptx" ? "장" : "쪽"} · 강조 ${n(m.segments)}곳`;
 
 /** 분석 진행 (I3 노트 "분석 중 2/3 · 기출_2023_필기.pdf"). 이벤트를 듣고, 이미 돌고 있으면 그 상태로 시작한다 */
@@ -126,6 +131,11 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const [segMenu, setSegMenu] = useState<number | null>(null);
   const [examSeg, setExamSeg] = useState<Segment | null>(null);
   const [spread, setSpread] = useState<{ seg: number; name: string | null; cards: number[] } | null>(null);
+  // 8.4 그림 · 표 (IT1 · IT1-p): 세 번째 탭. PPTX 슬라이드별 그림 · 표, PDF 쪽마다 찾은 그림 · 표 제안은 자료를 고를 때 한 번 읽는다
+  const [objView, setObjView] = useState(false);
+  const [objs, setObjs] = useState<SlideObjects[] | null>(null);
+  const [objErr, setObjErr] = useState<string>();
+  const [filesOpen, setFilesOpen] = useState(false);
 
   const reload = useCallback(async () => {
     const list = await sourceApi.list(deckId);
@@ -177,6 +187,30 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   }, [materials, reload, analyze]);
 
   const current = materials?.find((m) => m.id === sel);
+  const pptxId = current?.kind === "pptx" && current.status === "ready" ? current.id : undefined;
+  // PDF 는 글자를 못 읽는 스캔본도 쪽을 그린다 (IT10). 열지 못한 PDF(쪽 0)는 뺀다
+  const pdfId = current?.kind === "pdf" && current.status !== "pending" && current.pages > 0 ? current.id : undefined;
+  const figId = pptxId ?? pdfId;
+  const scan = usePdfScan(pdfId ? current : undefined);
+  const [hidden, hide] = useHidden(pdfId);
+  const scanned = !!pdfId && current?.status === "unsupported";
+  useEffect(() => {
+    if (!figId) setObjView(false);
+    else if (scanned) setObjView(true);
+  }, [figId, scanned]);
+  useEffect(() => {
+    setObjs(null);
+    setObjErr(undefined);
+    if (!pptxId) return;
+    let live = true;
+    sourceApi.slideObjects(pptxId).then(
+      (o) => live && setObjs(o),
+      (e) => live && (setObjs([]), setObjErr(errorText(e))),
+    );
+    return () => {
+      live = false;
+    };
+  }, [pptxId]);
   const loadSegs = useCallback(() => {
     if (!sel) return setSegs([]);
     sourceApi.segments(sel).then(setSegs);
@@ -189,9 +223,20 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     setPicked([]);
     setPageOnly(null);
   }, [sel]);
-  // 다른 자료를 고르면 첫 쪽부터. 구간에서 들어왔으면 그 쪽으로
+  const jumped = useRef(false);
   useEffect(() => {
     const s = segs.find((x) => x.id === active);
+    if (jumped.current || !s || !figId) return;
+    jumped.current = true;
+    if (isRegion(s)) setObjView(true);
+  }, [segs, active, figId]);
+  // 다른 자료를 고르면 첫 쪽부터. 구간에서 들어왔으면 그 쪽으로. 카드를 만들어 구간을 다시 읽을 때는 보던 쪽 그대로
+  const placed = useRef("");
+  useEffect(() => {
+    const s = segs.find((x) => x.id === active);
+    const key = `${sel}:${s?.id ?? ""}`;
+    if (placed.current === key) return;
+    placed.current = key;
     setPage(s ? s.page : 1);
   }, [sel, segs, active]);
 
@@ -267,14 +312,91 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   };
 
   if (!materials) return null;
-  const sorted = [...segs].sort((a, b) => rankOf(a) - rankOf(b) || a.page - b.page || a.ord - b.ord);
-  const linkedSegs = segs.filter((s) => s.links.length).length;
-  const gapSegs = segs.filter((s) => !s.links.length).sort((a, b) => gapRank(a) - gapRank(b) || a.page - b.page || a.ord - b.ord);
+  // 강조 구간 · 빠진 범위는 글자 강조만. 그림 · 표 영역은 [그림·표 N] 탭에서 (IT13)
+  const textSegs = segs.filter((s) => !isRegion(s));
+  const sorted = [...textSegs].sort((a, b) => rankOf(a) - rankOf(b) || a.page - b.page || a.ord - b.ord);
+  const linkedSegs = textSegs.filter((s) => s.links.length).length;
+  const gapSegs = textSegs.filter((s) => !s.links.length).sort((a, b) => gapRank(a) - gapRank(b) || a.page - b.page || a.ord - b.ord);
   const listed = gapView ? gapSegs.filter((s) => pageOnly === null || s.page === pageOnly) : sorted;
   const pick = (id: number, on: boolean) => setPicked((p) => (on ? (p.length < MAX_PICK && !p.includes(id) ? [...p, id] : p) : p.filter((x) => x !== id)));
   const pickedChars = segs.filter((s) => picked.includes(s.id)).reduce((t, s) => t + sentChars(s), 0);
   // 연결 전이면 같은 버튼이 L2 를 먼저 연다. 연결하면 미리보기(R1-b)로 (보내는 것은 그 창에서 누를 때)
   const startDraft = () => (ai?.connected ? setDrafting(true) : setConnecting(true));
+  const pdfList = pdfId ? pdfItems(scan, segs, hidden) : [];
+  const objImages = objs?.flatMap((o) => o.images) ?? [];
+  const objTables = objs?.flatMap((o) => o.tables).length ?? 0;
+  const objOff = objImages.filter((x) => !x.supported).length;
+  const suggs = pdfList.filter((x) => x.sugg).length;
+  const objCount = pdfId ? pdfList.length : objImages.length + objTables;
+  const objNote = pdfId
+    ? [
+        `그림 ${n(pdfList.filter((x) => x.kind === "figure").length)} · 표 ${n(pdfList.filter((x) => x.kind === "table" && !x.sugg).length)} · 제안 ${n(suggs)}`,
+        scan && scan.list.length < (current?.pages ?? 0) ? `살피는 중 ${n(scan.list.length)}/${n(current!.pages)}쪽` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : `그림 ${n(objImages.length)} · 표 ${n(objTables)}${objOff ? ` · 미리 볼 수 없음 ${n(objOff)}` : ""}`;
+  // 그림·표 탭은 왼쪽 파일 열 대신 알약에서 자료를 바꾼다 (IT1)
+  const pill = current && (
+    <span className="menu">
+      <button className="src-pill t-label-m" aria-haspopup="menu" aria-expanded={filesOpen} onClick={() => setFilesOpen(!filesOpen)}>
+        <Icon name="file" size={16} />
+        <span className="src-pill__name">{current.file_name}</span>
+        <Icon name="chevron-down" size={14} />
+      </button>
+      {filesOpen && (
+        <div className="menu__list menu--panel src-pill__menu" role="menu" aria-label="자료 고르기" onKeyDown={menuKeys} onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setFilesOpen(false)}>
+          {materials?.map((m, i) => (
+            <button
+              key={m.id}
+              role="menuitem"
+              autoFocus={m.id === sel || (!sel && i === 0)}
+              className={`menu__item ${m.id === sel ? "is-active" : ""}`}
+              onClick={() => {
+                setFilesOpen(false);
+                setSel(m.id);
+                setActive(undefined);
+                setLinking(undefined);
+              }}
+            >
+              <Icon name={m.status === "unsupported" ? "alert" : "file"} size={16} />
+              <span className="menu__text">
+                <span className="t-label-m">{m.file_name}</span>
+                <span className="t-caption c-tertiary">{metaOf(m, false)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+  const head = (
+    <div className="src-list__head">
+      <SegmentControl
+        boxed
+        label="구간 보기"
+        value={objView ? "objects" : gapView ? "gaps" : "all"}
+        onChange={(v) => {
+          setGapView(v === "gaps");
+          setObjView(v === "objects");
+          setLinking(undefined);
+        }}
+        options={[
+          // 스캔본은 글자 강조가 없어 두 탭을 끄고 그림·표 탭으로 연다 (IT10)
+          { value: "all", label: `강조 구간 ${n(textSegs.length)}`, disabled: scanned },
+          { value: "gaps", label: `미연결 강조 구간 ${n(gapSegs.length)}`, disabled: scanned },
+          ...(figId ? [{ value: "objects", label: `그림·표 ${n(objCount)}` }] : []),
+        ]}
+      />
+      <span className="t-caption c-tertiary">
+        {objView
+          ? objNote
+          : gapView
+            ? "인터넷 없이 돼요"
+            : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(textSegs.length - linkedSegs)}`}
+      </span>
+    </div>
+  );
 
   return (
     <main className="sources">
@@ -284,9 +406,15 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
       </button>
       <div className="deck__head">
         <div className="deck__title">
-          <h1 className="t-title-l">자료</h1>
+          <h1 className="t-title-l">학습 자료</h1>
           <p className="t-body-s c-secondary">
-            {gapView ? "강조됐는데 아직 카드가 없는 곳을 모았어요. 고른 구간으로 카드 초안을 만들 수 있어요." : "강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요."}
+            {objView
+              ? pdfId
+                ? "쪽 안의 그림과 표를 골라 카드로 만들어요. 자동으로 못 찾은 것은 끌어서 영역을 잡아요."
+                : "슬라이드마다 그림과 표를 목록에서 골라요. PPTX는 슬라이드를 그림으로 그리지 않아서 끌어서 잡기는 없어요."
+              : gapView
+                ? "강조 구간 중 연결된 카드가 없는 곳이에요. 이미 만든 카드가 있다면 연결해 주세요."
+                : "강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요."}
             {/* 다시 분석은 자동으로 하지 않는다. 지난 분석 뒤에 생긴 카드가 있을 때만 알린다 */}
             {stale > 0 && model?.ready && !progress && (
               <>
@@ -299,7 +427,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
             )}
           </p>
         </div>
-        <Button variant="secondary" size="M" icon="plus" label="자료 추가" onClick={add} />
+        <Button variant="secondary" size="M" icon="plus" label="학습 자료 추가" onClick={add} />
       </div>
       {progress && <AnalyzeBar p={progress} />}
       {error && <p className="t-body-s c-danger">{error}</p>}
@@ -313,7 +441,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
         </div>
       ) : (
         <div className="src-cols">
-          <div className="src-files">
+          <div className="src-files" hidden={objView}>
             {materials.map((m) => {
               const bad = m.status === "unsupported";
               const on = m.id === sel;
@@ -355,8 +483,43 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
             {model?.ready && <p className="src-model t-caption c-tertiary">분석 모델 있음 · 설정에서 지울 수 있어요</p>}
           </div>
 
-          {current && gapView && current.status === "ready" && <PageMap m={current} segs={segs} page={pageOnly} onPage={setPageOnly} />}
-          {current && !gapView && (
+          {current && objView && pptxId && (
+            <Figures
+              key={current.id}
+              m={current}
+              objs={objs}
+              error={objErr}
+              segs={segs}
+              deckId={deckId}
+              head={head}
+              pill={pill}
+              linking={linking}
+              onLinking={setLinking}
+              links={(s) => <LinkEditor deckId={deckId} seg={s} onChange={changed} />}
+              onChanged={changed}
+            />
+          )}
+          {current && objView && pdfId && (
+            <PdfFigures
+              key={current.id}
+              m={current}
+              items={pdfList}
+              scanning={!scan || scan.list.length < current.pages}
+              scanned={current.status === "unsupported"}
+              deckId={deckId}
+              head={head}
+              pill={pill}
+              page={page}
+              onPage={setPage}
+              linking={linking}
+              onLinking={setLinking}
+              links={(s) => <LinkEditor deckId={deckId} seg={s} onChange={changed} />}
+              onChanged={changed}
+              hide={hide}
+            />
+          )}
+          {current && !objView && gapView && current.status === "ready" && <PageMap m={current} segs={segs} page={pageOnly} onPage={setPageOnly} />}
+          {current && !objView && !gapView && (
             <Preview
               m={current}
               page={page}
@@ -370,35 +533,22 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
             />
           )}
 
-          <section className="panel src-list" aria-label="강조된 구간">
-            <div className="src-list__head">
-              <SegmentControl
-                boxed
-                label="구간 보기"
-                value={gapView ? "gaps" : "all"}
-                onChange={(v) => {
-                  setGapView(v === "gaps");
-                  setLinking(undefined);
-                }}
-                options={[
-                  { value: "all", label: `강조 구간 ${n(segs.length)}` },
-                  { value: "gaps", label: `빠진 범위 ${n(gapSegs.length)}` },
-                ]}
-              />
-              <span className="t-caption c-tertiary">
-                {gapView ? "기기 안에서 찾았어요 · 연결 없이 돼요" : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(segs.length - linkedSegs)}`}
-              </span>
-            </div>
+          {/* 그림·표 탭은 Figures 가 같은 자리에 목록을 그린다 */}
+          <section className="panel src-list" aria-label="강조된 구간" hidden={objView}>
+            {head}
             {current?.status === "unsupported" && (
               <p className="src-list__note t-body-s c-secondary">
-                이 자료에서는 글자를 읽을 수 없어요. 스캔본이나 손글씨 자료는 아직 지원하지 않아요.
+                이 자료에서는 글자를 읽을 수 없어요. 스캔본이나 손글씨 자료의 강조는 아직 찾지 못해요.
+                {pdfId ? " [그림·표] 탭에서 끌어서 잡은 영역으로 그림 카드를 만들 수 있어요." : ""}
               </p>
             )}
-            {current?.status === "ready" && segs.length === 0 && (
+            {current?.status === "ready" && textSegs.length === 0 && (
               <p className="src-list__note t-body-s c-secondary">하이라이트·붉은 글씨·★·볼드로 강조된 곳을 찾지 못했어요.</p>
             )}
             {gapView && current?.status === "ready" && listed.length === 0 && (
-              <p className="src-list__note t-body-s c-secondary">{pageOnly === null ? "빠진 범위가 없어요. 강조된 곳마다 카드가 있어요." : `${n(pageOnly)}쪽에는 빠진 구간이 없어요.`}</p>
+              <p className="src-list__note t-body-s c-secondary">
+                {pageOnly === null ? "카드 미연결 강조 구간이 없어요. 강조된 곳마다 연결된 카드가 있어요." : `${n(pageOnly)}쪽에는 카드 미연결 강조 구간이 없어요.`}
+              </p>
             )}
             {listed.map((s) => (
               <div key={s.id} id={`seg-${s.id}`} className={`src-seg ${s.id === active && !gapView ? "is-active" : ""} ${gapView && picked.includes(s.id) ? "is-picked" : ""}`}>
@@ -454,7 +604,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                       variant="ghost"
                       size="M"
                       icon="plus"
-                      label="카드 잇기"
+                      label="기존 카드 연결"
                       aria-expanded={linking === s.id}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -474,7 +624,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                             <Icon name="target" size={16} scaled />
                             <span className="menu__text">
                               <span className="t-body-m">기출 구간으로 표시</span>
-                              <span className="t-caption c-tertiary">빠진 범위에서 ★처럼 먼저 보여요</span>
+                              <span className="t-caption c-tertiary">미연결 강조 구간에서 ★처럼 먼저 보여요</span>
                             </span>
                           </button>
                         ) : (
@@ -551,10 +701,10 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
 function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page: number | null; onPage: (p: number | null) => void }) {
   const unit = m.kind === "pptx" ? "장" : "쪽";
   const state = (p: number) => {
-    const on = segs.filter((s) => s.page === p);
+    const on = segs.filter((s) => s.page === p && !isRegion(s));
     return !on.length ? "none" : on.some((s) => !s.links.length) ? "gap" : "linked";
   };
-  const label = { linked: "카드가 있는 강조 구간", gap: "강조됐는데 카드 없음", none: "강조 없음" } as const;
+  const label = { linked: "카드가 있는 강조 구간", gap: "카드 미연결 강조", none: "강조 없음" } as const;
   return (
     <div className="panel src-map" aria-label="쪽 지도">
       <span className="t-label-m">
@@ -651,16 +801,18 @@ function Preview({
   onPage: (p: number) => void;
   onPick: (id: number) => void;
 }) {
+  // 스캔본 PDF 도 쪽은 그린다 (IT10). 열지 못한 PDF(쪽 0)와 읽지 못한 PPTX 만 막는다
+  const shown = m.status === "ready" || (m.kind === "pdf" && m.status === "unsupported" && m.pages > 0);
   return (
     <div className="src-preview">
-      {m.status !== "ready" ? (
+      {!shown ? (
         <div className="src-page src-page--empty t-body-s c-tertiary">{m.status === "pending" ? "자료를 읽고 있어요…" : "미리 볼 수 없어요"}</div>
       ) : m.kind === "pdf" ? (
         <PdfPage materialId={m.id} page={page} width={300} segs={segs} active={active} onPick={onPick} />
       ) : (
         <SlidePage materialId={m.id} page={page} />
       )}
-      {m.status === "ready" && (
+      {shown && (
         <span className="src-preview__nav">
           <button className="src-icon-btn" aria-label="이전 쪽" disabled={page <= 1} onClick={() => onPage(page - 1)}>
             <Icon name="chevron-left" size={16} scaled />
@@ -741,8 +893,9 @@ export function PdfPage({
   );
 }
 
-/** PPTX 한 장. 그림은 그리지 않고 글만, 강조된 문단은 신호 색으로 */
-export function SlidePage({ materialId, page, active, height }: { materialId: number; page: number; active?: string; height?: number }) {
+/** PPTX 한 장. 그림은 그리지 않고 글만, 강조된 문단은 신호 색으로. region: 그림 · 표 구간의 I2 (연결은 위 그림 · 표가 보이므로
+ * 표 칸 문단은 빼고 강조 색 · 고른 문단 표시 없이 제목과 글만) */
+export function SlidePage({ materialId, page, active, height, region = false }: { materialId: number; page: number; active?: string; height?: number; region?: boolean }) {
   const [paras, setParas] = useState<Para[]>();
   useEffect(() => {
     sourceApi
@@ -753,10 +906,10 @@ export function SlidePage({ materialId, page, active, height }: { materialId: nu
   return (
     <div className="src-page src-page--slide" style={height ? { height } : undefined}>
       {paras?.length === 0 && <span className="t-caption c-tertiary">이 슬라이드에는 글이 없어요</span>}
-      {paras?.map((p, i) => (
+      {paras?.filter((p) => !region || !p.cell).map((p, i) => (
         <p
           key={i}
-          className={`src-slide__para ${p.signals.length ? `src-mark--${topSignal(p)}` : ""} ${p.text === active ? "is-active" : ""}`}
+          className={`src-slide__para ${!region && p.signals.length ? `src-mark--${topSignal(p)}` : ""} ${!region && p.text === active ? "is-active" : ""}`}
         >
           {p.text}
         </p>
@@ -765,7 +918,31 @@ export function SlidePage({ materialId, page, active, height }: { materialId: nu
   );
 }
 
-/** [카드 잇기]: 이 덱 카드 검색 → 골라서 연결 (B-1 수동 연결). 이어진 카드는 끊을 수 있다 */
+/** 카드 한 줄 (연결된 카드 · 검색 결과 공통): 첫 줄은 질문만, 둘째 줄 "답 · … · 직접 연결 · 덱".
+ * 그림 가리기는 질문이 모두 같아 "그림 가리기 · n/N · 칸 이름(없으면 칸 n)" (M21) */
+function CardSummary({ c, how }: { c: CardRow; how?: string }) {
+  const io = c.occlusion;
+  const [name, setName] = useState("");
+  useEffect(() => {
+    if (!io) return;
+    let live = true;
+    occlusionApi.note(c.note_id).then((o) => live && setName(labelOf(o.shapes, io.ordinal)), () => {});
+    return () => {
+      live = false;
+    };
+  }, [c.note_id, io]);
+  const deck = c.deck_path.slice(1).join(" › ") || c.deck_path[0];
+  const title = io ? `그림 가리기 · ${n(io.n)}/${n(io.count)} · ${name || `칸 ${n(io.ordinal)}`}` : c.question;
+  const sub = [!io && c.answer && `답 · ${c.answer}`, how, deck].filter(Boolean).join(" · ");
+  return (
+    <span className="src-link__text">
+      <span className="t-body-s c-primary">{title}</span>
+      <span className="t-caption c-tertiary">{sub}</span>
+    </span>
+  );
+}
+
+/** [기존 카드 연결]: 이 덱 카드 검색 → 골라서 연결 (B-1 수동 연결). 연결된 카드는 끊을 수 있다 */
 function LinkEditor({ deckId, seg, onChange }: { deckId: number; seg: Segment; onChange: () => void }) {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<CardRow[]>([]);
@@ -793,15 +970,10 @@ function LinkEditor({ deckId, seg, onChange }: { deckId: number; seg: Segment; o
     <div className="src-link" onClick={(e) => e.stopPropagation()}>
       {linked.length > 0 && (
         <div className="src-link__group">
-          <span className="t-label-s c-secondary">이어진 카드</span>
+          <span className="t-label-s c-secondary">연결된 카드</span>
           {linked.map((c) => (
             <div key={c.id} className="src-link__row">
-              <span className="src-link__text">
-                <span className="t-body-s c-primary">{c.question}</span>
-                <span className="t-caption c-tertiary">
-                  {method(c.id)} · {c.deck_path.slice(1).join(" › ") || c.deck_path[0]}
-                </span>
-              </span>
+              <CardSummary c={c} how={method(c.id)} />
               <Button variant="ghost" size="M" label="끊기" onClick={() => act(sourceApi.unlink(seg.id, c.id), c.id)} />
             </div>
           ))}
@@ -819,17 +991,14 @@ function LinkEditor({ deckId, seg, onChange }: { deckId: number; seg: Segment; o
         {rows.length === 0 && <span className="t-caption c-tertiary">맞는 카드가 없어요</span>}
         {rows.map((c) => (
           <div key={c.id} className="src-link__row">
-            <span className="src-link__text">
-              <span className="t-body-s c-primary">{c.question}</span>
-              <span className="t-caption c-tertiary">{c.answer}</span>
-            </span>
+            <CardSummary c={c} />
             {ids.includes(c.id) ? (
               <span className="t-label-s c-accent src-link__done">
                 <Icon name="check" size={14} />
-                이어짐
+                연결됨
               </span>
             ) : (
-              <Button variant="secondary" size="M" label="잇기" onClick={() => act(sourceApi.link(seg.id, c.id), c.id)} />
+              <Button variant="secondary" size="M" label="연결" onClick={() => act(sourceApi.link(seg.id, c.id), c.id)} />
             )}
           </div>
         ))}

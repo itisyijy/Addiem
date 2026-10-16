@@ -2,6 +2,7 @@
 import type { Sent } from "./sourceApi";
 import type { Special } from "./recall";
 import { invoke } from "@tauri-apps/api/core";
+import { voiceLangs } from "./cardHtml";
 
 export type Level = 0 | 1 | 2;
 
@@ -210,7 +211,8 @@ export type NoteEdit = {
   /** Q24 목록 · 선택형 전용 편집기를 채운다 */
   special: Special | null;
 };
-export type AnswerResult = { action: "next" | "again_later" | "buried"; due_in_ms: number | null };
+/** day_rollover: 학습 중 하루 경계를 넘어 세션이 닫혔다. 평가는 남지 않았다 (큐 명세 8장) */
+export type AnswerResult = { action: "next" | "again_later" | "buried" | "day_rollover"; due_in_ms: number | null };
 export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[] };
 export type SessionSummary = {
   studied: number;
@@ -414,10 +416,11 @@ export const api = {
   resolveBuried: (sessionId: number, today: boolean) => invoke<number[]>("resolve_buried", { sessionId, today }),
   previewJson: (text: string, deckId: number | null) => invoke<JsonPreview>("preview_json", { text, deckId }),
   importJson: (text: string, source: string, deckId: number | null) => invoke<ImportResult>("import_json", { text, source, deckId }),
-  inspectAnki: (path: string) => invoke<AnkiPreview>("inspect_anki", { path }),
+  /** voices: AU23 이 기기에서 읽을 수 있는 언어. 없는 언어의 읽어주기만 참고 줄로 알린다 */
+  inspectAnki: async (path: string) => invoke<AnkiPreview>("inspect_anki", { path, voices: await voiceLangs() }),
   /** deckIds: B2-s 에서 고른 덱 (deck_tree 의 id). 없으면 전부 */
-  importAnki: (path: string, withHistory = false, deckIds: number[] | null = null) =>
-    invoke<ImportResult>("import_anki", { path, withHistory, deckIds }),
+  importAnki: async (path: string, withHistory = false, deckIds: number[] | null = null) =>
+    invoke<ImportResult>("import_anki", { path, withHistory, deckIds, voices: await voiceLangs() }),
   /** B2-p 취소. 진행 중인 가져오기를 멈추고 되돌린다 */
   cancelImport: () => invoke<void>("cancel_import"),
   /** B2-j 끌어놓은 .json 파일을 읽는다 */
@@ -440,6 +443,9 @@ export const api = {
   updateNote: (noteId: number, values: string[]) => invoke<void>("update_note", { noteId, values }),
   readMedia: (name: string) => invoke<string>("read_media", { name }),
   appInfo: () => invoke<AppInfo>("app_info"),
+  /** AU20 내장 읽어주기 음성이 읽는 언어 (음성 파일이 없는 빌드면 빈 목록) · 설정의 라이선스 전문 */
+  ttsLangs: () => invoke<string[]>("tts_langs"),
+  ttsLicense: (which: "supertonic" | "onnxruntime") => invoke<string>("tts_license", { which }),
   mvpMetrics: () => invoke<MvpMetrics>("mvp_metrics"),
   createBackup: () => invoke<string>("create_backup"),
   retryOpen: () => invoke<void>("retry_open"),

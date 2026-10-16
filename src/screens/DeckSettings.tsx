@@ -220,8 +220,8 @@ export function DeckSettings({ deckId }: { deckId: number }) {
               warn={warn}
               label="하루 신규 카드 상한"
               onReset={edit.daily_new_limit !== null ? () => set({ daily_new_limit: null }) : undefined}
-              onMinus={() => set({ daily_new_limit: step(edit.daily_new_limit, -1, after.per_day) })}
-              onPlus={() => set({ daily_new_limit: step(edit.daily_new_limit, 1, after.per_day) })}
+              onMinus={() => set({ daily_new_limit: step(limitShown, -1, after.per_day) })}
+              onPlus={() => set({ daily_new_limit: step(limitShown, 1, after.per_day) })}
             />
           </div>
 

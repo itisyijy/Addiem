@@ -26,3 +26,6 @@ dist/
 
 # 구현 스크린샷 (디자인 검토용, 커밋하지 않는다)
 .review/
+
+# AU20 읽어주기 음성 모델 · ONNX Runtime (약 400MB). tools/fetch_tts.ps1 로 채운다
+src-tauri/resources/tts/

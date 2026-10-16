@@ -78,6 +78,17 @@ npm run tauri build     # 설치 파일 생성 (src-tauri/target/release/bundle/
 $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm run tauri dev
 ```
 
+### 읽어주기 음성 (빌드)
+
+Anki `{{tts}}` 읽어주기는 설치 파일에 들어 있는 Supertonic 3 음성(fp32 · 목소리 F1, OpenRAIL-M)과 ONNX Runtime 1.31.0(MIT)으로 이 기기에서 읽는다. 약 400MB라 저장소에는 없다. 빌드 전에 `src-tauri/resources/tts/`(gitignore)를 채운다. 파일마다 SHA-256 을 확인한다.
+
+```powershell
+pwsh -File tools\fetch_tts.ps1             # %LOCALAPPDATA%\neoanki-dev\tts 에 받아 둔 파일을 복사 (-Source 로 다른 폴더)
+pwsh -File tools\fetch_tts.ps1 -Download   # 받아 둔 것이 없으면 Hugging Face 고정 리비전 · ONNX Runtime GitHub 릴리스에서 받는다
+```
+
+폴더가 비어 있어도 `cargo build` · `npm run tauri dev` · CI 는 그대로 돈다(`build.rs` 가 빈 폴더를 만든다). 그 빌드의 읽어주기는 OS 음성(Windows 설정 › 시간 및 언어 › 음성)으로만 읽는다. 실제 모델로 한 문장 읽어 보는 시험은 `cd src-tauri; cargo test tts -- --ignored --nocapture`.
+
 ### Google Drive 동기화 (개발)
 
 [설계](docs/engineering/drive-sync.md) · 코드는 `src-tauri/src/sync/`. Google 연결은 빌드할 때 넣는 OAuth 클라이언트가 있어야 켜진다. 없으면 설정의 Google Drive 칸이 "이 앱 버전에서는 Google Drive 연결을 사용할 수 없어요"로 보이고 나머지는 그대로 동작한다.
@@ -126,7 +137,7 @@ npx tsc --noEmit
 | `src/ui.tsx`, `src/styles/` | Figma 컴포넌트와 디자인 토큰 |
 | `src-tauri/src/` | 데이터 계층. Rust: `db` 스키마, `queue` 오늘의 큐, `srs` FSRS, `render` Anki 템플릿, `import` 가져오기, `commands` 화면이 부르는 명령 |
 | `db/schema.sql` | 데이터 모델 정본 |
-| `tools/` | Python 참조 구현. Rust로 옮긴 원본 |
+| `tools/` | Python 참조 구현. Rust로 옮긴 원본. `fetch_tts.ps1` 은 읽어주기 음성 채우기 |
 
 ### Python 도구 사용
 

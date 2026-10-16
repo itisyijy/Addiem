@@ -47,6 +47,13 @@ argon2 = { version = "=0.6.0", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
 # G2 ChatGPT 로그인의 ID 토큰 서명(RS256) 확인. rustls 가 이미 쓰는 같은 버전이라 새로 받는 크레이트는 없다
 ring = "=0.17.14"
+# AU20 읽어주기 (tts.rs). Supertonic 3 ONNX 를 ONNX Runtime 으로 CPU 에서 돌린다. onnxruntime.dll 은 링크하지 않고
+# 설치 파일 리소스(resources/tts)에서 절대 경로로 연다 (load-dynamic). 바이너리를 받는 기본 기능은 끈다
+ort = { version = "=2.0.0-rc.14", default-features = false, features = ["load-dynamic", "api-31"] }
+# 아래 셋은 이미 Cargo.lock 에 있는 같은 버전이라 새로 받는 크레이트는 없다. NFKD · 잡음 표본
+unicode-normalization-alignments = "=0.1.12"
+rand = "=0.9.5"
+rand_distr = "=0.5.1"
 
 
 # 임베딩 행렬곱은 디버그 빌드에서 수십 배 느리다. 개발 중에도 이 크레이트들만 최적화한다
