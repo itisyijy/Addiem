@@ -646,7 +646,7 @@ export type SyncCounts = { decks: number; cards: number; reviews: number; media_
 export type SyncProbe = {
   account: string;
   /** Drive 에 Neo-Anki 데이터가 있으면 (K6-f · K6-m) */
-  remote: { gen: number; locked: boolean; devices: number; bytes: number; device: string | null; at: number | null; counts: SyncCounts | null } | null;
+  remote: { gen: number; locked: boolean; devices: number; names: string[]; bytes: number; device: string | null; at: number | null; counts: SyncCounts | null } | null;
   local: SyncCounts & { empty: boolean };
   device_name: string;
 };
@@ -668,8 +668,10 @@ export type RestorePreview = {
   /** 다음 동기화에서 고르는 창을 보게 될 다른 기기 */
   others: string[];
 };
-export type SyncVersion = { device: string; at: number; fields: string[]; current: boolean };
-export type SyncConflict = { id: number; question: string; deck_path: string[]; versions: [SyncVersion, SyncVersion] };
+/** winner: 자동으로 맞출 때 이긴(나중에 고친) 버전 */
+export type SyncVersion = { device: string; at: number; fields: string[]; current: boolean; winner: boolean };
+/** picked: [이 버전으로 바꾸기]로 직접 고른 적이 있다 (지금 내용 꼬리표) */
+export type SyncConflict = { id: number; question: string; deck_path: string[]; versions: [SyncVersion, SyncVersion]; picked: boolean };
 
 export const syncApi = {
   status: () => invoke<SyncStatus>("sync_status"),
