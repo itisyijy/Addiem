@@ -86,26 +86,44 @@ function LastLine({ text }: { text: string }) {
   );
 }
 
-/** Q30 (초안): "지난번" 표시를 붙일 번호. 목록은 지난번 빠뜨린 항목 모두, 선택형은 지난번에 틀렸을 때만 그때 고른 보기 */
-function lastOn(s: Special, last: number[] | null): number[] {
+/** Q30 · Q32: "지난번" 표시를 붙일 번호. 목록은 지난번 빠뜨린 항목 모두, 선택형은 지난번에 고른 오답 (오답이 없었으면 없다) */
+export function lastOn(s: Special, last: number[] | null): number[] {
   if (!last) return [];
-  return s.kind === "list" || last.some((m) => !s.correct.includes(m)) ? last : [];
+  return s.kind === "list" ? last : last.filter((m) => !s.correct.includes(m));
 }
 
-/** Q30 (초안) 요약 아래 · 보기 아래 한 줄. 사실만 쓴다 (추천은 이번 결과로만). 보일 것이 없으면 null */
+/** Q35: 한 줄에 넣는 항목 · 보기 글자는 20자까지 (넘으면 "…"). 조사는 원래 글자로 고른다 */
+const CLIP = 20;
+const named = (t: string, josa: (w: string) => string) => {
+  const c = [...t];
+  return `${c.length > CLIP ? `${c.slice(0, CLIP).join("").trimEnd()}…` : t}${josa(t)}`;
+};
+
+/** Q35 요약 아래 · 보기 아래 한 줄. 사실만 쓴다 (추천은 이번 결과로만). last 는 lastOn 의 번호, 보일 것이 없으면 null */
 function lastTip(s: Special, last: number[], marks: number[], order: number[]): string | null {
   if (!last.length) return null;
   if (s.kind === "list") {
     const now = s.items.filter((_, i) => last.includes(i + 1) && !marks.includes(i + 1));
-    const names = now.slice(0, 3).join(", ") + (now.length > 3 ? " 등" : "");
-    return `지난번엔 ${n(last.length)}개를 빠뜨렸어요${now.length ? ` · 그중 ${names}${eun(names)} 이번에 기억했어요` : ""}`;
+    const tail =
+      now.length === 0
+        ? ""
+        : now.length === 1
+          ? ` · 그중 ${named(now[0], eun)} 이번에 기억했어요`
+          : now.length === last.length
+            ? " · 이번엔 모두 기억했어요"
+            : ` · 그중 ${n(now.length)}개는 이번에 기억했어요`;
+    return `지난번엔 ${n(last.length)}개를 빠뜨렸어요${tail}`;
   }
-  // 번호는 이번 화면의 번호 (보기를 섞어도 보기를 따라간다)
+  // 번호는 이번 화면의 번호 (보기를 섞어도 보기를 따라간다). 지난번 오답이 하나면 보기 글자도 쓴다
   const nums = order.flatMap((x, i) => (last.includes(x) ? [CIRCLED[i]] : [])).join(", ");
-  if (last.length === marks.length && last.every((m) => marks.includes(m))) return `이번에도 ${nums}${eul(nums)} 골랐어요`;
-  const was = last.length === 1 ? `${nums} ${new Map(s.options).get(last[0]) ?? ""}` : nums;
-  const right = marks.length > 0 && marks.every((m) => s.correct.includes(m)) && s.correct.every((c) => marks.includes(c));
-  return `지난번엔 ${was}${eul(was)} 골랐어요${right ? " · 이번엔 맞혔어요" : ""}`;
+  const text = last.length === 1 ? new Map(s.options).get(last[0]) : undefined;
+  const was = text === undefined ? `${nums}${eul(nums)}` : `${nums} ${named(text, eul)}`;
+  const wrong = marks.filter((m) => !s.correct.includes(m));
+  if (wrong.length) return wrong.length === last.length && wrong.every((m) => last.includes(m)) ? `이번에도 ${was} 골랐어요` : `지난번엔 ${was} 골랐어요`;
+  if (marks.length === s.correct.length) return `지난번엔 ${was} 골랐어요 · 이번엔 맞혔어요`;
+  // 정답 일부만 (Hard): 줄이 길어 번호만
+  if (marks.length) return `지난번엔 ${nums}${eul(nums)} 골랐어요 · 이번엔 정답 ${n(s.correct.length)}개 중 ${n(marks.length)}개를 골랐어요`;
+  return `지난번엔 ${was} 골랐어요`;
 }
 
 /**

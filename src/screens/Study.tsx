@@ -20,7 +20,7 @@ import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
 import { ExamField, examHint } from "./Exam";
 import { cardSource } from "../sourceApi";
-import { ChoiceEditor, ListEditor, RecallFace, recallTip } from "./Recall";
+import { ChoiceEditor, lastOn, ListEditor, RecallFace, recallTip } from "./Recall";
 import { choiceDraft, choiceLabel, listLabel, optionOrder, recall, type ChoiceDraft, type ListDraft } from "../recall";
 import { deckFace, scopeCss } from "../cardCss";
 import "../styles/study.css";
@@ -815,13 +815,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     const box = answerBox.current;
     if (phase !== "a" || !box) return;
     box.focus({ preventScroll: true });
-    // Q2: 낮은 창(640)에서는 보기가 두어 개만 보여 고른 오답이 아래에 숨는다. 정답, 그다음 고른 보기(여럿이면 첫째)를 카드 안에서 보이게 내린다.
-    // 둘 다 안 들어가면 고른 보기가 보인다. 넘침 표시(is-overflow)로 스크롤 칸 높이가 바뀐 뒤에 잰다
+    // Q2: 낮은 창(640)에서는 보기가 두어 개만 보여 고른 오답이 아래에 숨는다. 정답, 지난번 고른 오답(Q35), 이번에 고른 보기(여럿이면 첫째) 차례로
+    // 카드 안에서 보이게 내린다. 다 안 들어가면 뒤의 것(이번에 고른 보기)이 보인다. 넘침 표시(is-overflow)로 스크롤 칸 높이가 바뀐 뒤에 잰다
     if (special?.kind !== "choice") return;
     const opts = box.querySelectorAll(".opt");
     const at = (nums: number[]) => opts[order.findIndex((x) => nums.includes(x))];
     const f = requestAnimationFrame(() => {
       at(special.correct)?.scrollIntoView({ block: "nearest" });
+      at(lastOn(special, card?.view.last_marks ?? null))?.scrollIntoView({ block: "nearest" });
       at(marks)?.scrollIntoView({ block: "nearest" });
     });
     return () => cancelAnimationFrame(f);
