@@ -69,7 +69,7 @@ Rust는 따로 할 일이 없다. 이 폴더에서 `cargo` 를 처음 실행하�
 
 ```powershell
 npm run tauri dev       # 개발 모드. 프론트엔드는 저장하면 바로 반영, Rust는 다시 컴파일
-npm run tauri build     # 설치 파일 생성 (src-tauri/target/release/bundle/)
+npm run tauri build     # NSIS 설치 파일 생성 (src-tauri/target/release/bundle/nsis/)
 ```
 
 데이터는 `%APPDATA%\io.github.itisyijy.neoanki\` 에 저장된다 (DB, `media/`, `backups/`). 다른 폴더로 시험하려면 환경 변수 `NEOANKI_DATA_DIR` 을 지정한다.
@@ -128,6 +128,18 @@ $env:NEOANKI_AI_FAKE = "ok"; $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm
 cd src-tauri; cargo test; cargo clippy --all-targets; cd ..
 npx tsc --noEmit
 ```
+
+### 배포 체크리스트
+
+`npm run tauri build` 는 NSIS 설치 파일 하나(`Neo-Anki_<버전>_x64-setup.exe`)만 만든다. 현재 사용자에게 설치하고(`%LOCALAPPDATA%\Neo-Anki`, 관리자 권한 없음) 설치 화면은 한국어다(Windows 표시 언어가 영어면 영어). 첫 배포 전에 확인할 것:
+
+- [ ] **코드 서명**: 인증서(OV · EV 또는 Azure Trusted Signing)를 준비하고 `bundle.windows` 에 `certificateThumbprint` + `digestAlgorithm: "sha256"` + `timestampUrl`, 또는 `signCommand`(signtool 등)를 넣는다. 서명이 없으면 SmartScreen 경고가 뜬다. 확인은 `Get-AuthenticodeSignature <exe>`.
+- [ ] **게시자 이름**: `bundle.publisher`(지금 `itisyijy`). 프로그램 추가/제거의 게시자, exe 의 CompanyName, NSIS 레지스트리 키 `HKCU\Software\<게시자>\Neo-Anki` 가 이 값에서 나온다. NSIS 는 이 키로 이전 설치 폴더를 찾으니 첫 배포 전에 정하고 그 뒤로는 바꾸지 않는다. 데이터 폴더 · 키체인 이름은 `identifier` 에서 나오므로 영향이 없다. `bundle.copyright` 도 아직 비어 있다.
+- [ ] **아이콘**: `src-tauri/icons/` 는 아직 Tauri 기본 아이콘이다. 로고가 정해지면 `npx tauri icon <1024px PNG>` 로 다시 만든다. 설치 파일 자체의 아이콘은 `bundle.windows.nsis.installerIcon`.
+- [ ] **Google OAuth**: 배포 빌드를 하는 셸에 `NEOANKI_GOOGLE_CLIENT_ID` · `NEOANKI_GOOGLE_CLIENT_SECRET` 을 넣는다. 빠져도 빌드는 성공하고 Drive 연결만 꺼지니(`option_env!`) 빌드 전에 확인한다. OAuth 동의 화면을 테스트에서 프로덕션으로 게시한다(테스트 상태에서는 등록한 테스트 사용자만 로그인된다).
+- [ ] **읽어주기 음성**: `tools\fetch_tts.ps1` 로 `src-tauri/resources/tts/` 의 11개 파일을 채운 뒤 빌드한다. 비어 있어도 빌드는 성공하고 OS 음성으로만 읽는다.
+- [ ] **WebView2**: `bundle.windows.webviewInstallMode` 는 기본값 `downloadBootstrapper` 다. WebView2 가 없는 PC(일부 Windows 10)는 설치 중에 인터넷이 필요하다. 오프라인 배포라면 `embedBootstrapper` 또는 `offlineInstaller`.
+- [ ] **업데이트**: 자동 업데이트는 없다(`tauri-plugin-updater` 안 씀). 새 버전은 설치 파일을 다시 받아 설치한다. 버전은 `tauri.conf.json` · `Cargo.toml` · `package.json` 을 같이 올리고, 설정 화면 맨 아래에 보인다.
 
 ### 구조
 
