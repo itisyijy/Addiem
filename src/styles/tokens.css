@@ -47,8 +47,8 @@
   --bg-nav: rgb(255 255 255 / 0.72); /* 반투명 면은 변수에 알파를 넣는다 */
 
   --text-primary: #16161d;
-  --text-secondary: #5e5c66;
-  --text-tertiary: #6f6c76;
+  --text-secondary: #4f4d57; /* 배경 블롭(라일락 · 살구 겹침) 위에서도 4.5:1 (QA T6-09) */
+  --text-tertiary: #66636d; /* 옅게 칠한 면(accent/status/importance bg) 위에서도 4.5:1 (QA T6-10 · T6-11) */
   --text-inverse: #ffffff;
 
   --border-default: #e5e1da;
@@ -65,16 +65,16 @@
   --status-warn-bg: #fff1d6;
   --status-warn-fg: #8f5b00;
   --status-danger-bg: #fde8e8;
-  --status-danger-fg: #cc2f35;
+  --status-danger-fg: #c72a31;
   --status-success-bg: #e3f5ea;
   --status-success-fg: #1f7a4a;
 
   --importance-core-bg: #ffe7d6;
-  --importance-core-fg: #c24e0a;
+  --importance-core-fg: #b54200;
   --importance-normal-bg: #ece9e3;
   --importance-normal-fg: #4f4d56;
   --importance-supp-bg: #f4f2ee;
-  --importance-supp-fg: #6f6c76;
+  --importance-supp-fg: #66636d;
 
   --rating-again: #e5484d;
   --rating-hard: #d98200;
@@ -109,7 +109,7 @@
 
   --text-primary: #edebf3;
   --text-secondary: #b4b1be;
-  --text-tertiary: #85828f;
+  --text-tertiary: #94919e; /* 칠한 면(accent-subtle · status · importance bg) 위에서도 4.5:1 */
   --text-inverse: #ffffff;
 
   --border-default: #2c2b34;
@@ -135,7 +135,7 @@
   --importance-normal-bg: #2a2930;
   --importance-normal-fg: #c9c6d2;
   --importance-supp-bg: #1b1a21;
-  --importance-supp-fg: #85828f;
+  --importance-supp-fg: #94919e;
 
   --rating-again: #ff6b70;
   --rating-hard: #f0a43a;
@@ -174,6 +174,7 @@
 .c-secondary { color: var(--text-secondary); }
 .c-tertiary  { color: var(--text-tertiary); }
 .c-inverse   { color: var(--text-inverse); }
+.c-on-inverse { color: var(--accent-on-inverse); } /* 반전 면(오늘 카드 · 토스트) 안의 보조 글자. c-tertiary 는 반전 면에서 3.5:1 */
 .c-accent    { color: var(--accent-text); }
 .c-warn      { color: var(--status-warn-fg); }
 .c-danger    { color: var(--status-danger-fg); }

@@ -494,7 +494,7 @@ struct SplitPayload {
 pub(crate) fn apply_split(con: &mut Connection, card_id: i64, parts: &[SplitPart], archive_original: bool) -> Res<i64> {
     let parts: Vec<&SplitPart> = parts.iter().filter(|p| !render::is_blank(&p.front) && !render::is_blank(&p.back)).collect();
     if parts.is_empty() {
-        return Err("나눌 카드가 없어요. 질문과 답을 채워주세요.".into());
+        return Err("나눌 카드가 없어요. 질문과 답을 채워 주세요.".into());
     }
     let tx = con.transaction().map_err(err)?;
     let (deck_id, importance, state): (i64, Option<i64>, String) = tx

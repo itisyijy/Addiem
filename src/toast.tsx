@@ -46,7 +46,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           </span>
           <span className="toast__text">
             <span className="t-body-m-strong">{toast.title}</span>
-            {toast.text && <span className="t-caption c-tertiary">{toast.text}</span>}
+            {toast.text && <span className="t-caption c-on-inverse">{toast.text}</span>}
           </span>
           {toast.action && (
             <button

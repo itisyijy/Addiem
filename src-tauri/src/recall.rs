@@ -207,11 +207,11 @@ fn esc(s: &str) -> String {
 /// Q4: 항목이 2개 미만이면 저장하지 않는다 (10개 넘는 경고는 화면만)
 pub(crate) fn list_fields(c: &ListNew) -> Res<Vec<String>> {
     if render::is_blank(&c.question) {
-        return Err("질문을 입력해주세요.".into());
+        return Err("질문을 입력해 주세요.".into());
     }
     let items: Vec<String> = c.items.iter().map(|i| i.trim()).filter(|i| !i.is_empty()).map(esc).collect();
     if items.len() < 2 {
-        return Err("항목을 2개 이상 입력해주세요.".into());
+        return Err("항목을 2개 이상 입력해 주세요.".into());
     }
     let order = if c.ordered { ORDERED } else { UNORDERED };
     Ok(vec![c.question.clone(), items.join("<br>"), order.into(), c.extra.clone()])
@@ -220,18 +220,18 @@ pub(crate) fn list_fields(c: &ListNew) -> Res<Vec<String>> {
 /// Q5: 보기 2–6개, 정답 1개 이상. 빈 보기는 빼고 앞으로 당긴다
 pub(crate) fn choice_fields(c: &ChoiceNew) -> Res<Vec<String>> {
     if render::is_blank(&c.question) {
-        return Err("질문을 입력해주세요.".into());
+        return Err("질문을 입력해 주세요.".into());
     }
     let kept: Vec<(usize, String)> = c.options.iter().enumerate().filter(|(_, o)| !o.trim().is_empty()).map(|(i, o)| (i, esc(o.trim()))).collect();
     if kept.len() < 2 {
-        return Err("보기를 2개 이상 입력해주세요.".into());
+        return Err("보기를 2개 이상 입력해 주세요.".into());
     }
     if kept.len() > MAX_OPTIONS {
         return Err("보기는 6개까지예요.".into());
     }
     let correct: Vec<String> = kept.iter().enumerate().filter(|(_, (i, _))| c.correct.contains(i)).map(|(n, _)| (n + 1).to_string()).collect();
     if correct.is_empty() {
-        return Err("정답을 하나 이상 골라주세요.".into());
+        return Err("정답을 하나 이상 골라 주세요.".into());
     }
     let mut f = vec![c.question.clone()];
     f.extend((0..MAX_OPTIONS).map(|i| kept.get(i).map(|k| k.1.clone()).unwrap_or_default()));

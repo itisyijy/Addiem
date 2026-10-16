@@ -108,7 +108,7 @@ export function AddCard({ deckId }: { deckId: number }) {
     try {
       let made = 1;
       if (kind === "occlusion") {
-        if (!pic) throw new Error("그림을 넣어주세요.");
+        if (!pic) throw new Error("그림을 넣어 주세요.");
         const note = { note_id: null, deck_id: target, image: pic.name, header: toStoredHtml(qHtml), back_extra: toStoredHtml(aHtml), shapes, hide_all: hideAll, importance };
         await occlusionApi.save(note);
         made = ordinalsOf(shapes).length;

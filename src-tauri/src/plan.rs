@@ -540,7 +540,7 @@ pub fn set_study_time(state: State<AppState>, weekday_min: Option<i64>, weekend_
             Some(m) if (0..=24 * 60).contains(&m) => {
                 con.execute("INSERT INTO plan_setting (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2", params![k, m.to_string()])
             }
-            Some(_) => return Err("시간은 0분에서 24시간 사이로 정해주세요.".into()),
+            Some(_) => return Err("시간은 0분에서 24시간 사이로 정해 주세요.".into()),
             None => con.execute("DELETE FROM plan_setting WHERE key = ?1", [k]),
         }
         .map_err(err)?;

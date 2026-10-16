@@ -497,10 +497,10 @@ pub struct WrittenNew {
 #[tauri::command]
 pub fn add_written_card(state: State<AppState>, card: WrittenNew) -> Res<i64> {
     if render::is_blank(&card.question) {
-        return Err("질문을 입력해주세요.".into());
+        return Err("질문을 입력해 주세요.".into());
     }
     if render::is_blank(&card.answer) {
-        return Err("모범 답안을 입력해주세요.".into());
+        return Err("모범 답안을 입력해 주세요.".into());
     }
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;

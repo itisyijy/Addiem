@@ -427,9 +427,9 @@ pub struct OcclusionInput {
 /// 노트 id 를 돌려준다
 pub(crate) fn save(con: &Connection, input: &OcclusionInput) -> Res<i64> {
     if ordinals(&input.shapes).is_empty() {
-        return Err("가릴 곳을 하나 이상 만들어주세요.".into());
+        return Err("가릴 곳을 하나 이상 만들어 주세요.".into());
     }
-    let image = commands::safe_media_name(input.image.trim()).map_err(|_| "그림을 넣어주세요.".to_string())?;
+    let image = commands::safe_media_name(input.image.trim()).map_err(|_| "그림을 넣어 주세요.".to_string())?;
     let occlusion = to_field(&input.shapes, input.hide_all);
     let img = format!("<img src=\"{}\">", escape(image));
     match input.note_id {

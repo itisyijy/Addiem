@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { aiApi, aiError, type AiError } from "../api";
 import { AiConnect, AiErrorBox, ScopeLine, SendList, UsingPlan, refreshAi, sentRows, useAiStatus, type SendRow } from "../ai";
-import { ragApi, type Grade, type GradeScope, type Sent } from "../sourceApi";
+import { placeOf, ragApi, type Grade, type GradeScope, type Sent } from "../sourceApi";
 import { actionKey } from "../keys";
 import { n, useKey, useOverlayScope } from "../nav";
 import { Button, Icon, Spinner } from "../ui";
@@ -209,8 +209,9 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
           compact
           rows={[
             ...rows.slice(0, 3),
-            ...sentRows(result.sent, () => {}, true).map((r) => ({ ...r, remove: undefined })),
+            ...sentRows(result.sent, () => {}, true),
           ]}
+          sent
         />
       )}
       <div className="grade__cols">
@@ -236,7 +237,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
                     s && (
                       <button key={id} type="button" className="src-chip t-label-s" onClick={() => openSegment(id)}>
                         <Icon name="file" size={12} />
-                        {s.material} p.{s.page}
+                        {placeOf(s)}
                       </button>
                     )
                   );

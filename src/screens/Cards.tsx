@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { api, errorText, qualityApi, type CardList, type CardRow, type DeckDetail, type ExamState, type Level } from "../api";
 import { Badge, Button, Icon, Importance, Kbd, LEVEL_LABEL, type BadgeTone } from "../ui";
-import { n, useKey, useNav, ro, useOverlayScope } from "../nav";
+import { n, studyDate, useKey, useNav, ro, useOverlayScope } from "../nav";
 import { actionKey } from "../keys";
 import { useToast, type ToastInput } from "../toast";
 import { Modal, NewDeckModal } from "./NewDeck";
@@ -28,6 +28,9 @@ const STATE: Record<CardRow["state"], [string, BadgeTone]> = {
   review: ["복습", "neutral"],
   suspended: ["학습 중지", "neutral"],
 };
+/** 접어둔 카드 배지는 실제 복귀일 (copy-guide 접어두기). 덱 상세 접어둔 카드 타일의 "10/18 복귀"와 같은 꼴. 상태 열(90px)에 들어가게 "접어둠"은 뺀다 */
+const buriedLabel = (until: string | null) =>
+  !until ? "접어둠" : until <= studyDate().toLocaleDateString("sv-SE") ? "오늘 복귀" : `${+until.slice(5, 7)}/${+until.slice(8, 10)} 복귀`;
 const key = (path: string[]) => path.join("\u0000");
 /** "…으로/로". 받침이 있으면 으로, 없거나 ㄹ 받침이면 로 */
 
@@ -520,7 +523,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
           <span />
         </div>
         {rows.map((c, i) => {
-          const [label, tone] = c.buried ? (["접어둠", "warn"] as const) : STATE[c.state];
+          const [label, tone] = c.buried ? ([buriedLabel(c.buried_until), "warn"] as const) : STATE[c.state];
           const inherited = levelOf(c.deck_path);
           const on = selected.has(c.id);
           return (

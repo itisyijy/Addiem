@@ -5,7 +5,7 @@ import "../styles/sources.css";
 import { Button, Icon } from "../ui";
 import { n, useNav } from "../nav";
 import { useEffect, useState } from "react";
-import { isRegion, sourceApi, useCardSource, type CardSource } from "../sourceApi";
+import { isRegion, pageOf, sourceApi, useCardSource, type CardSource } from "../sourceApi";
 import { PdfPage, SignalBadge, SlidePage } from "./Sources";
 import { RegionView } from "./Figures";
 
@@ -30,12 +30,12 @@ function SourceView({ src, cardId, onClose }: { src: CardSource; cardId?: number
   // [연결 바꾸기]는 그 구간의 카드 잇기 칸을 연 채로 들어간다
   const open = (link: boolean) => nav({ name: "sources", deckId: m.deck_id, materialId: m.id, segmentId: s.id, link });
   return (
-    <aside className="src-panel" aria-label={method ? "연결 자료" : "근거 자료"}>
+    <aside className="src-panel" aria-label={method ? "연결 자료" : "학습 자료"}>
       <div className="src-panel__head">
         <span className="src-panel__title">
-          <span className="t-title-s">{method ? "연결 자료" : "근거 자료"}</span>
+          <span className="t-title-s">{method ? "연결 자료" : "학습 자료"}</span>
           <span className="t-caption c-tertiary">
-            {m.file_name} · {m.kind === "pptx" ? `슬라이드 ${n(s.page)}` : `${n(s.page)}쪽`}
+            {m.file_name} · {pageOf(m.kind, n(s.page))}
           </span>
         </span>
         <button className="src-icon-btn" aria-label="자료 패널 닫기" onClick={onClose}>

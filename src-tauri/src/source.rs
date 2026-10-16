@@ -333,7 +333,7 @@ fn unlink(con: &Connection, segment_id: i64, card_id: i64) -> Res<()> {
 
 // ------------------------------------------------------------------ 8.4 그림 · 표 영역 (IT9)
 
-/// 그림 · 표 카드가 나온 곳. kind: figure | table. text: 대체 글 · "그림 · p.N" · 표 글자 (I2 패널 · 검색)
+/// 그림 · 표 카드가 나온 곳. kind: figure | table. text: 대체 글 · "그림 · 3쪽"(PPTX "그림 · 슬라이드 3") · 표 글자 (I2 패널 · 검색)
 #[derive(Deserialize)]
 pub struct Region {
     material_id: i64,
@@ -349,7 +349,14 @@ fn region_segment(con: &Connection, r: &Region) -> Res<i64> {
         return Err("그림이나 표만 이을 수 있어요.".into());
     }
     let rects = serde_json::to_string(&r.rects).map_err(err)?;
-    let text = if r.text.trim().is_empty() { format!("{} · p.{}", if r.kind == "table" { "표" } else { "그림" }, r.page) } else { r.text.trim().to_string() };
+    let text = if r.text.trim().is_empty() {
+        // 위치 표기는 화면과 같게: PPTX "슬라이드 N", PDF "N쪽" (QA T4-14)
+        let kind: Option<String> = con.query_row("SELECT kind FROM source_material WHERE id = ?1", [r.material_id], |x| x.get(0)).optional().map_err(err)?;
+        let place = if kind.as_deref() == Some("pptx") { format!("슬라이드 {}", r.page) } else { format!("{}쪽", r.page) };
+        format!("{} · {place}", if r.kind == "table" { "표" } else { "그림" })
+    } else {
+        r.text.trim().to_string()
+    };
     let hit: Option<i64> = con
         .query_row(
             "SELECT id FROM source_segment WHERE material_id = ?1 AND page = ?2 AND signals = ?3 AND rects = ?4",
@@ -1541,9 +1548,9 @@ mod tests {
         assert_eq!(count(&con, "SELECT count(*) FROM card WHERE deck_id = 2"), 3);
         assert_eq!(count(&con, "SELECT count(*) FROM note n JOIN note_type t ON t.id = n.note_type_id WHERE t.name = 'Neo-Anki 목록 회상'"), 1);
         let segs = segments_of(&con, 1).unwrap();
-        // 영역 구간은 그 쪽 강조 구간 뒤, 가중치 0, 글자가 없으면 "표 · p.3"
+        // 영역 구간은 그 쪽 강조 구간 뒤, 가중치 0, 글자가 없으면 "표 · 슬라이드 3" (PPTX)
         let t = segs.iter().find(|s| s.signals == ["table"]).unwrap();
-        assert_eq!((t.ord, t.weight, t.text.as_str(), t.links.len(), t.rects.clone()), (1, 0.0, "표 · p.3", 3, Some(vec![[0.0, 0.5, 0.5, 0.5]])));
+        assert_eq!((t.ord, t.weight, t.text.as_str(), t.links.len(), t.rects.clone()), (1, 0.0, "표 · 슬라이드 3", 3, Some(vec![[0.0, 0.5, 0.5, 0.5]])));
         // 강조 수 · 연결 수 · 빠진 범위는 글자 강조만 (영역은 세지 않는다, IT13). R8 은 이 쪽에서 가장 가까운 카드의 덱
         let m = material(&con, 1).unwrap();
         assert_eq!((m.segments, m.linked, m.gaps), (1, 0, 1));

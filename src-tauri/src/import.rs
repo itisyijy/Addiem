@@ -407,7 +407,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
                 // 앞뒤 둘 다: 노트 하나에서 카드 두 장 (앞 → 뒤, 뒤 → 앞)
                 let reversed = ["reversed", "Basic (and reversed card)"].iter().any(|t| note_type.eq_ignore_ascii_case(t));
                 if !cloze && !reversed && !note_type.eq_ignore_ascii_case("basic") {
-                    issues.push(at(i, "info", "note_type", format!("노트타입 '{note_type}' 는 질문과 답변으로 가져왔어요")));
+                    issues.push(at(i, "info", "note_type", format!("노트타입 '{note_type}'의 카드는 질문과 답변으로 가져왔어요")));
                 }
                 (front, back, if cloze { "cloze" } else if reversed { "reversed" } else { "basic" }, vec![])
             }
@@ -435,7 +435,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
             }
         };
         match seen.get(&front) {
-            Some(first) => issues.push(at(i, "warning", "duplicate", format!("front 가 #{first} 와 같아요 · 둘 다 가져왔어요"))),
+            Some(first) => issues.push(at(i, "warning", "duplicate", format!("질문(front)이 {first}번째 항목과 같아요 · 둘 다 가져왔어요"))),
             None => {
                 seen.insert(front.clone(), i);
             }

@@ -33,7 +33,7 @@ const parse = (iso: string) => {
   return new Date(y, m - 1, d);
 };
 const iso = (t: Date) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
-const addDays = (s: string, days: number) => {
+export const addDays = (s: string, days: number) => {
   const t = parse(s);
   t.setDate(t.getDate() + days);
   return iso(t);
@@ -283,20 +283,20 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
       <div className="deck__row">
         <section className="deck__today">
           {/* 하나라도 끝내면 큰 숫자는 남은 분량이라는 걸 밝힌다 (C1-t) */}
-          <p className="t-body-l c-tertiary">{d.done_today > 0 ? "오늘 남은" : "오늘"}</p>
+          <p className="t-body-l c-on-inverse">{d.done_today > 0 ? "오늘 남은" : "오늘"}</p>
           <p className="deck__today-count">
             <span className="deck__today-num">{n(today)}</span>
             <span className="t-display-l">장</span>
           </p>
           <div className="deck__today-mix t-body-m">
             <span>
-              <span className="c-tertiary">복습</span> <b>{n(d.today_review)}</b>
+              <span className="c-on-inverse">복습</span> <b>{n(d.today_review)}</b>
             </span>
             <span>
-              <span className="c-tertiary">신규</span> <b>{n(d.today_new)}</b>
+              <span className="c-on-inverse">신규</span> <b>{n(d.today_new)}</b>
             </span>
             <span>
-              <span className="c-tertiary">접어둔 카드 복귀</span> <b>{n(d.today_returning)}</b>
+              <span className="c-on-inverse">접어둔 카드 복귀</span> <b>{n(d.today_returning)}</b>
             </span>
           </div>
           {d.done_today > 0 && (
@@ -685,7 +685,7 @@ function SubdeckList({ d, reload }: { d: DeckDetail; reload: Reload }) {
                       className="subdecks__mark"
                       variant="ghost"
                       size="M"
-                      label="취약 지정"
+                      label="취약 챕터 지정"
                       aria-label={`${s.name} 취약 챕터로 지정`}
                       onClick={stop(() => weakAct.mark(s))}
                     />
@@ -961,12 +961,12 @@ function PauseMenu({ d, today, focusFirst, onBack, onPick, onPickDate }: {
   };
   const keep = target ? `목표일 ${monthDay(target)}은 그대로예요. ` : "";
   const hint = (() => {
-    if (active === "forever") return `${keep}다시 시작할 때까지 새 카드가 들어오지 않아요.`;
+    if (active === "forever") return `${keep}다시 시작할 때까지 신규 카드가 들어오지 않아요.`;
     if (active === "date") return `${keep}달력에서 마지막으로 쉬는 날을 골라요.`;
     const after = perDay[active];
     const change =
       after == null
-        ? " 그동안 새 카드가 들어오지 않아요."
+        ? " 그동안 신규 카드가 들어오지 않아요."
         : after === d.per_day
           ? ` 다시 시작한 뒤 하루 신규 ${n(after)}장 그대로.`
           : ` 다시 시작한 뒤 하루 신규 ${n(d.per_day)} → ${n(after)}장.`;
@@ -1077,7 +1077,7 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
       </p>
       <Checkbox checked={backup} label="지우기 전에 백업 파일 만들기 (권장)" onChange={setBackup} />
       <Input
-        label="확인을 위해 덱 이름을 그대로 입력하세요"
+        label="확인을 위해 덱 이름을 그대로 입력해 주세요"
         placeholder={name}
         value={typed}
         autoFocus
