@@ -1,10 +1,12 @@
 //! 동기화 엔진 (drive-sync.md 5장). Tauri 를 모른다: DB(Mutex<Connection>)와 Store 만 받는다.
 //!
 //! 기록 단위는 행이고 참조는 uid 다 (정수 id 는 기기 안에서만). 행마다 열 단위 HLC 를 sync_row 에 둔다.
-//!   - 올리기: sync_outbox(트리거) 를 행으로 묶어 changes/<나>/<번호>.jsonl.gz 새 파일 하나로. HLC 는 이때 seq 순서로 매긴다
+//!   - 고칠 때: 트리거가 sync_outbox 에 벽시계 시각(at)을 남긴다. 그 변경의 HLC 는 "고친 순간"이다 (K28):
+//!     hlc_next(그때까지 받은 가장 큰 HLC = floor, at). 받기 · 올리기 전에도 바뀌지 않는다
+//!   - 올리기: sync_outbox 를 행으로 묶어 changes/<나>/<번호>.jsonl.gz 새 파일 하나로. 열마다 고친 순간의 HLC
 //!   - 받기: 다른 기기의 새 파일을 모두 내려받아 한 트랜잭션(sync_flags.applying = 1)에서 합친다
-//!   - 합치기: 열마다 큰 HLC 가 이긴다. 아직 올리지 않은 이 기기의 변경은 앞으로 받을 어떤 값보다 크다(INF)
-//!     삭제는 그 행의 가장 큰 HLC 보다 클 때만. 복습 기록은 합집합. 두 기기에서 복습한 카드는 FSRS 를 다시 돌린다
+//!   - 합치기: 열마다 큰 HLC 가 이긴다 = 나중에 고친 쪽 (아직 올리지 않은 이 기기 변경도 고친 순간의 HLC 로 겨룬다)
+//!     삭제는 그 행 · 그 카드의 노트를 마지막으로 고친 것보다 나중일 때만 (K29). 복습 기록은 합집합. 두 기기에서 복습한 카드는 FSRS 를 다시 돌린다
 //!   - 같은 것을 가리키는 두 행(같은 이름 경로의 덱, 같은 파일 이름의 그림, 기본 노트 유형 …)은 uid 가 작은 쪽으로 합친다 (sync_alias)
 
 use super::crypto;
@@ -21,10 +23,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// 변경 파일 형식. Drive 에 더 큰 값이 있으면 받지 않는다 ("앱을 업데이트해 주세요")
+/// 변경 파일 형식. Drive 에 더 큰 값이 있으면 받지 않는다 ("앱을 업데이트해 주세요").
+/// K28 의 열마다 다른 HLC(k)는 옛 앱도 읽는 필드라 올리지 않았다
 pub const FORMAT: i64 = 1;
-/// 아직 올리지 않은 이 기기 변경의 HLC. 어떤 HLC(숫자로 시작)보다 크다
-const INF: &str = "~";
+/// sync_outbox.cols 의 표시 (엔진이 넣는 기록). 옛 앱은 넣기로만 읽는다 (모든 열)
+/// 지금 열 HLC 그대로 다시 보낸다: 처음 합친 결과 · 다른 기기에 없을 수 있는 행 (새 HLC 를 매기지 않는다)
+const RESEND: &str = "*";
+/// 지우기를 받지 않고 남긴 행을 모든 열로 다시 보낸다. HLC 는 그 지우기 바로 다음 (floor = 지운 HLC, at = 0)
+const REVIVE: &str = "+";
 /// 정리 (5.5)
 const COMPACT_FILES: usize = 200;
 const COMPACT_MS: i64 = 30 * db::DAY_MS;
@@ -58,7 +64,8 @@ pub fn hlc_device(h: &str) -> &str {
     h.splitn(3, '-').nth(2).unwrap_or("")
 }
 
-/// 올릴 때 다음 값: 받은 것 중 가장 큰 값보다 항상 크게 (5.4)
+/// 고친 순간의 HLC: 벽시계 at, 단 그때까지 받은 가장 큰 값(last)보다 항상 크게.
+/// 시계가 늦은 기기도 받은 값을 고치면 그 값을 이긴다 (K28)
 fn hlc_next(last: &str, at: i64, dev: &str) -> String {
     let (p, c) = hlc_split(last);
     if at > p { hlc(at, 0, dev) } else { hlc(p, c + 1, dev) }
@@ -85,16 +92,24 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
              loser_device TEXT, loser_at INTEGER, loser_fields TEXT,
              seen INTEGER NOT NULL DEFAULT 0, resolved INTEGER NOT NULL DEFAULT 0);",
     )
-    .map_err(dbe)
+    .map_err(dbe)?;
+    // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다)
+    for col in ["cols", "floor"] {
+        let has: i64 = con.query_row("SELECT count(*) FROM pragma_table_info('sync_outbox') WHERE name = ?1", [col], |r| r.get(0)).map_err(dbe)?;
+        if has == 0 {
+            con.execute_batch(&format!("ALTER TABLE sync_outbox ADD COLUMN {col} TEXT")).map_err(dbe)?;
+        }
+    }
+    Ok(())
 }
 
 /// 동기화 작업 전에: 표 + 변경 기록 트리거를 바꾼 열 목록까지 남기게 다시 만든다
 /// (db.rs 의 기본 트리거는 무엇이 바뀌었는지 모른다. 다른 기능이 더한 열도 여기서 따라간다)
 pub fn init(con: &Connection) -> SRes<()> {
     ensure_tables(con)?;
-    let has: i64 = con.query_row("SELECT count(*) FROM pragma_table_info('sync_outbox') WHERE name = 'cols'", [], |r| r.get(0)).map_err(dbe)?;
-    if has == 0 {
-        con.execute_batch("ALTER TABLE sync_outbox ADD COLUMN cols TEXT").map_err(dbe)?;
+    // 이 기기에서 생긴 행의 HLC 를 고정한다 (한 번). 비워 두면 나중에 고친 updated_at 으로 읽혀 고치지 않은 열까지 나중 값이 된다
+    if gen_of(con)? > 0 && local(con, "implicit_saved")?.is_none() {
+        save_implicit(con)?;
     }
     let on = "(SELECT enabled AND NOT applying FROM sync_flags WHERE id = 1)";
     let now = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
@@ -163,8 +178,12 @@ fn hlc_last(con: &Connection) -> SRes<String> {
     Ok(meta(con, "hlc_last")?.unwrap_or_else(|| "0".into()))
 }
 
+/// 받은(또는 올린) 가장 큰 HLC 를 남긴다. 그 전에 floor 가 빈 변경 기록에 지금 값을 적는다:
+/// 트리거는 floor 를 쓰지 않으므로 "비어 있음 = 고친 순간의 hlc_last = 지금 값"이고, 그 값은 여기서만 바뀐다 (K28)
 fn bump_hlc_last(con: &Connection, h: &str) -> SRes<()> {
-    if h != INF && h > hlc_last(con)?.as_str() {
+    let last = hlc_last(con)?;
+    if h > last.as_str() {
+        con.execute("UPDATE sync_outbox SET floor = ?1 WHERE floor IS NULL", [&last]).map_err(dbe)?;
         con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('hlc_last', ?1)", [h]).map_err(dbe)?;
     }
     Ok(())
@@ -318,11 +337,31 @@ impl Clock {
         self.cols.values().chain(std::iter::once(&self.base)).max().cloned().unwrap_or_default()
     }
 
-    /// 동기화 전에 생긴 행: 마지막으로 고친 벽시계 시각을 HLC 로 쓴다 (처음 합칠 때 "나중에 고친 쪽")
-    fn implicit(row: &Map<String, J>) -> Clock {
-        let phys = ["updated_at", "created_at", "started_at", "reviewed_at", "written_at"].iter().find_map(|k| row.get(*k).and_then(|v| v.as_i64())).unwrap_or(0);
-        Clock { base: hlc(phys, 0, ""), ..Default::default() }
+    /// 동기화 전에 생긴 이 기기 행: 마지막으로 고친 벽시계 시각을 HLC 로 쓴다 (처음 합칠 때 "나중에 고친 쪽").
+    /// 기기 자리는 이 기기 (K7 에 "이 기기"로 보인다. 옛 앱이 만든 스냅샷은 비어 있다)
+    fn implicit(row: &Map<String, J>, dev: &str) -> Clock {
+        let phys = IMPLICIT_TIME.iter().find_map(|k| row.get(*k).and_then(|v| v.as_i64())).unwrap_or(0);
+        Clock { base: hlc(phys, 0, dev), ..Default::default() }
     }
+}
+
+const IMPLICIT_TIME: [&str; 5] = ["updated_at", "created_at", "started_at", "reviewed_at", "written_at"];
+
+/// 시계가 없는 이 기기 행에 Clock::implicit 과 같은 HLC 를 적어 고정한다 (스냅샷에 실은 값 그대로).
+/// 적어 두지 않으면 그 행을 고쳤을 때 updated_at 이 바뀌어, 고치지 않은 열까지 나중 값으로 읽힌다
+fn save_implicit(con: &Connection) -> SRes<()> {
+    let me = device_uid(con)?;
+    for t in SYNC_TABLES {
+        let cols = raw_cols(con, t)?;
+        let time: Vec<&str> = IMPLICIT_TIME.iter().copied().filter(|c| cols.iter().any(|x| x == c)).collect();
+        let phys = if time.is_empty() { "0".to_string() } else { format!("coalesce({}, 0)", time.join(", ")) };
+        con.execute(
+            &format!("INSERT OR IGNORE INTO sync_row (table_name, uid, hlc) SELECT '{t}', uid, printf('%013d-00000000-%s', max(0, {phys}), ?1) FROM {t} WHERE uid IS NOT NULL"),
+            [&me],
+        )
+        .map_err(dbe)?;
+    }
+    set_local(con, "implicit_saved", "1")
 }
 
 fn load_clock(con: &Connection, table: &str, uid: &str) -> SRes<Option<Clock>> {
@@ -345,30 +384,95 @@ fn save_clock(con: &Connection, table: &str, uid: &str, c: &Clock) -> SRes<()> {
         .map_err(dbe)
 }
 
-/// 아직 올리지 않은 변경 (sync_outbox). 행마다 바뀐 열
-#[derive(Default, Debug)]
+/// 아직 올리지 않은 이 기기 변경 (sync_outbox). 행마다 열 -> 고친 순간의 HLC (K28)
+#[derive(Default, Debug, Clone)]
 struct Pending {
-    all: bool,
-    cols: HashSet<String>,
-    deleted: bool,
-    at: i64,
+    /// 모든 열에 걸친 변경 (넣기 · 열 목록 없는 고치기 · 되살리기)의 HLC
+    all: Option<String>,
+    cols: HashMap<String, String>,
+    /// 이 기기에서 지운 HLC
+    deleted: Option<String>,
+    /// 지금 열 HLC 그대로 다시 보낸다 (RESEND)
+    resend: bool,
+    /// 이 기기에서 새로 만든 행 (첫 기록이 트리거의 넣기)
+    created: bool,
 }
 
-fn load_pending(con: &Connection) -> SRes<HashMap<(String, String), Pending>> {
-    let mut st = con.prepare("SELECT table_name, uid, op, cols, at FROM sync_outbox ORDER BY seq").map_err(dbe)?;
-    let rows: Vec<(String, String, String, Option<String>, i64)> =
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+fn max_of<'a>(a: Option<&'a str>, b: Option<&'a str>) -> Option<&'a str> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, y) => x.or(y),
+    }
+}
+
+impl Pending {
+    /// 이 열을 고친 HLC
+    fn col(&self, c: &str) -> Option<&str> {
+        max_of(self.all.as_deref(), self.cols.get(c).map(|s| s.as_str()))
+    }
+
+    /// 이 행에 남은 이 기기 변경 중 가장 나중
+    fn newest(&self) -> Option<&str> {
+        let cols = self.cols.values().map(|s| s.as_str()).max();
+        max_of(max_of(self.all.as_deref(), cols), self.deleted.as_deref())
+    }
+
+    fn all_cols(&self) -> bool {
+        self.all.is_some() || self.resend
+    }
+}
+
+/// 열 c 의 이 기기 HLC: 받은 값과 아직 올리지 않은 이 기기 변경 중 큰 것.
+/// 받은 값이 이 기기 변경을 이겼으면 지금 값도 받은 값이라 받은 HLC 가 맞다
+fn col_hlc(clock: &Clock, p: Option<&Pending>, c: &str) -> String {
+    max_of(Some(clock.col(c)), p.and_then(|p| p.col(c))).unwrap_or_default().to_string()
+}
+
+/// 변경 기록을 행으로 묶는다 (처음 기록 순서). 기록마다 HLC = hlc_next(floor, at): 고친 순간 (K28)
+fn load_pending(con: &Connection) -> SRes<Vec<((String, String), Pending)>> {
+    let me = device_uid(con)?;
+    let last = hlc_last(con)?;
+    let mut st = con.prepare("SELECT table_name, uid, op, cols, at, floor FROM sync_outbox ORDER BY seq").map_err(dbe)?;
+    type Row = (String, String, String, Option<String>, i64, Option<String>);
+    let rows: Vec<Row> =
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+    let mut order: Vec<(String, String)> = vec![];
     let mut out: HashMap<(String, String), Pending> = HashMap::new();
-    for (t, u, op, cols, at) in rows {
-        let p = out.entry((t, u)).or_default();
-        p.at = p.at.max(at);
-        match (op.as_str(), cols) {
-            ("insert", _) | ("update", None) => p.all = true,
-            ("update", Some(c)) => p.cols.extend(c.split(',').filter(|s| !s.is_empty()).map(String::from)),
-            _ => p.deleted = true,
+    for (t, u, op, cols, at, floor) in rows {
+        let key = (t, u);
+        let first = !out.contains_key(&key);
+        if first {
+            order.push(key.clone());
+        }
+        let p = out.entry(key).or_default();
+        let h = hlc_next(floor.as_deref().unwrap_or(&last), at, &me);
+        let raise = |slot: &mut Option<String>| {
+            if slot.as_ref().is_none_or(|o| h > *o) {
+                *slot = Some(h.clone());
+            }
+        };
+        match (op.as_str(), cols.as_deref()) {
+            ("insert", Some(RESEND)) => p.resend = true,
+            ("insert", c) => {
+                p.created |= first && c.is_none();
+                raise(&mut p.all);
+            }
+            ("update", None) => raise(&mut p.all),
+            ("update", Some(c)) => {
+                for col in c.split(',').filter(|s| !s.is_empty()) {
+                    let e = p.cols.entry(col.to_string()).or_default();
+                    if h > *e {
+                        *e = h.clone();
+                    }
+                }
+            }
+            _ => raise(&mut p.deleted),
         }
     }
-    Ok(out)
+    Ok(order.into_iter().map(|k| {
+        let p = out.remove(&k).unwrap_or_default();
+        (k, p)
+    }).collect())
 }
 
 // ---------------------------------------------------------------- 파일 형식
@@ -415,7 +519,7 @@ pub fn open_opt(data: Vec<u8>, key: Option<&[u8; 32]>) -> SRes<Vec<u8>> {
 /// ponytail: 복습 기록이 수백만 건이면 스냅샷이 1 GiB 에 닿는다. 그때는 줄 단위로 읽어 합친다
 const MAX_UNPACKED: u64 = 1 << 30;
 
-/// 받은 HLC 의 형식: hlc() 가 만든 값이거나 "0" (시계가 없던 행). INF("~") 보다 큰 값이 남으면 그 행은 다시는 고칠 수 없다
+/// 받은 HLC 의 형식: hlc() 가 만든 값이거나 "0" (시계가 없던 행). 숫자가 아닌 큰 값("~")이 남으면 그 행은 다시는 고칠 수 없다
 fn valid_hlc(h: &str) -> bool {
     let mut it = h.splitn(3, '-');
     let (phys, counter, dev) = (it.next().unwrap_or(""), it.next(), it.next());
@@ -456,10 +560,11 @@ pub fn decode(data: Vec<u8>, key: Option<&[u8; 32]>) -> SRes<(J, Vec<Rec>)> {
 }
 
 /// 다른 기기의 변경 파일 하나. 잠근 Drive 의 평문 파일은 받지 않고 건너뛴다 (None):
-/// 잠그기 전 세대의 기기가 늦게 올렸거나 누가 써 넣은 파일이다. 오류로 멈추면 그 파일이 지워질 때까지 아무것도 받지 못한다
-fn read_change(cx: &Ctx, path: &str) -> SRes<Option<(J, Vec<Rec>)>> {
+/// 잠그기 전 세대의 기기가 늦게 올렸거나 누가 써 넣은 파일이다. 오류로 멈추면 그 파일이 지워질 때까지 아무것도 받지 못한다.
+/// 잠기지 않은 Drive(crypto.json 없음)의 암호문도 같다: 지운 Drive 를 다시 시작하기 전 세대의 잠근 기기가 올린 것이다 (T3-10)
+fn read_change(cx: &Ctx, path: &str, locked: bool) -> SRes<Option<(J, Vec<Rec>)>> {
     let data = cx.store.get(path)?;
-    if cx.key.is_some() && !crypto::is_sealed(&data) {
+    if (cx.key.is_some() && !crypto::is_sealed(&data)) || (cx.key.is_none() && !locked && crypto::is_sealed(&data)) {
         return Ok(None);
     }
     decode(data, cx.key()).map(Some)
@@ -550,8 +655,14 @@ fn fix_media_hashes(con: &mut Connection, media_dir: &Path) -> SRes<()> {
 
 // ---------------------------------------------------------------- 올리기 (5.2)
 
-/// 올린 행: (표, uid, 바뀐 열 (None = 전부), HLC, 지움)
-type Pushed = (String, String, Option<Vec<String>>, String, bool);
+/// 올린 행: 열마다 보낸 HLC (all = 모든 열을 보냈다), 또는 지운 HLC
+struct Pushed {
+    t: String,
+    u: String,
+    all: bool,
+    cols: BTreeMap<String, String>,
+    deleted: Option<String>,
+}
 
 pub struct Batch {
     seq: i64,
@@ -569,57 +680,32 @@ pub struct Batch {
 pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
     init(con)?;
     fix_media_hashes(con, &cx.media_dir)?;
-    let rows: Vec<(i64, String, String, String, i64, Option<String>)> = {
-        let mut st = con.prepare("SELECT seq, table_name, uid, op, at, cols FROM sync_outbox ORDER BY seq").map_err(dbe)?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
-    };
-    let Some(max_outbox) = rows.last().map(|r| r.0) else { return Ok(None) };
+    let max_outbox: Option<i64> = con.query_row("SELECT max(seq) FROM sync_outbox", [], |r| r.get(0)).map_err(dbe)?;
+    let Some(max_outbox) = max_outbox else { return Ok(None) };
     let me = device_uid(con)?;
     let tables = tables(con)?;
-    // HLC 는 seq 순서로 하나씩. 행의 HLC 는 그 행 마지막 변경의 것
-    struct Group {
-        first_op: String,
-        all: bool,
-        cols: BTreeSet<String>,
-        hlc: String,
-    }
-    let mut h = hlc_last(con)?;
-    let mut order: Vec<(String, String)> = vec![];
-    let mut groups: HashMap<(String, String), Group> = HashMap::new();
-    for (_, t, u, op, at, cols) in rows {
-        h = hlc_next(&h, at, &me);
-        let key = (t, u);
-        let g = groups.entry(key.clone()).or_insert_with(|| {
-            order.push(key.clone());
-            Group { first_op: op.clone(), all: false, cols: BTreeSet::new(), hlc: String::new() }
-        });
-        g.hlc = h.clone();
-        match (op.as_str(), cols) {
-            ("insert", _) | ("update", None) => g.all = true,
-            ("update", Some(c)) => g.cols.extend(c.split(',').filter(|s| !s.is_empty()).map(String::from)),
-            _ => {}
-        }
-    }
     let mut recs = vec![];
     let mut out_rows = vec![];
     let mut media = vec![];
     let mut reviews = 0;
-    for (t, u) in order {
-        let g = &groups[&(t.clone(), u.clone())];
+    let mut top = String::new();
+    for ((t, u), p) in load_pending(con)? {
         let Some(table) = tables.iter().find(|x| x.name == t) else { continue };
         match rowid_of(con, &t, &u)? {
             Some(rowid) => {
-                let cols: Option<Vec<String>> = if g.all { None } else { Some(g.cols.iter().filter(|c| table.cols.contains(c)).cloned().collect()) };
-                if cols.as_ref().is_some_and(|c| c.is_empty()) {
+                let names: Vec<String> = if p.all_cols() { table.cols.clone() } else { table.cols.iter().filter(|c| p.cols.contains_key(*c)).cloned().collect() };
+                if names.is_empty() {
                     continue; // 값이 그대로인 UPDATE
                 }
                 let Some((_, r)) = export(con, table, rowid)? else { continue };
-                let b = if t == "note" && cols.as_ref().is_none_or(|c| c.iter().any(|c| c == "fields")) {
-                    let clock = load_clock(con, &t, &u)?.unwrap_or_else(|| Clock::implicit(&r));
-                    Some(clock.col("fields").to_string())
-                } else {
-                    None
-                };
+                let clock = load_clock(con, &t, &u)?.unwrap_or_else(|| Clock::implicit(&r, &me));
+                // 열마다 고친 순간의 HLC. 받은 값이 이겼던 열은 받은 HLC 그대로 (지금 값이 그 값이다)
+                let per: BTreeMap<String, String> = names.iter().map(|c| (c.clone(), col_hlc(&clock, Some(&p), c))).collect();
+                let h = per.values().min().cloned().unwrap_or_default();
+                top = top.max(per.values().max().cloned().unwrap_or_default());
+                let k: BTreeMap<String, String> = per.iter().filter(|(_, v)| **v != h).map(|(c, v)| (c.clone(), v.clone())).collect();
+                // 처음 합친 결과는 Drive 쪽 내용을 바탕으로 고친 것이 아니다: 받는 쪽이 다르면 K7 에 남긴다
+                let b = (t == "note" && per.contains_key("fields")).then(|| if p.resend && p.all.is_none() { "0".to_string() } else { clock.col("fields").to_string() });
                 if t == "media"
                     && let (Some(sha), Some(name)) = (r.get("sha256").and_then(|v| v.as_str()), r.get("filename").and_then(|v| v.as_str()))
                     && sha.len() == 64
@@ -627,56 +713,65 @@ pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
                 {
                     media.push((media_path(sha, name, cx.key()), cx.media_dir.join(name)));
                 }
-                if t == "review_log" && g.first_op == "insert" {
+                // 새로 올린 복습 기록 (처음 합친 뒤 Drive 가 모르던 이 기기 기록도)
+                if t == "review_log" && (p.created || p.resend) {
                     reviews += 1;
                 }
-                out_rows.push((t.clone(), u.clone(), cols.clone(), g.hlc.clone(), false));
-                recs.push(Rec { t, u, op: "up".into(), h: g.hlc.clone(), r: Some(r), c: cols, k: None, b });
+                let all = p.all_cols();
+                recs.push(Rec { t: t.clone(), u: u.clone(), op: "up".into(), h, r: Some(r), c: (!all).then_some(names), k: (!k.is_empty()).then_some(k), b });
+                out_rows.push(Pushed { t, u, all, cols: per, deleted: None });
             }
-            // 이번 묶음에서 생겼다 사라진 행(되돌린 복습 기록 등)은 아무도 모르니 보낼 것도 없다
-            None if g.first_op == "insert" => {}
+            // 이번 묶음에서 생겼다 사라진 행(되돌린 복습 기록 등)은 아무도 모르니 보낼 것도 없다.
+            // 이 기기가 지우지 않았는데 없는 행은 받은 지우기가 지웠다 (다른 기기도 안다)
+            None if p.created => {}
             None => {
-                out_rows.push((t.clone(), u.clone(), None, g.hlc.clone(), true));
-                recs.push(Rec { t, u, op: "del".into(), h: g.hlc.clone(), r: None, c: None, k: None, b: None });
+                let Some(d) = p.deleted else { continue };
+                top = top.max(d.clone());
+                recs.push(Rec { t: t.clone(), u: u.clone(), op: "del".into(), h: d.clone(), r: None, c: None, k: None, b: None });
+                out_rows.push(Pushed { t, u, all: false, cols: BTreeMap::new(), deleted: Some(d) });
             }
         }
     }
     let seq = local_i64(con, "my_seq")? + 1;
     set_local(con, "my_seq", &seq.to_string())?;
-    let header = json!({ "v": FORMAT, "kind": "changes", "gen": gen_of(con)?, "device": me, "seq": seq, "at": db::now_ms(), "hlc": h, "reviews": reviews });
+    let header = json!({ "v": FORMAT, "kind": "changes", "gen": gen_of(con)?, "device": me, "seq": seq, "at": db::now_ms(), "hlc": top, "reviews": reviews });
     let data = encode(&header, &recs, cx.key())?;
-    Ok(Some(Batch { seq, path: change_path(&me, seq), data, max_outbox, hlc: h, rows: out_rows, media, reviews }))
+    Ok(Some(Batch { seq, path: change_path(&me, seq), data, max_outbox, hlc: top, rows: out_rows, media, reviews }))
 }
 
 /// 올리기에 성공한 뒤: 행 HLC 를 남기고, 올린 변경을 지우고, 받은 위치에 이 기기 번호를 적는다
 pub fn finish_push(con: &mut Connection, b: &Batch) -> SRes<()> {
     let me = device_uid(con)?;
     let tx = con.transaction().map_err(dbe)?;
-    for (t, u, cols, h, deleted) in &b.rows {
-        let mut c = load_clock(&tx, t, u)?.unwrap_or_default();
-        if *deleted {
-            c.deleted = Some(h.clone());
-        } else {
-            match cols {
-                None => {
-                    c.base = h.clone();
-                    c.cols.clear();
-                    c.deleted = None;
-                }
-                Some(cols) => {
-                    if c.base.is_empty() {
-                        c.base = "0".into();
-                    }
-                    for col in cols {
-                        c.cols.insert(col.clone(), h.clone());
-                    }
-                }
+    for p in &b.rows {
+        let mut c = load_clock(&tx, &p.t, &p.u)?.unwrap_or_default();
+        if let Some(d) = &p.deleted {
+            if c.deleted.as_ref().is_none_or(|old| d > old) {
+                c.deleted = Some(d.clone());
             }
+            if c.base.is_empty() {
+                c.base = "0".into();
+            }
+        } else {
+            // 열 HLC 는 보낸 값으로 (보낸 값은 이미 지금 값 이상이다. 그래도 내려가지 않게 max)
+            let cols: BTreeMap<String, String> = p.cols.iter().map(|(col, h)| (col.clone(), h.clone().max(c.col(col).to_string()))).collect();
+            if p.all {
+                c.base = cols.values().min().cloned().unwrap_or_else(|| "0".into());
+                c.deleted = None;
+                c.cols.clear();
+            } else if c.base.is_empty() {
+                c.base = "0".into();
+            }
+            for (col, h) in cols {
+                c.cols.insert(col, h);
+            }
+            let base = c.base.clone();
+            c.cols.retain(|_, h| *h > base);
         }
-        save_clock(&tx, t, u, &c)?;
-        if t == "card" {
+        save_clock(&tx, &p.t, &p.u, &c)?;
+        if p.t == "card" {
             // 앵커는 다른 기기가 이 번호를 받았다고 알 때까지 둔다 (K27). 그 사이 엇갈려 온 기록도 이 앵커부터 다시 돌린다
-            tx.execute("UPDATE sync_anchor SET srs = json_set(srs, '$[10]', ?2) WHERE card_id = (SELECT id FROM card WHERE uid = ?1)", params![u, b.seq])
+            tx.execute("UPDATE sync_anchor SET srs = json_set(srs, '$[10]', ?2) WHERE card_id = (SELECT id FROM card WHERE uid = ?1)", params![p.u, b.seq])
                 .map_err(dbe)?;
         }
     }
@@ -819,8 +914,10 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
     if r.is_empty() {
         return Ok(if generation > 0 { Pulled::Gone } else { Pulled::Done(Report::default()) });
     }
-    if r.generation() > generation {
+    // 세대가 올랐다(다른 기기가 되돌리기 · 새로 시작 · 잠그기) 또는 이 기기 세대의 스냅샷이 없다(지운 Drive 를 다른 기기가 다시 시작했다, T3-10)
+    if r.generation() > generation || r.newest(generation).is_none() {
         let snap = r.newest(r.generation()).expect("세대가 있으면 스냅샷도 있다");
+        saw_generation(db, r.generation())?;
         // 다른 기기가 잠갔으면 머리도 못 읽는다. 고르는 창이 암호를 묻는다. 잠금을 풀었으면 평문이라 키 없이 머리만 읽는다
         let data = cx.store.get(&snap.path)?;
         let key = cx.key().filter(|_| crypto::is_sealed(&data));
@@ -856,12 +953,13 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         .collect();
     for (i, (dev, seq, path)) in todo.iter().enumerate() {
         (cx.progress)("pull", i as u64, todo.len() as u64);
-        let Some((header, file_recs)) = read_change(cx, path)? else {
+        let Some((header, file_recs)) = read_change(cx, path, r.locked)? else {
             new_pos.insert(dev.clone(), *seq);
             continue;
         };
         let file_gen = header["gen"].as_i64().unwrap_or(0);
         if file_gen > generation {
+            saw_generation(db, file_gen)?;
             return Ok(Pulled::Choice(Choice { generation: file_gen, header }));
         }
         // 세대가 바뀌기 전에 다른 기기가 쓴 변경은 버린다 (되돌린 상태를 다시 덮지 않게)
@@ -876,7 +974,7 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         let tx = con.transaction().map_err(dbe)?;
         applying(&tx, true)?;
         add_aliases(&tx, &aliases)?;
-        let report = apply(&tx, recs, Mode::Sync, cx.fsrs)?;
+        let report = apply(&tx, recs, Mode::Sync, cx.fsrs, "")?;
         let mut pos = positions(&tx)?;
         for (d, s) in new_pos {
             let e = pos.entry(d).or_insert(0);
@@ -891,6 +989,15 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
     };
     fetch_media(db, cx, &r.media)?;
     Ok(Pulled::Done(report))
+}
+
+/// 본 적 있는 가장 큰 세대. 지운 Drive 를 다시 시작할 때 이보다 큰 세대를 쓴다 (다른 기기가 지난 세대로 보고 버리지 않게, T3-10)
+fn saw_generation(db: &Mutex<Connection>, g: i64) -> SRes<()> {
+    let con = lock(db)?;
+    if g > local_i64(&con, "seen_gen")? {
+        set_local(&con, "seen_gen", &g.to_string())?;
+    }
+    Ok(())
 }
 
 /// 앵커를 놓아도 되는가 (K27): 이 기기가 올린 복습을 활성 기기가 모두 받았고, 이 기기도 그 기기가 그 뒤 올린 것까지 받았다.
@@ -971,8 +1078,11 @@ fn fold(recs: Vec<Rec>, aliases: &HashMap<(String, String), String>) -> (HashMap
     let mut max_h = String::new();
     for rec in recs {
         let uid = alias_of(aliases, &rec.t, &rec.u);
-        if rec.h > max_h {
-            max_h = rec.h.clone();
+        // 열마다 다른 HLC(k)도 받은 값이다: 그 뒤에 고친 이 기기 변경은 그보다 커야 한다
+        for h in std::iter::once(&rec.h).chain(rec.k.iter().flat_map(|k| k.values())) {
+            if *h > max_h {
+                max_h = h.clone();
+            }
         }
         let f = out.entry((rec.t.clone(), uid)).or_default();
         if rec.op == "del" {
@@ -1077,6 +1187,10 @@ fn rename_uid(con: &Connection, t: &str, old: &str, new: &str) -> SRes<()> {
     run("UPDATE sync_outbox SET uid = ?3 WHERE table_name = ?1 AND uid = ?2", &[t, old, new])?;
     run("UPDATE sync_alias SET to_uid = ?3 WHERE table_name = ?1 AND to_uid = ?2", &[t, old, new])?;
     run("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES (?1, ?2, ?3)", &[t, old, new])?;
+    if t == "note" {
+        // K7 기록도 같은 노트를 가리키게 (처음 합칠 때 Drive 쪽 uid 를 따른다)
+        run("UPDATE sync_conflict SET note_uid = ?2 WHERE note_uid = ?1", &[old, new])?;
+    }
     Ok(())
 }
 
@@ -1103,17 +1217,25 @@ fn resolve_fk(con: &Connection, aliases: &HashMap<(String, String), String>, tar
 
 struct Applier<'a> {
     tx: &'a Transaction<'a>,
+    tables: &'a [Table],
     mode: Mode,
     aliases: HashMap<(String, String), String>,
     pending: HashMap<(String, String), Pending>,
     me: String,
+    /// 받은 값의 HLC 에 기기 자리가 비었을 때(옛 앱이 만든 스냅샷) K7 에 적을 기기: 그 스냅샷을 쓴 기기
+    src: String,
     report: Report,
-    /// 새로 들어온 복습 기록의 카드 rowid
+    /// 새로 들어온 복습 기록의 카드 rowid 와 그 기록 uid
     new_logs: HashSet<i64>,
+    new_log_uids: HashSet<String>,
     /// 처음 합치기: Drive 에 있던 행, 이 기기 값이 이긴 행
     remote_rows: HashSet<(String, String)>,
     local_won: HashSet<(String, String)>,
+    /// 받은 지우기 (표, uid, HLC): 지울 것과, 나중에 고쳐서 남긴 것 (K29)
     deletes: Vec<(&'static str, String, String)>,
+    refused: Vec<(&'static str, String, String)>,
+    /// 처음 합치기: 두 기기에서 따로 복습한 카드의 (이 기기 상태, Drive 상태) (T3-06)
+    merge_srs: HashMap<i64, (SrsState, SrsState)>,
 }
 
 enum Step {
@@ -1167,7 +1289,8 @@ impl Applier<'_> {
         let t = table.name;
         let clock = load_clock(self.tx, t, &uid)?;
         let max_in = f.cols.values().map(|(_, h)| h.clone()).max().unwrap_or_default();
-        let tomb = if self.pend(t, &uid).is_some_and(|p| p.deleted) { Some(INF.to_string()) } else { clock.as_ref().and_then(|c| c.deleted.clone()) };
+        // 이 기기에서 지운 것(아직 올리지 않았어도 지운 순간의 HLC)과 받아서 지운 것 중 나중
+        let tomb = max_of(self.pend(t, &uid).and_then(|p| p.deleted.as_deref()), clock.as_ref().and_then(|c| c.deleted.as_deref())).map(String::from);
         // 지운 쪽이 나중이면 넣지 않는다. 고친 쪽이 나중이면 되살린다 (5.4 삭제)
         if let Some(d) = &f.del
             && *d >= max_in
@@ -1237,6 +1360,7 @@ impl Applier<'_> {
             && let Some(Value::Integer(card)) = vals.get("card_id")
         {
             self.new_logs.insert(*card);
+            self.new_log_uids.insert(uid);
         }
         self.report.applied += 1;
         Ok(Step::Done)
@@ -1273,32 +1397,53 @@ impl Applier<'_> {
         Ok(Step::Done)
     }
 
+    /// 그 행을 마지막으로 고친 HLC: 받은 값 · 아직 올리지 않은 이 기기 변경 중 나중
+    fn newest(&self, t: &str, uid: &str) -> SRes<String> {
+        let clock = match load_clock(self.tx, t, uid)? {
+            Some(c) => c,
+            None => match (self.tables.iter().find(|x| x.name == t), rowid_of(self.tx, t, uid)?) {
+                (Some(table), Some(id)) => export(self.tx, table, id)?.map(|(_, r)| Clock::implicit(&r, &self.me)).unwrap_or_default(),
+                _ => Clock::default(),
+            },
+        };
+        let mine = clock.max();
+        Ok(max_of(Some(mine.as_str()), self.pend(t, uid).and_then(|p| p.newest())).unwrap_or_default().to_string())
+    }
+
     fn update(&mut self, table: &Table, uid: &str, rowid: i64, f: &Fold) -> SRes<Step> {
         let t = table.name;
         let Some((_, local)) = export(self.tx, table, rowid)? else { return Ok(Step::Done) };
-        let mut clock = load_clock(self.tx, t, uid)?.unwrap_or_else(|| Clock::implicit(&local));
-        let pend_all = self.pend(t, uid).is_some_and(|p| p.all);
-        let pend_cols: HashSet<String> = self.pend(t, uid).map(|p| p.cols.clone()).unwrap_or_default();
-        let pend_at = self.pend(t, uid).map(|p| p.at).unwrap_or(0);
-        let local_hlc = |clock: &Clock, c: &str| if pend_all || pend_cols.contains(c) { INF.to_string() } else { clock.col(c).to_string() };
-        // 복습 기록은 바뀌지 않는다 (합집합). 카드가 지워져 참조가 비는 것은 각 기기에서 일어난다
-        if t != "review_log" {
+        let mut clock = load_clock(self.tx, t, uid)?.unwrap_or_else(|| Clock::implicit(&local, &self.me));
+        let pend = self.pend(t, uid).cloned();
+        if t == "review_log" {
+            // 복습 기록은 바뀌지 않는다 (합집합). 단 카드를 지웠다가 되살려 받은 기기에서 비어 버린 카드 참조는 채운다 (K29)
+            if local.get("card_id").is_some_and(|v| v.is_null())
+                && let Some((v, _)) = f.cols.get("card_id")
+                && let Some(Some(card)) = resolve_fk(self.tx, &self.aliases, "card", v)?
+            {
+                self.tx.execute("UPDATE review_log SET card_id = ?2 WHERE rowid = ?1", params![rowid, card]).map_err(dbe)?;
+            }
+        } else {
             let mut sets: Vec<(String, J, String)> = vec![];
+            let mut srs_differs = false;
             for (c, (v, h)) in &f.cols {
                 if !table.cols.contains(c) {
                     continue;
                 }
-                let lh = local_hlc(&clock, c);
+                // 이 기기 값의 HLC: 받은 값이거나, 아직 올리지 않았으면 고친 순간 (K28)
+                let lh = col_hlc(&clock, pend.as_ref(), c);
                 // 참조는 별칭을 거친 uid 로 비교한다 (합쳐진 덱을 가리키는 옛 uid)
                 let v = &match (table.fks.get(c), v.as_str()) {
                     (Some((target, _)), Some(u)) => J::String(alias_of(&self.aliases, target, u)),
                     _ => v.clone(),
                 };
                 let same = local.get(c) == Some(v);
+                srs_differs |= !same && t == "card" && SRS_COLS.contains(&c.as_str());
                 if *h > lh {
                     if !same {
-                        if t == "note" && c == "fields" && f.base.as_ref().is_none_or(|b| *b < lh) && lh != hlc(0, 0, "") {
-                            self.conflict(uid, h, v, &lh, local.get(c), pend_at, false)?;
+                        // 받은 쪽이 이 기기 값을 모르고 고쳤으면(바탕이 더 옛것) 동시에 고친 것이다. 처음 합칠 때는 바탕이 없다: 내용이 다르면 남긴다
+                        if t == "note" && c == "fields" && hlc_ms(&lh) > 0 && (self.mode == Mode::Merge || f.base.as_ref().is_none_or(|b| *b < lh)) {
+                            self.conflict(uid, h, v, &lh, local.get(c), false)?;
                         }
                         sets.push((c.clone(), v.clone(), h.clone()));
                     } else {
@@ -1306,12 +1451,16 @@ impl Applier<'_> {
                     }
                 } else if !same {
                     if t == "note" && c == "fields" {
-                        self.conflict(uid, h, v, &lh, local.get(c), pend_at, true)?;
+                        self.conflict(uid, h, v, &lh, local.get(c), true)?;
                     }
                     if self.mode == Mode::Merge {
                         self.local_won.insert((t.into(), uid.to_string()));
                     }
                 }
+            }
+            if srs_differs && self.mode == Mode::Merge {
+                let incoming = |c: &str| f.cols.get(c).map(|(v, _)| v).or_else(|| f.row.as_ref().and_then(|(_, r)| r.get(c)));
+                self.merge_srs.insert(rowid, (srs_of(|c| local.get(c)), srs_of(incoming)));
             }
             let applied = !sets.is_empty();
             for (c, v, h) in sets {
@@ -1331,30 +1480,42 @@ impl Applier<'_> {
                 self.report.applied += 1;
             }
         }
-        if let Some(d) = &f.del {
-            let newest = if self.pend(t, uid).is_some() { INF.to_string() } else { clock.max() };
-            if *d > newest {
-                self.deletes.push((t, uid.to_string(), d.clone()));
-            }
-        }
         // 열 HLC 를 행 기본값보다 작게 남길 필요는 없다
         let base = clock.base.clone();
         clock.cols.retain(|_, h| *h > base);
         save_clock(self.tx, t, uid, &clock)?;
+        if let Some(d) = &f.del {
+            // 지운 것이 그 행을 마지막으로 고친 것보다 나중일 때만 지운다. 카드는 노트(앞뒤 내용)를 고친 것도 그 카드를 고친 것이다 (K29).
+            // 지운 기기가 이미 받은 수정이면 지운 HLC 가 더 크다 (고친 순간의 HLC 는 받은 값보다 크다): 모르고 나중에 고친 것만 남긴다
+            let mut newest = self.newest(t, uid)?;
+            if t == "card"
+                && let Some(note) = local.get("note_id").and_then(|v| v.as_str())
+            {
+                newest = newest.max(self.newest("note", note)?);
+            }
+            if *d > newest {
+                self.deletes.push((t, uid.to_string(), d.clone()));
+            } else if t != "review_log" {
+                self.refused.push((t, uid.to_string(), d.clone()));
+            }
+        }
         Ok(Step::Done)
     }
 
-    /// K7: 같은 노트 내용을 두 기기에서 고쳤다. 진 쪽 내용을 남긴다
-    #[allow(clippy::too_many_arguments)]
-    fn conflict(&mut self, note_uid: &str, h: &str, incoming: &J, lh: &str, local: Option<&J>, pend_at: i64, local_wins: bool) -> SRes<()> {
-        let local_dev = if lh == INF { self.me.clone() } else { hlc_device(lh).to_string() };
-        let local_at = if lh == INF { pend_at } else { hlc_ms(lh) };
+    /// K7: 같은 노트 내용을 두 기기에서 고쳤다. 진 쪽 내용을 남긴다. 시각은 고친 순간 (K28)
+    fn conflict(&mut self, note_uid: &str, h: &str, incoming: &J, lh: &str, local: Option<&J>, local_wins: bool) -> SRes<()> {
+        let local_dev = hlc_device(lh).to_string();
+        // 옛 앱이 만든 스냅샷은 HLC 에 기기가 없다: 그 스냅샷을 쓴 기기
+        let in_dev = match hlc_device(h) {
+            "" => self.src.clone(),
+            d => d.to_string(),
+        };
         let local_fields = local.and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let in_fields = incoming.as_str().unwrap_or_default().to_string();
         let (wd, wa, wf, ld, la, lf) = if local_wins {
-            (local_dev, local_at, local_fields, hlc_device(h).to_string(), hlc_ms(h), in_fields)
+            (local_dev, hlc_ms(lh), local_fields, in_dev, hlc_ms(h), in_fields)
         } else {
-            (hlc_device(h).to_string(), hlc_ms(h), in_fields, local_dev, local_at, local_fields)
+            (in_dev, hlc_ms(h), in_fields, local_dev, hlc_ms(lh), local_fields)
         };
         self.tx
             .execute(
@@ -1373,63 +1534,209 @@ impl Applier<'_> {
             let anchor: Option<String> = self.tx.query_row("SELECT srs FROM sync_anchor WHERE card_id = ?1", [card], |r| r.get(0)).optional().map_err(dbe)?;
             // 앵커가 없으면 이 기기의 복습은 다른 기기가 모두 받았다: 받은 상태가 그대로 맞다
             let Some(anchor) = anchor.and_then(|a| serde_json::from_str::<Vec<J>>(&a).ok()) else { continue };
-            let mut s = SrsState {
-                state: anchor[0].as_str().unwrap_or("new").into(),
-                step: anchor[1].as_u64().map(|v| v as u32),
-                stability: anchor[2].as_f64().map(|v| v as f32),
-                difficulty: anchor[3].as_f64().map(|v| v as f32),
-                due_at: anchor[4].as_i64(),
-                interval_days: anchor[5].as_f64().unwrap_or(0.0),
-                last_reviewed_at: anchor[6].as_i64(),
-                reps: anchor[7].as_i64().unwrap_or(0),
-                lapses: anchor[8].as_i64().unwrap_or(0),
-            };
-            let from = anchor[9].as_i64().unwrap_or(0);
-            let logs: Vec<(i64, u8)> = {
-                let mut st = self
-                    .tx
-                    .prepare("SELECT reviewed_at, rating FROM review_log WHERE card_id = ?1 AND id >= ?2 AND fed_to_scheduler = 1 ORDER BY reviewed_at, uid")
-                    .map_err(dbe)?;
-                st.query_map([card, from], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
-            };
-            for (at, rating) in logs {
-                s = srs::review(fsrs, &s, rating, at);
+            let mut s = srs_of(|c| SRS_COLS.iter().position(|x| *x == c).and_then(|i| anchor.get(i)));
+            let from = anchor.get(9).and_then(|v| v.as_i64()).unwrap_or(0);
+            for (_, id, at, rating) in self.fed_logs(card)? {
+                if id >= from {
+                    s = srs::review(fsrs, &s, rating, at);
+                }
             }
             self.report.recomputed += 1;
-            if crate::commands::load_srs(self.tx, card).map_err(other)? == s {
+            self.write_srs(card, &s)?;
+        }
+        Ok(())
+    }
+
+    /// 처음 합치기 (T3-06): 연결 전에 두 기기에서 따로 복습한 카드. 갈라지기 전 상태(앵커)는 어디에도 없다 (앵커는 동기화를 켠 뒤에만 남는다).
+    /// 한쪽 복습이 모두 다른 쪽보다 먼저면, 먼저 끝난 쪽 상태에서 나중 쪽 기록을 다시 돌린 것이 합친 기록 전체를 시간 순으로 돌린 것과 같다.
+    /// ponytail: 두 쪽 복습이 시간상 엇갈리면 지금처럼 열마다 나중 값을 쓴다. 잦으면 동기화를 켜기 전에도 앵커를 남긴다
+    fn merge_replay(&mut self, fsrs: &fsrs::FSRS) -> SRes<()> {
+        for (card, (local, remote)) in std::mem::take(&mut self.merge_srs) {
+            let logs = self.fed_logs(card)?;
+            // Drive 에서 새로 들어온 기록 / Drive 가 모르는 이 기기 기록 (같은 기록은 합칠 때 Drive 쪽 uid 를 따랐다)
+            let theirs: Vec<(i64, u8)> = logs.iter().filter(|(u, ..)| self.new_log_uids.contains(u)).map(|(_, _, at, r)| (*at, *r)).collect();
+            let mine: Vec<(i64, u8)> =
+                logs.iter().filter(|(u, ..)| !self.remote_rows.contains(&("review_log".to_string(), u.clone()))).map(|(_, _, at, r)| (*at, *r)).collect();
+            let (Some(t0), Some(t1), Some(m0), Some(m1)) = (theirs.first(), theirs.last(), mine.first(), mine.last()) else { continue };
+            let (start, rest) = if t1.0 <= m0.0 {
+                (remote, &mine)
+            } else if m1.0 <= t0.0 {
+                (local, &theirs)
+            } else {
+                continue;
+            };
+            let s = rest.iter().fold(start, |s, (at, r)| srs::review(fsrs, &s, *r, *at));
+            self.report.recomputed += 1;
+            self.write_srs(card, &s)?;
+            // 쓰면서 트리거가 남긴 앵커는 다시 계산하기 전 상태라 틀린 공통 시점이다. 이 결과를 올리면 다른 기기와 같은 출발점이다
+            self.tx.execute("DELETE FROM sync_anchor WHERE card_id = ?1", [card]).map_err(dbe)?;
+        }
+        Ok(())
+    }
+
+    /// 일정에 넘긴 복습 기록 (uid, id, 시각, 평가). 시간 순
+    fn fed_logs(&self, card: i64) -> SRes<Vec<(String, i64, i64, u8)>> {
+        let mut st = self
+            .tx
+            .prepare_cached("SELECT uid, id, reviewed_at, rating FROM review_log WHERE card_id = ?1 AND fed_to_scheduler = 1 ORDER BY reviewed_at, uid")
+            .map_err(dbe)?;
+        st.query_map([card], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(dbe)?
+            .collect::<Result<_, _>>()
+            .map_err(dbe)
+    }
+
+    /// 다시 계산한 상태가 다르면 이 기기의 변경으로 올린다 (트리거가 바뀐 열만 쌓는다): 복습하지 않은 기기도 같은 상태가 되게
+    fn write_srs(&self, card: i64, s: &SrsState) -> SRes<()> {
+        if crate::commands::load_srs(self.tx, card).map_err(other)? == *s {
+            return Ok(());
+        }
+        applying(self.tx, false)?;
+        self.tx
+            .execute(
+                "UPDATE card SET state = ?2, srs_step = ?3, stability = ?4, difficulty = ?5, due_at = ?6, interval_days = ?7,
+                        last_reviewed_at = ?8, reps = ?9, lapses = ?10 WHERE id = ?1",
+                params![card, s.state, s.step, s.stability, s.difficulty, s.due_at, s.interval_days, s.last_reviewed_at, s.reps, s.lapses],
+            )
+            .map_err(dbe)?;
+        applying(self.tx, true)
+    }
+
+    /// 받은 지우기를 적용한다 (K29). 지울 행을 붙잡는 남은 행이 있으면 지우지 않는다:
+    ///   - 붙잡기: 지우지 않는 자식(나중에 고쳤거나 새로 단 카드 · 하위 덱 …)이 가리키는 부모 (노트 · 덱 · 노트 유형)
+    ///   - 따라가기: 남긴 부모의 일부 (노트의 카드, 덱의 설정, 서술형 정보)
+    ///
+    /// 남긴 행은 지운 기기가 되살리게 다시 보내고, 붙잡은 자식도 다시 보낸다 (지운 기기는 부모가 없어 건너뛰었을 수 있다)
+    fn delete_rows(&mut self) -> SRes<()> {
+        let mut cand: HashMap<(&'static str, String), String> =
+            std::mem::take(&mut self.deletes).into_iter().filter(|(t, _, _)| *t != "review_log").map(|(t, u, d)| ((t, u), d)).collect();
+        let mut kept: HashSet<(&'static str, String)> = self.refused.iter().map(|(t, u, _)| (*t, u.clone())).collect();
+        let holds: Vec<(&'static str, String, &'static str)> = self
+            .tables
+            .iter()
+            .filter(|t| !DERIVED.contains(&t.name))
+            .flat_map(|t| t.fks.iter().filter(|(_, (_, set_null))| !set_null).map(move |(col, (parent, _))| (t.name, col.clone(), *parent)))
+            .collect();
+        let mut survivors: BTreeSet<(&'static str, String)> = BTreeSet::new();
+        loop {
+            let mut moved = vec![];
+            for (t, u) in cand.keys() {
+                let Some(rowid) = rowid_of(self.tx, t, u)? else { continue };
+                let mut by = vec![];
+                for (child, col, _) in holds.iter().filter(|(_, _, p)| p == t) {
+                    let mut st = self.tx.prepare_cached(&format!("SELECT uid FROM {child} WHERE \"{col}\" = ?1 AND uid IS NOT NULL")).map_err(dbe)?;
+                    let uids: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+                    by.extend(uids.into_iter().map(|cu| (*child, cu)).filter(|k| !cand.contains_key(k)));
+                }
+                let mut follows = false;
+                for (child, col) in PART_OF.iter().filter(|(c, _)| c == t) {
+                    let Some(parent) = self.tables.iter().find(|x| x.name == *child).and_then(|x| x.fks.get(*col)).map(|(p, _)| *p) else { continue };
+                    let pu: Option<String> = self
+                        .tx
+                        .query_row(&format!("SELECT uid FROM {parent} WHERE id = (SELECT \"{col}\" FROM {child} WHERE uid = ?1)"), [u], |r| r.get(0))
+                        .optional()
+                        .map_err(dbe)?;
+                    follows |= pu.is_some_and(|pu| kept.contains(&(parent, pu)));
+                }
+                if !by.is_empty() || follows {
+                    moved.push(((*t, u.clone()), by));
+                }
+            }
+            if moved.is_empty() {
+                break;
+            }
+            for (k, by) in moved {
+                if let Some(d) = cand.remove(&k) {
+                    self.refused.push((k.0, k.1.clone(), d));
+                    kept.insert(k);
+                    survivors.extend(by);
+                }
+            }
+        }
+        // 자식부터 (카드 -> 노트 -> 덱)
+        let mut order: Vec<((&'static str, String), String)> = cand.into_iter().collect();
+        order.sort_by_key(|((t, u), _)| (std::cmp::Reverse(self.tables.iter().position(|x| x.name == *t)), u.clone()));
+        for ((t, uid), d) in order {
+            if self.tx.execute(&format!("DELETE FROM {t} WHERE uid = ?1"), [&uid]).is_err() {
+                self.refused.push((t, uid, d)); // 다른 참조가 붙잡았다
                 continue;
             }
-            // 바뀐 상태는 이 기기의 변경으로 올린다 (트리거가 바뀐 열만 쌓는다): 복습하지 않은 기기도 같은 상태가 되게
-            applying(self.tx, false)?;
+            let mut c = load_clock(self.tx, t, &uid)?.unwrap_or_default();
+            c.deleted = Some(d);
+            if c.base.is_empty() {
+                c.base = "0".into();
+            }
+            save_clock(self.tx, t, &uid, &c)?;
+            self.report.applied += 1;
+        }
+        // 남긴 행: 모든 열을 지운 HLC 바로 다음으로 다시 보낸다. 카드는 지운 기기에서 비어 버린 복습 기록의 참조도 채우게 그 기록까지
+        let now = db::now_ms();
+        let put = |t: &str, u: &str, cols: &str, at: i64, floor: Option<&str>| {
             self.tx
-                .execute(
-                    "UPDATE card SET state = ?2, srs_step = ?3, stability = ?4, difficulty = ?5, due_at = ?6, interval_days = ?7,
-                            last_reviewed_at = ?8, reps = ?9, lapses = ?10 WHERE id = ?1",
-                    params![card, s.state, s.step, s.stability, s.difficulty, s.due_at, s.interval_days, s.last_reviewed_at, s.reps, s.lapses],
-                )
-                .map_err(dbe)?;
-            applying(self.tx, true)?;
+                .execute("INSERT INTO sync_outbox (table_name, uid, op, at, cols, floor) VALUES (?1, ?2, 'insert', ?3, ?4, ?5)", params![t, u, at, cols, floor])
+                .map(|_| ())
+                .map_err(dbe)
+        };
+        for (t, u, d) in &self.refused {
+            let Some(rowid) = rowid_of(self.tx, t, u)? else { continue };
+            put(t, u, REVIVE, 0, Some(d))?;
+            if *t == "card" {
+                let mut st = self.tx.prepare_cached("SELECT uid FROM review_log WHERE card_id = ?1 AND uid IS NOT NULL").map_err(dbe)?;
+                let logs: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+                for l in logs {
+                    put("review_log", &l, RESEND, now, None)?;
+                }
+            }
+        }
+        for (t, u) in survivors {
+            put(t, &u, RESEND, now, None)?;
         }
         Ok(())
     }
 }
 
-/// 받은 변경을 합친다. 호출하는 쪽이 트랜잭션과 applying 을 잡는다
-pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS) -> SRes<Report> {
+/// 남은 자식이 있어도 부모를 붙잡지 않는 표 (기기가 저절로 만드는 것: 오늘의 계획 · 자료 분석 결과 · 자동 연결)
+const DERIVED: [&str; 3] = ["daily_plan", "source_segment", "source_link"];
+/// 부모를 남기면 함께 남는 그 부모의 일부 (K29): 노트의 카드, 덱의 설정, 서술형 키워드 · 지난번 답
+const PART_OF: [(&str, &str); 4] = [("card", "note_id"), ("deck_config", "deck_id"), ("note_written", "note_id"), ("written_answer", "card_id")];
+
+/// 열 이름 -> 값에서 FSRS 상태 (SRS_COLS 와 같은 열)
+fn srs_of<'a>(get: impl Fn(&str) -> Option<&'a J>) -> SrsState {
+    let g = |c: &str| get(c).cloned().unwrap_or(J::Null);
+    SrsState {
+        state: g("state").as_str().unwrap_or("new").into(),
+        step: g("srs_step").as_u64().map(|v| v as u32),
+        stability: g("stability").as_f64().map(|v| v as f32),
+        difficulty: g("difficulty").as_f64().map(|v| v as f32),
+        due_at: g("due_at").as_i64(),
+        interval_days: g("interval_days").as_f64().unwrap_or(0.0),
+        last_reviewed_at: g("last_reviewed_at").as_i64(),
+        reps: g("reps").as_i64().unwrap_or(0),
+        lapses: g("lapses").as_i64().unwrap_or(0),
+    }
+}
+
+/// 받은 변경을 합친다. 호출하는 쪽이 트랜잭션과 applying 을 잡는다. src: 받은 스냅샷을 쓴 기기 (K7 기기 이름)
+pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, src: &str) -> SRes<Report> {
     let tables = tables(tx)?;
     let aliases = load_aliases(tx)?;
     let (mut folds, max_h) = fold(recs, &aliases);
     let mut ap = Applier {
         tx,
+        tables: &tables,
         mode,
         aliases,
-        pending: load_pending(tx)?,
+        pending: load_pending(tx)?.into_iter().collect(),
         me: device_uid(tx)?,
+        src: src.to_string(),
         report: Report::default(),
         new_logs: HashSet::new(),
+        new_log_uids: HashSet::new(),
         remote_rows: HashSet::new(),
         local_won: HashSet::new(),
         deletes: vec![],
+        refused: vec![],
+        merge_srs: HashMap::new(),
     };
     if mode == Mode::Merge {
         // 아직 차례가 오지 않은 행도 Drive 가 아는 uid 다 (insert 가 이 기기 uid 를 버려도 되는지 본다)
@@ -1457,32 +1764,19 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS) ->
             keys = later;
         }
     }
-    // 지우기는 자식부터 (카드 -> 노트 -> 덱). 실패하면(이 기기에서 새로 단 자식이 있다) 남긴다 = 고친 쪽이 나중
-    let mut deletes = std::mem::take(&mut ap.deletes);
-    deletes.sort_by_key(|(t, _, _)| std::cmp::Reverse(tables.iter().position(|x| x.name == *t)));
-    for (t, uid, d) in deletes {
-        if t == "review_log" {
-            continue; // 복습 기록은 지우지 않는다
-        }
-        if tx.execute(&format!("DELETE FROM {t} WHERE uid = ?1"), [&uid]).is_ok() {
-            let mut c = load_clock(tx, t, &uid)?.unwrap_or_default();
-            c.deleted = Some(d);
-            if c.base.is_empty() {
-                c.base = "0".into();
-            }
-            save_clock(tx, t, &uid, &c)?;
-            ap.report.applied += 1;
-        }
-    }
+    ap.delete_rows()?;
+    // 받은 값을 남긴 뒤에 다시 계산한다: 그 결과는 받은 것을 본 뒤의 이 기기 변경이라 받은 어떤 값보다 크다 (K28)
+    bump_hlc_last(tx, &max_h)?;
     ap.recompute(fsrs)?;
     if mode == Mode::Merge {
+        ap.merge_replay(fsrs)?;
         enqueue_local(tx, &tables, &ap.remote_rows, &ap.local_won)?;
     }
-    bump_hlc_last(tx, &max_h)?;
     Ok(ap.report)
 }
 
-/// 처음 합친 뒤: Drive 에 없던 이 기기 행과 이 기기 값이 이긴 행을 올릴 변경으로 쌓는다
+/// 처음 합친 뒤: Drive 에 없던 이 기기 행과 이 기기 값이 이긴 행을 지금 열 HLC 그대로 올린다 (RESEND).
+/// 처음 합친 결과는 Drive 쪽을 바탕으로 고친 것이 아니라서, 받는 기기도 내용이 다르면 K7 에 남긴다 (T3-04)
 fn enqueue_local(tx: &Transaction, tables: &[Table], remote: &HashSet<(String, String)>, won: &HashSet<(String, String)>) -> SRes<()> {
     let now = db::now_ms();
     for t in tables {
@@ -1493,7 +1787,7 @@ fn enqueue_local(tx: &Transaction, tables: &[Table], remote: &HashSet<(String, S
         for u in uids {
             let key = (t.name.to_string(), u.clone());
             if !remote.contains(&key) || won.contains(&key) {
-                tx.execute("INSERT INTO sync_outbox (table_name, uid, op, at, cols) VALUES (?1, ?2, 'insert', ?3, NULL)", params![t.name, u, now])
+                tx.execute("INSERT INTO sync_outbox (table_name, uid, op, at, cols) VALUES (?1, ?2, 'insert', ?3, ?4)", params![t.name, u, now, RESEND])
                     .map_err(dbe)?;
             }
         }
@@ -1532,7 +1826,7 @@ fn build_snapshot(con: &Connection, generation: i64, reason: &J, key: Option<&[u
         };
         for id in ids {
             let Some((uid, r)) = export(con, &table, id)? else { continue };
-            let c = load_clock(con, table.name, &uid)?.unwrap_or_else(|| Clock::implicit(&r));
+            let c = load_clock(con, table.name, &uid)?.unwrap_or_else(|| Clock::implicit(&r, &me));
             let k = (!c.cols.is_empty()).then(|| c.cols.clone());
             let b = (table.name == "note").then(|| c.col("fields").to_string());
             recs.push(Rec { t: table.name.into(), u: uid, op: "up".into(), h: c.base, r: Some(r), c: None, k, b });
@@ -1636,7 +1930,13 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
     }
     match how {
         Join::New | Join::Fresh => {
-            let generation = r.generation() + 1;
+            // 지금 Drive 와 이 기기가 본 어떤 세대보다 크게: 지운 Drive 를 다시 시작해도 다른 기기가 지난 세대로 보고 버리지 않는다 (T3-10)
+            let generation = {
+                let con = lock(db)?;
+                // 이 기기 행의 HLC 를 스냅샷에 싣는 값으로 고정한다
+                save_implicit(&con)?;
+                r.generation().max(gen_of(&con)?).max(local_i64(&con, "seen_gen")?) + 1
+            };
             // 스냅샷을 올린 뒤에야 이 기기를 새 세대로 옮긴다 (실패하면 그대로).
             // 다른 기기의 지난 세대 파일은 머리의 세대를 보고 건너뛰므로 받은 위치는 그대로 둔다
             let upto = write_snapshot(db, cx, generation, reason)?;
@@ -1663,7 +1963,7 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
             for (d, files) in &r.changes {
                 for (s, p) in files {
                     if *s > pos.get(d).copied().unwrap_or(0) {
-                        if let Some((h, file_recs)) = read_change(cx, p)?
+                        if let Some((h, file_recs)) = read_change(cx, p, r.locked)?
                             && h["gen"].as_i64().unwrap_or(0) == generation
                         {
                             recs.extend(file_recs);
@@ -1683,7 +1983,7 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
                     clear_synced(&tx)?;
                 }
                 add_aliases(&tx, header["aliases"].as_array().map(|v| v.as_slice()).unwrap_or(&[]))?;
-                let report = apply(&tx, recs, if how == Join::Take { Mode::Sync } else { Mode::Merge }, cx.fsrs)?;
+                let report = apply(&tx, recs, if how == Join::Take { Mode::Sync } else { Mode::Merge }, cx.fsrs, header["device"].as_str().unwrap_or_default())?;
                 let my_seq = local_i64(&tx, "my_seq")?.max(mine);
                 set_local(&tx, "my_seq", &my_seq.to_string())?;
                 pos.insert(me.clone(), my_seq);
@@ -1702,6 +2002,18 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
             Ok(report)
         }
     }
+}
+
+/// K17 잠그기를 바꿔 새 세대로 옮긴 뒤: 지난 세대 스냅샷과, 옮기기 전에 본 변경 파일(평문이거나 옛 키)을 지운다.
+/// 지울 변경 파일은 새 세대를 올리기 전에 정한다 (번호만으로는 세대를 모르고 옛 키로 잠근 파일은 머리도 못 읽는다)
+pub fn drop_old_generation(store: &dyn Store, old_gen: i64, before: &Remote) -> SRes<()> {
+    for s in remote(store)?.snapshots.iter().filter(|s| s.generation <= old_gen) {
+        store.delete(&s.path)?;
+    }
+    for (_, p) in before.changes.values().flatten() {
+        store.delete(p)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- 기기 파일 · 정리

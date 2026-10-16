@@ -49,7 +49,8 @@ type Flow =
   | { kind: "conflicts" }
   | { kind: "restore"; backup: DriveBackup }
   | { kind: "disconnect" }
-  | { kind: "unlock" };
+  /** restart: 잠근 기기가 지운 Drive 를 이 기기 데이터로 다시 시작 (같은 암호로 잠근 채, T3-11) */
+  | { kind: "unlock"; restart?: boolean };
 let openFlow: (f: Flow | null) => void = () => {};
 export const syncFlow = (f: Flow) => openFlow(f);
 
@@ -61,11 +62,29 @@ const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.get
 const md = (d: Date) => `${d.getMonth() + 1}월 ${d.getDate()}일`;
 const dayStart = (ms: number) => new Date(new Date(ms).toDateString()).getTime();
 
-/** 오늘 09:12 · 어제 22:10 · 10월 12일 22:40 */
-export function when(ms: number) {
+/** 오늘 09:12 · 어제 22:10 · 10월 12일 22:40. secs: 같은 분에 고친 두 버전을 가리려고 초까지 (K7) */
+export function when(ms: number, secs = false) {
   const d = new Date(ms);
+  const t = secs ? `${hm(d)}:${String(d.getSeconds()).padStart(2, "0")}` : hm(d);
   const days = Math.round((dayStart(Date.now()) - dayStart(ms)) / DAY);
-  return days === 0 ? `오늘 ${hm(d)}` : days === 1 ? `어제 ${hm(d)}` : `${md(d)} ${hm(d)}`;
+  return days === 0 ? `오늘 ${t}` : days === 1 ? `어제 ${t}` : `${md(d)} ${t}`;
+}
+/** 맞추지 못했을 때: 변경은 이 기기에 남아 있다는 것을 먼저 (T3-14) */
+const failText = (s: SyncStatus) =>
+  s.pending > 0 ? `아직 올리지 못한 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요. 다음 동기화 때 올려요.` : "이 기기 데이터는 그대로예요. 다음 동기화 때 다시 맞춰요.";
+
+/** 오류 원문(OS 오류 등)은 접어 두고 [자세히]를 눌렀을 때만 보인다 */
+function Detail({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {" "}
+      <button type="button" className="sync-detail t-caption" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? "접기" : "자세히"}
+      </button>
+      {open && <span className="sync-detail__text"> {text}</span>}
+    </>
+  );
 }
 /** 방금 · 2분 전 · 3시간 전 · 어제 22:10 */
 export function ago(ms: number) {
@@ -99,7 +118,7 @@ function line(s: SyncStatus): { title: string; icon: IconName; tone: "ok" | "pla
       return { title: s.total > 1 ? `${verb} · ${n(s.done)} / ${n(s.total)}` : verb, icon: "cloud", tone: "plain" };
     }
     case "offline":
-      return { title: s.pending > 0 ? `오프라인 · 전송 대기 변경 ${n(s.pending)}건 · 이 기기에 저장됨` : "오프라인 · 연결되면 저절로 맞춰요", icon: "cloud-off", tone: "plain" };
+      return { title: s.pending > 0 ? `오프라인 · 아직 올리지 못한 변경 ${n(s.pending)}건 · 이 기기에 저장됨` : "오프라인 · 연결되면 저절로 맞춰요", icon: "cloud-off", tone: "plain" };
     case "login":
       return { title: "다시 로그인이 필요해요", icon: "alert", tone: "warn" };
     case "quota":
@@ -237,7 +256,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     </>
   );
   if (s.state === "login") {
-    text = `Google 로그인이 만료됐어요. 전송 대기 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요.`;
+    text = `Google 로그인이 만료됐어요. 아직 올리지 못한 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요.`;
     actions = (
       <>
         <Button variant="ghost" size="M" label="나중에" onClick={close} />
@@ -266,17 +285,33 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     text = "Drive 데이터를 어떻게 할지 고르면 다시 맞춰요. 그때까지 이 기기 데이터는 그대로예요.";
     actions = <Button size="M" label="고르기" onClick={act(() => syncFlow({ kind: "choice", probe: null }))} />;
   } else if (s.state === "gone") {
-    text = "다른 기기에서 Drive 데이터를 지웠어요. 이 기기 데이터는 그대로예요.";
+    text = "다른 기기나 Drive 설정에서 지워졌어요. 이 기기 데이터는 그대로예요.";
     actions = (
       <>
         <Button variant="ghost" size="M" label="연결 끊기" onClick={act(() => syncFlow({ kind: "disconnect" }))} />
-        <Button size="M" label="이 기기 데이터로 다시 시작" onClick={act(() => syncApi.join({ mode: "fresh" }).catch((e) => toast({ title: errorText(e), tone: "error" })))} />
+        <Button
+          size="M"
+          label="이 기기 데이터로 다시 시작"
+          onClick={act(() =>
+            syncApi.join({ mode: "fresh" }).catch((e) =>
+              // 잠근 기기: 이 기기에 남긴 잠금이 없으면 암호를 물어 잠근 채 다시 시작한다 (잠금을 말없이 풀지 않는다)
+              s.lock ? syncFlow({ kind: "unlock", restart: true }) : toast({ title: errorText(e), tone: "error" }),
+            ),
+          )}
+        />
       </>
     );
   } else if (s.state === "locked") {
     text = "이 기기에서 Drive 데이터를 열려면 암호가 필요해요.";
     actions = <Button size="M" icon="lock" label="암호 입력" onClick={act(() => syncFlow({ kind: "unlock" }))} />;
-  } else if (s.state === "update" || s.state === "error") {
+  } else if (s.state === "error") {
+    text = (
+      <>
+        {failText(s)}
+        {s.error && <Detail text={s.error} />}
+      </>
+    );
+  } else if (s.state === "update") {
     text = s.error ?? "";
   }
   const devices = s.state === "idle" || s.state === "syncing" || s.state === "offline" ? s.devices.slice(0, 4) : [];
@@ -365,7 +400,7 @@ export function SyncHost({ studying }: { studying: boolean }) {
       {flow?.kind === "conflicts" && <ConflictsModal onClose={close} />}
       {flow?.kind === "restore" && <RestoreModal backup={flow.backup} onClose={close} />}
       {flow?.kind === "disconnect" && <DisconnectModal onClose={close} />}
-      {flow?.kind === "unlock" && <UnlockModal onClose={close} />}
+      {flow?.kind === "unlock" && <UnlockModal restart={flow.restart} onClose={close} />}
     </>
   );
 }
@@ -760,8 +795,12 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
   const toast = useToast();
   const [probe, setProbe] = useState(given);
   const choice = given ? null : s?.choice ?? null;
-  // 다른 기기가 바꾼 뒤라면 기본은 "Drive 데이터로 바꾸기"
-  const [mode, setMode] = useState<SyncJoinMode>(choice ? "take" : "merge");
+  // 다른 기기가 잠그기만 바꿨으면 내용은 같은 데이터에 그 기기 변경까지 받은 것이라 합치기가 잃는 것이 없다 (T3-09).
+  // 되돌리기 · 새로 시작 뒤라면 기본은 "Drive 데이터로 바꾸기"
+  const lockKind = choice?.header?.reason?.kind === "lock" || choice?.header?.reason?.kind === "unlock";
+  const suggest: SyncJoinMode = choice && !lockKind ? "take" : "merge";
+  const [mode, setMode] = useState<SyncJoinMode>(suggest);
+  const [name, setName] = useState(given?.device_name ?? s?.device_name ?? "");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -786,16 +825,18 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
     ? `Drive에는 ${dev}에서 맞춘 데이터가 있어요. 어떻게 할까요?`
     : kind === "unlock"
       ? `${named ? `${named}에서` : "다른 기기에서"} 잠금을 풀고 Drive에 다시 올렸어요. 이 기기에 저장된 암호는 더 이상 쓰지 않아요. 어떻게 할까요?`
-      : `이 기기에는 ${kind === "restore" ? "복구" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
-  const locked = (choice?.locked || remote?.locked) && mode !== "fresh";
-  const others_ = others(s ?? null).filter((n) => n !== probe?.device_name);
+      : `이 기기에는 ${kind === "restore" ? "복구" : kind === "lock" ? "잠그기" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
+  // 이 기기 잠금으로 새로 시작하면 암호가 필요 없다. 다른 기기가 잠근 Drive 를 새로 시작하면 그 암호로 잠근 채 (T3-11)
+  const locked = (choice?.locked || remote?.locked) && !(mode === "fresh" && s?.lock);
+  // 다시 연결하면 기기 목록 기억이 없다: Drive 의 기기 파일 이름 (T3-18)
+  const others_ = (remote?.names?.length ? remote.names : others(s ?? null)).filter((n) => n !== probe?.device_name);
   const who = others_.length ? others_.join(", ") : dev;
   const labels: Record<SyncJoinMode, [string, IconName]> = { merge: ["합치기", "merge"], take: ["Drive 데이터로 바꾸기", "download"], fresh: ["Drive 새로 시작", "upload"], new: ["시작", "cloud"] };
   const go = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      await syncApi.join({ mode, password: locked ? password : undefined });
+      await syncApi.join({ mode, password: locked ? password : undefined, device_name: choice ? undefined : name });
       await refreshSync();
       onClose();
       nav({ name: "home" });
@@ -831,10 +872,10 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
           onPick={() => setMode("merge")}
           icon="merge"
           title="두 데이터 합치기"
-          badge={choice ? undefined : "권장"}
+          badge={suggest === "merge" ? "권장" : undefined}
           text="덱·카드·복습 기록을 합쳐요. 같은 Anki 노트의 카드는 하나로 합치고, 내용이 다르면 나중에 고친 버전을 써요. 다른 버전은 30일 동안 ‘두 기기에서 고친 카드’에서 볼 수 있어요."
         />
-        <Option on={mode === "take"} onPick={() => setMode("take")} icon="download" title="Drive 데이터로 바꾸기" badge={choice ? "권장" : undefined} text="이 기기 데이터는 백업 파일로 남기고, Drive의 데이터를 받아요." />
+        <Option on={mode === "take"} onPick={() => setMode("take")} icon="download" title="Drive 데이터로 바꾸기" badge={suggest === "take" ? "권장" : undefined} text="이 기기 데이터는 백업 파일로 남기고, Drive의 데이터를 받아요." />
         <Option
           on={mode === "fresh"}
           onPick={() => setMode("fresh")}
@@ -843,7 +884,21 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
           text={`Drive의 동기화 데이터를 이 기기 것으로 바꿔요. ${who}${eun(who)} 다음에 동기화할 때 고르는 창을 봐요.`}
         />
       </div>
-      {locked && <Input type="password" label="Drive 데이터 암호" value={password} onChange={(e) => setPassword(e.target.value)} />}
+      {/* 처음 연결: K3 · K6-f 처럼 이 기기 이름을 정한다 (같은 PC 이름끼리 구분, T3-16) */}
+      {!choice && <DeviceName value={name} onChange={setName} />}
+      {locked && (
+        <>
+          <Input
+            type="password"
+            label="Drive 데이터 암호"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            // 이 기기가 잠근 채라면 [Drive 새로 시작]은 이 기기 키로 잠금을 이어 가 암호가 필요 없다
+            helper={s?.lock ? "잠근 기기에서 정한 암호예요" : "잠근 기기에서 정한 암호예요 · 세 방법 모두 필요해요"}
+          />
+          <p className="t-caption c-tertiary">암호를 모르면 [취소] 뒤 설정에서 연결을 끊고 이 기기만 쓸 수 있어요</p>
+        </>
+      )}
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="sync-foot">
         <span className="t-caption c-tertiary">어느 쪽이든 바꾸기 전에 이 기기 백업을 먼저 만들어요</span>
@@ -874,7 +929,8 @@ function Diff({ text, other }: { text: string; other: string }) {
   );
 }
 
-function Version({ v, other, current, onUse, busy }: { v: SyncConflict["versions"][0]; other: SyncConflict["versions"][0]; current: boolean; onUse?: () => void; busy?: boolean }) {
+function Version({ v, other, current, picked, onUse, busy }: { v: SyncConflict["versions"][0]; other: SyncConflict["versions"][0]; current: boolean; picked?: boolean; onUse?: () => void; busy?: boolean }) {
+  const secs = when(v.at) === when(other.at);
   const lines = v.fields.slice(1).join("\n").split("\n");
   const otherLines = other.fields.slice(1).join("\n").split("\n");
   return (
@@ -882,7 +938,7 @@ function Version({ v, other, current, onUse, busy }: { v: SyncConflict["versions
       <span className="sync-version__who">
         <Icon name="laptop" size={16} className="c-secondary" />
         <span className="t-label-m">{v.device}</span>
-        <span className="t-caption c-tertiary">{when(v.at)}</span>
+        <span className="t-caption c-tertiary">{when(v.at, secs)}</span>
         {current && <Badge tone="accent">지금 내용</Badge>}
       </span>
       {v.fields[0] !== other.fields[0] && (
@@ -898,7 +954,8 @@ function Version({ v, other, current, onUse, busy }: { v: SyncConflict["versions
         ))}
       </div>
       {current ? (
-        <span className="t-caption c-accent">{v.at >= other.at ? "나중에 고친 쪽이라 이 내용으로 맞췄어요" : "직접 고른 내용이에요"}</span>
+        // 저절로 맞춘 쪽(이긴 버전, 고른 적 없음)만 "나중에 고친 쪽". 시각 비교로 고르지 않는다 (T3-02)
+        <span className="t-caption c-accent">{v.winner && !picked ? "나중에 고친 쪽이라 이 내용으로 맞췄어요" : "직접 고른 내용이에요"}</span>
       ) : (
         <Button variant="secondary" size="M" icon="rotate" label="이 버전으로 바꾸기" busy={busy} onClick={onUse} />
       )}
@@ -934,7 +991,12 @@ function ConflictsModal({ onClose }: { onClose: () => void }) {
     <Sheet label="두 기기에서 고친 카드" onClose={onClose} className="sync-k7">
       <Head
         title={`두 기기에서 고친 카드 ${list ? n(list.length) : ""}장`}
-        sub="나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+        sub={
+          // 저절로 맞춘 그대로인 카드만 있으면 규칙을, 직접 고른(또는 다른 기기에서 고른) 카드가 있으면 그 말을 빼고
+          list?.some((c) => c.picked || !c.versions.some((v) => v.current && v.winner))
+            ? "내용이 다른 카드예요. 지금 내용은 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+            : "나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+        }
         onClose={onClose}
       />
       <div className="sync-k7__list">
@@ -948,7 +1010,7 @@ function ConflictsModal({ onClose }: { onClose: () => void }) {
                 <span className="t-caption c-tertiary">{c.deck_path.join(" › ")}</span>
               </span>
               <div className="sync-versions">
-                <Version v={cur} other={other} current />
+                <Version v={cur} other={other} current picked={c.picked} />
                 <Version v={other} other={cur} current={false} onUse={() => use(c.id)} busy={busy === c.id} />
               </div>
             </div>
@@ -1124,7 +1186,7 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
     <Sheet label="Google Drive 연결을 끊을까요?" onClose={onClose} className="sync-k10">
       <h2 className="t-title-m">Google Drive 연결을 끊을까요?</h2>
       <p className="t-body-s c-secondary">
-        이 기기의 덱·카드·복습 기록은 그대로예요.{whoText && ` ${whoText}${eun(whoText)} 계속 Drive와 맞춰요.`}
+        이 기기의 덱·카드·복습 기록은 그대로예요.{whoText && !remove && ` ${whoText}${eun(whoText)} 계속 Drive와 맞춰요.`}
       </p>
       <div className="import__choice">
         <Option on={!remove} onPick={() => setRemove(false)} title="Drive 데이터 남기기" text="다시 연결하면 이어서 쓸 수 있어요." />
@@ -1161,7 +1223,7 @@ function LockModal({ on, onClose, onConfirm }: { on: boolean; onClose: () => voi
       <p className="t-body-s c-secondary">
         {on
           ? "Drive의 동기화 데이터를 이 기기에서 암호 없이 다시 올려요. 다른 기기는 다음에 맞출 때 고르는 창을 봐요."
-          : "이 기기에서 암호화한 뒤 다시 올려요. Google도 내용을 볼 수 없어요. 암호는 Drive에 올리지 않고 이 기기 키체인에만 둬요."}
+          : "이 기기에서 암호화한 뒤 다시 올려요. Google도 내용을 볼 수 없어요. 암호는 Drive에 올리지 않고 이 기기에만 저장해요."}
       </p>
       {!on && pw.fields}
       {error && <p className="t-body-s c-danger">{error}</p>}
@@ -1173,14 +1235,16 @@ function LockModal({ on, onClose, onConfirm }: { on: boolean; onClose: () => voi
   );
 }
 
-function UnlockModal({ onClose }: { onClose: () => void }) {
+function UnlockModal({ restart, onClose }: { restart?: boolean; onClose: () => void }) {
+  const s = useSyncStatus();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const run = async () => {
     setBusy(true);
     try {
-      await syncApi.unlock(password);
+      if (restart) await syncApi.join({ mode: "fresh", password });
+      else await syncApi.unlock(password);
       await refreshSync();
       onClose();
     } catch (e) {
@@ -1190,12 +1254,20 @@ function UnlockModal({ onClose }: { onClose: () => void }) {
   };
   return (
     <Sheet label="Drive 데이터 암호" onClose={onClose} className="sync-k10">
-      <h2 className="t-title-m">암호를 입력하세요</h2>
-      <p className="t-body-s c-secondary">다른 기기에서 Drive 데이터를 암호로 잠갔어요. 맞는 암호를 넣으면 이 기기 키체인에 두고 이어서 맞춰요.</p>
+      <h2 className="t-title-m">암호를 넣어 주세요</h2>
+      <p className="t-body-s c-secondary">
+        {restart
+          ? "이 기기는 Drive 데이터를 암호로 잠가 두었어요. 암호를 넣으면 잠근 채 이 기기 데이터로 다시 시작해요. 잊었다면 연결을 끊고 다시 연결해 잠그지 않고 시작할 수 있어요."
+          : s?.lock
+            ? "이 기기에 저장해 둔 암호를 찾지 못했어요. 암호를 다시 넣으면 이어서 맞춰요."
+            : "다른 기기에서 Drive 데이터를 암호로 잠갔어요. 맞는 암호를 넣으면 이 기기에 저장하고 이어서 맞춰요."}
+      </p>
+      {/* 다시 시작 모드는 위 문장이 같은 말을 한다 */}
+      {!restart && <p className="t-caption c-tertiary">암호를 모르면 설정에서 연결을 끊고 이 기기만 쓸 수 있어요</p>}
       <Input type="password" label="암호" value={password} autoFocus error={error} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && password && run()} />
       <div className="sync-foot sync-foot--end">
         <Button variant="ghost" size="M" label="취소" onClick={onClose} />
-        <Button size="M" icon="lock" label="열기" busy={busy} disabled={!password} onClick={run} />
+        <Button size="M" icon="lock" label={restart ? "다시 시작" : "열기"} busy={busy} disabled={!password} onClick={run} />
       </div>
     </Sheet>
   );
@@ -1372,7 +1444,14 @@ function Connected({ s }: { s: SyncStatus }) {
         )}
       </div>
       {/* 오프라인은 위 줄이 이미 말한다 (OS 원문 오류는 보이지 않는다) */}
-      {s.error && s.state !== "idle" && s.state !== "offline" && <p className="sync-error t-caption c-tertiary">{s.error}</p>}
+      {s.state === "error" ? (
+        <p className="sync-error t-caption c-tertiary">
+          {failText(s)}
+          {s.error && <Detail text={s.error} />}
+        </p>
+      ) : (
+        s.error && s.state !== "idle" && s.state !== "offline" && <p className="sync-error t-caption c-tertiary">{s.error}</p>
+      )}
 
       <div className="sync-block">
         <p className="t-label-s c-tertiary">기기 {n(s.devices.length)}대</p>
