@@ -202,10 +202,14 @@ export type NoteEdit = {
   note_id: number;
   /** image_occlusion: 가리기 편집기(M2)로 연다 */
   kind: "basic" | "cloze" | "image_occlusion" | "list" | "choice" | "other";
-  /** 노트 유형 이름 */
+  /** 노트 유형 이름 · id (NT13 머리의 [편집]) */
   type_name: string;
+  note_type_id: number;
+  /** 보이는 순서 (8.1: 지운 필드는 빠지고 순서는 노트 유형의 필드 순서) */
   names: string[];
   values: string[];
+  /** names 의 자리 번호. updateNote 에 그대로 돌려준다 (순서를 바꾼 유형에서 값이 제자리에 가게) */
+  slots: number[];
   /** 필드마다 앞면 템플릿에 쓰이는가 */
   front: boolean[];
   /** 8.4 N1 기출 줄 */
@@ -213,6 +217,33 @@ export type NoteEdit = {
   /** Q24 목록 · 선택형 전용 편집기를 채운다 */
   special: Special | null;
 };
+/** 8.1 노트 유형 목록 행 (notetype.rs TypeRow). native_kind 가 있으면 앱 기본 유형 (basic · reversed · cloze · written · list · choice · io) */
+export type NoteTypeRow = {
+  id: number;
+  name: string;
+  native_kind: string | null;
+  editable: boolean;
+  cloneable: boolean;
+  imported: boolean;
+  user_made: boolean;
+  cloze: boolean;
+  /** 보이는 필드 수 · 카드 종류 수 */
+  fields: number;
+  templates: number;
+  notes: number;
+  cards: number;
+  /** 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저) */
+  decks: string[];
+};
+/** note_type_detail. fields 는 보이는 순서 (add_typed_note 의 values 순서) */
+export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
+  css: string;
+  fields: { slot: number; name: string }[];
+  templates: { ord: number; name: string; qfmt: string; afmt: string; layout: unknown }[];
+};
+/** suggest_card_kind: AddCard 의 유형 id */
+export type CardKindHint = "cloze" | "choice" | "list" | "occlusion";
+
 /** day_rollover: 학습 중 하루 경계를 넘어 세션이 닫혔다. 평가는 남지 않았다 (큐 명세 8장) */
 export type AnswerResult = { action: "next" | "again_later" | "buried" | "day_rollover"; due_in_ms: number | null };
 export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[] };
@@ -442,7 +473,20 @@ export const api = {
     invoke<{ rows: number; path: string }>("export_csv", { deckId, path, columns, plainText }),
   importanceBoard: (deckId: number) => invoke<BoardDeck[]>("importance_board", { deckId }),
   noteEdit: (noteId: number) => invoke<NoteEdit>("note_edit", { noteId }),
-  updateNote: (noteId: number, values: string[]) => invoke<void>("update_note", { noteId, values }),
+  /** slots: noteEdit 의 자리 번호. 없으면 지금 보이는 순서 */
+  updateNote: (noteId: number, values: string[], slots?: number[]) => invoke<void>("update_note", { noteId, values, slots }),
+  // 8.1 노트 유형 (notetype.rs). C3 노트 유형 고르기(NT6) · E 머리(NT7) · 유형 추천 칩
+  noteTypes: () => invoke<NoteTypeRow[]>("note_types"),
+  noteTypeDetail: (id: number) => invoke<NoteTypeDetail>("note_type_detail", { id }),
+  /** 그 덱(하위 덱 포함) 노트가 쓰는 유형 id, 많이 쓰는 것 먼저 */
+  deckNoteTypes: (deckId: number) => invoke<number[]>("deck_note_types", { deckId }),
+  /** values 는 보이는 순서 */
+  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[]) =>
+    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values }),
+  /** 사용자 · 가져온 유형으로 노트 추가. 만든 카드 수 */
+  addTypedNote: (note: { deck_id: number; note_type_id: number; values: string[]; importance: Level | null }) =>
+    invoke<number>("add_typed_note", { note }),
+  suggestCardKind: (text: string) => invoke<CardKindHint | null>("suggest_card_kind", { text }),
   readMedia: (name: string) => invoke<string>("read_media", { name }),
   appInfo: () => invoke<AppInfo>("app_info"),
   /** AU20 내장 읽어주기 음성이 읽는 언어 (음성 파일이 없는 빌드면 빈 목록) · 설정의 라이선스 전문 */
