@@ -74,6 +74,8 @@
 .opt--wrong .opt__num, .opt--wrong .opt__mark { color: var(--status-danger-fg); }
 .opt--other .opt__num { color: var(--text-tertiary); }
 .opt--other .opt__text { color: var(--text-secondary); }
+/* 답 면을 열 때 고른 보기로 내리면 (Study.tsx) 위 페이드 12 · 아래 페이드 72 에 걸리지 않게 */
+.study__a.recall .opt { scroll-margin: 12px 0 72px; }
 
 /* ---------------------------------------------------------------- 학습 면 (Q1-a · Q1-b · Q2) */
 .study__a.recall { gap: 12px; }

@@ -28,6 +28,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // 첫 창은 여기서 만든다 (tauri.conf.json create: false). 만들기 전에 크기를 정해 커졌다 줄어드는 깜빡임이 없다.
+            // 켤 때마다 주 모니터 작업 영역에 맞춘다. 모니터를 못 읽으면 설정 크기(1280×800) 그대로
+            // ponytail: 크기 기억은 하지 않는다. 필요하면 닫을 때 크기를 저장해 여기서 읽는다
+            if let Some(conf) = app.config().app.windows.first().cloned() {
+                let mut win = tauri::WebviewWindowBuilder::from_config(app.handle(), &conf)?;
+                let area = app.primary_monitor().ok().flatten().map(|m| m.work_area().size.to_logical::<f64>(m.scale_factor()));
+                if let Some((w, h)) = area.and_then(|a| fit_window(a.width, a.height)) {
+                    win = win.inner_size(w, h).center();
+                }
+                win.build()?;
+            }
             // %APPDATA%\<식별자> (DECISIONS H1: 식별자가 바뀌면 이 경로가 바뀐다).
             // NEOANKI_DATA_DIR 로 바꿀 수 있다. 테스트가 실제 데이터를 건드리지 않게 하기 위한 것이다
             let data_dir = match std::env::var_os("NEOANKI_DATA_DIR") {
@@ -164,4 +175,27 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// 첫 창 크기 (논리 px). 설정 크기 1280×800 을 작업 영역의 90% 와 각각 비교해 작은 쪽, 최소 1180×640.
+/// 그대로면 None (위치도 건드리지 않는다)
+fn fit_window(area_w: f64, area_h: f64) -> Option<(f64, f64)> {
+    let w = (area_w * 0.9).clamp(1180.0, 1280.0);
+    let h = (area_h * 0.9).clamp(640.0, 800.0);
+    (w < 1280.0 || h < 800.0).then_some((w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fit_window() {
+        // 1080p 150%: 작업 영역 약 1280×672 → 90% 는 1152×604.8 이라 최소 크기로
+        assert_eq!(super::fit_window(1280.0, 672.0), Some((1180.0, 640.0)));
+        // 1366×768 100% (작업 영역 1366×728): 1229.4×655.2
+        let (w, h) = super::fit_window(1366.0, 728.0).unwrap();
+        assert!((w - 1229.4).abs() < 1e-9 && (h - 655.2).abs() < 1e-9);
+        // 넉넉한 화면은 그대로
+        assert_eq!(super::fit_window(2560.0, 1392.0), None);
+        assert_eq!(super::fit_window(1920.0, 1040.0), None);
+    }
 }
