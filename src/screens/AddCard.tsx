@@ -97,7 +97,7 @@ function placeFields(from: Field[], to: string[]) {
 }
 
 /** 템플릿이 쓰는 필드 이름 ({{X}} {{#X}} {{필터:X}}). cloze: {{cloze:X}} 로 쓴다 */
-function tagRefs(tpl: string) {
+export function tagRefs(tpl: string) {
   return [...tpl.matchAll(/\{\{([^}]+)\}\}/g)].map((m) => {
     const t = m[1].trim().replace(/^[#^/]/, "");
     const at = t.lastIndexOf(":");
@@ -151,6 +151,8 @@ function hintReason(k: CardKindHint, html: string) {
   return k === "occlusion" ? "그림만 있어요" : "빈칸 표시가 있어요";
 }
 const stripImages = (html: string) => html.replace(/<img\b[^>]*>/gi, "");
+/** 괄호 빈칸 "( )" "[ ]" "（ ）" · 밑줄 "___" (notetype.rs blank_mark 와 같은 표시). 편집기 HTML 의 공백은 &nbsp; 일 수 있다 */
+const BLANK = /\((?:\s|&nbsp;)+\)|\[(?:\s|&nbsp;)+\]|（(?:\s|&nbsp;)+）|_{3,}/;
 
 /** cdp 로 돌리는 검사: (await import("/src/screens/AddCard.tsx")).hintSelfCheck() */
 export function hintSelfCheck() {
@@ -171,6 +173,8 @@ export function hintSelfCheck() {
     choiceParen: paren.question === "포트 80은?" && paren.options.join("|") === "HTTP|FTP|SSH|DNS",
     reason: hintReason("list", "1. a<br>2. b<br>3. c") === "번호 붙은 줄이 3개예요",
     unCloze: unCloze("{{c1::TCP::프로토콜}}와 {{c2::UDP}}") === "TCP와 UDP",
+    blank: "IPv6 주소는 ( &nbsp; )비트다".replace(BLANK, "{{c1::128}}") === "IPv6 주소는 {{c1::128}}비트다" && "수도는 ___ 이다".replace(BLANK, "X") === "수도는 X 이다",
+    blankNot: !BLANK.test("f(x) = (x)"),
     placeAlias: JSON.stringify(placeFields([{ name: "질문", html: "Q" }, { name: "답변", html: "A" }], LABELS.reversed)) === '{"values":["Q","A"],"lost":[]}',
     placeLost: placeFields(from, LABELS.basic).lost.join() === "추가 설명",
     placeTyped: placeFields(from, ["Text", "추가 설명"]).values.join() === "A,B",
@@ -339,18 +343,22 @@ export function AddCard({ deckId }: { deckId: number }) {
         setError(undefined);
       },
     });
-  const ioLink = (field: React.RefObject<FieldHandle | null>, i: number) => (
-    <OcclusionLink html={field.current?.html() ?? ""} onPick={(img) => toOcclusion(img, i)} />
-  );
+  // 첫 칸에 "그림 가리기로 바꾸기" 칩이 떠 있으면 같은 일을 하는 링크는 숨긴다 (✕ 로 닫으면 다시 보인다)
+  const ioLink = (field: React.RefObject<FieldHandle | null>, i: number) =>
+    i === 0 && shownHint === "occlusion" ? null : <OcclusionLink html={field.current?.html() ?? ""} onPick={(img) => toOcclusion(img, i)} />;
 
   // ---- NT14 유형 추천 칩: 붙여 넣거나 입력한 글(첫 칸)을 규칙으로 본다. 그림 data URL 은 보내지 않는다
   const hintSource = (kind === "typed" ? tf.current[0] : q.current)?.html() ?? "";
   const hintText = hintSource.replace(/src="data:[^"]*"/g, 'src="x"');
+  // 답 칸 (질문과 답변 · 양방향 · 서술형의 둘째 칸, 사용자 유형의 둘째 필드). 괄호 빈칸은 여기 글이 있을 때만 빈칸으로 권한다 ({{c1::답}})
+  const answerField = kind === "typed" ? tf.current[1] : kind === "basic" || kind === "reversed" || kind === "written" ? a.current : null;
+  const hintAnswer = answerField?.html() ?? "";
+  const answerText = hintAnswer.replace(/src="data:[^"]*"/g, 'src="x"');
   useEffect(() => {
     if (hintOff || !ready) return;
-    const t = setTimeout(() => api.suggestCardKind(hintText).then(setHint, () => setHint(null)), 300);
+    const t = setTimeout(() => api.suggestCardKind(hintText, answerText).then(setHint, () => setHint(null)), 300);
     return () => clearTimeout(t);
-  }, [hintText, hintOff, ready]);
+  }, [hintText, answerText, hintOff, ready]);
   // 이미 그 유형이면 띄우지 않는다 (빈칸으로 쓰는 사용자 유형은 빈칸이다)
   const shownHint = !hintOff && hint && hint !== kind && !(hint === "cloze" && isCloze(kind, typed)) ? hint : null;
   const takeHint = (k: CardKindHint) => {
@@ -369,7 +377,18 @@ export function AddCard({ deckId }: { deckId: number }) {
       const img = lastImage(html);
       if (img) toOcclusion(img, 0, true);
       else switchTo("occlusion", null, { force: true, fix: (from) => void (from[0].html = stripImages(from[0].html)) });
-    } else switchTo("cloze", null, { force: true });
+    } else if (/\{\{c\d+::/.test(html)) switchTo("cloze", null, { force: true });
+    else {
+      // 괄호 빈칸 · ___ 에 답 칸의 글을 넣는다 ({{c1::답}}). 답 칸은 비운다 (추가 설명으로 옮기지 않는다)
+      const answer = escapeText(plainText(hintAnswer));
+      switchTo("cloze", null, {
+        force: true,
+        fix: (from) => {
+          from[0].html = from[0].html.replace(BLANK, `{{c1::${answer}}}`);
+          if (from[1]) from[1].html = "";
+        },
+      });
+    }
     toast({
       title: `${label}${ro(label)} 바꿨어요`,
       tone: "undo",
@@ -388,6 +407,20 @@ export function AddCard({ deckId }: { deckId: number }) {
       },
     });
   };
+  /** 칩은 그 글이 있는 칸(첫 칸) 바로 아래 한 줄. 쓰고 있는 칸은 움직이지 않고 그 아래만 내려간다 */
+  const chip = shownHint && (
+    <div className="addcard__hint" role="status">
+      <Icon name="info" size={14} className="c-accent" />
+      <span className="t-label-s">{hintReason(shownHint, hintSource)}</span>
+      <button className="addcard__hint-act t-label-s" onClick={() => takeHint(shownHint)}>
+        {typeName(shownHint, null)}
+        {ro(typeName(shownHint, null))} 바꾸기
+      </button>
+      <button className="addcard__hint-x" aria-label="추천 닫기 · 이 카드에서는 다시 띄우지 않아요" title="닫기" onClick={() => setHintOff(true)}>
+        <Icon name="x" size={14} />
+      </button>
+    </div>
+  );
   // 비워두면 넣을 하위 덱의 중요도를 따른다
   const inherited = targetDeck?.importance ?? deck?.own_importance ?? 1;
   const shownLevel = importance ?? inherited;
@@ -530,19 +563,6 @@ export function AddCard({ deckId }: { deckId: number }) {
       {ready && (
       <div className="addcard__cols">
         <div className="addcard__form">
-          {shownHint && (
-            <div className="addcard__hint" role="status">
-              <Icon name="info" size={14} className="c-accent" />
-              <span className="t-label-s">{hintReason(shownHint, hintSource)}</span>
-              <button className="addcard__hint-act t-label-s" onClick={() => takeHint(shownHint)}>
-                {typeName(shownHint, null)}
-                {ro(typeName(shownHint, null))} 바꾸기
-              </button>
-              <button className="addcard__hint-x" aria-label="추천 닫기 · 이 카드에서는 다시 띄우지 않아요" title="닫기" onClick={() => setHintOff(true)}>
-                <Icon name="x" size={14} />
-              </button>
-            </div>
-          )}
           <div className="segment segment--boxed addcard__seg">
             {KINDS.map(([k, name]) => (
               <button key={k} className={`segment__item t-label-m ${kind === k ? "is-selected" : ""}`} onClick={() => k !== kind && switchTo(k)}>
@@ -578,9 +598,9 @@ export function AddCard({ deckId }: { deckId: number }) {
               </div>
               <p className="t-caption c-tertiary">
                 {origin === "remembered"
-                  ? "이 덱에서 마지막으로 쓴 유형이에요. 다음에도 이 유형으로 열려요."
+                  ? "이 덱에서 마지막으로 쓴 유형이에요."
                   : origin === "common"
-                    ? "이 덱 노트가 가장 많이 쓰는 유형이에요."
+                    ? "이 덱의 노트가 가장 많이 쓰는 유형이에요."
                     : "다음에도 이 덱은 이 유형으로 열려요."}
               </p>
             </>
@@ -628,6 +648,7 @@ export function AddCard({ deckId }: { deckId: number }) {
                       ) : undefined
                     }
                   />
+                  {i === 0 && chip}
                 </Fragment>
               ))}
               <p className="t-caption c-tertiary">칸은 노트 유형의 필드 순서대로예요. 비운 칸은 그 칸을 쓰는 카드에서만 빠져요.</p>
@@ -681,6 +702,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               )}
               <span className="t-label-m">질문</span>
               <RichField key={`q-io-${gen}`} ref={q} initial={init[0]} minHeight={44} toolbar={false} onInput={refresh} />
+              {chip}
               <span className="addcard__label">
                 <span className="t-label-m">추가 설명</span>
                 <span className="t-caption c-tertiary">선택 · 답을 본 뒤에만 보여요</span>
@@ -691,6 +713,7 @@ export function AddCard({ deckId }: { deckId: number }) {
             <>
               <span className="t-label-m">질문</span>
               <RichField key={`q-written-${gen}`} ref={q} initial={init[0]} minHeight={64} onInput={refresh} />
+              {chip}
               {ioLink(q, 0)}
               <span className="t-label-m">모범 답안</span>
               <RichField key={`a-written-${gen}`} ref={a} initial={init[1]} minHeight={84} toolbar={false} onInput={refresh} />
@@ -714,6 +737,7 @@ export function AddCard({ deckId }: { deckId: number }) {
             <>
               <span className="t-label-m">질문</span>
               <RichField key={`q-${kind}-${gen}`} ref={q} initial={init[0]} minHeight={44} toolbar={false} onInput={refresh} />
+              {chip}
               {kind === "list" ? <ListEditor value={list} onChange={setList} /> : <ChoiceEditor value={choice} onChange={setChoice} />}
               {extraOpen ? (
                 <>
@@ -735,6 +759,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               {/* 앞뒤 둘 다는 어느 쪽도 질문이 되므로 앞면 · 뒷면. 질문과 답변을 오가도 쓴 내용은 남는다 */}
               <span className="t-label-m">{kind === "reversed" ? "앞면" : "질문"}</span>
               <RichField key={`q-basic-${gen}`} ref={q} initial={init[0]} minHeight={64} onInput={refresh} />
+              {chip}
               {ioLink(q, 0)}
               <span className="t-label-m">{kind === "reversed" ? "뒷면" : "답변"}</span>
               <RichField key={`a-basic-${gen}`} ref={a} initial={init[1]} minHeight={84} onInput={refresh} />
@@ -774,6 +799,7 @@ export function AddCard({ deckId }: { deckId: number }) {
                   />
                 }
               />
+              {chip}
               {ioLink(q, 0)}
               {marks.length > 0 && (
                 <span className="addcard__chips">
@@ -1014,7 +1040,9 @@ function TypeMenu({ open, setOpen, types, deckTypes, current, onPick, onEdit, on
           {mine.length > 0 && <p className="menu__cap t-label-s c-tertiary">이 덱이 쓰는 노트 유형</p>}
           {mine.map((r, i) => item(r, `${shape(r)} · ${r.cloze ? "빈칸마다 카드 1장" : `카드 ${n(r.templates)}장씩`}`, i === 0))}
           {others.length > 0 && <p className="menu__cap t-label-s c-tertiary">다른 노트 유형</p>}
-          {others.map((r, i) => item(r, `${shape(r)} · ${r.decks[0] ? `${r.decks[0]}에서 씀` : "아직 쓰는 덱이 없어요"}`, !mine.length && i === 0))}
+          {others.map((r, i) =>
+            item(r, `${shape(r)} · ${r.imported ? "Anki에서 가져옴" : "내가 만든 것"} · ${r.decks[0] ? `${r.decks[0]}에서 씀` : "아직 쓰는 덱이 없어요"}`, !mine.length && i === 0),
+          )}
           {(mine.length > 0 || others.length > 0) && <div className="menu__sep" />}
           <button role="menuitem" className="menu__item t-body-m" disabled={current === undefined} autoFocus={!mine.length && !others.length} onClick={onEdit}>
             <Icon name="pencil" size={16} scaled />
