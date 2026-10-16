@@ -740,7 +740,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               <span className="t-label-m">질문</span>
               <RichField key={`q-${kind}-${gen}`} ref={q} initial={init[0]} minHeight={44} toolbar={false} onInput={refresh} />
               {chip}
-              {kind === "list" ? <ListEditor value={list} onChange={setList} /> : <ChoiceEditor value={choice} onChange={setChoice} />}
+              {kind === "list" ? <ListEditor value={list} onChange={setList} /> : <ChoiceEditor key={addedCount} value={choice} onChange={setChoice} question={() => q.current?.html() ?? ""} />}
               {extraOpen ? (
                 <>
                   <span className="addcard__label">

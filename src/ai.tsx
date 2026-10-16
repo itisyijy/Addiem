@@ -63,7 +63,7 @@ export const setSendConfirmed = (on: boolean, segs = 0) => {
   }
 };
 
-const openUsage = () => aiApi.openUsage().catch(() => {});
+export const openUsage = () => aiApi.openUsage().catch(() => {});
 
 // ---------------------------------------------------------------- 로그인 버튼 (OpenAI 지침: "Continue with ChatGPT")
 
@@ -484,7 +484,7 @@ export function ScopeLine({ text, open, onToggle }: { text: string; open?: boole
 }
 
 /** 보낼 내용 한 행. remove 가 있으면 ✕ 로 뺄 수 있고, 없으면 "필수" (이미 보낸 기록 sent 에서는 둘 다 없다) */
-export type SendRow = { key: string | number; icon: IconName; meta: ReactNode; text: string; remove?: () => void };
+export type SendRow = { key: string | number; icon: IconName; meta: ReactNode; text: string; remove?: () => void; /** ✕ 의 이름 (기본 "이 구간 빼기") */ removeLabel?: string };
 
 /** 자료 구간 행 (자료 이름 · 쪽 · 연결 방식 · 신호 칩). 구간 글은 보내는 글자 그대로 */
 export const sentRows = (sent: Sent[], remove: (id: number) => void, how = false): SendRow[] =>
@@ -545,7 +545,7 @@ export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foo
             <span className="ai-send__body t-body-s">{r.text}</span>
           </span>
           {sent ? null : r.remove ? (
-            <button type="button" className="src-icon-btn" aria-label="이 구간 빼기" disabled={locked} onClick={r.remove}>
+            <button type="button" className="src-icon-btn" aria-label={r.removeLabel ?? "이 구간 빼기"} disabled={locked} onClick={r.remove}>
               <Icon name="x" size={compact ? 14 : 16} />
             </button>
           ) : (

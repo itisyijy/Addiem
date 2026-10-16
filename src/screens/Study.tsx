@@ -1617,7 +1617,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
               <>
                 {recallField(0, "질문")}
                 <div className="edit__item edit__item--wide">
-                  {list ? <ListEditor value={list} onChange={setList} /> : choice && <ChoiceEditor value={choice} onChange={setChoice} />}
+                  {list ? <ListEditor value={list} onChange={setList} /> : choice && <ChoiceEditor value={choice} onChange={setChoice} question={() => fields.current[0]?.html() ?? ""} />}
                 </div>
                 {recallField(note.names.length - 1, "추가 설명")}
               </>
