@@ -793,6 +793,7 @@
 .prefs__row { display: flex; align-items: center; gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--border-default); }
 .prefs__row:last-of-type { border-bottom: 0; }
 .prefs__text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 96px; }
+.prefs__version { text-align: center; }
 .prefs__path { display: flex; align-items: center; gap: 8px; }
 /* 오픈소스 라이선스 전문 (펼치면 이 안에서 스크롤) */
 .prefs__license { margin-top: 6px; }
