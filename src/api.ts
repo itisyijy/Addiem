@@ -239,7 +239,34 @@ export type NoteTypeRow = {
 export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   css: string;
   fields: { slot: number; name: string }[];
-  templates: { ord: number; name: string; qfmt: string; afmt: string; layout: unknown }[];
+  /** layout: 쉬운 편집 구조 (없으면 HTML 전용, reason 이 그 이유) */
+  templates: { ord: number; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null }[];
+  /** 줄 상자 CSS. 템플릿이 쓰는데 CSS 에 없으면 저장할 때 붙는다 (편집기 미리보기도 붙여 그린다) */
+  layout_css: string;
+};
+/** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽) */
+export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };
+export type Part =
+  | { kind: "field"; name: string; look?: Look }
+  | { kind: "cloze"; name: string; look?: Look }
+  | { kind: "type"; name: string }
+  | { kind: "tts"; opts: string; name: string }
+  | { kind: "front_side" };
+export type Layout = { front: Part[]; back: Part[] };
+/** 편집기 미리보기 카드 고르기. slots 는 자리 순서 값 */
+export type NoteTypeSample = { note_id: number; deck: string; slots: string[] };
+/** 편집기 초안 (save_note_type). fields 는 보이는 순서 · slot null 은 새 필드, 빠진 필드 · 카드 종류는 지운다 */
+export type NoteTypeEdit = {
+  fields: { slot: number | null; name: string }[];
+  templates: { ord: number | null; name: string | null; qfmt: string; afmt: string }[];
+  css: string;
+};
+/** 저장 전 확인 창의 수 (NT5) */
+export type NoteTypeImpact = {
+  empty_fronts: number;
+  made: number;
+  templates: { name: string; cards: number; reviews: number; notes: number }[];
+  fields: { name: string; notes: number }[];
 };
 /** suggest_card_kind: AddCard 의 유형 id */
 export type CardKindHint = "cloze" | "choice" | "list" | "occlusion";
@@ -480,9 +507,20 @@ export const api = {
   noteTypeDetail: (id: number) => invoke<NoteTypeDetail>("note_type_detail", { id }),
   /** 그 덱(하위 덱 포함) 노트가 쓰는 유형 id, 많이 쓰는 것 먼저 */
   deckNoteTypes: (deckId: number) => invoke<number[]>("deck_note_types", { deckId }),
-  /** values 는 보이는 순서 */
-  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[]) =>
-    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values }),
+  /** values 는 보이는 순서. names 를 주면 편집 중인 필드 이름 (values 가 null 이면 이름 샘플) */
+  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[]) =>
+    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names }),
+  // NT1–NT5 목록 · 편집기
+  cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
+  renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),
+  deleteNoteType: (id: number) => invoke<void>("delete_note_type", { id }),
+  noteTypeSamples: (id: number) => invoke<NoteTypeSample[]>("note_type_samples", { id }),
+  /** HTML 전용이면 이유 문자열로 거부한다 ("뒷면에 조건문 {{#예문}}") */
+  templateLayout: (qfmt: string, afmt: string) => invoke<Layout>("template_layout", { qfmt, afmt }),
+  buildTemplateLayout: (layout: Layout) => invoke<{ qfmt: string; afmt: string }>("build_template_layout", { layout }),
+  renameFieldRefs: (texts: string[], old: string, name: string) => invoke<string[]>("rename_field_refs", { texts, old, new: name }),
+  /** dryRun: 확인 창의 수만 세고 되돌린다 */
+  saveNoteType: (id: number, edit: NoteTypeEdit, dryRun: boolean) => invoke<NoteTypeImpact>("save_note_type", { id, edit, dryRun }),
   /** 사용자 · 가져온 유형으로 노트 추가. 만든 카드 수 */
   addTypedNote: (note: { deck_id: number; note_type_id: number; values: string[]; importance: Level | null }) =>
     invoke<number>("add_typed_note", { note }),

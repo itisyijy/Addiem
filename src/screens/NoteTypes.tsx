@@ -1,17 +1,20 @@
 // NT1 설정 › 노트 유형 목록 · [새 노트 유형](복제로 시작, NT3) · 이름 바꾸기 · 삭제. 설정 칸(NoteTypesEntry)도 여기
 import { useCallback, useEffect, useState } from "react";
-import { errorText } from "../api";
-import { NATIVE_LABEL, ntApi, typeLabel, type NativeKind, type TypeRow } from "../noteTypeApi";
+import { api, errorText, type NoteTypeRow as TypeRow } from "../api";
 import { Button, Icon, Input, type IconName } from "../ui";
 import { n, eul, useKey, useNav, useOverlayScope, type Route } from "../nav";
 import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
 import { menuKeys } from "./Deck";
+import { TYPE_LABEL } from "./AddCard";
 import "../styles/notetypes.css";
 
 /** 앱 기본 유형 행 순서. 목록 · 선택형 · 그림 가리기는 한 행으로 묶는다 (앱이 직접 그리는 유형) */
-const APP_ORDER: NativeKind[] = ["basic", "reversed", "cloze", "written"];
-const DRAWN: NativeKind[] = ["io", "list", "choice"];
+const APP_ORDER = ["basic", "reversed", "cloze", "written"];
+const DRAWN = ["io", "list", "choice"];
+
+/** 화면에 쓰는 이름. 앱 기본 유형은 카드 추가 세그먼트 이름 (DB 이름은 Anki 의 "Basic" 등) */
+export const typeLabel = (t: { name: string; native_kind: string | null }) => (t.native_kind ? (TYPE_LABEL[t.native_kind] ?? t.name) : t.name);
 
 /** "필드 2개 · 카드 종류 1개 · 토익 영단어에서 씀" */
 export function typeSub(r: TypeRow) {
@@ -41,7 +44,7 @@ export function NoteTypesEntry() {
   const nav = useNav();
   const [rows, setRows] = useState<TypeRow[] | null>(null);
   useEffect(() => {
-    ntApi.list().then(setRows, () => setRows([]));
+    api.noteTypes().then(setRows, () => setRows([]));
   }, []);
   const g = rows && groups(rows);
   return (
@@ -74,7 +77,7 @@ export function NoteTypes({ back }: { back?: Route }) {
   const [cloning, setCloning] = useState<TypeRow | "new" | null>(null);
   const [renaming, setRenaming] = useState<TypeRow | null>(null);
   const [deleting, setDeleting] = useState<TypeRow | null>(null);
-  const load = useCallback(() => ntApi.list().then(setRows, (e) => setError(errorText(e))), []);
+  const load = useCallback(() => api.noteTypes().then(setRows, (e) => setError(errorText(e))), []);
   useEffect(() => {
     load();
   }, [load]);
@@ -192,10 +195,10 @@ export function NoteTypes({ back }: { back?: Route }) {
               "drawn",
               g.drawn[0],
               "lock",
-              g.drawn.map((r) => NATIVE_LABEL[r.native_kind!]).join(" · "),
+              g.drawn.map(typeLabel).join(" · "),
               "앱이 직접 그리는 유형 · 복제할 수 없어요",
               drawnSum,
-              g.drawn.map((r) => ({ icon: "file" as const, label: `${NATIVE_LABEL[r.native_kind!]} 보기`, onClick: () => open(r) })),
+              g.drawn.map((r) => ({ icon: "file" as const, label: `${typeLabel(r)} 보기`, onClick: () => open(r) })),
             )}
         </div>
         {g.imported.length > 0 && (
@@ -236,7 +239,7 @@ export function NoteTypes({ back }: { back?: Route }) {
               label="삭제"
               autoFocus
               onClick={() =>
-                ntApi.remove(deleting.id).then(
+                api.deleteNoteType(deleting.id).then(
                   () => {
                     setDeleting(null);
                     toast({ title: "노트 유형을 지웠어요" });
@@ -256,16 +259,21 @@ export function NoteTypes({ back }: { back?: Route }) {
 // ---------------------------------------------------------------- 복제 (새 노트 유형 · NT4 [복제해서 고치기])
 
 /** from 이 없으면 "어떤 유형에서 시작할까요?" (복제할 수 있는 유형만, 빈 유형 없음 NT3). 만들면 그 사본을 편집기로 연다 */
-export function CloneDialog({ rows: given, from, back, onClose }: { rows?: TypeRow[]; from?: TypeRow; back?: Route; onClose: () => void }) {
+export function CloneDialog({ rows: given, from, back, onClose }: {
+  rows?: TypeRow[];
+  from?: Pick<TypeRow, "id" | "name" | "native_kind">;
+  back?: Route;
+  onClose: () => void;
+}) {
   const nav = useNav();
   const [rows, setRows] = useState<TypeRow[]>(given ?? []);
-  const [src, setSrc] = useState<TypeRow | undefined>(from);
+  const [src, setSrc] = useState<Pick<TypeRow, "id" | "name" | "native_kind"> | undefined>(from);
   const [name, setName] = useState("");
   const [edited, setEdited] = useState(false);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (!given) ntApi.list().then(setRows, (e) => setError(errorText(e)));
+    if (!given) api.noteTypes().then(setRows, (e) => setError(errorText(e)));
   }, [given]);
   const choices = (() => {
     const g = groups(rows.filter((r) => r.cloneable));
@@ -281,7 +289,7 @@ export function CloneDialog({ rows: given, from, back, onClose }: { rows?: TypeR
     if (!pick || busy) return;
     setBusy(true);
     try {
-      const id = await ntApi.clone(pick.id, name.trim());
+      const id = await api.cloneNoteType(pick.id, name.trim());
       nav({ name: "noteTypeEdit", id, back: back?.name === "noteTypes" ? back : { name: "noteTypes", back } }, true);
     } catch (e) {
       setError(errorText(e));
@@ -354,7 +362,7 @@ function RenameDialog({ row, onClose, onDone }: { row: TypeRow; onClose: () => v
         className="modal__body"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!same) ntApi.rename(row.id, name).then(onDone, (e) => setError(errorText(e)));
+          if (!same) api.renameNoteType(row.id, name).then(onDone, (e) => setError(errorText(e)));
         }}
       >
         <Input

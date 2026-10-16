@@ -40,7 +40,7 @@
 .nte__back:hover { background: var(--bg-subtle); }
 .nte__bar .nte__modes { display: flex; align-items: center; gap: 2px; align-self: center; }
 .nte__lock { margin: 0 4px 0 6px; }
-.nte__actions { display: flex; justify-self: end; align-items: center; gap: 8px; }
+.nte__actions { display: flex; grid-column: 3; justify-self: end; align-items: center; gap: 8px; }
 .nte__body { display: flex; flex-direction: column; gap: 14px; padding: 18px 24px 40px; }
 .nte__notice { display: flex; align-self: flex-start; align-items: center; gap: 8px; padding: 8px 14px 8px 12px; border-radius: 10px; background: var(--bg-subtle); color: var(--text-primary); }
 .nte__notice--warn { background: var(--status-warn-bg); color: var(--status-warn-fg); }
@@ -83,6 +83,7 @@
 /* ④ 템플릿이 쓰는 필드: 지우기 아이콘 아래 어두운 말풍선 */
 .nte__tip { position: absolute; top: calc(100% + 8px); right: -8px; z-index: 6; display: none; flex-direction: column; gap: 2px; width: 230px; padding: 8px 12px; border-radius: 10px; background: var(--bg-inverse); color: var(--text-inverse); cursor: default; }
 .nte__trash-wrap:hover .nte__tip, .nte__trash:focus-visible + .nte__tip { display: flex; }
+.nte__tip > .t-caption { white-space: normal; }
 
 /* 가운데 앞면 · 뒷면 */
 .nte__side { padding: 14px 16px; }

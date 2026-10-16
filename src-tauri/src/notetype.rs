@@ -1219,10 +1219,6 @@ pub fn layout_of(qfmt: &str, afmt: &str) -> Result<Layout, String> {
     Ok(Layout { front: parse_side(qfmt, false)?, back: parse_side(afmt, true)? })
 }
 
-pub fn parse_layout(qfmt: &str, afmt: &str) -> Option<Layout> {
-    layout_of(qfmt, afmt).ok()
-}
-
 fn build_side(parts: &[Part], back: bool) -> String {
     let mut out = String::new();
     // 지금 줄을 줄 상자로 감쌌다
@@ -1315,8 +1311,11 @@ pub struct TypeRow {
     /// 앱에서 만든 유형 (디자인 NT1 묶음: 앱 기본 · Anki 에서 가져옴 · 내가 만든 것)
     user_made: bool,
     cloze: bool,
-    fields: usize,
-    templates: usize,
+    /// 보이는 필드 수 · 카드 종류 수. 상세(note_type_detail)는 같은 이름의 목록을 주므로 비운다 (JSON 키가 두 번 나오지 않게)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fields: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    templates: Option<usize>,
     notes: i64,
     cards: i64,
     /// 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저)
@@ -1333,8 +1332,8 @@ fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
         cloneable: nt.cloneable(),
         imported: nt.native_kind.is_none() && !nt.user_made && nt.anki_model_id.is_some(),
         cloze: nt.cloze(),
-        fields: nt.visible().len(),
-        templates: nt.templates.len(),
+        fields: Some(nt.visible().len()),
+        templates: Some(nt.templates.len()),
         user_made: nt.user_made,
         notes: count("SELECT count(*) FROM note WHERE note_type_id = ?1")?,
         cards: count("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1")?,
@@ -1391,7 +1390,7 @@ pub struct Detail {
 pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
     let nt = load(con, id)?;
     Ok(Detail {
-        row: row(con, &nt)?,
+        row: TypeRow { fields: None, templates: None, ..row(con, &nt)? },
         css: nt.css.clone(),
         fields: nt.visible().into_iter().map(|(slot, name)| FieldView { slot, name }).collect(),
         templates: nt
@@ -1566,6 +1565,10 @@ pub fn suggest_card_kind(text: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::db;
+
+    fn parse_layout(qfmt: &str, afmt: &str) -> Option<Layout> {
+        layout_of(qfmt, afmt).ok()
+    }
 
     fn f(name: &str, look: Option<(Size, Align)>) -> Part {
         Part::Field { name: name.into(), look: look.map(|(size, align)| Look { size, align }) }
@@ -1858,7 +1861,10 @@ mod tests {
         assert_eq!(clone_type(&con, a, Some("Basic 복사본 2")), Err("'Basic 복사본 2' 유형이 이미 있어요.".into()));
         let rows = list(&con).unwrap();
         let ra = rows.iter().find(|r| r.id == a).unwrap();
-        assert!(ra.editable && ra.cloneable && !ra.imported && ra.templates == 1 && ra.fields == 2);
+        assert!(ra.editable && ra.cloneable && !ra.imported && ra.templates == Some(1) && ra.fields == Some(2));
+        // 상세는 fields · templates 키가 한 번씩 (목록 배열)
+        let json = serde_json::to_string(&detail(&con, a).unwrap()).unwrap();
+        assert_eq!((json.matches("\"fields\":").count(), json.matches("\"templates\":").count()), (1, 1), "{json}");
         assert!(rows.iter().filter(|r| r.native_kind.is_some()).all(|r| !r.editable));
         let w = clone_type(&con, id("written"), Some("내 서술형")).unwrap();
         assert_eq!(load(&con, w).unwrap().templates[0].qfmt, "{{질문}}{{type:모범 답안}}");

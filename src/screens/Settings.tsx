@@ -18,6 +18,7 @@ import { ModelRow } from "./Sources";
 import { DriveSection } from "../sync";
 import { AiSection } from "../ai";
 import { NoteTypesEntry } from "./NoteTypes";
+import { LAST_TYPE } from "./AddCard";
 
 const HOURS = [0, 1, 2, 3, 4, 5, 6];
 const THEMES: [ThemePref, string][] = [
@@ -312,6 +313,11 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
     try {
       await api.wipeAll(backup);
       localStorage.removeItem(FIGURES_HIDDEN); // 새 자료가 지운 자료의 id 를 다시 쓴다
+      try {
+        localStorage.removeItem(LAST_TYPE); // 새 덱 · 유형이 지운 것의 id 를 다시 쓴다 (NT35)
+      } catch {
+        // 못 지워도 틀린 기본 유형일 뿐이다
+      }
       onDone();
     } catch (e) {
       setError(errorText(e));

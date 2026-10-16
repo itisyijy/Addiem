@@ -52,7 +52,7 @@ const isRecall = (k: Kind) => k === "list" || k === "choice";
 
 // ---------------------------------------------------------------- NT12 덱마다 마지막에 쓴 유형 (이 기기에만)
 
-const LAST_TYPE = "neoanki.addCard.lastType"; // { [덱 id]: 노트 유형 id }
+export const LAST_TYPE = "neoanki.addCard.lastType"; // { [덱 id]: 노트 유형 id }. 모든 데이터 삭제가 같이 지운다
 function lastType(deckId: number): number | undefined {
   try {
     return JSON.parse(localStorage.getItem(LAST_TYPE) ?? "{}")[deckId];

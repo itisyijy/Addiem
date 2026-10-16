@@ -1,11 +1,10 @@
 // NT2 쉬운 편집 · NT3 HTML (쉬운 편집 잠김) · NT4 앱 기본 유형 보기 · NT5 저장할 때 확인과 오류.
 // 초안을 화면에 들고 있다가 [저장]에서 한 트랜잭션으로 쓴다 (save_note_type). 먼저 dry-run 으로 확인 창의 수를 센다
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
-import { api, errorText } from "../api";
 import {
-  BASE_LOOK, NATIVE_LABEL, ntApi, typeLabel,
-  type Detail, type Layout, type Look, type Part, type Sample, type SaveImpact, type TypeEdit,
-} from "../noteTypeApi";
+  api, errorText,
+  type Layout, type Look, type NoteTypeDetail as Detail, type NoteTypeEdit as TypeEdit, type NoteTypeImpact as SaveImpact, type NoteTypeSample as Sample, type Part,
+} from "../api";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
 import { iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, matchAction } from "../keys";
@@ -15,7 +14,7 @@ import { withMath } from "../math";
 import { deckFace, scopeCss } from "../cardCss";
 import { splitBack } from "./Study";
 import { DiscardModal, Modal } from "./NewDeck";
-import { CloneDialog } from "./NoteTypes";
+import { CloneDialog, typeLabel } from "./NoteTypes";
 import { menuKeys } from "./Deck";
 import "../styles/notetypes.css";
 import "../styles/study.css";
@@ -26,6 +25,8 @@ type DTpl = { key: number; ord: number | null; name: string; qfmt: string; afmt:
 type Draft = { fields: DField[]; tpls: DTpl[]; css: string };
 
 const SIDE_LABEL: Record<Side, string> = { front: "앞면", back: "뒷면" };
+/** 면의 기본 줄 모양 (notetype.rs Look::base: 학습 화면의 질문 · 답 글자) */
+const BASE_LOOK: Record<Side, Look> = { front: { size: "l", align: "center" }, back: { size: "m", align: "left" } };
 const SPECIAL = ["FrontSide", "Card", "CardFlag", "CardID", "Deck", "Subdeck", "Tags", "Type"];
 /** 읽어주기 언어 (Anki {{tts 언어:필드}}) */
 const TTS_LANGS: [string, string][] = [
@@ -101,7 +102,7 @@ export function NoteTypeEdit({ id, ord, back }: { id: number; ord?: number; back
   const [d, setD] = useState<Detail | null>(null);
   const [error, setError] = useState<string>();
   useEffect(() => {
-    ntApi.detail(id).then(setD, (e) => setError(errorText(e)));
+    api.noteTypeDetail(id).then(setD, (e) => setError(errorText(e)));
   }, [id]);
   if (!d) return error ? <p className="load-error t-body-m c-danger">{error}</p> : null;
   return <Editor d={d} ord={ord} back={back ?? { name: "noteTypes" }} />;
@@ -160,7 +161,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     setTpl(key, { layout, reason: null });
     const n = (builds.current.get(key) ?? 0) + 1;
     builds.current.set(key, n);
-    ntApi.build(layout).then((b) => builds.current.get(key) === n && setTpl(key, b));
+    api.buildTemplateLayout(layout).then((b) => builds.current.get(key) === n && setTpl(key, b));
   };
   // HTML: 고칠 때마다 쉬운 편집이 읽을 수 있는지 다시 본다 (잠금 · 이유 줄)
   const parses = useRef(new Map<number, ReturnType<typeof setTimeout>>());
@@ -172,7 +173,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
       setTimeout(() => {
         const t = latest.current.tpls.find((y) => y.key === key);
         if (t)
-          ntApi.layout(t.qfmt, t.afmt).then(
+          api.templateLayout(t.qfmt, t.afmt).then(
             (layout) => setTpl(key, { layout, reason: null }),
             (why) => setTpl(key, { layout: null, reason: String(why) }),
           );
@@ -205,9 +206,9 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     if (!old) return;
     // 템플릿 참조도 같이 (저장할 때 rename_field 와 같은 규칙)
     for (const t of draft.tpls) {
-      const [qfmt, afmt] = await ntApi.renameRefs([t.qfmt, t.afmt], old, name);
+      const [qfmt, afmt] = await api.renameFieldRefs([t.qfmt, t.afmt], old, name);
       if (qfmt === t.qfmt && afmt === t.afmt) continue;
-      const layout = await ntApi.layout(qfmt, afmt).catch(() => null);
+      const layout = await api.templateLayout(qfmt, afmt).catch(() => null);
       setTpl(t.key, { qfmt, afmt, layout, reason: layout ? null : t.reason });
     }
   };
@@ -324,7 +325,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     const f0 = refsOf(cur?.qfmt ?? "")[0] ?? names[0];
     const other = names.find((x) => x && x !== f0) ?? f0;
     const layout: Layout = { front: [{ kind: "field", name: other }], back: [{ kind: "front_side" }, { kind: "field", name: f0 }] };
-    const b = await ntApi.build(layout);
+    const b = await api.buildTemplateLayout(layout);
     const key = seq.current--;
     setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null }] }));
     setCurKey(key);
@@ -387,7 +388,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     try {
       // 지우는 저장은 이 기기 백업을 먼저 (디자인 NT8)
       if (impact.templates.length || impact.fields.length) await api.createBackup();
-      await ntApi.save(d.id, editOf(), false);
+      await api.saveNoteType(d.id, editOf(), false);
       toast({ title: "노트 유형을 저장했어요", text: impact.made ? `카드 ${n(impact.made)}장을 새로 만들었어요` : undefined });
       nav(back, true);
     } catch (e) {
@@ -402,7 +403,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     setSaving(true);
     setSaveError(undefined);
     try {
-      const impact = await ntApi.save(d.id, editOf(), true);
+      const impact = await api.saveNoteType(d.id, editOf(), true);
       setSaving(false);
       if (impact.empty_fronts || impact.templates.length || impact.fields.length || impact.made) setAsk(impact);
       else await commit(impact);
@@ -497,7 +498,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
               <span className="t-caption c-tertiary">그림 가리기 · 목록 · 선택형</span>
               <span className="t-label-m">앱이 직접 그리는 유형이에요</span>
               <span className="t-body-s c-secondary">
-                필드와 앞·뒷면 배치가 정해져 있어 이 편집기로 고치거나 복제할 수 없어요. 카드는 카드 추가 화면의 [{NATIVE_LABEL[d.native_kind!]}]에서 만들어요.
+                필드와 앞·뒷면 배치가 정해져 있어 이 편집기로 고치거나 복제할 수 없어요. 카드는 카드 추가 화면의 [{typeLabel(d)}]에서 만들어요.
               </span>
             </span>
           </div>
@@ -1048,7 +1049,7 @@ function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undef
   useOverlayScope(open);
   useKey("Escape", () => setOpen(false), open, { modal: true });
   useEffect(() => {
-    ntApi.samples(d.id).then(setSamples, () => setSamples([]));
+    api.noteTypeSamples(d.id).then(setSamples, () => setSamples([]));
   }, [d.id]);
   const sample = samples && pick !== "names" ? samples[pick] : undefined;
   const names = draft.fields.filter((f) => f.name).map((f) => f.name);
@@ -1057,8 +1058,8 @@ function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undef
   useEffect(() => {
     if (!tpl || samples === null) return;
     let live = true;
-    ntApi
-      .preview(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names)
+    api
+      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names)
       .then(async (p) => {
         const parts = splitBack(p.back, p.front);
         const [front, question, answer] = (await Promise.all([renderCardHtml(p.front), renderCardHtml(parts.question), renderCardHtml(parts.answer)])).map(withMath);
@@ -1076,7 +1077,11 @@ function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undef
   const css = tpl && usesBox(tpl) && !draft.css.includes(mark) ? `${draft.css}\n${d.layout_css}` : draft.css;
   const face = theme === "dark" && css.trim() ? deckFace(css) : null;
   const scoped = useMemo(() => scopeCss(css, face === "other", ".nte-card__body"), [css, face]);
-  const label = (s: Sample) => `${plainText(s.slots[draft.fields.find((f) => f.slot !== null)?.slot ?? 0] ?? "").slice(0, 30) || "(빈 칸)"}${s.deck ? ` · ${s.deck}` : ""}`;
+  // 카드 고르기 이름: 첫 필드 글자 (빈칸 표시는 답만) · 덱
+  const label = (s: Sample) => {
+    const first = plainText(s.slots[draft.fields.find((f) => f.slot !== null)?.slot ?? 0] ?? "").replace(/\{\{c\d+::(.*?)(::.*?)?\}\}/g, "$1");
+    return `${first.slice(0, 30) || "(빈 칸)"}${s.deck ? ` · ${s.deck}` : ""}`;
+  };
 
   return (
     <section className="nte__panel nte__preview" aria-label="미리보기">
