@@ -929,7 +929,8 @@ pub struct NoteEdit {
     /// basic | cloze | image_occlusion | list | choice | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다.
     /// image_occlusion 은 화면이 occlusion_note 로 가리기 편집기(M2)를 연다
     kind: String,
-    /// 노트 유형 이름 ("Anki 노트타입 '…'")
+    /// 노트 유형 이름 ("Anki 노트타입 '…'")과 id (디자인 NT13 머리의 [편집])
+    note_type_id: i64,
     type_name: String,
     /// 보이는 순서 (8.1 노트 유형: 지운 필드는 빠지고 순서는 field_order)
     names: Vec<String>,
@@ -975,7 +976,7 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let used: Vec<String> = nt.templates.iter().flat_map(|t| notetype::refs(&t.qfmt)).collect();
     let front = names.iter().map(|n| used.contains(n)).collect();
     let special = crate::recall::special(&nt.name, &nt.slots, &fields);
-    Ok(NoteEdit { note_id, kind: kind.into(), type_name: nt.name, names, values, slots, front, exam, special })
+    Ok(NoteEdit { note_id, kind: kind.into(), note_type_id: nt.id, type_name: nt.name, names, values, slots, front, exam, special })
 }
 
 /// 필드를 고친다. values 는 note_edit 의 보이는 순서, slots 는 그 자리 번호 (없으면 지금 보이는 순서). 지운 자리 값은 그대로 둔다.

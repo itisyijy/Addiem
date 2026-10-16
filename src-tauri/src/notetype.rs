@@ -941,11 +941,15 @@ pub struct TypeRow {
     cloneable: bool,
     /// Anki 에서 가져온 유형 (앱에서 만든 사용자 유형은 아니다)
     imported: bool,
+    /// 앱에서 만든 유형 (디자인 NT1 묶음: 앱 기본 · Anki 에서 가져옴 · 내가 만든 것)
+    user_made: bool,
     cloze: bool,
     fields: usize,
     templates: usize,
     notes: i64,
     cards: i64,
+    /// 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저)
+    decks: Vec<String>,
 }
 
 fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
@@ -960,8 +964,18 @@ fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
         cloze: nt.cloze(),
         fields: nt.visible().len(),
         templates: nt.templates.len(),
+        user_made: nt.user_made,
         notes: count("SELECT count(*) FROM note WHERE note_type_id = ?1")?,
         cards: count("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1")?,
+        decks: {
+            let mut st = con
+                .prepare(
+                    "SELECT d.name FROM card c JOIN note n ON n.id = c.note_id JOIN deck d ON d.id = c.deck_id
+                     WHERE n.note_type_id = ?1 GROUP BY d.id ORDER BY count(*) DESC, d.name",
+                )
+                .map_err(err)?;
+            st.query_map([nt.id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
+        },
     })
 }
 
@@ -1013,18 +1027,17 @@ pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
     })
 }
 
-/// 디자인 NT12: 덱에서 처음 카드를 추가할 때 열 유형 = 그 덱(하위 덱 포함) 노트가 가장 많이 쓰는 유형. 같으면 최근에 쓴 쪽. 노트가 없으면 None.
-/// "마지막에 쓴 유형"은 화면이 이 기기에만 기억한다 (2단계)
-pub(crate) fn deck_type(con: &Connection, deck_id: i64) -> Res<Option<i64>> {
-    con.query_row(
-        "WITH RECURSIVE d(id) AS (SELECT ?1 UNION ALL SELECT deck.id FROM deck JOIN d ON deck.parent_id = d.id)
-         SELECT n.note_type_id FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN (SELECT id FROM d)
-         GROUP BY n.note_type_id ORDER BY count(DISTINCT n.id) DESC, max(n.id) DESC LIMIT 1",
-        [deck_id],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(err)
+/// 그 덱(하위 덱 포함) 노트가 쓰는 유형, 많이 쓰는 것 먼저 (같으면 최근에 쓴 쪽). 디자인 NT11 [⋯] "이 덱이 쓰는 노트 유형 먼저",
+/// NT12 처음 열 유형 = 첫째. "마지막에 쓴 유형"은 화면이 이 기기에만 기억한다 (2단계)
+pub(crate) fn deck_types(con: &Connection, deck_id: i64) -> Res<Vec<i64>> {
+    let mut st = con
+        .prepare(
+            "WITH RECURSIVE d(id) AS (SELECT ?1 UNION ALL SELECT deck.id FROM deck JOIN d ON deck.parent_id = d.id)
+             SELECT n.note_type_id FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN (SELECT id FROM d)
+             GROUP BY n.note_type_id ORDER BY count(DISTINCT n.id) DESC, max(n.id) DESC",
+        )
+        .map_err(err)?;
+    st.query_map([deck_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)
 }
 
 /// 바꾸는 명령은 모두 한 트랜잭션
@@ -1047,8 +1060,8 @@ pub fn note_type_detail(state: State<AppState>, id: i64) -> Res<Detail> {
 }
 
 #[tauri::command]
-pub fn deck_note_type(state: State<AppState>, deck_id: i64) -> Res<Option<i64>> {
-    deck_type(&*state.db.lock().map_err(err)?, deck_id)
+pub fn deck_note_types(state: State<AppState>, deck_id: i64) -> Res<Vec<i64>> {
+    deck_types(&*state.db.lock().map_err(err)?, deck_id)
 }
 
 #[tauri::command]
@@ -1444,7 +1457,7 @@ mod tests {
         let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"]))).unwrap();
         assert_eq!(p.front, "덧붙임");
         assert!(preview(&con, nt, "", "", 0, Some(&s(&["t"]))).is_err());
-        assert_eq!(deck_type(&con, deck).unwrap(), None);
+        assert!(deck_types(&con, deck).unwrap().is_empty());
         note(&con, deck, nt, &["{{c1::a}}", ""]);
         con.execute("INSERT INTO deck (name, parent_id, created_at, updated_at) VALUES ('하위', ?1, 0, 0)", [deck]).unwrap();
         let sub = con.last_insert_rowid();
@@ -1453,8 +1466,11 @@ mod tests {
             let card = crate::commands::NewCard { deck_id: sub, kind: "basic".into(), front: format!("q{i}"), back: "a".into(), importance: None };
             crate::commands::insert_note(&con, &card, "", None).unwrap();
         }
-        assert_eq!(deck_type(&con, deck).unwrap(), Some(basic), "하위 덱 노트도 센다");
-        assert_eq!(deck_type(&con, sub).unwrap(), Some(basic));
+        assert_eq!(deck_types(&con, deck).unwrap(), [basic, nt], "하위 덱 노트도 센다. 많이 쓰는 것 먼저");
+        assert_eq!(deck_types(&con, sub).unwrap(), [basic]);
+        let rows = list(&con).unwrap();
+        assert_eq!(rows.iter().find(|r| r.id == basic).unwrap().decks, ["하위"]);
+        assert!(rows.iter().find(|r| r.id == nt).is_some_and(|r| r.user_made && r.decks == ["덱"]));
         // 미리보기 기본값: 가장 최근 노트 (이 유형의)
         let p = preview(&con, nt, "{{cloze:Text}}", "", 0, None).unwrap();
         assert!(p.front.starts_with("<span class=\"cloze\">["), "{p:?}");
