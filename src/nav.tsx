@@ -1,5 +1,5 @@
 // 화면 전환과 단축키. 데스크톱 앱이라 URL 라우팅을 쓰지 않는다
-import { createContext, useContext, useEffect } from "react";
+import { createContext, useContext, useEffect, useRef } from "react";
 import type { ImportResult, SessionSummary } from "./api";
 import type { Draft, DraftAmount } from "./sourceApi";
 import type { MixRun, MixStats } from "./written";
@@ -27,8 +27,28 @@ export type Route =
   | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats; minutes: number; completed: boolean } // P3 혼합 회독 끝난 뒤
   | { name: "settings"; focus?: "archived" }; // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
 
-export const NavContext = createContext<(r: Route) => void>(() => {});
+/** force: 화면이 이미 물어본 뒤(버리기 · 저장한 뒤)라 떠나기 확인(useLeaveGuard)을 건너뛴다 */
+export type Nav = (r: Route, force?: boolean) => void;
+export const NavContext = createContext<Nav>(() => {});
 export const useNav = () => useContext(NavContext);
+
+/**
+ * 작성 중인 화면(C3 카드 추가 · R1-c 초안 검토)이 건다. 그 화면을 떠나는 모든 이동(뒤로 · Esc · 상단 메뉴 · 전역 단축키 · 팝오버)이
+ * 먼저 여기를 거친다. 버릴 게 있으면 화면이 제 확인 창을 띄우고 true 를 돌려준다 (QA T6-04)
+ */
+let leaveGuard: ((to: Route) => boolean) | null = null;
+export const leaveBlocked = (to: Route) => leaveGuard?.(to) ?? false;
+export function useLeaveGuard(ask: (to: Route) => boolean) {
+  const latest = useRef(ask);
+  latest.current = ask;
+  useEffect(() => {
+    const g = (to: Route) => latest.current(to);
+    leaveGuard = g;
+    return () => {
+      if (leaveGuard === g) leaveGuard = null;
+    };
+  }, []);
+}
 
 // 떠 있는 겹침 창 수 (모달 · 메뉴 · 팝오버). 떠 있으면 화면 단축키가 모두 꺼지고 그 창이 키를 받는다 (E4 노트 45:5835)
 let openOverlays = 0;
@@ -38,13 +58,32 @@ let openOverlays = 0;
  * 훅 규칙 때문에 열고 닫는 메뉴는 늘 부르고 active 로 켠다
  */
 export function useOverlayScope(active = true) {
+  // 열 때 초점이 있던 곳. 그리는 중에 잡는다 (창 안 autoFocus 가 초점을 가져가기 전)
+  const opener = useRef<HTMLElement | null>(null);
+  if (!active) opener.current = null;
+  else if (!opener.current) opener.current = openerOf(document.activeElement);
   useEffect(() => {
     if (!active) return;
+    const back = opener.current;
     openOverlays++;
     return () => {
       openOverlays--;
+      // 창 안에 있던 초점이 창과 함께 사라졌으면 연 곳으로 돌려준다 (QA T6-15. 닫으면서 다른 곳에 초점을 둔 경우는 그대로)
+      const at = document.activeElement;
+      if ((!at || at === document.body) && back?.isConnected) back.focus();
     };
   }, [active]);
+}
+
+/** 메뉴 항목에서 열었으면 항목은 메뉴와 함께 사라진다. 그 메뉴를 연 버튼(메뉴와 나란한 [aria-haspopup])으로, 겹친 메뉴면 바깥까지 */
+function openerOf(el: Element | null) {
+  let at = el instanceof HTMLElement ? el : null;
+  for (let menu = at?.closest("[role=menu]"); menu; menu = at?.closest("[role=menu]")) {
+    const trigger = menu.parentElement?.querySelector<HTMLElement>(":scope > [aria-haspopup]");
+    if (!trigger) break;
+    at = trigger;
+  }
+  return at;
 }
 /** 예전 이름 (Modal) */
 export const useModalScope = () => useOverlayScope();

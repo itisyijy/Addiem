@@ -124,6 +124,8 @@
   z-index: 20;
   background: rgba(22, 22, 29, 0.32); /* #16161D 32%. 두 모드 모두 고정 (F 결정) */
 }
+/* 묻는 창(버리기 확인 등)은 창 옆 패널(나누기 제안의 근거 자료, z 30)보다도 위 */
+.scrim:has(> .modal--confirm) { z-index: 35; }
 .modal {
   position: absolute;
   top: 250px;

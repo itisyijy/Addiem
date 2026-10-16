@@ -3,15 +3,15 @@
 // R1-c: 초안은 이 화면에만 있다. 승인한 카드만 만들고(한 번의 변경으로 되돌릴 수 있다), 기기 안 검사(비슷한 카드 · 근거에 없는 말)를 칩으로 짚는다
 import "../styles/quality.css";
 import "../styles/drafts.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { aiApi, aiError, api, errorText, qualityApi, type AiError, type CardView } from "../api";
 import { AiConnect, AiErrorBox, SendList, UsingPlan, refreshAi, sentRows } from "../ai";
 import { ragApi, SIGNAL_LABEL, type Draft, type DraftAmount, type DraftCard, type Sent } from "../sourceApi";
 import { renderCardHtml } from "../cardHtml";
-import { eul, n, useKey, useNav } from "../nav";
+import { eul, n, useKey, useLeaveGuard, useNav, type Route } from "../nav";
 import { useToast } from "../toast";
 import { Button, Checkbox, Icon, LEVEL_LABEL, Segment, Spinner, type Level } from "../ui";
-import { Modal } from "./NewDeck";
+import { DiscardModal, Modal } from "./NewDeck";
 import { DeckPicker } from "./DeckPicker";
 import { SegmentPanel } from "./SourcePanel";
 
@@ -200,14 +200,23 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
   const [editing, setEditing] = useState<number | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [deckId, setDeckId] = useState(draft.deck_id);
-  const [asking, setAsking] = useState(false);
+  const [asking, setAsking] = useState<Route | null>(null); // 초안을 버리고 그리로 갈지 묻는 중
   const [resend, setResend] = useState(false);
+  const [askResend, setAskResend] = useState(false); // 고친 초안을 버리고 다시 만들지 묻는 중
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
-  const back = useCallback(() => nav({ name: "sources", deckId: props.deckId, materialId: props.materialId, gaps: true }), [nav, props.deckId, props.materialId]);
-  const leave = () => (items.length ? setAsking(true) : back());
-  useKey("Escape", () => (panel ? setPanel(null) : leave()), editing === null && !asking && !resend);
+  const backTo: Route = { name: "sources", deckId: props.deckId, materialId: props.materialId, gaps: true };
+  const back = () => nav(backTo);
+  // 초안은 이 화면에만 있다. 뒤로 · Esc · 상단 메뉴 · 전역 단축키(N · I) 모두 버리기 전에 묻는다 (QA T6-04)
+  useLeaveGuard((to) => {
+    if (!items.length) return false;
+    setAsking(to);
+    return true;
+  });
+  useKey("Escape", () => (panel ? setPanel(null) : back()), editing === null && !asking && !resend && !askResend);
+  // 앞·뒷면을 고친 초안. [다시 만들기]가 말없이 덮지 않게 먼저 묻는다 (QA T5-04)
+  const edited = items.filter((x) => x.front !== draft.cards[x.key]?.front || x.back !== draft.cards[x.key]?.back).length;
 
   const seg = (id: number) => draft.sent.find((s) => s.id === id);
   const set = (key: number, patch: Partial<Item>) => setItems((list) => list.map((x) => (x.key === key ? { ...x, ...patch } : x)));
@@ -229,7 +238,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
           onClick: () => qualityApi.undo(change).then(() => toast({ title: "카드 만들기를 되돌렸어요" }), (e) => toast({ title: "되돌리지 못했어요", text: errorText(e), tone: "error" })),
         },
       });
-      back();
+      nav(backTo, true); // 승인한 초안은 카드가 됐다
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
@@ -238,7 +247,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
 
   return (
     <main className={`drafts ${panel ? "has-panel" : ""}`}>
-      <button className="backlink t-label-m c-secondary" onClick={leave}>
+      <button className="backlink t-label-m c-secondary" onClick={back}>
         <Icon name="chevron-left" size={18} />
         학습 자료 · 미연결 강조 구간
       </button>
@@ -362,19 +371,33 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
           <span className="t-caption c-tertiary">중요도는 제안대로 · 바꾸려면 칩을 눌러요</span>
         </span>
         <span className="drafts__bar-right">
-          <Button variant="ghost" size="M" icon="rotate" label="다시 만들기" onClick={() => setResend(true)} />
+          <Button variant="ghost" size="M" icon="rotate" label="다시 만들기" onClick={() => (edited ? setAskResend(true) : setResend(true))} />
           <Button size="M" icon="check" label={`${n(chosen.length)}장 만들기`} disabled={!chosen.length} busy={busy} busyLabel="만드는 중…" onClick={apply} />
         </span>
       </div>
 
       {asking && (
-        <Modal title={`초안 ${n(items.length)}장을 버릴까요?`} onClose={() => setAsking(false)} variant="confirm" icon="trash">
-          <p className="t-body-m c-secondary">초안은 이 화면에만 있어요. 다시 만들려면 ChatGPT 요금제 사용량을 다시 써요.</p>
-          <div className="modal__actions">
-            <Button variant="ghost" size="M" label="계속 보기" shortcut="Esc" onClick={() => setAsking(false)} />
-            <Button variant="danger" size="M" icon="trash" label="버리기" onClick={back} />
-          </div>
-        </Modal>
+        <DiscardModal
+          title={`초안 ${n(items.length)}장을 버릴까요?`}
+          text="초안은 이 화면에만 있어요. 다시 만들려면 ChatGPT 요금제 사용량을 다시 써요."
+          keep="계속 보기"
+          discard="버리기"
+          onKeep={() => setAsking(null)}
+          onDiscard={() => nav(asking, true)}
+        />
+      )}
+      {askResend && (
+        <DiscardModal
+          title={`고친 초안 ${n(edited)}장이 있어요`}
+          text="다시 만들면 고친 내용은 사라지고 새 초안으로 바뀌어요."
+          keep="계속 보기"
+          discard="버리고 다시 만들기"
+          onKeep={() => setAskResend(false)}
+          onDiscard={() => {
+            setAskResend(false);
+            setResend(true);
+          }}
+        />
       )}
       {/* [다시 만들기]: 사용량을 쓰므로 같은 미리보기(R1-b)를 다시 거친다 */}
       {resend && (
