@@ -142,7 +142,7 @@ pub(crate) fn introduced_today(con: &Connection, today: i64) -> Res<HashMap<i64,
     let mut st = con
         .prepare(
             "SELECT c.deck_id, count(DISTINCT r.card_id) FROM review_log r JOIN card c ON c.id = r.card_id
-             WHERE r.prev_state = 'new' AND r.reviewed_at >= ?1 GROUP BY c.deck_id",
+             WHERE r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 AND r.reviewed_at >= ?1 GROUP BY c.deck_id",
         )
         .map_err(err)?;
     let rows = st
@@ -1550,7 +1550,8 @@ pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> R
         paused_reviews,
         resume_date: paused.then(|| paused_until.map(|u| db::date_from_day(u + 1))).flatten(),
         never_finish: per_day == 0 && remaining_new > 0,
-        today_total: plan.ordered().len(),
+        // 쉬면 오늘의 학습에서 빠진다 (C4-p). 덱을 직접 골라 학습할 때만 복습이 나온다 (I84)
+        today_total: if paused { 0 } else { plan.ordered().len() },
         today_new: plan.new.len(),
     })
 }
@@ -1848,12 +1849,29 @@ pub(crate) fn load_srs(con: &Connection, card_id: i64) -> Res<SrsState> {
 
 #[tauri::command]
 pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8, elapsed_ms: i64) -> Res<AnswerResult> {
+    let mut con = state.db.lock().map_err(err)?;
+    let (result, undo) = answer_at(&mut con, &state.fsrs, session_id, card_id, rating, elapsed_ms, now_ms())?;
+    drop(con);
+    if let Some(u) = undo {
+        push_undo(&state, u)?;
+    }
+    Ok(result)
+}
+
+/// answer 의 본체 (테스트가 시각을 정해 부른다). 되돌리기 기록이 없으면 평가를 남기지 않은 것이다
+fn answer_at(con: &mut Connection, fsrs: &fsrs::FSRS, session_id: i64, card_id: i64, rating: u8, elapsed_ms: i64, now: i64) -> Res<(AnswerResult, Option<Undo>)> {
     if !(1..=4).contains(&rating) {
         return Err("평가 값이 올바르지 않아요.".into());
     }
-    let mut con = state.db.lock().map_err(err)?;
-    let now = now_ms();
     let today = study_day(now);
+    // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 평가는 남기지 않고 세션을 닫는다. 화면이 새 날의 학습을 다시 연다 (I83)
+    let session_day: Option<String> =
+        con.query_row("SELECT study_day FROM study_session WHERE id = ?1", [session_id], |r| r.get(0)).optional().map_err(err)?;
+    if session_day.is_some_and(|d| d != db::date_from_day(today)) {
+        con.execute("UPDATE study_session SET ended_at = ?2, end_reason = 'day_rollover' WHERE id = ?1 AND ended_at IS NULL", params![session_id, now])
+            .map_err(err)?;
+        return Ok((AnswerResult { action: "day_rollover".into(), due_in_ms: None }, None));
+    }
     let tx = con.transaction().map_err(err)?;
     let mut undo = snapshot(&tx, session_id, card_id)?;
     let prev = load_srs(&tx, card_id)?;
@@ -1874,11 +1892,13 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
     )
     .map_err(err)?;
 
-    let next = if feed { Some(srs::review(&state.fsrs, &prev, rating, now)) } else { None };
+    let next = if feed { Some(srs::review(fsrs, &prev, rating, now)) } else { None };
     let overdue = matches!(prev.state.as_str(), "review" | "relearning") && prev.due_at.is_some_and(|d| study_day(d) < today);
+    // 접어둔 카드가 돌아와(큐의 보류 복귀) 평가됐다. 신규 상태여도 오늘 신규 상한을 쓰지 않는다 (명세 4.6, I82)
+    let from_buried = undo.card.1.is_some();
     tx.execute(
-        "INSERT INTO review_log (card_id, session_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, overdue)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO review_log (card_id, session_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, overdue, from_buried)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             card_id,
             session_id,
@@ -1889,7 +1909,8 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
             next.as_ref().map(|n| n.interval_days),
             prev.state,
             feed as i64,
-            overdue as i64
+            overdue as i64,
+            from_buried as i64
         ],
     )
     .map_err(err)?;
@@ -1925,9 +1946,7 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
         (RatingAction::Continue, None) => AnswerResult { action: "next".into(), due_in_ms: None },
     };
     tx.commit().map_err(err)?;
-    drop(con);
-    push_undo(&state, undo)?;
-    Ok(result)
+    Ok((result, Some(undo)))
 }
 
 /// D4. 사용자가 직접 접어둔다 (단축키 −)
@@ -2063,7 +2082,8 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         .map_err(err)
     };
     let studied = one("count(DISTINCT r.card_id)")?;
-    let new_done = one("count(DISTINCT CASE WHEN r.prev_state = 'new' THEN r.card_id END)")?;
+    // 접어둔 카드 복귀는 신규로 세지 않는다 (D1 · 홈과 같게, I82)
+    let new_done = one("count(DISTINCT CASE WHEN r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 THEN r.card_id END)")?;
     let again = one("coalesce(sum(r.rating = 1), 0)")?;
     let started: i64 = con.query_row("SELECT started_at FROM study_session WHERE id = ?1", [session_id], |r| r.get(0)).map_err(err)?;
 
@@ -2616,6 +2636,87 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
 
 #[cfg(test)]
 mod tests {
+    use crate::db::{now_ms, study_day, study_day_end_ms};
+    use rusqlite::{params, Connection};
+
+    /// 덱 하나에 기본 카드 n장 (하루 신규 상한 limit). 카드 id
+    fn deck_with_cards(con: &Connection, n: usize, limit: Option<i64>) -> Vec<i64> {
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('t', 0, 0)", []).unwrap();
+        let deck_id = con.last_insert_rowid();
+        con.execute("INSERT INTO deck_config (deck_id, daily_new_limit, updated_at) VALUES (?1, ?2, 0)", params![deck_id, limit]).unwrap();
+        for i in 0..n {
+            let card = super::NewCard { deck_id, kind: "basic".into(), front: format!("q{i}"), back: "a".into(), importance: None };
+            super::insert_note(con, &card, "", None).unwrap();
+        }
+        con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)
+    fn mid_today() -> (i64, i64) {
+        let today = study_day(now_ms());
+        (today, (super::today_start_ms(today) + study_day_end_ms(today)) / 2)
+    }
+
+    fn session(con: &Connection, day: i64) -> i64 {
+        con.execute("INSERT INTO study_session (started_at, study_day) VALUES (0, ?1)", [crate::db::date_from_day(day)]).unwrap();
+        con.last_insert_rowid()
+    }
+
+    fn plan_ids(con: &Connection, today: i64) -> (Vec<i64>, usize) {
+        let (_, plan) = super::plan_for(con, None, 1.0, today).unwrap();
+        (plan.ordered().iter().map(|c| c.id).collect(), plan.new.len())
+    }
+
+    #[test]
+    fn relearning_card_stays_today_after_again() {
+        // T1-01: 오늘 예정 복습에서 Again -> 재학습. 자기 노트를 오늘 봤다고 형제 규칙이 빼면 안 된다
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 1, None);
+        let (today, now) = mid_today();
+        con.execute(
+            "UPDATE card SET state = 'review', stability = 5, difficulty = 5, interval_days = 5, due_at = ?2, last_reviewed_at = ?3, reps = 3 WHERE id = ?1",
+            params![ids[0], now - 1000, now - 5 * crate::db::DAY_MS],
+        )
+        .unwrap();
+        let s = session(&con, today);
+        assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 1, 1000, now).unwrap().0.action, "again_later");
+        assert_eq!(plan_ids(&con, today).0, [ids[0]], "재학습 카드는 오늘 큐에 남는다 (이어서 학습 · 홈 · D5 남은 수)");
+    }
+
+    #[test]
+    fn returning_new_card_does_not_use_new_cap() {
+        // T1-05: 상한 3 덱에 복귀 카드(신규 상태) 1 + 신규 3. 복귀 1 + 신규 1 을 학습하면 남은 신규는 2장
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 4, Some(3));
+        let (today, now) = mid_today();
+        con.execute("UPDATE card SET buried_until = ?2, buried_reason = 'user' WHERE id = ?1", params![ids[0], super::today_start_ms(today)]).unwrap();
+        let (_, plan) = super::plan_for(&con, None, 1.0, today).unwrap();
+        assert_eq!((plan.returning.len(), plan.new.len()), (1, 3));
+        let s = session(&con, today);
+        for id in [ids[0], ids[1]] {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, id, 3, 1000, now).unwrap();
+        }
+        assert_eq!(plan_ids(&con, today).1, 2, "복귀 카드는 신규 상한을 쓰지 않는다 (명세 4.6)");
+        assert_eq!(super::introduced_today(&con, today).unwrap().values().sum::<i64>(), 1);
+    }
+
+    #[test]
+    fn rating_after_day_boundary_ends_session() {
+        // T1-06: 어제 학습일에 연 세션에서 경계 뒤에 평가하면 남기지 않고 day_rollover 로 닫는다
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 1, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today - 1);
+        let (r, undo) = super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 3, 1000, now).unwrap();
+        assert_eq!((r.action.as_str(), undo.is_none()), ("day_rollover", true));
+        let (reason, logs): (String, i64) = con
+            .query_row("SELECT end_reason, (SELECT count(*) FROM review_log) FROM study_session WHERE id = ?1", [s], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((reason.as_str(), logs), ("day_rollover", 0));
+        let s2 = session(&con, today);
+        assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s2, ids[0], 3, 1000, now).unwrap().0.action, "again_later");
+    }
+
     #[test]
     fn median_and_plan_rate() {
         assert_eq!(super::median(vec![]), None);
