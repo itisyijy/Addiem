@@ -199,6 +199,8 @@ export type CardView = {
   occlusion: IoPos | null;
   /** Q 목록 회상 · 선택형. 있으면 템플릿 대신 이것으로 그린다 */
   special: Special | null;
+  /** Q30 지난번 빠뜨린 항목 · 고른 보기 (special 의 번호). 노트를 고쳐 항목 · 보기가 바뀌었으면 null */
+  last_marks: number[] | null;
 };
 export type NoteEdit = {
   note_id: number;
@@ -467,8 +469,9 @@ export const api = {
   startSession: (deckIds: number[] | null, scale: number) =>
     invoke<{ session_id: number; card_ids: number[] }>("start_session", { deckIds, scale }),
   cardView: (cardId: number) => invoke<CardView>("card_view", { cardId }),
-  answer: (sessionId: number, cardId: number, rating: 1 | 2 | 3 | 4, elapsedMs: number) =>
-    invoke<AnswerResult>("answer", { sessionId, cardId, rating, elapsedMs }),
+  /** marks: Q 목록 · 선택형의 빠뜨린 항목 · 고른 보기. 평가가 남을 때만 "지난번"으로 저장된다 */
+  answer: (sessionId: number, cardId: number, rating: 1 | 2 | 3 | 4, elapsedMs: number, marks: number[] | null) =>
+    invoke<AnswerResult>("answer", { sessionId, cardId, rating, elapsedMs, marks }),
   buryCard: (sessionId: number, cardId: number) => invoke<void>("bury_card", { sessionId, cardId }),
   /** 이 세션에서 방금 한 평가나 접기를 되돌린다. 되돌린 카드 id, 없으면 null */
   undoLast: (sessionId: number) => invoke<number | null>("undo_last", { sessionId }),

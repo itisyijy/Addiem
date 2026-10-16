@@ -7,12 +7,12 @@
 //! 템플릿은 스크립트 없이 필드만 쓴다 (db.rs NATIVE_TYPES). Anki 에서는 한 번에 다 보이는 기본 카드처럼 읽히고,
 //! 정답 보기 굵게는 뒷면의 data-answer 속성 선택자(CSS)로 한다. 앱 학습 화면은 템플릿 대신 필드를 읽어 직접 그린다.
 //! 다시 가져오면 유형 이름 + 필드로 알아본다 (M10 과 같은 방식). 이름만 같고 필드가 다르면 일반 노트로 (가져오기 결과에 한 줄).
-//! 평가는 FSRS 4단계 그대로이고 앱은 추천만 한다 (Q3 · Q7). 항목별 빠뜨림 · 고른 보기는 이 기기에만 남긴다 (recall_mark, Q9)
+//! 평가는 FSRS 4단계 그대로이고 앱은 추천만 한다 (Q3 · Q7). 항목별 빠뜨림 · 고른 보기는 이 기기에만 남기고 답 면에 "지난번"으로 보인다 (recall_mark, Q9 · Q30)
 
 use crate::commands::AppState;
 use crate::db::now_ms;
 use crate::{quality, render, written};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -163,17 +163,50 @@ pub fn recall_suggest(state: State<AppState>, card_id: i64, marks: Vec<u32>) -> 
     suggest_for(&con, card_id, &marks)
 }
 
-/// Q9 평가할 때. 카드마다 마지막 하나만, 이 기기에만 (recall_mark 는 동기화하지 않는다). "지난번 빠뜨림" 표시는 다음 버전
-#[tauri::command]
-pub fn save_recall_marks(state: State<AppState>, card_id: i64, marks: Vec<u32>) -> Res<()> {
-    let con = state.db.lock().map_err(err)?;
+// ------------------------------------------------------------------ 지난번 빠뜨림 · 고른 답 (Q9 · Q20, 초안 Q30–Q33)
+
+/// marks 가 가리키는 것 (목록: 항목 글자, 선택형: 보기 필드 번호 · 글자 + 정답). 노트를 고쳐 이것이 바뀌면 지난번 기록은 엉뚱한 칸을 가리킨다
+fn shown(s: &Special) -> String {
+    match s {
+        Special::List { items, .. } => serde_json::to_string(items),
+        Special::Choice { options, correct, .. } => serde_json::to_string(&(options, correct)),
+    }
+    .unwrap_or_default()
+}
+
+/// 평가가 남은 같은 트랜잭션에서만 부른다 (answer · cram_answer). 카드마다 마지막 하나, 이 기기에만 (동기화하지 않는다).
+/// 되돌리기에 쓰게 만든 기록 id(log_id)와 바로 전 값(prev)을 같이 둔다. 선택형 marks 는 보기 필드 번호라 섞어도 보기를 따라간다
+pub(crate) fn save_marks(con: &Connection, card_id: i64, log_id: i64, marks: &[u32], now: i64) -> Res<()> {
+    let shown = card_special(con, card_id)?.as_ref().map(shown);
     con.execute(
-        "INSERT INTO recall_mark (card_id, marks, marked_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(card_id) DO UPDATE SET marks = ?2, marked_at = ?3",
-        params![card_id, serde_json::to_string(&marks).map_err(err)?, now_ms()],
+        "INSERT INTO recall_mark (card_id, marks, marked_at, shown, log_id) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(card_id) DO UPDATE SET prev = json_object('marks', marks, 'marked_at', marked_at, 'shown', shown, 'log_id', log_id),
+             marks = ?2, marked_at = ?3, shown = ?4, log_id = ?5",
+        params![card_id, serde_json::to_string(marks).map_err(err)?, now, shown, log_id],
     )
     .map_err(err)?;
     Ok(())
+}
+
+/// 그 평가(log_id)를 되돌리면 지난번 기록도 그 전 값으로 (없었으면 지운다). undo_last · cram_undo.
+/// ponytail: 전 값은 하나만 둔다. 같은 카드를 두 번 거슬러 되돌리면 지운다 (화면의 되돌리기는 한 번뿐이다)
+pub(crate) fn undo_marks(con: &Connection, log_id: i64) -> Res<()> {
+    con.execute(
+        "UPDATE recall_mark SET marks = json_extract(prev, '$.marks'), marked_at = json_extract(prev, '$.marked_at'),
+             shown = json_extract(prev, '$.shown'), log_id = json_extract(prev, '$.log_id'), prev = NULL
+         WHERE log_id = ?1 AND prev IS NOT NULL",
+        [log_id],
+    )
+    .map_err(err)?;
+    con.execute("DELETE FROM recall_mark WHERE log_id = ?1", [log_id]).map_err(err)?;
+    Ok(())
+}
+
+/// 학습 화면의 "지난번" (card_view). 노트를 고쳐 항목 · 보기 · 정답이 바뀌었으면 없다 (편집 · 동기화 · 가져오기 어느 길로 바뀌어도 읽을 때 본다)
+pub(crate) fn last_marks(con: &Connection, card_id: i64, s: &Special) -> Res<Option<Vec<u32>>> {
+    let row: Option<(String, Option<String>)> =
+        con.query_row("SELECT marks, shown FROM recall_mark WHERE card_id = ?1", [card_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(err)?;
+    Ok(row.filter(|(_, at)| at.as_deref() == Some(shown(s).as_str())).and_then(|(m, _)| serde_json::from_str(&m).ok()))
 }
 
 // ------------------------------------------------------------------ 명령: 카드 추가 (Q0)
@@ -463,6 +496,68 @@ mod tests {
         let mut new = list_fields(&ListNew { deck_id: 0, question: "Q".into(), items: vec!["a".into(), "b".into()], ordered: false, extra: String::new(), importance: None }).unwrap();
         keep_untouched(LIST, &old, &mut new);
         assert_eq!(new, old);
+    }
+
+    /// 덱 하나 + 노트 하나 (카드 id)
+    fn one_card(con: &Connection, nt: &str, fields: &[&str]) -> i64 {
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES (?1, 0, 0)", [nt]).unwrap();
+        let fields: Vec<String> = fields.iter().map(|s| s.to_string()).collect();
+        let nid = insert(con, nt, con.last_insert_rowid(), &fields, None, "", None).unwrap();
+        con.query_row("SELECT id FROM card WHERE note_id = ?1", [nid], |r| r.get(0)).unwrap()
+    }
+
+    fn last(con: &Connection, card: i64) -> Option<Vec<u32>> {
+        last_marks(con, card, &card_special(con, card).unwrap().unwrap()).unwrap()
+    }
+
+    fn set_fields(con: &Connection, card: i64, fields: &[&str]) {
+        con.execute("UPDATE note SET fields = ?2 WHERE id = (SELECT note_id FROM card WHERE id = ?1)", params![card, serde_json::to_string(fields).unwrap()]).unwrap();
+    }
+
+    #[test]
+    fn last_marks_dropped_when_items_or_options_change() {
+        // Q30: 노트를 고쳐 항목 · 보기 · 정답이 바뀌면 지난번 기록은 엉뚱한 칸을 가리킨다 → 읽지 않는다 (어느 길로 고쳐도 읽을 때 본다)
+        let con = crate::db::open_in_memory().unwrap();
+        let list = one_card(&con, LIST, &["OSI?", "응용<br>표현<br>세션", "순서대로", ""]);
+        save_marks(&con, list, 1, &[2], 0).unwrap();
+        assert_eq!(last(&con, list), Some(vec![2]));
+        set_fields(&con, list, &["OSI 7계층은?", "<b>응용</b><br>표현<br>세션", "순서 없이", "설명"]);
+        assert_eq!(last(&con, list), Some(vec![2]), "질문 · 서식 · 순서 · 추가 설명만 고치면 그대로");
+        set_fields(&con, list, &["OSI 7계층은?", "응용<br>세션<br>표현", "순서대로", ""]);
+        assert_eq!(last(&con, list), None, "항목 순서가 바뀌면 2번은 다른 항목이다");
+
+        let choice = one_card(&con, CHOICE, &["Q", "SYN", "SYN-ACK", "ACK", "", "", "", "2", "섞기", ""]);
+        save_marks(&con, choice, 2, &[3], 0).unwrap();
+        set_fields(&con, choice, &["Q?", "SYN", "SYN-ACK", "ACK", "", "", "", "2", "섞지 않음", "해설"]);
+        assert_eq!(last(&con, choice), Some(vec![3]));
+        set_fields(&con, choice, &["Q?", "SYN", "SYN-ACK", "ACK", "", "", "", "3", "섞기", ""]);
+        assert_eq!(last(&con, choice), None, "정답을 고치면 (Figma Q2-c 노트)");
+        set_fields(&con, choice, &["Q", "SYN-ACK", "ACK", "", "", "", "", "1", "섞기", ""]);
+        save_marks(&con, choice, 3, &[2], 0).unwrap();
+        set_fields(&con, choice, &["Q", "SYN", "SYN-ACK", "ACK", "", "", "", "2", "섞기", ""]);
+        assert_eq!(last(&con, choice), None, "보기를 더해 필드 번호가 밀리면 (2번이 ACK 에서 SYN-ACK 로)");
+
+        // 이 기능 전에 남은 기록(그때의 항목이 없다)은 쓰지 않는다
+        save_marks(&con, list, 4, &[1], 0).unwrap();
+        assert_eq!(last(&con, list), Some(vec![1]));
+        con.execute("UPDATE recall_mark SET shown = NULL WHERE card_id = ?1", [list]).unwrap();
+        assert_eq!(last(&con, list), None);
+    }
+
+    #[test]
+    fn last_pick_follows_the_option_not_the_position() {
+        // Q30: 선택형 marks 는 보기 필드 번호다. 볼 때마다 섞여도(optionOrder, 화면) 지난번 고른 보기 글자는 같다
+        let con = crate::db::open_in_memory().unwrap();
+        let card = one_card(&con, CHOICE, &["Q", "SYN", "SYN-ACK", "ACK", "FIN", "", "", "2", "섞기", ""]);
+        let Some(Special::Choice { options, .. }) = card_special(&con, card).unwrap() else { panic!() };
+        let text = |num: u32| options.iter().find(|o| o.0 == num).unwrap().1.clone();
+        let first_order = [4, 3, 1, 2]; // 화면 ② 를 골랐다
+        save_marks(&con, card, 1, &[first_order[1]], 0).unwrap();
+        let next_order = [2, 1, 4, 3];
+        let last = last(&con, card).unwrap();
+        let at = next_order.iter().position(|n| last.contains(n)).unwrap();
+        assert_eq!((text(last[0]).as_str(), at), ("ACK", 3), "다음엔 ④ 자리에 있어도 ACK 에 붙는다");
+        assert_eq!(suggest_for(&con, card, &last).unwrap(), Some(1), "지난번엔 틀렸다 (화면은 이때만 보인다)");
     }
 
     #[test]

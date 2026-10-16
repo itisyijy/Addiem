@@ -545,8 +545,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     () =>
       cram
         ? {
-            answer: async (id: number, r: Rating, ms: number): Promise<AnswerAction> => {
-              const log = await cramApi.answer(id, r, ms);
+            answer: async (id: number, r: Rating, ms: number, marks: number[] | null): Promise<AnswerAction> => {
+              const log = await cramApi.answer(id, r, ms, marks);
               const again = (cramAgain.current.get(id) ?? 0) + (r === 1 ? 1 : 0);
               cramAgain.current.set(id, again);
               cramDone.current.add(id);
@@ -561,7 +561,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             },
           }
         : {
-            answer: (id: number, r: Rating, ms: number): Promise<AnswerAction> => api.answer(session.current!, id, r, ms),
+            answer: (id: number, r: Rating, ms: number, marks: number[] | null): Promise<AnswerAction> => api.answer(session.current!, id, r, ms, marks),
             bury: (id: number) => api.buryCard(session.current!, id),
             unbury: (id: number) => api.unburyCard(session.current!, id),
             undo: (_: Last) => api.undoLast(session.current!),
@@ -605,8 +605,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const rate2 = (r: Rating) =>
     guard(async () => {
       const c = card!;
-      if (c.view.special) recall.saveMarks(c.view.id, marks).catch(() => {}); // Q9 이 기기에만
-      const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current);
+      // Q9 빠뜨림 · 고른 보기는 평가가 남을 때 같이 저장된다 (이 기기에만. 되돌리면 그 전 값으로)
+      const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current, c.view.special ? marks : null);
       if (res.action === "day_rollover") {
         // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 세션은 닫혔고 방금 평가는 남지 않았다. 새 날의 학습을 다시 짠다
         notify({ title: "새 학습일이 시작됐어요", text: "오늘의 학습을 새로 만들었어요. 방금 평가는 남기지 않았어요." });
@@ -1017,6 +1017,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                       extra={card.answer}
                       opened={opened}
                       marks={marks}
+                      last={card.view.last_marks}
                       order={order}
                       openKey={actionKey("reveal")}
                       onSlot={onSlot}

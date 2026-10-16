@@ -196,27 +196,37 @@ pub fn cram_cards(state: State<AppState>, deck_id: i64, scope: Scope) -> Res<Vec
     Ok(items(&con, &commands::descendants(deck_id, &decks), &weak_ids)?.into_iter().filter(|i| i.picked(scope)).map(|i| i.id).collect())
 }
 
-/// 압축 회독 평가. 일정은 그대로 두고 기록만 남긴다. 되돌리기에 쓸 기록 id 를 돌려준다
+/// 압축 회독 평가. 일정은 그대로 두고 기록만 남긴다. 되돌리기에 쓸 기록 id 를 돌려준다.
+/// marks: Q 목록 · 선택형 (Q9). 압축 회독 결과도 "지난번"이 된다 (Q20 · Q31)
 #[tauri::command]
-pub fn cram_answer(state: State<AppState>, card_id: i64, rating: u8, elapsed_ms: i64) -> Res<i64> {
+pub fn cram_answer(state: State<AppState>, card_id: i64, rating: u8, elapsed_ms: i64, marks: Option<Vec<u32>>) -> Res<i64> {
     if !(1..=4).contains(&rating) {
         return Err("평가 값이 올바르지 않아요.".into());
     }
-    let con = state.db.lock().map_err(err)?;
-    con.execute(
+    let mut con = state.db.lock().map_err(err)?;
+    let tx = con.transaction().map_err(err)?;
+    let now = now_ms();
+    tx.execute(
         "INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, kind)
          SELECT id, ?2, ?3, ?4, interval_days, interval_days, state, 0, 'cram' FROM card WHERE id = ?1",
-        params![card_id, now_ms(), rating, elapsed_ms],
+        params![card_id, now, rating, elapsed_ms],
     )
     .map_err(err)?;
-    Ok(con.last_insert_rowid())
+    let log_id = tx.last_insert_rowid();
+    if let Some(m) = marks {
+        crate::recall::save_marks(&tx, card_id, log_id, &m, now)?;
+    }
+    tx.commit().map_err(err)?;
+    Ok(log_id)
 }
 
-/// 압축 회독 평가 되돌리기 (Ctrl+Z). 압축 회독 기록만 지운다
+/// 압축 회독 평가 되돌리기 (Ctrl+Z). 압축 회독 기록만 지운다 (지난번 표시는 그 전 값으로)
 #[tauri::command]
 pub fn cram_undo(state: State<AppState>, log_id: i64) -> Res<()> {
     let con = state.db.lock().map_err(err)?;
-    con.execute("DELETE FROM review_log WHERE id = ?1 AND kind = 'cram'", [log_id]).map_err(err)?;
+    if con.execute("DELETE FROM review_log WHERE id = ?1 AND kind = 'cram'", [log_id]).map_err(err)? > 0 {
+        crate::recall::undo_marks(&con, log_id)?;
+    }
     Ok(())
 }
 

@@ -22,7 +22,6 @@ export const recall = {
   addChoice: (card: Common & ChoiceDraft) => invoke<number>("add_choice_card", { card }),
   /** marks: 목록은 빠뜨린 항목 번호, 선택형은 고른 보기 번호 (1부터). 1 Again · 2 Hard · 3 Good */
   suggest: (cardId: number, marks: number[]) => invoke<1 | 2 | 3 | null>("recall_suggest", { cardId, marks }),
-  saveMarks: (cardId: number, marks: number[]) => invoke<void>("save_recall_marks", { cardId, marks }),
   /** Q24 전용 편집기. 추가와 같은 검사 · 같은 값으로 저장한다 (고치지 않은 항목 · 보기 · 칸은 원래 HTML 그대로) */
   updateList: (noteId: number, card: Edit & ListDraft) => invoke<void>("update_list_note", { noteId, ...card }),
   updateChoice: (noteId: number, card: Edit & ChoiceDraft) => invoke<void>("update_choice_note", { noteId, ...card }),
