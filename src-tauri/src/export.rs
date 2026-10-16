@@ -454,6 +454,47 @@ struct Card {
 }
 
 /// 겹치면 1씩 올린다. Anki id 는 표마다 유일하면 된다
+/// 8.4 그림 · 표 영역에서 만든 노트의 출처 태그 (.apkg 만, DECISIONS IT32): `Neo-Anki::출처::4장_회귀분석::슬라이드_3` · `Neo-Anki::출처::3장::12쪽`.
+/// 이 앱이 단 태그만 알아보게 `Neo-Anki::` 아래에 둔다. 사용자가 직접 단 `출처::…` 태그는 내보내기 · 가져오기 모두 건드리지 않는다 (QA T2-02).
+/// 노트 글은 건드리지 않는다 (IT14). 앱 안 연결은 source_link 가 그대로 하고, 다시 가져오면 이 태그는 뺀다 (import.rs)
+pub(crate) const SOURCE_TAG: &str = "Neo-Anki::출처::";
+
+fn source_tags(con: &Connection) -> Res<HashMap<i64, Vec<String>>> {
+    let mut st = con
+        .prepare(
+            "SELECT DISTINCT c.note_id, m.file_name, m.kind, s.page FROM source_link l
+             JOIN source_segment s ON s.id = l.segment_id AND s.signals IN ('figure', 'table')
+             JOIN source_material m ON m.id = s.material_id JOIN card c ON c.id = l.card_id
+             WHERE l.method != 'rejected' ORDER BY c.note_id, m.file_name, s.page",
+        )
+        .map_err(err)?;
+    let mut out: HashMap<i64, Vec<String>> = HashMap::new();
+    let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))).map_err(err)?;
+    for row in rows {
+        let (note, file, kind, page) = row.map_err(err)?;
+        // 태그는 띄어쓰기로 나뉘어 기출 태그처럼 _ 로 (exam::to_tags)
+        let stem = file.rsplit_once('.').map_or(file.as_str(), |(s, _)| s).split_whitespace().collect::<Vec<_>>().join("_");
+        let place = if kind == "pptx" { format!("슬라이드_{page}") } else { format!("{page}쪽") };
+        let tag = format!("{SOURCE_TAG}{stem}::{place}");
+        let list = out.entry(note).or_default();
+        if !list.contains(&tag) {
+            list.push(tag);
+        }
+    }
+    Ok(out)
+}
+
+/// 이전 출처 태그는 빼고 지금 연결로 다시 단다 (쌓이지 않게)
+fn with_source_tags(tags: &str, sources: &[String]) -> String {
+    without_source_tags(tags).split_whitespace().map(str::to_string).chain(sources.iter().cloned()).collect::<Vec<_>>().join(" ")
+}
+
+/// 이 앱이 단 출처 태그만 뺀다. Anki 는 태그 대소문자를 컬렉션에 이미 있는 태그에 맞추므로 영문 부분은 대소문자를 가리지 않는다
+pub(crate) fn without_source_tags(tags: &str) -> String {
+    let ours = |t: &str| t.get(..SOURCE_TAG.len()).is_some_and(|h| h.eq_ignore_ascii_case(SOURCE_TAG));
+    tags.split_whitespace().filter(|t| !ours(t)).collect::<Vec<_>>().join(" ")
+}
+
 fn unique(used: &mut HashSet<i64>, mut id: i64) -> i64 {
     while !used.insert(id) {
         id += 1;
@@ -554,6 +595,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         rows.collect::<Result<_, _>>().map_err(err)?
     };
 
+    let sources = source_tags(con)?;
     let root_did = deck_map[&deck_id];
     let mut used = HashSet::new();
     let mut models: HashMap<i64, Model> = HashMap::new();
@@ -591,6 +633,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         note_ids.insert(n.id, id);
         // 기출 표시를 태그로 (N20). Anki 에서 보이고, 다시 가져오면 같은 표시가 된다
         let tags = crate::exam::to_tags(&n.tags, n.exam_hits, n.exam_names.clone());
+        let tags = with_source_tags(&tags, sources.get(&n.id).map_or(&[][..], Vec::as_slice));
         let guid = match &n.anki_guid {
             Some(g) => g.clone(),
             None => {
@@ -1531,6 +1574,50 @@ mod tests {
         let tags: Vec<&str> = after.iter().map(|r| r.0.as_str()).collect();
         assert_eq!(tags, ["과목::1 과목::기출::2023 기출::2024_기말", "중요", "기출", "과목::1"], "앞 단계가 있는 기출 태그는 그대로, 정하지 않은 노트는 손대지 않는다");
         assert_eq!(after.into_iter().map(|r| r.1).collect::<Vec<_>>(), before.into_iter().map(|r| r.1).collect::<Vec<_>>());
+    }
+
+    /// IT: 그림 · 표 영역에 이은 노트만 .apkg 에 출처 태그가 붙고 (노트 글은 그대로), 다시 가져오면 그 태그는 빠진다
+    #[test]
+    fn region_source_tag_on_apkg_only() {
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-srctag-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('회귀', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let add = |front: &str, tags: &str| -> i64 {
+            insert_note(&con, &NewCard { deck_id: root, kind: "basic".into(), front: front.into(), back: "b".into(), importance: None }, tags, None).unwrap();
+            con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap()
+        };
+        let (fig, text) = (add("그림 카드", "과목::1 출처::4장_회귀분석::슬라이드_3 neo-anki::출처::옛것::1쪽"), add("글 카드", ""));
+        add("따로", "중요");
+        con.execute_batch(&format!(
+            "INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, created_at, updated_at) VALUES (1, {root}, '4장 회귀분석.pptx', 'sources/1.pptx', 'pptx', 0, 0), (2, {root}, '3장.pdf', 'sources/2.pdf', 'pdf', 0, 0);
+             INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight, rects) VALUES (1, 1, 3, 0, '그림', 'figure', 0, '[[0,0,1,1]]'), (2, 2, 12, 0, '표', 'table', 0, '[[0,0,1,1]]'), (3, 1, 3, 1, '강조', 'star', 2, NULL);
+             INSERT INTO source_link (segment_id, card_id, method, created_at) VALUES (1, {fig}, 'manual', 0), (2, {fig}, 'manual', 0), (3, {text}, 'manual', 0);"
+        ))
+        .unwrap();
+        let out = tmp.0.join("src.apkg");
+        export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        let mut raw = vec![];
+        std::io::Read::read_to_end(&mut zip.by_name("collection.anki2").unwrap(), &mut raw).unwrap();
+        let col = tmp.0.join("src.anki2");
+        std::fs::write(&col, raw).unwrap();
+        let col = Connection::open(&col).unwrap();
+        let tags = |front: &str| -> String { col.query_row("SELECT tags || '|' || flds FROM notes WHERE flds LIKE ?1", [format!("{front}%")], |r| r.get(0)).unwrap() };
+        assert_eq!(
+            tags("그림 카드"),
+            " 과목::1 출처::4장_회귀분석::슬라이드_3 Neo-Anki::출처::3장::12쪽 Neo-Anki::출처::4장_회귀분석::슬라이드_3 |그림 카드\u{1f}b",
+            "이 앱이 단 옛 출처 태그만 빼고 지금 연결로. 사용자가 단 같은 모양의 출처:: 태그는 그대로 (T2-02), 노트 글도 그대로"
+        );
+        assert_eq!(tags("글 카드"), "|글 카드\u{1f}b", "글 강조 구간은 출처 태그가 없다");
+        assert_eq!(tags("따로"), " 중요 |따로\u{1f}b");
+
+        let b = state(&tmp.0.join("b"));
+        crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let bc = b.db.lock().unwrap();
+        let back: String = bc.query_row("SELECT tags FROM note WHERE fields LIKE '%그림 카드%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(back, "과목::1 출처::4장_회귀분석::슬라이드_3", "다시 가져오면 이 앱이 단 출처 태그만 빠진다 (T2-02)");
     }
 
     /// 릴리스 QA: 그림 가리기 노트는 CSV 에 겹침 HTML(io-mask · canvas) 대신 질문 · 그림 파일 · 칸 이름을 쓴다

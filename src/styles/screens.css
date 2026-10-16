@@ -289,6 +289,10 @@
 .card-html .cloze { color: var(--accent-default); font-weight: 600; }
 .card-html .cloze-mark { color: var(--accent-text); font-weight: 600; text-decoration: underline; }
 .card-html .missing-media { color: var(--text-tertiary); font-size: 13px; }
+/* 8.4 표 카드 (IT5): 칸 빈칸 노트는 표 전체를 담는다 */
+.card-html table { margin: 8px 0; border-collapse: collapse; font-size: 0.85em; line-height: 1.5; }
+.card-html th, .card-html td { padding: 4px 10px; border: 1px solid var(--border-strong); text-align: left; vertical-align: top; }
+.card-html th { background: var(--bg-subtle); font-weight: 600; }
 /* AU SoundChip (cardHtml.ts): 높이 30 · 알약 · 14px 아이콘 + Label/S. 글자는 data-label 로 그려 카드 글자에 섞이지 않는다 */
 .card-html .snd {
   display: inline-flex;
