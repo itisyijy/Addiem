@@ -373,6 +373,8 @@ export type ExportResult = {
   path: string;
   /** 찾지 못한 미디어를 쓰는 카드 (C1-xr [카드 보기]) */
   missing_cards: number[];
+  /** 카드 종류가 없어 뺀 카드 수 (Anki 가 받지 않는다) */
+  skipped_cards: number;
 };
 /** C1-xe 덱 상자 */
 /** recall_cards: 목록 회상 · 선택형 카드 수 (Anki 에서는 보기만 해요) */
@@ -499,7 +501,7 @@ export const api = {
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
   /** C1-xc. columns: front | back | deck | tags | importance | due. plainText: 서식 빼고 글자만 */
   exportCsv: (deckId: number, path: string, columns: string[], plainText: boolean) =>
-    invoke<{ rows: number; path: string }>("export_csv", { deckId, path, columns, plainText }),
+    invoke<{ rows: number; path: string; empty_fronts: number }>("export_csv", { deckId, path, columns, plainText }),
   importanceBoard: (deckId: number) => invoke<BoardDeck[]>("importance_board", { deckId }),
   noteEdit: (noteId: number) => invoke<NoteEdit>("note_edit", { noteId }),
   /** slots: noteEdit 의 자리 번호. 없으면 지금 보이는 순서 */

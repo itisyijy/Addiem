@@ -2643,7 +2643,7 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
     let tx = con.transaction().map_err(err)?;
     // Drive 동기화 중이면 "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 먼저 끊는다 (Drive 데이터는 그대로, K10)
     crate::sync::forget_local(&tx).map_err(err)?;
-    // K7 두 기기에서 고친 카드 · K36 노트 유형의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
+    // K7 두 기기에서 고친 카드 · K39 노트 유형의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
     tx.execute_batch("DROP TABLE IF EXISTS sync_conflict; DROP TABLE IF EXISTS sync_type_conflict;").map_err(err)?;
     tx.execute_batch(
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;

@@ -91,7 +91,7 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
              winner_device TEXT, winner_at INTEGER, winner_fields TEXT,
              loser_device TEXT, loser_at INTEGER, loser_fields TEXT,
              seen INTEGER NOT NULL DEFAULT 0, resolved INTEGER NOT NULL DEFAULT 0);
-         -- K36 두 기기에서 고친 노트 유형 정의 (카드 종류 앞 · 뒷면 · 이름, CSS, 필드 이름, 같은 자리에 더한 필드). 진 쪽을 남긴다 (30일)
+         -- K39 두 기기에서 고친 노트 유형 정의 (카드 종류 앞 · 뒷면 · 이름, CSS, 필드 이름, 같은 자리에 더한 필드). 진 쪽을 남긴다 (30일)
          CREATE TABLE IF NOT EXISTS sync_type_conflict (
              id INTEGER PRIMARY KEY, type_uid TEXT NOT NULL, what TEXT NOT NULL, at INTEGER NOT NULL,
              winner_device TEXT, winner TEXT, loser_device TEXT, loser TEXT);",
@@ -1246,7 +1246,7 @@ struct Applier<'a> {
     moves: Vec<(i64, usize, usize, String)>,
 }
 
-/// 두 기기에서 고친 노트 유형 정의를 남기는 열 (K36): (표, 열, 화면 이름)
+/// 두 기기에서 고친 노트 유형 정의를 남기는 열 (K39): (표, 열, 화면 이름)
 const TYPE_COLS: [(&str, &str, &str); 5] =
     [("card_template", "qfmt", "앞면"), ("card_template", "afmt", "뒷면"), ("card_template", "name", "이름"), ("note_type", "css", "CSS"), ("note_type", "name", "유형 이름")];
 
@@ -1531,7 +1531,7 @@ impl Applier<'_> {
                 };
                 let same = local.get(c) == Some(v);
                 srs_differs |= !same && t == "card" && SRS_COLS.contains(&c.as_str());
-                // 노트 유형 정의를 이 기기도 고쳤는데 아직 올리지 않았다: 받은 쪽은 이 기기 것을 모르고 고쳤다. 진 쪽을 남긴다 (K36)
+                // 노트 유형 정의를 이 기기도 고쳤는데 아직 올리지 않았다: 받은 쪽은 이 기기 것을 모르고 고쳤다. 진 쪽을 남긴다 (K39)
                 if !same
                     && let Some((_, _, label)) = TYPE_COLS.iter().find(|(tt, cc, _)| *tt == t && cc == c)
                     && pend.as_ref().and_then(|p| p.col(c)).is_some()
@@ -1634,7 +1634,7 @@ impl Applier<'_> {
         Ok(())
     }
 
-    /// K36: 노트 유형 정의를 두 기기에서 고쳤다. 진 쪽을 남긴다 (노트 유형 편집기가 보인다). win · lose = (내용, HLC)
+    /// K39: 노트 유형 정의를 두 기기에서 고쳤다. 진 쪽을 남긴다 (노트 유형 편집기가 보인다). win · lose = (내용, HLC)
     fn type_conflict(&mut self, t: &str, uid: &str, local: &Map<String, J>, label: &str, win: (&str, &str), lose: (&str, &str)) -> SRes<()> {
         let (type_uid, what) = if t == "card_template" {
             let tpl = local.get("name").and_then(|v| v.as_str()).unwrap_or_default();
@@ -1690,7 +1690,7 @@ impl Applier<'_> {
             }
             self.report.applied += 1;
         }
-        // 진 쪽 기록 (K36): 같은 필드 이름을 이 기기도 바꿨는데 아직 올리지 않았다 · 같은 자리에 따로 더한 필드는 새 자리로 옮겼다
+        // 진 쪽 기록 (K39): 같은 필드 이름을 이 기기도 바꿨는데 아직 올리지 않았다 · 같은 자리에 따로 더한 필드는 새 자리로 옮겼다
         if pend.and_then(|p| p.col("fields")).is_some() {
             for (w, l) in &m.renamed {
                 self.type_conflict("note_type", uid, local, "필드 이름", (w, wh), (l, loh))?;
