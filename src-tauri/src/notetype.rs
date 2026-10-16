@@ -29,6 +29,8 @@ const APP_TYPE: &str = "앱 기본 유형은 고칠 수 없어요. 복제해서 
 const SPECIAL: [&str; 8] = ["FrontSide", "Card", "CardFlag", "CardID", "Deck", "Subdeck", "Tags", "Type"];
 /// 복제할 수 있는 앱 유형. 목록 · 선택형 · 그림 가리기는 학습 화면이 필드로 따로 그려 복제본이 다르게 보인다
 const CLONEABLE: [&str; 4] = ["basic", "reversed", "cloze", "written"];
+/// 동기화 중 카드 종류 번호의 기기 몫 (add_template)
+const ORD_LANES: i64 = 1 << 16;
 
 // ------------------------------------------------------------------ 읽기
 
@@ -46,6 +48,8 @@ pub(crate) struct Nt {
     pub name: String,
     /// 자리별 이름. 지운 자리는 ""
     pub slots: Vec<String>,
+    /// 자리별 필드 id (앱에서 더한 필드만, "시각-기기". 처음부터 있던 자리는 ""). 두 기기가 같은 자리에 따로 더한 필드를 가린다 (Q2-06)
+    pub ids: Vec<String>,
     pub order: Option<String>,
     pub native_kind: Option<String>,
     pub user_made: bool,
@@ -115,7 +119,7 @@ pub fn visible(names: &[String], order: Option<&str>) -> Vec<(usize, String)> {
 pub(crate) fn load(con: &Connection, id: i64) -> Res<Nt> {
     let mut nt = con
         .query_row(
-            "SELECT id, name, fields, field_order, native_kind, user_made, anki_model_id, anki_stock_kind, css, next_ord FROM note_type WHERE id = ?1",
+            "SELECT id, name, fields, field_order, native_kind, user_made, anki_model_id, anki_stock_kind, css, next_ord, field_ids FROM note_type WHERE id = ?1",
             [id],
             |r| {
                 Ok(Nt {
@@ -129,6 +133,7 @@ pub(crate) fn load(con: &Connection, id: i64) -> Res<Nt> {
                     stock: r.get(7)?,
                     css: r.get(8)?,
                     next_ord: r.get(9)?,
+                    ids: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
                     templates: vec![],
                 })
             },
@@ -329,8 +334,42 @@ impl Fronts {
     }
 }
 
+/// 그 덱들(SQL id 목록)에서 앞면이 빈 카드 (id, 상태). 학습 큐가 빼므로(queue::Card::plays) 남은 카드 수 · 하루 몫 · 목표 안내 ·
+/// 계획도 이 규칙 하나로 뺀다 (Q1-01). 일시 정지한 카드는 원래 나오지 않아 넣지 않는다
+pub(crate) fn front_empty_cards(con: &Connection, decks: &str) -> Res<Vec<(i64, String)>> {
+    let fronts = Fronts::load(con)?;
+    let mut st = con
+        .prepare(&format!(
+            "SELECT c.id, c.state, n.note_type_id, c.template_ord, n.fields FROM card c JOIN note n ON n.id = c.note_id
+             WHERE c.deck_id IN ({decks}) AND c.state <> 'suspended'"
+        ))
+        .map_err(err)?;
+    let rows = st
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, u32>(3)?, r.get::<_, String>(4)?)))
+        .map_err(err)?;
+    let mut out = vec![];
+    for row in rows {
+        let (id, state, ty, ord, fields) = row.map_err(err)?;
+        if fronts.empty(ty, ord, &fields) {
+            out.push((id, state));
+        }
+    }
+    Ok(out)
+}
+
+/// 그 덱들의 아직 보지 않은 카드 중 학습에 나오는 것 (앞면이 빈 카드는 뺀다). 남은 신규 수는 모두 이것으로 센다 (Q1-01)
+pub(crate) fn new_left(con: &Connection, decks: &str) -> Res<i64> {
+    let all: i64 = con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({decks}) AND state = 'new'"), [], |r| r.get(0)).map_err(err)?;
+    Ok(all - front_empty_cards(con, decks)?.iter().filter(|(_, s)| s == "new").count() as i64)
+}
+
 /// 일반 유형 노트의 빠진 카드를 만든다 (Anki 처럼 만들기만 하고 지우지 않는다). 덱 · 중요도는 그 노트의 첫 카드를 따른다 (C3-r). 만든 수
 pub(crate) fn add_missing_cards(con: &Connection, nt: &Nt, note_id: i64, values: &[String]) -> Res<usize> {
+    add_missing_cards_where(con, nt, note_id, values, |_| true)
+}
+
+/// add_missing_cards 를 고른 카드 종류(ord)에만. 동기화가 받은 노트 · 카드 종류에 쓴다 (Q2-04)
+pub(crate) fn add_missing_cards_where(con: &Connection, nt: &Nt, note_id: i64, values: &[String], keep: impl Fn(u32) -> bool) -> Res<usize> {
     if nt.cloze() {
         return Ok(0);
     }
@@ -340,7 +379,7 @@ pub(crate) fn add_missing_cards(con: &Connection, nt: &Nt, note_id: i64, values:
     };
     let now = now_ms();
     let mut made = 0;
-    for ord in card_ords(nt, values).into_iter().filter(|o| !have.contains(o)) {
+    for ord in card_ords(nt, values).into_iter().filter(|o| !have.contains(o) && keep(*o)) {
         made += con
             .execute(
                 "INSERT INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at)
@@ -359,7 +398,7 @@ fn notes_of(con: &Connection, id: i64) -> Res<Vec<(i64, Vec<String>)>> {
     rows.map(|r| r.map(|(id, f)| (id, serde_json::from_str(&f).unwrap_or_default()))).collect::<Result<_, _>>().map_err(err)
 }
 
-fn fill_cards(con: &Connection, id: i64) -> Res<usize> {
+pub(crate) fn fill_cards(con: &Connection, id: i64) -> Res<usize> {
     let nt = load(con, id)?;
     let mut made = 0;
     for (nid, values) in notes_of(con, id)? {
@@ -376,9 +415,12 @@ fn touch(con: &Connection, id: i64) -> Res<()> {
 }
 
 fn save_slots(con: &Connection, nt: &Nt) -> Res<()> {
+    // id 는 앱에서 더한 필드만 있다. 끝의 빈 id 는 떼고, 하나도 없으면 NULL (sync::engine::ids_value 와 같다)
+    let n = nt.ids.iter().rposition(|x| !x.is_empty()).map_or(0, |i| i + 1);
+    let ids = (n > 0).then(|| serde_json::to_string(&nt.ids[..n])).transpose().map_err(err)?;
     con.execute(
-        "UPDATE note_type SET fields = ?2, updated_at = ?3 WHERE id = ?1",
-        params![nt.id, serde_json::to_string(&nt.slots).map_err(err)?, now_ms()],
+        "UPDATE note_type SET fields = ?2, field_ids = ?3, updated_at = ?4 WHERE id = ?1",
+        params![nt.id, serde_json::to_string(&nt.slots).map_err(err)?, ids, now_ms()],
     )
     .map_err(err)?;
     Ok(())
@@ -388,10 +430,16 @@ fn name_taken(con: &Connection, name: &str, except: Option<i64>) -> Res<bool> {
     con.query_row("SELECT EXISTS (SELECT 1 FROM note_type WHERE name = ?1 AND id IS NOT ?2)", params![name, except], |r| r.get(0)).map_err(err)
 }
 
+/// 앱 기본 유형의 화면 이름 (카드 추가 세그먼트 · 목록 · E 머리). 사용자 유형이 이 이름이면 둘을 가릴 수 없다 (Q1-04)
+const APP_NAMES: [&str; 7] = ["질문과 답변", "양방향", "빈칸", "서술형", "그림 가리기", "목록", "선택형"];
+
 fn type_name(con: &Connection, name: &str, except: Option<i64>) -> Res<String> {
     let n = name.trim();
     if n.is_empty() {
         return Err("유형 이름을 입력해 주세요.".into());
+    }
+    if APP_NAMES.contains(&n) {
+        return Err(format!("'{n}'은 앱 기본 유형 이름이에요. 다른 이름을 써 주세요."));
     }
     if name_taken(con, n, except)? {
         return Err(format!("'{n}' 유형이 이미 있어요."));
@@ -525,7 +573,12 @@ pub(crate) fn anki_clone(con: &Connection, kind: &str, name: Option<&str>) -> i6
 }
 
 pub(crate) fn rename_type(con: &Connection, id: i64, name: &str) -> Res<()> {
-    load(con, id)?.editable()?;
+    let nt = load(con, id)?;
+    nt.editable()?;
+    // 이름을 그대로 두고 저장하면 할 일이 없다 (같은 이름 유형이 동기화로 둘이어도 막지 않는다, Q2-11)
+    if name.trim() == nt.name {
+        return Ok(());
+    }
     let name = type_name(con, name, Some(id))?;
     con.execute("UPDATE note_type SET name = ?2, updated_at = ?3 WHERE id = ?1", params![id, name, now_ms()]).map_err(err)?;
     Ok(())
@@ -547,6 +600,10 @@ pub(crate) fn add_field(con: &Connection, id: i64, name: &str) -> Res<usize> {
     let mut nt = load(con, id)?;
     nt.editable()?;
     let name = field_name(&nt, name, None)?;
+    // 이 필드의 id: 더한 시각 · 기기 (동기화 HLC 와 같은 꼴). 다른 기기가 같은 자리에 더한 필드와 가리고, 그 뒤 이 기기가 쓴 노트 값을 알아본다
+    let dev: String = con.query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).map_err(err)?;
+    nt.ids.resize(nt.slots.len(), String::new());
+    nt.ids.push(format!("{:013}-00000000-{dev}", now_ms()));
     nt.slots.push(name);
     save_slots(con, &nt)?;
     Ok(nt.slots.len() - 1)
@@ -629,7 +686,22 @@ pub(crate) fn add_template(con: &Connection, id: i64, name: Option<&str>, qfmt: 
     }
     check_template(&nt, qfmt, afmt)?;
     let max = nt.templates.iter().map(|t| t.ord as i64 + 1).max().unwrap_or(0);
-    let ord = nt.next_ord.unwrap_or(0).max(max) as u32;
+    let base = nt.next_ord.unwrap_or(0).max(max);
+    // 동기화를 켰으면 기기마다 다른 번호: ord 를 ORD_LANES 로 나눈 나머지가 이 기기 몫이다. 두 기기가 같은 유형에 따로 더해도
+    // 같은 ord 로 합쳐져 한쪽 정의가 사라지지 않는다 (Q2-05). 화면 · 내보내기는 ord 값을 보이지 않는다 (내보내기는 0 부터 다시 센다)
+    let lane: Option<i64> = con
+        .query_row(
+            "SELECT m.value FROM schema_meta m, sync_flags f WHERE m.key = 'device_uid' AND f.id = 1 AND f.enabled = 1",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(err)?
+        .map(|dev| i64::from_str_radix(&dev[dev.len().saturating_sub(4)..], 16).unwrap_or(0) % ORD_LANES);
+    let ord = match lane {
+        Some(l) => base + (l + ORD_LANES - base % ORD_LANES) % ORD_LANES,
+        None => base,
+    } as u32;
     let name = match name {
         Some(n) => template_name(&nt, n, None)?,
         None => (nt.templates.len() + 1..).map(|i| format!("Card {i}")).find(|n| nt.templates.iter().all(|t| t.name != *n)).unwrap_or_default(),
@@ -788,15 +860,16 @@ pub struct Sample {
 }
 
 /// 미리보기 카드 고르기 (디자인 NT5 "지금 덱의 카드"): 이 유형의 최근 노트
-pub(crate) fn samples(con: &Connection, id: i64, limit: i64) -> Res<Vec<Sample>> {
+/// first: 먼저 보일 노트 (카드 편집 E 의 [편집]으로 열면 그 카드의 노트, Q1-12)
+pub(crate) fn samples(con: &Connection, id: i64, limit: i64, first: Option<i64>) -> Res<Vec<Sample>> {
     let mut st = con
         .prepare(
             "SELECT n.id, n.fields, coalesce((SELECT d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = n.id ORDER BY c.id LIMIT 1), '')
-             FROM note n WHERE n.note_type_id = ?1 ORDER BY n.id DESC LIMIT ?2",
+             FROM note n WHERE n.note_type_id = ?1 ORDER BY n.id IS ?3 DESC, n.id DESC LIMIT ?2",
         )
         .map_err(err)?;
     let rows = st
-        .query_map(params![id, limit], |r| {
+        .query_map(params![id, limit, first], |r| {
             Ok(Sample { note_id: r.get(0)?, slots: serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default(), deck: r.get(2)? })
         })
         .map_err(err)?;
@@ -977,28 +1050,47 @@ pub(crate) fn add_note(con: &Connection, input: &TypedNote) -> Res<usize> {
 
 // ------------------------------------------------------------------ 다시 가져오기 (같은 모델 id 의 유형은 덮지 않는다)
 
-/// 이미 있는 유형에 들어오는 Anki 노트의 필드 i -> 우리 자리. 이름이 같은 보이는 필드, 없으면 같은 위치의 보이는 필드 (이름으로 이미 잡힌 자리는 빼고).
-/// 내보낼 때 보이는 순서로 썼으므로, Anki 에서 고치지 않았으면 그대로 돌아온다
+/// 이미 있는 유형에 들어오는 Anki 노트의 필드 i -> 우리 자리. 이름이 같은 보이는 필드, 없으면 이 앱에서 지운(숨긴) 같은 자리
+/// (가져온 유형의 자리 = 처음 가져온 Anki 순서. 지운 필드의 값도 숨긴 자리에 남긴다, NT10 · Q2-13), 없으면 같은 위치의 보이는 필드
+/// (이름으로 이미 잡힌 자리는 빼고). 내보낼 때 보이는 순서로 썼으므로, Anki 에서 고치지 않았으면 그대로 돌아온다
 /// ponytail: 이름이 하나도 안 맞고 위치도 겹치면 뒤 값이 진다. 필드 이름을 양쪽에서 다르게 바꾼 드문 경우
 pub fn incoming_slots(nt: &Nt, names: &[String]) -> Vec<Option<usize>> {
     let vis = nt.visible();
     let by_name: Vec<Option<usize>> = names.iter().map(|n| vis.iter().find(|(_, v)| v == n).map(|(s, _)| *s)).collect();
-    by_name.iter().enumerate().map(|(i, m)| m.or_else(|| vis.get(i).map(|(s, _)| *s).filter(|s| !by_name.contains(&Some(*s))))).collect()
+    let free = |s: usize| !by_name.contains(&Some(s));
+    by_name
+        .iter()
+        .enumerate()
+        .map(|(i, m)| m.or_else(|| (nt.slots.get(i).is_some_and(String::is_empty) && free(i)).then_some(i)).or_else(|| vis.get(i).map(|(s, _)| *s).filter(|s| free(*s))))
+        .collect()
 }
 
-/// 들어오는 Anki 템플릿 ord -> 우리 ord. 이름이 같은 템플릿, 없으면 같은 순번 (Anki 는 빈틈없이 센다). 빈칸 유형은 비어 있다 (ord = 빈칸 번호)
-pub fn incoming_ords(nt: &Nt, tmpls: &[(u32, String)]) -> HashMap<u32, u32> {
+/// 들어오는 Anki 템플릿 (ord, 이름, 앞면) -> 우리 ord. 이름이 같은 카드 종류, 없으면 앞면이 같은 것, 없으면 같은 ord
+/// (가져온 유형의 ord = 처음 가져온 Anki ord, 이름만 이 앱에서 바꿨다). 어느 것도 아니면 빠진다: 이 앱에서 지운 카드 종류라 그 카드는 넣지 않는다
+/// (같은 순번으로 대신하면 다른 카드 종류에 붙어 앞면이 빈 카드가 된다, Q2-08). 빈칸 유형은 비어 있다 (ord = 빈칸 번호)
+pub fn incoming_ords(nt: &Nt, tmpls: &[(u32, String, String)]) -> HashMap<u32, u32> {
     if nt.cloze() {
         return HashMap::new();
     }
-    tmpls
-        .iter()
-        .enumerate()
-        .filter_map(|(i, (ord, name))| {
-            let ours = nt.templates.iter().find(|t| t.name == *name).or_else(|| nt.templates.get(i))?;
-            Some((*ord, ours.ord))
-        })
-        .collect()
+    let mut out: HashMap<u32, u32> = HashMap::new();
+    // 이름 -> 앞면 -> 같은 ord 순서로 (앞 단계에서 잡힌 우리 카드 종류는 빼고)
+    for pass in 0..3 {
+        for (ord, name, qfmt) in tmpls {
+            if out.contains_key(ord) {
+                continue;
+            }
+            let taken: Vec<u32> = out.values().copied().collect();
+            let same = |t: &Tpl| match pass {
+                0 => t.name == *name,
+                1 => t.qfmt == *qfmt,
+                _ => t.ord == *ord,
+            };
+            if let Some(t) = nt.templates.iter().find(|t| !taken.contains(&t.ord) && same(t)) {
+                out.insert(*ord, t.ord);
+            }
+        }
+    }
+    out
 }
 
 // ------------------------------------------------------------------ 쉬운 편집기 (필드를 앞 · 뒷면에 놓기)
@@ -1400,6 +1492,9 @@ pub struct TypeRow {
     cards: i64,
     /// 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저)
     decks: Vec<String>,
+    /// 만든 시각 · 이 기기에서 만들었나 (같은 이름 유형을 가린다, Q2-11). 다른 기기에서 받은 유형만 false
+    created_at: i64,
+    made_here: bool,
 }
 
 fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
@@ -1426,6 +1521,19 @@ fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
                 .map_err(err)?;
             st.query_map([nt.id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
         },
+        created_at: count("SELECT created_at FROM note_type WHERE id = ?1")?,
+        // 동기화 행 시계의 기기 = 그 행을 만든 기기 (받은 행은 보낸 기기). 동기화 표가 없으면 모두 이 기기 것
+        made_here: con
+            .query_row(
+                "SELECT r.hlc NOT LIKE '%-' || (SELECT value FROM schema_meta WHERE key = 'device_uid') FROM sync_row r JOIN note_type nt ON nt.uid = r.uid
+                 WHERE r.table_name = 'note_type' AND nt.id = ?1",
+                [nt.id],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .is_none_or(|elsewhere| !elsewhere),
     })
 }
 
@@ -1465,6 +1573,8 @@ pub struct Detail {
     templates: Vec<TemplateView>,
     /// 줄 상자 CSS (미리보기가 초안 CSS 에 없으면 붙인다. 저장은 apply_edit 가 붙인다)
     layout_css: &'static str,
+    /// 연 때의 정의 (save_note_type 이 확인한다, Q2-07)
+    version: String,
 }
 
 pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
@@ -1485,8 +1595,24 @@ pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
             })
             .collect(),
         layout_css: LAYOUT_CSS,
+        version: version(&nt),
     })
 }
+
+/// 정의(이름 · 필드 · 순서 · CSS · 카드 종류)의 지문. 편집기가 연 뒤 동기화가 그 유형을 바꿨는지 본다 (Q2-07).
+/// updated_at 은 열 단위로 합쳐져 다른 기기의 카드 종류만 바뀌었을 때 그대로일 수 있어 쓰지 않는다
+pub(crate) fn version(nt: &Nt) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (&nt.name, &nt.slots, &nt.ids, &nt.order, &nt.css, nt.next_ord).hash(&mut h);
+    for t in &nt.templates {
+        (t.ord, &t.name, &t.qfmt, &t.afmt).hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// 편집기가 연 뒤 다른 기기에서 바뀐 유형은 저장하지 않는다: 낡은 초안에 없는 필드 · 카드 종류를 지우게 된다
+pub(crate) const STALE: &str = "다른 기기에서 이 노트 유형이 바뀌었어요. 다시 불러온 뒤 고쳐 주세요.";
 
 /// 그 덱(하위 덱 포함) 노트가 쓰는 유형, 많이 쓰는 것 먼저 (같으면 최근에 쓴 쪽). 디자인 NT11 [⋯] "이 덱이 쓰는 노트 유형 먼저",
 /// NT12 처음 열 유형 = 첫째. "마지막에 쓴 유형"은 화면이 이 기기에만 기억한다 (2단계)
@@ -1591,15 +1717,19 @@ pub fn preview_template(state: State<AppState>, id: i64, qfmt: String, afmt: Str
 }
 
 #[tauri::command]
-pub fn note_type_samples(state: State<AppState>, id: i64) -> Res<Vec<Sample>> {
-    samples(&*state.db.lock().map_err(err)?, id, 20)
+pub fn note_type_samples(state: State<AppState>, id: i64, first: Option<i64>) -> Res<Vec<Sample>> {
+    samples(&*state.db.lock().map_err(err)?, id, 20, first)
 }
 
-/// 편집기 [저장]. dry_run 이면 확인 창의 수만 세고 되돌린다 (같은 트랜잭션을 버린다)
+/// 편집기 [저장]. dry_run 이면 확인 창의 수만 세고 되돌린다 (같은 트랜잭션을 버린다).
+/// version: 편집기가 연 때의 정의 (note_type_detail.version). 다르면 저장하지 않는다 (Q2-07)
 #[tauri::command]
-pub fn save_note_type(state: State<AppState>, id: i64, edit: TypeEdit, dry_run: bool) -> Res<SaveImpact> {
+pub fn save_note_type(state: State<AppState>, id: i64, edit: TypeEdit, dry_run: bool, version: Option<String>) -> Res<SaveImpact> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
+    if version.is_some_and(|v| load(&tx, id).is_ok_and(|nt| v != self::version(&nt))) {
+        return Err(STALE.into());
+    }
     let out = apply_edit(&tx, id, &edit)?;
     if !dry_run {
         tx.commit().map_err(err)?;
@@ -1910,8 +2040,11 @@ mod tests {
         assert!(preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값"])), Some(&names)).is_err());
         note(&con, deck, nt, &["q1", "a1"]);
         note(&con, deck, nt, &["q2", "a2"]);
-        let got = samples(&con, nt, 1).unwrap();
+        let got = samples(&con, nt, 1, None).unwrap();
         assert_eq!((got.len(), got[0].deck.as_str(), got[0].slots.clone()), (1, "덱", s(&["q2", "a2"])));
+        // E 의 [편집]으로 열면 그 카드의 노트를 먼저 (Q1-12)
+        let first: i64 = con.query_row("SELECT min(id) FROM note WHERE note_type_id = ?1", [nt], |r| r.get(0)).unwrap();
+        assert_eq!(samples(&con, nt, 20, Some(first)).unwrap()[0].slots, s(&["q1", "a1"]));
         assert!(LAYOUT_CSS.starts_with(LAYOUT_MARK));
         assert_eq!(with_layout_css("", false), "");
         assert_eq!(with_layout_css(LAYOUT_CSS, true), LAYOUT_CSS, "두 번 붙이지 않는다");
@@ -2188,9 +2321,98 @@ mod tests {
         // 내보낸 순서(보이는 순서) 그대로 돌아오면 자리로, Anki 에서 이름을 바꾼 필드는 같은 위치로
         assert_eq!(incoming_slots(&t, &s(&["Extra", "Front", "Back"])), [Some(2), Some(0), Some(1)]);
         assert_eq!(incoming_slots(&t, &s(&["덧", "Front", "Back", "새 필드"])), [Some(2), Some(0), Some(1), None]);
-        // Anki 는 템플릿을 0 부터 빈틈없이 센다: 0 Card 1 · 1 덧붙임 (우리 ord 2)
-        let m = incoming_ords(&t, &[(0, "Card 1".into()), (1, "덧붙임".into())]);
+        // Anki 는 템플릿을 0 부터 빈틈없이 센다: 0 Card 1 · 1 덧붙임 (우리 ord 2). Anki 에서 이름만 바꾼 것은 앞면으로
+        let q = |o: u32, n: &str, q: &str| (o, n.to_string(), q.to_string());
+        let m = incoming_ords(&t, &[q(0, "Card 1", "x"), q(1, "덧붙임", "x")]);
         assert_eq!((m[&0], m[&1]), (0, 2));
+        assert_eq!(incoming_ords(&t, &[q(0, "앞", &t.templates[0].qfmt), q(1, "뒤", "{{Extra}}")]), HashMap::from([(0, 0), (1, 2)]));
         let _ = deck;
+    }
+
+    #[test]
+    fn editing_an_existing_note_does_not_need_the_first_field() {
+        // Q1-02: 새 필드를 맨 앞에 두면 그 칸이 빈 기존 노트도 다른 칸만 고쳐 저장한다 (앱 기본 유형은 그대로 첫 칸 필수)
+        let (con, deck) = setup();
+        let nt = anki_clone(&con, "basic", None);
+        note(&con, deck, nt, &["a", "b"]);
+        let slot = add_field(&con, nt, "메모").unwrap();
+        reorder_fields(&con, nt, &[slot, 0, 1]).unwrap();
+        let id: i64 = con.query_row("SELECT id FROM note", [], |r| r.get(0)).unwrap();
+        crate::commands::save_note_fields(&con, id, &s(&["a", "b 고침", ""])).unwrap();
+        assert_eq!(q(&con, "SELECT fields FROM note"), [r#"["a","b 고침",""]"#]);
+        // 사용자 유형은 앞면 필드를 비워도 저장한다 (그 카드는 앞면 빔)
+        crate::commands::save_note_fields(&con, id, &s(&["", "b", ""])).unwrap();
+        let basic = crate::db::native_type_id(&con, "basic").unwrap();
+        con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, '[\"q\",\"a\"]', 0, 0)", [basic]).unwrap();
+        let app = con.last_insert_rowid();
+        assert!(crate::commands::save_note_fields(&con, app, &s(&["", "a"])).is_err(), "앱 기본 유형은 첫 칸 필수");
+    }
+
+    #[test]
+    fn new_left_skips_empty_front_cards() {
+        // Q1-01: 덱 상세 · 목표 안내 · 계획의 남은 신규는 큐와 같이 앞면이 빈 카드를 빼고 센다
+        let (con, deck) = setup();
+        let nt = anki_clone(&con, "basic", None);
+        note(&con, deck, nt, &["a", "b"]);
+        note(&con, deck, nt, &["c", "d"]);
+        add_field(&con, nt, "힌트").unwrap();
+        save_template(&con, nt, 0, None, "{{힌트}}", "{{FrontSide}}").unwrap();
+        con.execute("UPDATE note SET fields = json_set(fields, '$[2]', '힌트 있음') WHERE id = (SELECT min(id) FROM note)", []).unwrap();
+        let ids = deck.to_string();
+        assert_eq!(new_left(&con, &ids).unwrap(), 1);
+        assert_eq!(front_empty_cards(&con, &ids).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn version_changes_with_the_definition_and_same_name_rename_is_a_no_op() {
+        let (con, _) = setup();
+        let a = anki_clone(&con, "basic", Some("내 단어"));
+        let v = version(&load(&con, a).unwrap());
+        touch(&con, a).unwrap();
+        assert_eq!(version(&load(&con, a).unwrap()), v, "고친 시각만 바뀌면 같다");
+        add_template(&con, a, Some("거꾸로"), "{{Back}}", "{{FrontSide}}").unwrap();
+        assert_ne!(version(&load(&con, a).unwrap()), v, "카드 종류가 바뀌면 다르다 (Q2-07)");
+        // Q2-11: 동기화로 같은 이름 유형이 둘이어도 이름을 그대로 두고 저장하면 막지 않는다
+        con.execute("INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id, user_made) VALUES ('내 단어', '[\"Front\"]', '', 5, 5, 99, 1)", []).unwrap();
+        rename_type(&con, a, " 내 단어 ").unwrap();
+        assert!(rename_type(&con, a, "Basic").is_err(), "다른 유형 이름과는 여전히 겹칠 수 없다");
+        assert!(rename_type(&con, a, "질문과 답변").unwrap_err().contains("앱 기본 유형 이름"), "앱 기본 유형의 화면 이름과도 (Q1-04)");
+        let rows = list(&con).unwrap();
+        assert!(rows.iter().any(|r| r.created_at == 5 && r.made_here), "만든 시각 · 이 기기에서 만듦 (동기화 전)");
+    }
+
+    #[test]
+    fn reimport_skips_deleted_card_types_and_keeps_hidden_fields() {
+        // 원래 Anki 컬렉션을 다시 가져온다 (가져온 유형: 우리 자리 · ord = 처음 가져온 Anki 순서)
+        let (con, _) = setup();
+        con.execute(
+            "INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id) VALUES ('단어장', '[\"단어\",\"뜻\",\"메모\"]', '', 0, 0, 77)",
+            [],
+        )
+        .unwrap();
+        let nt = con.last_insert_rowid();
+        for (ord, name, q) in [(0, "단어 → 뜻", "{{단어}}"), (1, "뜻 → 단어", "{{뜻}}")] {
+            con.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, '')", params![nt, ord, name, q]).unwrap();
+        }
+        add_template(&con, nt, Some("예문 → 단어"), "{{뜻}}!", "").unwrap();
+        delete_template(&con, nt, 1, false).unwrap();
+        delete_field(&con, nt, 2).unwrap();
+        let t = load(&con, nt).unwrap();
+        // Q2-08: 이 앱에서 지운 "뜻 → 단어"(Anki ord 1)는 같은 순번의 "예문 → 단어"에 붙지 않고 빠진다
+        let q = |o: u32, n: &str, q: &str| (o, n.to_string(), q.to_string());
+        let m = incoming_ords(&t, &[q(0, "단어 → 뜻", "{{단어}}"), q(1, "뜻 → 단어", "{{뜻}}")]);
+        assert_eq!(m, HashMap::from([(0, 0)]));
+        // 이 앱에서 이름만 바꾼 카드 종류는 같은 ord 로
+        rename_template_for_test(&con, nt, 0, "앞 → 뒤");
+        let t = load(&con, nt).unwrap();
+        assert_eq!(incoming_ords(&t, &[q(0, "Card 1", "{{단어}}!?")]), HashMap::from([(0, 0)]));
+        // Q2-13: 이 앱에서 지운(숨긴) 필드 "메모"(자리 2)의 값은 숨긴 자리로
+        assert_eq!(incoming_slots(&t, &s(&["단어", "뜻", "메모"])), [Some(0), Some(1), Some(2)]);
+    }
+
+    fn rename_template_for_test(con: &Connection, id: i64, ord: u32, name: &str) {
+        let t = load(con, id).unwrap();
+        let tpl = t.template(ord).unwrap();
+        save_template(con, id, ord, Some(name), &tpl.qfmt, &tpl.afmt).unwrap();
     }
 }

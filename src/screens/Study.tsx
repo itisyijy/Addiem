@@ -1516,7 +1516,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   /** NT13 [편집]: 그 노트 유형 편집기로. 고친 것이 있으면 버릴지 먼저 묻는다 */
   const toType = () => {
     if (!note) return;
-    const to: Route = { name: "noteTypeEdit", id: note.note_type_id, back };
+    const to: Route = { name: "noteTypeEdit", id: note.note_type_id, note: note.note_id, back };
     const changed =
       touched.current ||
       (level !== null && level !== card?.importance) ||

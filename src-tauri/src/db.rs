@@ -75,6 +75,8 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("recall_mark", "shown", "TEXT"),
         ("recall_mark", "log_id", "INTEGER"),
         ("recall_mark", "prev", "TEXT"),
+        // 자리별 필드 id (앱에서 더한 필드, NULL = 없음). 두 기기가 같은 자리에 따로 더한 필드를 동기화가 가린다 (Q2-06)
+        ("note_type", "field_ids", "TEXT"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),

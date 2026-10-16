@@ -119,7 +119,7 @@ function Screen({ route }: { route: Route }) {
     case "noteTypes":
       return <NoteTypes back={route.back} />;
     case "noteTypeEdit":
-      return <NoteTypeEdit key={route.id} id={route.id} ord={route.ord} back={route.back} />;
+      return <NoteTypeEdit key={route.id} id={route.id} ord={route.ord} note={route.note} back={route.back} />;
     case "deckSettings":
       return <DeckSettings key={route.deckId} deckId={route.deckId} />;
     case "quality":

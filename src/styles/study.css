@@ -256,8 +256,9 @@
 .preview.addcard__nt { align-items: center; gap: 12px; padding: 20px; text-align: center; }
 .preview.addcard__nt[data-theme="light"] { background: var(--bg-canvas); color: var(--text-primary); color-scheme: light; }
 .addcard__nt-rule { align-self: stretch; }
-.addcard__nt-card { width: 100%; font: 400 30px/46px var(--font-sans); letter-spacing: -0.015em; word-break: keep-all; overflow-wrap: anywhere; }
-.addcard__nt-card.is-sub { font: 400 20px/34px var(--font-sans); letter-spacing: -0.005em; }
+/* 줄 높이는 학습 화면처럼 비율로 (px 면 노트 CSS 의 작은 줄(S 13px)까지 46px 줄 높이를 물려받아 벌어진다, Q1-06) */
+.addcard__nt-card { width: 100%; font: 400 30px var(--font-sans); line-height: calc(46 / 30); letter-spacing: -0.015em; word-break: keep-all; overflow-wrap: anywhere; }
+.addcard__nt-card.is-sub { font: 400 20px var(--font-sans); line-height: calc(34 / 20); letter-spacing: -0.005em; }
 .addcard__nt-empty { padding: 24px 0; }
 .edit__meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .edit__type { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 8px; border-radius: 8px; background: var(--bg-subtle); }

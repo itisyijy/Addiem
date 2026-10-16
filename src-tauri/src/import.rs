@@ -15,7 +15,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -664,8 +664,8 @@ struct ADeck {
     filtered: bool,
 }
 
-/// 이미 있던 노트 유형에 들어오는 것: (Anki 필드 i -> 우리 자리, 우리 자리 수, Anki 템플릿 ord -> 우리 ord)
-type Remap = (Vec<Option<usize>>, usize, HashMap<u32, u32>);
+/// 이미 있던 노트 유형에 들어오는 것: (Anki 필드 i -> 우리 자리, 우리 자리 이름 (지운 자리는 ""), Anki 템플릿 ord -> 우리 ord. 없는 ord = 이 앱에서 지운 카드 종류)
+type Remap = (Vec<Option<usize>>, Vec<String>, HashMap<u32, u32>);
 
 struct AType {
     name: String,
@@ -1391,8 +1391,8 @@ fn run_import_selected(
         let id = match existing {
             Some(id) => {
                 let ours = crate::notetype::load(&tx, id)?;
-                let tmpls: Vec<(u32, String)> = t.templates.iter().map(|(o, n, _, _)| (*o, n.clone())).collect();
-                remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.len(), crate::notetype::incoming_ords(&ours, &tmpls)));
+                let tmpls: Vec<(u32, String, String)> = t.templates.iter().map(|(o, n, q, _)| (*o, n.clone(), q.clone())).collect();
+                remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.clone(), crate::notetype::incoming_ords(&ours, &tmpls)));
                 id
             }
             None => {
@@ -1451,6 +1451,8 @@ fn run_import_selected(
     let mut note_mid: HashMap<i64, i64> = HashMap::new(); // 다시 맞출 유형의 노트만 (Anki 노트 id -> 모델 id)
     let mut dup = 0;
     let mut refs: HashSet<String> = HashSet::new(); // 고른 노트가 쓰는 미디어 (덱을 골랐을 때만 쓴다)
+    // 다시 맞춘 유형에서 값이 숨긴 자리로 간 · 넣을 자리가 없는 Anki 필드 -> 노트 수 (Q2-13)
+    let (mut hidden, mut dropped): (BTreeMap<String, usize>, BTreeMap<String, usize>) = Default::default();
     {
         let mut st = pkg.col.prepare("SELECT id, guid, mid, mod, tags, flds FROM notes").map_err(err)?;
         let rows = st
@@ -1474,11 +1476,19 @@ fn run_import_selected(
                 crate::export::media_refs(&flds, &mut refs); // 새로 넣는 노트가 쓰는 미디어만 (이미 있는 노트의 것은 이미 있다)
             }
             let mut fields: Vec<&str> = flds.split(SEP).collect();
-            if let Some((slots, n, _)) = remap.get(&mid) {
-                let mut out = vec![""; *n];
-                for (v, s) in fields.iter().zip(slots) {
-                    if let Some(s) = s {
-                        out[*s] = v;
+            if let Some((slots, names, _)) = remap.get(&mid) {
+                let mut out = vec![""; names.len()];
+                for (i, (v, s)) in fields.iter().zip(slots).enumerate() {
+                    let field = || pkg.types.get(&mid).and_then(|t| t.fields.get(i)).cloned().unwrap_or_default();
+                    match s {
+                        Some(s) => {
+                            out[*s] = v;
+                            if names[*s].is_empty() && !v.is_empty() {
+                                *hidden.entry(field()).or_default() += 1;
+                            }
+                        }
+                        None if !v.is_empty() => *dropped.entry(field()).or_default() += 1,
+                        None => {}
                     }
                 }
                 fields = out;
@@ -1499,6 +1509,12 @@ fn run_import_selected(
     if dup > 0 {
         result.issues.push(issue("info", "duplicate", format!("이미 가져온 노트 {}개는 다시 넣지 않았어요", n(dup))));
     }
+    for (f, c) in &hidden {
+        result.issues.push(issue("info", "hidden_field", format!("이 앱에서 지운 필드 '{f}'의 값이 있는 노트 {}개는 그 값을 숨긴 자리에 넣었어요. 카드에는 나오지 않아요", n(*c))));
+    }
+    for (f, c) in &dropped {
+        result.issues.push(issue("warning", "dropped_field", format!("이 노트 유형에 없는 필드 '{f}'의 값이 있는 노트 {}개는 그 값을 넣지 않았어요", n(*c))));
+    }
 
     // 카드. 복습 기록을 옮기지 않으면 모두 새 카드로 시작하고 일시 정지만 지킨다.
     // 옮기면 Anki 의 상태, 간격, 기한, 기억 상태를 그대로 가져온다
@@ -1512,6 +1528,8 @@ fn run_import_selected(
     };
     let mut used: HashSet<i64> = HashSet::new();
     let mut card_tags: HashMap<i64, Vec<Option<(i64, String)>>> = HashMap::new();
+    // 이 앱에서 지운 카드 종류의 Anki 카드: (유형 이름, 카드 종류 이름) -> Anki 카드 id (Q2-08)
+    let mut gone: BTreeMap<(String, String), Vec<i64>> = BTreeMap::new();
     {
         let mut st = pkg
             .col
@@ -1535,14 +1553,26 @@ fn run_import_selected(
             })
             .map_err(err)?;
         for row in rows {
-            let ((acid, anid, did, ord, odid), anki) = row.map_err(err)?;
-            let ord = note_mid.get(&anid).and_then(|m| remap[m].2.get(&(ord as u32))).map_or(ord, |o| *o as i64);
+            let ((acid, anid, did, aord, odid), anki) = row.map_err(err)?;
             if !picked_card(acid) {
                 continue;
             }
             step(&mut done)?;
             let queue = anki.queue;
             let Some((nid, tags)) = note_map.get(&anid) else { continue };
+            // 다시 맞춘 유형: 우리 ord 로. 없으면 이 앱에서 지운 카드 종류다. 같은 순번의 다른 카드 종류에 붙이지 않고 건너뛴다
+            let ord = match note_mid.get(&anid) {
+                Some(m) => match remap[m].2.get(&(aord as u32)) {
+                    Some(o) => *o as i64,
+                    None => {
+                        let t = &pkg.types[m];
+                        let tpl = t.templates.iter().find(|x| x.0 as i64 == aord).map_or_else(|| format!("{}", aord + 1), |x| x.1.clone());
+                        gone.entry((t.name.clone(), tpl)).or_default().push(acid);
+                        continue;
+                    }
+                },
+                None => aord,
+            };
             let real = real_deck(did, odid);
             if odid != 0 {
                 result.filtered_cards += 1;
@@ -1590,6 +1620,28 @@ fn run_import_selected(
         }
     }
     emit("cards", total, total);
+    if !gone.is_empty() {
+        let logs: HashMap<i64, i64> = {
+            let mut st = pkg.col.prepare("SELECT cid, count(*) FROM revlog WHERE ease BETWEEN 1 AND 4 GROUP BY cid").map_err(err)?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+            rows.collect::<Result<_, _>>().map_err(err)?
+        };
+        for ((ty, tpl), cids) in &gone {
+            let reviews = cids.iter().filter_map(|c| logs.get(c)).sum::<i64>() as usize;
+            // 기록은 지운 카드의 기록처럼 카드 없이 통계에만 남긴다 (A4). 옮기지 않으면 넣지 않는다
+            let logs = match (with_history, reviews) {
+                (true, r) if r > 0 => format!(" 그 카드의 복습 기록 {}건은 통계에만 남겼어요.", n(r)),
+                _ => String::new(),
+            };
+            result.skipped += cids.len();
+            result.issues.push(issue("skipped", "deleted_card_type", format!("이 앱에서 지운 카드 종류 '{tpl}'({ty})의 카드 {}장은 넣지 않았어요.{logs}", n(cids.len()))));
+        }
+        // 카드가 하나도 남지 않은 새 노트는 넣지 않는다
+        let empty = tx
+            .execute("DELETE FROM note WHERE import_batch_id = ?1 AND NOT EXISTS (SELECT 1 FROM card WHERE card.note_id = note.id)", [batch])
+            .map_err(err)?;
+        result.notes -= empty.min(result.notes);
+    }
     suggest_from_tags(&tx, &card_tags)?;
     crate::exam::fill_from_tags(&tx).map_err(err)?;
     crate::exam::suggest_all(&tx)?;
@@ -1701,8 +1753,9 @@ fn run_import_selected(
     result.roots = roots.iter().copied().collect();
     // 기록도 고른 카드 것만 (덱을 고르지 않았으면 지운 카드의 기록까지 전부)
     let cards_of = chosen.as_ref().map(|c| &c.cards);
+    let ords_of: HashMap<i64, HashMap<u32, u32>> = remap.iter().map(|(m, r)| (*m, r.2.clone())).collect();
     result.reviews = if with_history {
-        import_revlog(&tx, &pkg.col, cards_of)?
+        import_revlog(&tx, &pkg.col, cards_of, &ords_of)?
     } else {
         let mut st = pkg.col.prepare("SELECT cid FROM revlog").map_err(err)?;
         let cids = st.query_map([], |r| r.get::<_, i64>(0)).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
@@ -1794,7 +1847,8 @@ fn schedule(c: &AnkiCard, crt_day: i64, fsrs: &fsrs::FSRS) -> Schedule {
 /// (이 앱이 내보낸 .apkg 를 다시 가져오면 revlog id 가 원래 기록의 시각이다, I79).
 /// 카드는 anki_card_id 로 찾고, 없으면 노트 guid + 카드 순서로 찾는다 (이미 있어 건너뛴 노트의 카드).
 /// 끝내 못 찾은 기록(원본에서 지운 카드)은 card_id 없이 남긴다 (통계는 사실로 남아야 한다, 데이터 모델 A4)
-fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>) -> Res<usize> {
+/// ords_of: 다시 맞춘 유형(모델 id)의 Anki ord -> 우리 ord. 없는 ord 는 이 앱에서 지운 카드 종류라 카드를 찾지 않는다 (Q2-08)
+fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>, ords_of: &HashMap<i64, HashMap<u32, u32>>) -> Res<usize> {
     let mut card_by_anki: HashMap<i64, i64> = {
         let mut st = tx.prepare("SELECT anki_card_id, id FROM card WHERE anki_card_id IS NOT NULL").map_err(err)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
@@ -1804,13 +1858,20 @@ fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>)
         let mut ours = tx
             .prepare("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = ?1 AND c.template_ord = ?2")
             .map_err(err)?;
-        let mut st = col.prepare("SELECT c.id, c.ord, n.guid FROM cards c JOIN notes n ON n.id = c.nid").map_err(err)?;
-        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))).map_err(err)?;
+        let mut st = col.prepare("SELECT c.id, c.ord, n.guid, n.mid FROM cards c JOIN notes n ON n.id = c.nid").map_err(err)?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))).map_err(err)?;
         for row in rows {
-            let (cid, ord, guid) = row.map_err(err)?;
+            let (cid, ord, guid, mid) = row.map_err(err)?;
             if card_by_anki.contains_key(&cid) {
                 continue;
             }
+            let ord = match ords_of.get(&mid) {
+                Some(m) => match m.get(&(ord as u32)) {
+                    Some(o) => *o as i64,
+                    None => continue,
+                },
+                None => ord,
+            };
             if let Some(id) = ours.query_row(params![guid, ord], |r| r.get(0)).optional().map_err(err)? {
                 card_by_anki.insert(cid, id);
             }
