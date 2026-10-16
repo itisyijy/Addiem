@@ -1073,15 +1073,19 @@ pub fn incoming_ords(nt: &Nt, tmpls: &[(u32, String, String)]) -> HashMap<u32, u
         return HashMap::new();
     }
     let mut out: HashMap<u32, u32> = HashMap::new();
-    let ways: [&dyn Fn(&Tpl, u32, &str, &str) -> bool; 3] =
-        [&|t, _, name, _| t.name == name, &|t, _, _, qfmt| t.qfmt == qfmt, &|t, ord, _, _| t.ord == ord];
-    for way in ways {
+    // 이름 -> 앞면 -> 같은 ord 순서로 (앞 단계에서 잡힌 우리 카드 종류는 빼고)
+    for pass in 0..3 {
         for (ord, name, qfmt) in tmpls {
             if out.contains_key(ord) {
                 continue;
             }
             let taken: Vec<u32> = out.values().copied().collect();
-            if let Some(t) = nt.templates.iter().find(|t| !taken.contains(&t.ord) && way(t, *ord, name, qfmt)) {
+            let same = |t: &Tpl| match pass {
+                0 => t.name == *name,
+                1 => t.qfmt == *qfmt,
+                _ => t.ord == *ord,
+            };
+            if let Some(t) = nt.templates.iter().find(|t| !taken.contains(&t.ord) && same(t)) {
                 out.insert(*ord, t.ord);
             }
         }

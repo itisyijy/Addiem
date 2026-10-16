@@ -1799,11 +1799,12 @@ impl Applier<'_> {
         let mut types: HashMap<i64, crate::notetype::Nt> = HashMap::new();
         for (nid, ords) in want {
             let (ty, fields): (i64, String) = self.tx.query_row("SELECT note_type_id, fields FROM note WHERE id = ?1", [nid], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?;
-            if !types.contains_key(&ty) {
-                types.insert(ty, crate::notetype::load(self.tx, ty).map_err(other)?);
-            }
+            let nt = match types.entry(ty) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => e.insert(crate::notetype::load(self.tx, ty).map_err(other)?),
+            };
             let values: Vec<String> = serde_json::from_str(&fields).unwrap_or_default();
-            crate::notetype::add_missing_cards_where(self.tx, &types[&ty], nid, &values, |o| ords.contains(&o)).map_err(other)?;
+            crate::notetype::add_missing_cards_where(self.tx, nt, nid, &values, |o| ords.contains(&o)).map_err(other)?;
         }
         applying(self.tx, true)
     }

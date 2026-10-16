@@ -1641,6 +1641,11 @@ fn card_types_added_on_both_devices_both_stay() {
     let (id, note) = user_type(&env, &a, &b);
     let ty = a.uid("note_type", id);
     let b_id = b.id("note_type", &ty).unwrap();
+    // 기기 몫은 기기 uid 끝 4자리. 우연히 같으면(1/65536) 같은 ord 가 되어 예전처럼 한 행으로 합쳐진다 (K39 한계)
+    let lane = |d: &Dev| d.me()[d.me().len() - 4..].to_string();
+    if lane(&a) == lane(&b) {
+        return;
+    }
     nt::add_template(&a.con(), id, Some("역방향"), REV_Q, REV_A).unwrap();
     nt::add_template(&b.con(), b_id, Some("힌트 카드"), "힌트: {{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}").unwrap();
     for d in [&a, &b, &a, &b] {
