@@ -178,7 +178,8 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
             <div className="summary__amount-row">
               <span className="t-body-m-strong">신규 분량</span>
               <div className="segment segment--boxed">
-                {SCALES.map((s, i) => (
+                {/* 남은 신규가 권장 이하면 [더 많이]도 같은 수라 숨긴다 */}
+                {SCALES.map((s, i) => i === 2 && newOf(plans[2]) <= newOf(plans[1]) ? null : (
                   <button
                     key={s.value}
                     className={`segment__item t-label-m ${scale === s.value ? "is-selected" : ""}`}

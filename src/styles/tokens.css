@@ -218,7 +218,9 @@ button:disabled { cursor: default; opacity: 0.45; }
 
 /* 키보드로 옮긴 초점에만 링 (마우스 클릭에는 안 보인다). 알약 버튼은 radius 를 따라간다 */
 :focus-visible {
-  outline: 2px solid var(--accent-default);
+  outline: 2px solid var(--focus-ring, var(--accent-default));
   outline-offset: 2px;
 }
-:root[data-theme="dark"] :focus-visible { outline-color: var(--accent-text); }
+:root[data-theme="dark"] :focus-visible { outline-color: var(--focus-ring, var(--accent-text)); }
+/* 반전 면(오늘 카드 · 토스트 · 선택 바) 안에서는 옅은 보라 링. accent 링은 bg/inverse 위에서 2.71:1 (QA T6-17) */
+.deck__today, .toast, .study__toast, .study__undo, .cards__bar { --focus-ring: var(--accent-on-inverse); }

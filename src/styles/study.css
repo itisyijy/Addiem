@@ -293,6 +293,8 @@
   letter-spacing: -0.005em;
 }
 .write__input:focus-visible { outline: none; } /* 초점은 상자 테두리(accent 2px)가 보여준다 */
+/* 640 높이: 카드가 최소 높이(160)라 되돌리기 토스트가 뜨면 14px 넘쳤다 */
+@media (max-height: 640px) { .write__input { height: 42px; } }
 
 /* ---------------------------------------------------------------- J2 비교와 평가 추천 (Figma 53:7329) */
 .cmp__kw { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
