@@ -280,7 +280,7 @@ const daysAgo = (at: number) => {
  * 뒷면을 질문 부분과 답 부분으로 나눈다. Basic 템플릿은 <hr id=answer> 로 나뉜다.
  * 구분선 없이 {{FrontSide}} 바로 뒤에 답을 붙인 템플릿은 앞면이 그대로 앞에 있으므로 거기서 나눈다
  */
-function splitBack(back: string, front: string) {
+export function splitBack(back: string, front: string) {
   const m = back.match(/<hr[^>]*\bid=["']?answer\b["']?[^>]*>/i);
   if (m && m.index !== undefined) return { question: back.slice(0, m.index), answer: back.slice(m.index + m[0].length) };
   const f = front.trim();

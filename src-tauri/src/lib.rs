@@ -144,6 +144,7 @@ pub fn run() {
             notetype::delete_note_field, notetype::add_card_template, notetype::delete_card_template, notetype::save_card_template,
             notetype::save_note_type_css, notetype::note_type_empty_fronts, notetype::preview_template, notetype::add_typed_note,
             notetype::template_layout, notetype::build_template_layout, notetype::suggest_card_kind,
+            notetype::note_type_samples, notetype::save_note_type, notetype::rename_field_refs,
             // 8.4 기출 이력
             exam::mark_exam, exam::set_exam, exam::exam_list, exam::exam_summary,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)
