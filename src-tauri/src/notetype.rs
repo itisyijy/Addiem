@@ -334,6 +334,35 @@ impl Fronts {
     }
 }
 
+/// 그 덱들(SQL id 목록)에서 앞면이 빈 카드 (id, 상태). 학습 큐가 빼므로(queue::Card::plays) 남은 카드 수 · 하루 몫 · 목표 안내 ·
+/// 계획도 이 규칙 하나로 뺀다 (Q1-01). 일시 정지한 카드는 원래 나오지 않아 넣지 않는다
+pub(crate) fn front_empty_cards(con: &Connection, decks: &str) -> Res<Vec<(i64, String)>> {
+    let fronts = Fronts::load(con)?;
+    let mut st = con
+        .prepare(&format!(
+            "SELECT c.id, c.state, n.note_type_id, c.template_ord, n.fields FROM card c JOIN note n ON n.id = c.note_id
+             WHERE c.deck_id IN ({decks}) AND c.state <> 'suspended'"
+        ))
+        .map_err(err)?;
+    let rows = st
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, u32>(3)?, r.get::<_, String>(4)?)))
+        .map_err(err)?;
+    let mut out = vec![];
+    for row in rows {
+        let (id, state, ty, ord, fields) = row.map_err(err)?;
+        if fronts.empty(ty, ord, &fields) {
+            out.push((id, state));
+        }
+    }
+    Ok(out)
+}
+
+/// 그 덱들의 아직 보지 않은 카드 중 학습에 나오는 것 (앞면이 빈 카드는 뺀다). 남은 신규 수는 모두 이것으로 센다 (Q1-01)
+pub(crate) fn new_left(con: &Connection, decks: &str) -> Res<i64> {
+    let all: i64 = con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({decks}) AND state = 'new'"), [], |r| r.get(0)).map_err(err)?;
+    Ok(all - front_empty_cards(con, decks)?.iter().filter(|(_, s)| s == "new").count() as i64)
+}
+
 /// 일반 유형 노트의 빠진 카드를 만든다 (Anki 처럼 만들기만 하고 지우지 않는다). 덱 · 중요도는 그 노트의 첫 카드를 따른다 (C3-r). 만든 수
 pub(crate) fn add_missing_cards(con: &Connection, nt: &Nt, note_id: i64, values: &[String]) -> Res<usize> {
     add_missing_cards_where(con, nt, note_id, values, |_| true)
@@ -2284,6 +2313,21 @@ mod tests {
         assert_eq!((m[&0], m[&1]), (0, 2));
         assert_eq!(incoming_ords(&t, &[q(0, "앞", &t.templates[0].qfmt), q(1, "뒤", "{{Extra}}")]), HashMap::from([(0, 0), (1, 2)]));
         let _ = deck;
+    }
+
+    #[test]
+    fn new_left_skips_empty_front_cards() {
+        // Q1-01: 덱 상세 · 목표 안내 · 계획의 남은 신규는 큐와 같이 앞면이 빈 카드를 빼고 센다
+        let (con, deck) = setup();
+        let nt = anki_clone(&con, "basic", None);
+        note(&con, deck, nt, &["a", "b"]);
+        note(&con, deck, nt, &["c", "d"]);
+        add_field(&con, nt, "힌트").unwrap();
+        save_template(&con, nt, 0, None, "{{힌트}}", "{{FrontSide}}").unwrap();
+        con.execute("UPDATE note SET fields = json_set(fields, '$[2]', '힌트 있음') WHERE id = (SELECT min(id) FROM note)", []).unwrap();
+        let ids = deck.to_string();
+        assert_eq!(new_left(&con, &ids).unwrap(), 1);
+        assert_eq!(front_empty_cards(&con, &ids).unwrap().len(), 1);
     }
 
     #[test]

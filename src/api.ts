@@ -81,6 +81,9 @@ export type DeckDetail = {
   core_learned_pct: number;
   per_day: number;
   finish_days: number | null;
+  /** 앞면이 빈 카드 (학습에 나오지 않는다). 그중 신규 수 (unseen 에 들지 않는다) */
+  front_empty: number[];
+  unseen_empty: number;
   learnable_days: number | null;
   on_track: boolean | null;
   subdeck_count: number;

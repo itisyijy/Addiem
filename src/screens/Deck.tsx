@@ -276,7 +276,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
   useEffect(() => {
     planApi.adjust(d.id).then(setAdjust, () => {});
   }, [d.id, d.per_day]);
-  const seen = d.total - d.unseen;
+  const seen = d.total - d.unseen - d.unseen_empty;
 
   return (
     <main className="deck">
@@ -320,6 +320,13 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
               <Icon name="info" size={16} />
               {reasonText(d, adjust)}
             </span>
+            {/* 앞면이 빈 카드는 큐 · 남은 수에서 빠진다 (NT49). "오늘 0장"의 이유를 밝힌다 */}
+            {d.front_empty.length > 0 && (
+              <button type="button" className="deck__empty t-label-s" onClick={() => nav({ name: "cards", deckId: d.id, cardIds: d.front_empty })}>
+                <Icon name="alert" size={16} />
+                앞면이 빈 카드 {n(d.front_empty.length)}장은 학습에 나오지 않아요 · 카드 목록에서 보기
+              </button>
+            )}
           </div>
           {d.paused ? (
             <Button variant="secondary" className="deck__start" label="쉬는 중에도 학습하기" shortcut="Enter" onClick={start} />
@@ -387,7 +394,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
             <StatTile
               label="아직 보지 않은 카드"
               value={n(d.unseen)}
-              sub={d.finish_days ? `하루 ${n(d.per_day)}장씩 ${n(d.finish_days)}일` : d.unseen ? "오늘은 신규를 넣지 않아요" : "모두 한 번씩 봤어요"}
+              sub={d.finish_days ? `하루 ${n(d.per_day)}장씩 ${n(d.finish_days)}일` : d.unseen ? "오늘은 신규를 넣지 않아요" : d.unseen_empty ? "남은 카드는 앞면이 비어 있어요" : "모두 한 번씩 봤어요"}
             />
             <StatTile
               label="접어둔 카드"
