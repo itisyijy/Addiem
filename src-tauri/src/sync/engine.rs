@@ -90,7 +90,11 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
              id INTEGER PRIMARY KEY, note_uid TEXT NOT NULL, at INTEGER NOT NULL,
              winner_device TEXT, winner_at INTEGER, winner_fields TEXT,
              loser_device TEXT, loser_at INTEGER, loser_fields TEXT,
-             seen INTEGER NOT NULL DEFAULT 0, resolved INTEGER NOT NULL DEFAULT 0);",
+             seen INTEGER NOT NULL DEFAULT 0, resolved INTEGER NOT NULL DEFAULT 0);
+         -- K36 두 기기에서 고친 노트 유형 정의 (카드 종류 앞 · 뒷면 · 이름, CSS, 필드 이름, 같은 자리에 더한 필드). 진 쪽을 남긴다 (30일)
+         CREATE TABLE IF NOT EXISTS sync_type_conflict (
+             id INTEGER PRIMARY KEY, type_uid TEXT NOT NULL, what TEXT NOT NULL, at INTEGER NOT NULL,
+             winner_device TEXT, winner TEXT, loser_device TEXT, loser TEXT);",
     )
     .map_err(dbe)?;
     // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다)
@@ -331,10 +335,6 @@ struct Clock {
 impl Clock {
     fn col(&self, c: &str) -> &str {
         self.cols.get(c).map(|s| s.as_str()).unwrap_or(&self.base)
-    }
-
-    fn max(&self) -> String {
-        self.cols.values().chain(std::iter::once(&self.base)).max().cloned().unwrap_or_default()
     }
 
     /// 동기화 전에 생긴 이 기기 행: 마지막으로 고친 벽시계 시각을 HLC 로 쓴다 (처음 합칠 때 "나중에 고친 쪽").
@@ -1239,6 +1239,83 @@ struct Applier<'a> {
     refused: Vec<(&'static str, String, String)>,
     /// 처음 합치기: 두 기기에서 따로 복습한 카드의 (이 기기 상태, Drive 상태) (T3-06)
     merge_srs: HashMap<i64, (SrsState, SrsState)>,
+    /// 받아서 새로 넣은 노트, 새로 받았거나 앞면이 바뀐 카드 종류 (rowid). 끝에 빠진 카드를 만든다 (Q2-04)
+    new_notes: HashSet<i64>,
+    new_tpls: HashSet<i64>,
+    /// 같은 자리에 따로 더한 필드: (노트 유형 rowid, 원래 자리, 새 자리, 진 쪽 필드 id). 끝에 진 쪽 노트 값을 옮긴다 (Q2-06)
+    moves: Vec<(i64, usize, usize, String)>,
+}
+
+/// 두 기기에서 고친 노트 유형 정의를 남기는 열 (K36): (표, 열, 화면 이름)
+const TYPE_COLS: [(&str, &str, &str); 5] =
+    [("card_template", "qfmt", "앞면"), ("card_template", "afmt", "뒷면"), ("card_template", "name", "이름"), ("note_type", "css", "CSS"), ("note_type", "name", "유형 이름")];
+
+/// note_type.fields · field_ids 를 자리마다 합친 것 (Q2-06)
+#[derive(Default, Debug, PartialEq)]
+struct Slots {
+    names: Vec<String>,
+    ids: Vec<String>,
+    /// 같은 자리에 따로 더해 옮긴 진 쪽 필드 (원래 자리, 새 자리, 그 필드 id)
+    moved: Vec<(usize, usize, String)>,
+    /// 같은 필드를 두 기기가 다르게 바꾼 이름 (이긴 이름, 진 이름)
+    renamed: Vec<(String, String)>,
+}
+
+/// 자리마다 합친다. 같은 필드(같은 id, 처음부터 있던 필드는 둘 다 빈 id)는 이긴 쪽 이름, 한쪽에만 있는 자리는 그대로.
+/// 같은 자리를 두 기기가 따로 더했으면(id 가 다르다) 이긴 쪽이 그 자리를 갖고 진 쪽은 끝 새 자리로 간다 (이긴 쪽이 이미 그 필드를 옮겨 두었으면 그 자리로).
+/// 이름까지 같으면 같은 필드로 본다. 두 기기가 같은 (win, lose) 를 보므로 결과가 같다
+/// ponytail: 진 쪽 이름이 이긴 쪽의 다른 자리 이름과 같으면 이름이 겹친 채 둔다 (두 기기가 같은 이름을 다른 자리에 동시에 더한 경우)
+fn merge_slots(win: &(Vec<String>, Vec<String>), lose: &(Vec<String>, Vec<String>)) -> Slots {
+    let id = |s: &(Vec<String>, Vec<String>), i: usize| s.1.get(i).cloned().unwrap_or_default();
+    let mut out = Slots::default();
+    let mut later = vec![];
+    for i in 0..win.0.len().max(lose.0.len()) {
+        let (wi, li) = (id(win, i), id(lose, i));
+        let elsewhere = win.1.iter().position(|x| !li.is_empty() && *x == li);
+        let (name, nid) = match (win.0.get(i), lose.0.get(i)) {
+            (Some(w), Some(l)) => {
+                if wi != li && !l.is_empty() && l != w {
+                    later.push((i, l.clone(), li));
+                } else if wi == li && !w.is_empty() && !l.is_empty() && l != w {
+                    out.renamed.push((w.clone(), l.clone()));
+                }
+                (w.clone(), wi)
+            }
+            (Some(w), None) => (w.clone(), wi),
+            // 진 쪽에만 있는 자리. 이긴 쪽이 이미 다른 자리로 옮긴 필드면 빈 자리로 두고 값은 그 자리로
+            (None, Some(_)) if elsewhere.is_some() => {
+                out.moved.push((i, elsewhere.unwrap_or_default(), li));
+                (String::new(), String::new())
+            }
+            (None, Some(l)) => (l.clone(), li),
+            (None, None) => unreachable!(),
+        };
+        out.names.push(name);
+        out.ids.push(nid);
+    }
+    for (from, name, lid) in later {
+        let to = match out.ids.iter().position(|x| *x == lid) {
+            Some(j) => j,
+            None => {
+                out.names.push(name);
+                out.ids.push(lid.clone());
+                out.names.len() - 1
+            }
+        };
+        out.moved.push((from, to, lid));
+    }
+    out
+}
+
+/// JSON 배열 글 -> 목록 (NULL · 깨진 값은 빈 목록)
+fn str_list(v: Option<&J>) -> Vec<String> {
+    v.and_then(|v| v.as_str()).and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+}
+
+/// field_ids 열 값: 끝의 빈 id 는 뗀다. 모두 비었으면 NULL (더한 필드가 없는 유형 · 옛 앱과 같다)
+fn ids_value(ids: &[String]) -> Value {
+    let n = ids.iter().rposition(|x| !x.is_empty()).map_or(0, |i| i + 1);
+    if n == 0 { Value::Null } else { Value::Text(serde_json::to_string(&ids[..n]).unwrap_or_default()) }
 }
 
 enum Step {
@@ -1352,6 +1429,12 @@ impl Applier<'_> {
             // 다른 제약(유일 키 등)에 걸린 행. 묶음 전체를 실패시키지 않고 건너뛴다
             return Ok(self.skip());
         }
+        let new = self.tx.last_insert_rowid();
+        match t {
+            "note" => self.new_notes.insert(new),
+            "card_template" => self.new_tpls.insert(new),
+            _ => false,
+        };
         let mut c = Clock { base: row_h.clone(), ..Default::default() };
         for (col, (_, h)) in &f.cols {
             if *h != c.base {
@@ -1400,8 +1483,9 @@ impl Applier<'_> {
         Ok(Step::Done)
     }
 
-    /// 그 행을 마지막으로 고친 HLC: 받은 값 · 아직 올리지 않은 이 기기 변경 중 나중
-    fn newest(&self, t: &str, uid: &str) -> SRes<String> {
+    /// 그 행을 다른 기기(by 가 아닌 기기)가 마지막으로 고친 HLC: 받은 값 · 아직 올리지 않은 이 기기 변경 중 나중.
+    /// 지운 기기 자신이 고친 것은 빼고 본다: 같은 트랜잭션에서 고쳤든(빈칸 지우기는 노트도 고친다, Q2-03) 지운 뒤에 고쳤든 그 기기는 지운 것을 안다
+    fn newest(&self, t: &str, uid: &str, by: &str) -> SRes<String> {
         let clock = match load_clock(self.tx, t, uid)? {
             Some(c) => c,
             None => match (self.tables.iter().find(|x| x.name == t), rowid_of(self.tx, t, uid)?) {
@@ -1409,8 +1493,8 @@ impl Applier<'_> {
                 _ => Clock::default(),
             },
         };
-        let mine = clock.max();
-        Ok(max_of(Some(mine.as_str()), self.pend(t, uid).and_then(|p| p.newest())).unwrap_or_default().to_string())
+        let others = clock.cols.values().chain(std::iter::once(&clock.base)).filter(|h| hlc_device(h) != by).max().cloned().unwrap_or_default();
+        Ok(max_of(Some(others.as_str()), self.pend(t, uid).and_then(|p| p.newest())).unwrap_or_default().to_string())
     }
 
     fn update(&mut self, table: &Table, uid: &str, rowid: i64, f: &Fold) -> SRes<Step> {
@@ -1429,8 +1513,13 @@ impl Applier<'_> {
         } else {
             let mut sets: Vec<(String, J, String)> = vec![];
             let mut srs_differs = false;
+            // 필드 목록은 열 하나로 통째로 겨루지 않고 자리마다 합친다 (Q2-06)
+            let merged = t == "note_type" && f.cols.contains_key("fields");
+            if merged {
+                self.merge_fields(uid, rowid, &local, &mut clock, pend.as_ref(), f)?;
+            }
             for (c, (v, h)) in &f.cols {
-                if !table.cols.contains(c) {
+                if !table.cols.contains(c) || (merged && (c == "fields" || c == "field_ids")) {
                     continue;
                 }
                 // 이 기기 값의 HLC: 받은 값이거나, 아직 올리지 않았으면 고친 순간 (K28)
@@ -1442,6 +1531,15 @@ impl Applier<'_> {
                 };
                 let same = local.get(c) == Some(v);
                 srs_differs |= !same && t == "card" && SRS_COLS.contains(&c.as_str());
+                // 노트 유형 정의를 이 기기도 고쳤는데 아직 올리지 않았다: 받은 쪽은 이 기기 것을 모르고 고쳤다. 진 쪽을 남긴다 (K36)
+                if !same
+                    && let Some((_, _, label)) = TYPE_COLS.iter().find(|(tt, cc, _)| *tt == t && cc == c)
+                    && pend.as_ref().and_then(|p| p.col(c)).is_some()
+                {
+                    let (mine, theirs) = (local.get(c).and_then(|x| x.as_str()).unwrap_or_default(), v.as_str().unwrap_or_default());
+                    let (win, lose) = if *h > lh { ((theirs, h.as_str()), (mine, lh.as_str())) } else { ((mine, lh.as_str()), (theirs, h.as_str())) };
+                    self.type_conflict(t, uid, &local, label, win, lose)?;
+                }
                 if *h > lh {
                     if !same {
                         // 받은 쪽이 이 기기 값을 모르고 고쳤으면(바탕이 더 옛것) 동시에 고친 것이다. 처음 합칠 때는 바탕이 없다: 내용이 다르면 남긴다
@@ -1466,6 +1564,10 @@ impl Applier<'_> {
                 self.merge_srs.insert(rowid, (srs_of(|c| local.get(c)), srs_of(incoming)));
             }
             let applied = !sets.is_empty();
+            // 앞면이 바뀐 카드 종류: 보낸 기기가 모르던 이 기기 노트에 카드가 생길 수 있다 (Q2-04)
+            if t == "card_template" && sets.iter().any(|(c, _, _)| c == "qfmt") {
+                self.new_tpls.insert(rowid);
+            }
             for (c, v, h) in sets {
                 let val = match table.fks.get(&c) {
                     Some((target, nullable)) => match resolve_fk(self.tx, &self.aliases, target, &v)? {
@@ -1489,12 +1591,13 @@ impl Applier<'_> {
         save_clock(self.tx, t, uid, &clock)?;
         if let Some(d) = &f.del {
             // 지운 것이 그 행을 마지막으로 고친 것보다 나중일 때만 지운다. 카드는 노트(앞뒤 내용)를 고친 것도 그 카드를 고친 것이다 (K29).
-            // 지운 기기가 이미 받은 수정이면 지운 HLC 가 더 크다 (고친 순간의 HLC 는 받은 값보다 크다): 모르고 나중에 고친 것만 남긴다
-            let mut newest = self.newest(t, uid)?;
+            // 지운 기기가 이미 받은 수정이면 지운 HLC 가 더 크다 (고친 순간의 HLC 는 받은 값보다 크다): 다른 기기가 모르고 나중에 고친 것만 남긴다
+            let by = hlc_device(d);
+            let mut newest = self.newest(t, uid, by)?;
             if t == "card"
                 && let Some(note) = local.get("note_id").and_then(|v| v.as_str())
             {
-                newest = newest.max(self.newest("note", note)?);
+                newest = newest.max(self.newest("note", note, by)?);
             }
             if *d > newest {
                 self.deletes.push((t, uid.to_string(), d.clone()));
@@ -1529,6 +1632,180 @@ impl Applier<'_> {
             .map_err(dbe)?;
         self.report.conflicts += 1;
         Ok(())
+    }
+
+    /// K36: 노트 유형 정의를 두 기기에서 고쳤다. 진 쪽을 남긴다 (노트 유형 편집기가 보인다). win · lose = (내용, HLC)
+    fn type_conflict(&mut self, t: &str, uid: &str, local: &Map<String, J>, label: &str, win: (&str, &str), lose: (&str, &str)) -> SRes<()> {
+        let (type_uid, what) = if t == "card_template" {
+            let tpl = local.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+            (local.get("note_type_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(), format!("카드 종류 '{tpl}' {label}"))
+        } else {
+            (uid.to_string(), label.to_string())
+        };
+        let dev = |h: &str| match hlc_device(h) {
+            "" => self.src.clone(),
+            d => d.to_string(),
+        };
+        self.tx
+            .execute(
+                "INSERT INTO sync_type_conflict (type_uid, what, at, winner_device, winner, loser_device, loser) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![type_uid, what, db::now_ms(), dev(win.1), win.0, dev(lose.1), lose.0],
+            )
+            .map_err(dbe)?;
+        Ok(())
+    }
+
+    /// note_type.fields · field_ids 를 자리마다 합쳐 쓴다 (merge_slots, Q2-06). 열 하나로 통째로 겨루면 다른 기기가 더한 필드가 사라진다.
+    /// 합친 것이 받은 값과 다르면(이 기기 쪽 필드를 살렸다) 이 기기의 변경으로 올려 다른 기기도 같아진다. 진 쪽 노트 값은 끝에 옮긴다 (move_values)
+    fn merge_fields(&mut self, uid: &str, rowid: i64, local: &Map<String, J>, clock: &mut Clock, pend: Option<&Pending>, f: &Fold) -> SRes<()> {
+        let Some((v, h)) = f.cols.get("fields") else { return Ok(()) };
+        let ids_in = f.cols.get("field_ids").map(|(x, _)| x).or_else(|| f.row.as_ref().and_then(|(_, r)| r.get("field_ids")));
+        let theirs = (str_list(Some(v)), str_list(ids_in));
+        let mine = (str_list(local.get("fields")), str_list(local.get("field_ids")));
+        let lh = col_hlc(clock, pend, "fields");
+        let incoming = *h > lh;
+        let (win, lose, wh, loh) = if incoming { (&theirs, &mine, h.as_str(), lh.as_str()) } else { (&mine, &theirs, lh.as_str(), h.as_str()) };
+        let m = merge_slots(win, lose);
+        let same_as = |s: &(Vec<String>, Vec<String>)| s.0 == m.names && ids_value(&s.1) == ids_value(&m.ids);
+        if incoming {
+            clock.cols.insert("fields".into(), h.clone());
+            if let Some((_, ih)) = f.cols.get("field_ids") {
+                clock.cols.insert("field_ids".into(), ih.clone());
+            }
+        }
+        if !same_as(&mine) {
+            // 받은 그대로면 받은 값, 아니면 합친 값을 이 기기의 변경으로 (트리거가 쌓는다)
+            let local_change = !same_as(&theirs);
+            if local_change {
+                applying(self.tx, false)?;
+            }
+            self.tx
+                .execute(
+                    "UPDATE note_type SET fields = ?2, field_ids = ?3 WHERE rowid = ?1",
+                    params![rowid, serde_json::to_string(&m.names).map_err(other)?, ids_value(&m.ids)],
+                )
+                .map_err(dbe)?;
+            if local_change {
+                applying(self.tx, true)?;
+            }
+            self.report.applied += 1;
+        }
+        // 진 쪽 기록 (K36): 같은 필드 이름을 이 기기도 바꿨는데 아직 올리지 않았다 · 같은 자리에 따로 더한 필드는 새 자리로 옮겼다
+        if pend.and_then(|p| p.col("fields")).is_some() {
+            for (w, l) in &m.renamed {
+                self.type_conflict("note_type", uid, local, "필드 이름", (w, wh), (l, loh))?;
+            }
+        }
+        for (from, to, id) in m.moved {
+            let at_from = m.names.get(from).cloned().unwrap_or_default();
+            let moved = m.names.get(to).cloned().unwrap_or_default();
+            self.type_conflict("note_type", uid, local, "같은 자리에 따로 더한 필드 (진 쪽을 새 자리로 옮겼어요)", (&at_from, wh), (&moved, loh))?;
+            self.moves.push((rowid, from, to, id));
+        }
+        Ok(())
+    }
+
+    /// 같은 자리에 따로 더한 필드의 진 쪽 노트 값을 그 필드의 새 자리로 (Q2-06). 그 기기가 필드를 더한 뒤 쓴 노트만:
+    /// 노트 내용의 HLC 가 그 기기 것이고 필드를 더한 시각(id) 뒤. 이긴 쪽 노트 · 더하기 전 노트는 그 자리에 진 쪽 값이 없다.
+    /// 이 기기의 변경으로 올린다 (두 기기가 같은 노트를 같은 값으로 옮긴다)
+    /// ponytail: 진 쪽 정의를 받은 세 번째 기기가 쓴 노트는 옮기지 않는다 (그 기기 노트의 값은 이긴 쪽 이름 아래 보인다)
+    fn move_values(&mut self) -> SRes<()> {
+        let moves = std::mem::take(&mut self.moves);
+        if moves.is_empty() {
+            return Ok(());
+        }
+        applying(self.tx, false)?;
+        for (ty, from, to, id) in moves {
+            let (dev, born) = (hlc_device(&id), hlc_ms(&id));
+            let notes: Vec<(i64, String, String)> = {
+                let mut st = self.tx.prepare_cached("SELECT id, uid, fields FROM note WHERE note_type_id = ?1 AND uid IS NOT NULL").map_err(dbe)?;
+                st.query_map([ty], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
+            };
+            for (nid, nuid, fields) in notes {
+                let clock = load_clock(self.tx, "note", &nuid)?.unwrap_or_default();
+                let h = col_hlc(&clock, self.pend("note", &nuid), "fields");
+                let mut v: Vec<String> = serde_json::from_str(&fields).unwrap_or_default();
+                if hlc_device(&h) != dev || hlc_ms(&h) < born || v.get(from).is_none_or(|x| x.is_empty()) {
+                    continue;
+                }
+                v.resize(v.len().max(to + 1), String::new());
+                v[to] = std::mem::take(&mut v[from]);
+                self.tx.execute("UPDATE note SET fields = ?2 WHERE id = ?1", params![nid, serde_json::to_string(&v).map_err(other)?]).map_err(dbe)?;
+            }
+        }
+        applying(self.tx, true)
+    }
+
+    /// 그 행을 마지막으로 정한 HLC 와 그것이 이 기기 결정인가: 노트는 내용(fields), 카드 종류는 앞면(qfmt).
+    /// 아직 올리지 않은 이 기기 변경이면 (None, true): 다른 기기는 아무도 모른다
+    fn decided(&self, t: &str, uid: &str, col: &str) -> SRes<(Option<String>, bool)> {
+        if self.pend(t, uid).is_some_and(|p| p.created || p.col(col).is_some()) {
+            return Ok((None, true));
+        }
+        let h = load_clock(self.tx, t, uid)?.map(|c| c.col(col).to_string()).unwrap_or_default();
+        let mine = hlc_device(&h) == self.me;
+        Ok((Some(h), mine))
+    }
+
+    /// 받은 노트 · 카드 종류로 빠진 카드를 만든다 (Q2-04, 앞면이 비지 않으면). 카드 (노트 N, 카드 종류 T) 는 N 을 쓴 기기가 T 를 알았거나
+    /// T 를 쓴 기기가 N 을 알았으면 이미 정해졌다 (만들었거나, 앞면이 비었거나, 지웠다). 둘 다 몰랐을 때만 만든다.
+    /// 몰랐다는 것은 이 기기가 그 결정을 한 쪽일 때만 안다: 받은 것은 이 기기가 처음 보는 것이고, HLC 가 작은 쪽은 큰 쪽을 볼 수 없었다
+    /// (받은 뒤에 고친 것은 늘 받은 것보다 크다, K28). 그래서 결정한 기기가 만들고 이 기기의 변경으로 올린다. 앱 유형은 앱이 카드를 만든다
+    fn fill_cards(&mut self) -> SRes<()> {
+        let notes = std::mem::take(&mut self.new_notes);
+        let tpls = std::mem::take(&mut self.new_tpls);
+        if notes.is_empty() && tpls.is_empty() {
+            return Ok(());
+        }
+        let mut want: BTreeMap<i64, BTreeSet<u32>> = BTreeMap::new();
+        let rows = |sql: &str, id: i64| -> SRes<Vec<(i64, String, u32, String)>> {
+            let mut st = self.tx.prepare_cached(sql).map_err(dbe)?;
+            st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)
+        };
+        // 받은 카드 종류 T × 이 기기가 정한 노트 N: T 를 쓴 기기가 N 을 몰랐다 (N 이 아직 올리지 않은 것이거나 T 보다 나중)
+        for t in &tpls {
+            let list = rows(
+                "SELECT n.id, n.uid, t.ord, t.uid FROM card_template t JOIN note_type nt ON nt.id = t.note_type_id JOIN note n ON n.note_type_id = nt.id
+                 WHERE t.rowid = ?1 AND nt.native_kind IS NULL AND n.uid IS NOT NULL AND t.uid IS NOT NULL",
+                *t,
+            )?;
+            for (nid, nuid, ord, tuid) in list {
+                let (nh, mine) = self.decided("note", &nuid, "fields")?;
+                let (th, _) = self.decided("card_template", &tuid, "qfmt")?;
+                if mine && (nh.is_none() || th.zip(nh).is_some_and(|(th, nh)| th < nh)) {
+                    want.entry(nid).or_default().insert(ord);
+                }
+            }
+        }
+        // 받은 노트 N × 이 기기가 정한 카드 종류 T: N 을 쓴 기기가 T 를 몰랐다
+        for n in &notes {
+            let list = rows(
+                "SELECT n.id, n.uid, t.ord, t.uid FROM note n JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id
+                 WHERE n.id = ?1 AND nt.native_kind IS NULL AND n.uid IS NOT NULL AND t.uid IS NOT NULL",
+                *n,
+            )?;
+            for (nid, nuid, ord, tuid) in list {
+                let (th, mine) = self.decided("card_template", &tuid, "qfmt")?;
+                let (nh, _) = self.decided("note", &nuid, "fields")?;
+                if mine && (th.is_none() || nh.zip(th).is_some_and(|(nh, th)| nh < th)) {
+                    want.entry(nid).or_default().insert(ord);
+                }
+            }
+        }
+        if want.is_empty() {
+            return Ok(());
+        }
+        applying(self.tx, false)?;
+        let mut types: HashMap<i64, crate::notetype::Nt> = HashMap::new();
+        for (nid, ords) in want {
+            let (ty, fields): (i64, String) = self.tx.query_row("SELECT note_type_id, fields FROM note WHERE id = ?1", [nid], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?;
+            if !types.contains_key(&ty) {
+                types.insert(ty, crate::notetype::load(self.tx, ty).map_err(other)?);
+            }
+            let values: Vec<String> = serde_json::from_str(&fields).unwrap_or_default();
+            crate::notetype::add_missing_cards_where(self.tx, &types[&ty], nid, &values, |o| ords.contains(&o)).map_err(other)?;
+        }
+        applying(self.tx, true)
     }
 
     /// 두 기기 이상에서 복습한 카드: 마지막 공통 시점(앵커)부터 합친 기록을 시간 순으로 FSRS 에 다시 돌린다
@@ -1631,6 +1908,11 @@ impl Applier<'_> {
                     let uids: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
                     by.extend(uids.into_iter().map(|cu| (*child, cu)).filter(|k| !cand.contains_key(k)));
                 }
+                if *t == "card_template" {
+                    let mut st = self.tx.prepare_cached(CARDS_OF_TEMPLATE).map_err(dbe)?;
+                    let uids: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+                    by.extend(uids.into_iter().map(|cu| ("card", cu)).filter(|k| !cand.contains_key(k)));
+                }
                 let mut follows = false;
                 for (child, col) in PART_OF.iter().filter(|(c, _)| c == t) {
                     let Some(parent) = self.tables.iter().find(|x| x.name == *child).and_then(|x| x.fks.get(*col)).map(|(p, _)| *p) else { continue };
@@ -1700,8 +1982,12 @@ impl Applier<'_> {
 
 /// 남은 자식이 있어도 부모를 붙잡지 않는 표 (기기가 저절로 만드는 것: 오늘의 계획 · 자료 분석 결과 · 자동 연결)
 const DERIVED: [&str; 3] = ["daily_plan", "source_segment", "source_link"];
-/// 부모를 남기면 함께 남는 그 부모의 일부 (K29): 노트의 카드, 덱의 설정, 서술형 키워드 · 지난번 답
-const PART_OF: [(&str, &str); 4] = [("card", "note_id"), ("deck_config", "deck_id"), ("note_written", "note_id"), ("written_answer", "card_id")];
+/// 부모를 남기면 함께 남는 그 부모의 일부 (K29): 노트의 카드, 덱의 설정, 서술형 키워드 · 지난번 답, 노트 유형의 카드 종류 (Q2-01)
+const PART_OF: [(&str, &str); 5] =
+    [("card", "note_id"), ("deck_config", "deck_id"), ("note_written", "note_id"), ("written_answer", "card_id"), ("card_template", "note_type_id")];
+/// 카드 종류를 붙잡는 카드 (외래 키가 아니라 노트 유형 + ord 로 가리킨다, Q2-02). 빈칸 유형은 템플릿 하나가 모든 카드를 그린다
+const CARDS_OF_TEMPLATE: &str = "SELECT c.uid FROM card c JOIN note n ON n.id = c.note_id JOIN card_template t ON t.note_type_id = n.note_type_id
+                                 WHERE t.rowid = ?1 AND (c.template_ord = t.ord OR t.qfmt LIKE '%{{cloze:%') AND c.uid IS NOT NULL";
 
 /// 열 이름 -> 값에서 FSRS 상태 (SRS_COLS 와 같은 열)
 fn srs_of<'a>(get: impl Fn(&str) -> Option<&'a J>) -> SrsState {
@@ -1724,6 +2010,9 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
     let tables = tables(tx)?;
     let aliases = load_aliases(tx)?;
     let (mut folds, max_h) = fold(recs, &aliases);
+    // 받은 가장 큰 HLC 를 먼저 남긴다: 합치는 동안 이 기기가 새로 쓰는 변경(합친 필드 목록 · 옮긴 값 · 다시 계산한 일정 · 만든 카드)은
+    // 받은 것을 본 뒤의 변경이라 받은 어떤 값보다 커야 한다 (K28). 그 전에 쌓인 변경의 floor 는 bump 가 옛 값으로 채운다
+    bump_hlc_last(tx, &max_h)?;
     let mut ap = Applier {
         tx,
         tables: &tables,
@@ -1740,6 +2029,9 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
         deletes: vec![],
         refused: vec![],
         merge_srs: HashMap::new(),
+        new_notes: HashSet::new(),
+        new_tpls: HashSet::new(),
+        moves: vec![],
     };
     if mode == Mode::Merge {
         // 아직 차례가 오지 않은 행도 Drive 가 아는 uid 다 (insert 가 이 기기 uid 를 버려도 되는지 본다)
@@ -1768,8 +2060,8 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
         }
     }
     ap.delete_rows()?;
-    // 받은 값을 남긴 뒤에 다시 계산한다: 그 결과는 받은 것을 본 뒤의 이 기기 변경이라 받은 어떤 값보다 크다 (K28)
-    bump_hlc_last(tx, &max_h)?;
+    ap.move_values()?;
+    ap.fill_cards()?;
     ap.recompute(fsrs)?;
     if mode == Mode::Merge {
         ap.merge_replay(fsrs)?;

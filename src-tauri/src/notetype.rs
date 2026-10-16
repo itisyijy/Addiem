@@ -29,6 +29,8 @@ const APP_TYPE: &str = "앱 기본 유형은 고칠 수 없어요. 복제해서 
 const SPECIAL: [&str; 8] = ["FrontSide", "Card", "CardFlag", "CardID", "Deck", "Subdeck", "Tags", "Type"];
 /// 복제할 수 있는 앱 유형. 목록 · 선택형 · 그림 가리기는 학습 화면이 필드로 따로 그려 복제본이 다르게 보인다
 const CLONEABLE: [&str; 4] = ["basic", "reversed", "cloze", "written"];
+/// 동기화 중 카드 종류 번호의 기기 몫 (add_template)
+const ORD_LANES: i64 = 1 << 16;
 
 // ------------------------------------------------------------------ 읽기
 
@@ -46,6 +48,8 @@ pub(crate) struct Nt {
     pub name: String,
     /// 자리별 이름. 지운 자리는 ""
     pub slots: Vec<String>,
+    /// 자리별 필드 id (앱에서 더한 필드만, "시각-기기". 처음부터 있던 자리는 ""). 두 기기가 같은 자리에 따로 더한 필드를 가린다 (Q2-06)
+    pub ids: Vec<String>,
     pub order: Option<String>,
     pub native_kind: Option<String>,
     pub user_made: bool,
@@ -115,7 +119,7 @@ pub fn visible(names: &[String], order: Option<&str>) -> Vec<(usize, String)> {
 pub(crate) fn load(con: &Connection, id: i64) -> Res<Nt> {
     let mut nt = con
         .query_row(
-            "SELECT id, name, fields, field_order, native_kind, user_made, anki_model_id, anki_stock_kind, css, next_ord FROM note_type WHERE id = ?1",
+            "SELECT id, name, fields, field_order, native_kind, user_made, anki_model_id, anki_stock_kind, css, next_ord, field_ids FROM note_type WHERE id = ?1",
             [id],
             |r| {
                 Ok(Nt {
@@ -129,6 +133,7 @@ pub(crate) fn load(con: &Connection, id: i64) -> Res<Nt> {
                     stock: r.get(7)?,
                     css: r.get(8)?,
                     next_ord: r.get(9)?,
+                    ids: r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
                     templates: vec![],
                 })
             },
@@ -331,6 +336,11 @@ impl Fronts {
 
 /// 일반 유형 노트의 빠진 카드를 만든다 (Anki 처럼 만들기만 하고 지우지 않는다). 덱 · 중요도는 그 노트의 첫 카드를 따른다 (C3-r). 만든 수
 pub(crate) fn add_missing_cards(con: &Connection, nt: &Nt, note_id: i64, values: &[String]) -> Res<usize> {
+    add_missing_cards_where(con, nt, note_id, values, |_| true)
+}
+
+/// add_missing_cards 를 고른 카드 종류(ord)에만. 동기화가 받은 노트 · 카드 종류에 쓴다 (Q2-04)
+pub(crate) fn add_missing_cards_where(con: &Connection, nt: &Nt, note_id: i64, values: &[String], keep: impl Fn(u32) -> bool) -> Res<usize> {
     if nt.cloze() {
         return Ok(0);
     }
@@ -340,7 +350,7 @@ pub(crate) fn add_missing_cards(con: &Connection, nt: &Nt, note_id: i64, values:
     };
     let now = now_ms();
     let mut made = 0;
-    for ord in card_ords(nt, values).into_iter().filter(|o| !have.contains(o)) {
+    for ord in card_ords(nt, values).into_iter().filter(|o| !have.contains(o) && keep(*o)) {
         made += con
             .execute(
                 "INSERT INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at)
@@ -359,7 +369,7 @@ fn notes_of(con: &Connection, id: i64) -> Res<Vec<(i64, Vec<String>)>> {
     rows.map(|r| r.map(|(id, f)| (id, serde_json::from_str(&f).unwrap_or_default()))).collect::<Result<_, _>>().map_err(err)
 }
 
-fn fill_cards(con: &Connection, id: i64) -> Res<usize> {
+pub(crate) fn fill_cards(con: &Connection, id: i64) -> Res<usize> {
     let nt = load(con, id)?;
     let mut made = 0;
     for (nid, values) in notes_of(con, id)? {
@@ -376,9 +386,12 @@ fn touch(con: &Connection, id: i64) -> Res<()> {
 }
 
 fn save_slots(con: &Connection, nt: &Nt) -> Res<()> {
+    // id 는 앱에서 더한 필드만 있다. 끝의 빈 id 는 떼고, 하나도 없으면 NULL (sync::engine::ids_value 와 같다)
+    let n = nt.ids.iter().rposition(|x| !x.is_empty()).map_or(0, |i| i + 1);
+    let ids = (n > 0).then(|| serde_json::to_string(&nt.ids[..n])).transpose().map_err(err)?;
     con.execute(
-        "UPDATE note_type SET fields = ?2, updated_at = ?3 WHERE id = ?1",
-        params![nt.id, serde_json::to_string(&nt.slots).map_err(err)?, now_ms()],
+        "UPDATE note_type SET fields = ?2, field_ids = ?3, updated_at = ?4 WHERE id = ?1",
+        params![nt.id, serde_json::to_string(&nt.slots).map_err(err)?, ids, now_ms()],
     )
     .map_err(err)?;
     Ok(())
@@ -547,6 +560,10 @@ pub(crate) fn add_field(con: &Connection, id: i64, name: &str) -> Res<usize> {
     let mut nt = load(con, id)?;
     nt.editable()?;
     let name = field_name(&nt, name, None)?;
+    // 이 필드의 id: 더한 시각 · 기기 (동기화 HLC 와 같은 꼴). 다른 기기가 같은 자리에 더한 필드와 가리고, 그 뒤 이 기기가 쓴 노트 값을 알아본다
+    let dev: String = con.query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).map_err(err)?;
+    nt.ids.resize(nt.slots.len(), String::new());
+    nt.ids.push(format!("{:013}-00000000-{dev}", now_ms()));
     nt.slots.push(name);
     save_slots(con, &nt)?;
     Ok(nt.slots.len() - 1)
@@ -629,7 +646,22 @@ pub(crate) fn add_template(con: &Connection, id: i64, name: Option<&str>, qfmt: 
     }
     check_template(&nt, qfmt, afmt)?;
     let max = nt.templates.iter().map(|t| t.ord as i64 + 1).max().unwrap_or(0);
-    let ord = nt.next_ord.unwrap_or(0).max(max) as u32;
+    let base = nt.next_ord.unwrap_or(0).max(max);
+    // 동기화를 켰으면 기기마다 다른 번호: ord 를 ORD_LANES 로 나눈 나머지가 이 기기 몫이다. 두 기기가 같은 유형에 따로 더해도
+    // 같은 ord 로 합쳐져 한쪽 정의가 사라지지 않는다 (Q2-05). 화면 · 내보내기는 ord 값을 보이지 않는다 (내보내기는 0 부터 다시 센다)
+    let lane: Option<i64> = con
+        .query_row(
+            "SELECT m.value FROM schema_meta m, sync_flags f WHERE m.key = 'device_uid' AND f.id = 1 AND f.enabled = 1",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(err)?
+        .map(|dev| i64::from_str_radix(&dev[dev.len().saturating_sub(4)..], 16).unwrap_or(0) % ORD_LANES);
+    let ord = match lane {
+        Some(l) => base + (l + ORD_LANES - base % ORD_LANES) % ORD_LANES,
+        None => base,
+    } as u32;
     let name = match name {
         Some(n) => template_name(&nt, n, None)?,
         None => (nt.templates.len() + 1..).map(|i| format!("Card {i}")).find(|n| nt.templates.iter().all(|t| t.name != *n)).unwrap_or_default(),
