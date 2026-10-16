@@ -48,7 +48,13 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   const [showSent, setShowSent] = useState(false);
   const [connect, setConnect] = useState<{ start: "intro" | "wait"; reconsent: boolean } | null>(null);
   const seq = useRef(0);
+  const inFlight = useRef(false); // 보내 놓고 아직 답을 받지 않은 요청
   const confirmBox = useRef<HTMLDivElement>(null);
+  /** 보내던 요청을 멈춘다. 끝까지 돌면 결과는 버려도 사용량은 줄어든다 */
+  const cancel = () => {
+    if (inFlight.current) aiApi.cancel().catch(() => {});
+    inFlight.current = false;
+  };
 
   // 카드가 바뀌면 처음부터. 범위는 비교 화면이 뜰 때 기기 안에서 고른다 (보내지 않는다)
   useEffect(() => {
@@ -69,8 +75,10 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
       },
       () => {},
     );
+    // 카드가 바뀌거나(접어두기 · 되돌리기 · 다음 카드) 학습 화면을 떠나면(그만하기 · 이동) 보내던 요청도 멈춘다 (QA T5-01)
     return () => {
       live = false;
+      cancel();
     };
     // typed 는 비교할 때 정해진다 (비교 화면에서는 바뀌지 않는다)
   }, [cardId, on]);
@@ -89,7 +97,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   useKey("Escape", () => setPhase("idle"), phase === "confirm", { modal: true });
 
   const stop = useCallback(() => {
-    if (phase === "busy") aiApi.cancel().catch(() => {});
+    cancel();
     seq.current++;
     setPhase((p) => (p === "busy" || p === "confirm" ? "idle" : p));
   }, [phase]);
@@ -100,15 +108,18 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
     const my = ++seq.current;
     setFail(null);
     setPhase("busy");
+    inFlight.current = true;
     ragApi.grade(cardId, typed, segs.map((s) => s.id)).then(
       (g) => {
         if (seq.current !== my) return; // 그 사이 평가했다: 결과는 버린다
+        inFlight.current = false;
         setResult(g);
         setPhase("done");
         refreshAi();
       },
       (e) => {
         if (seq.current !== my) return;
+        inFlight.current = false;
         refreshAi();
         const f = aiError(e);
         if (f.kind === "cancelled") return setPhase("idle");
@@ -139,6 +150,9 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
       ]
     : [];
 
+  // 단축키 G 를 받을 때. 결과가 있으면 받지 않는다 (실수로 다시 보내 사용량을 쓰지 않게, 다시 받으려면 버튼).
+  // 오류 뒤에는 다시 보내 볼 만할 때만. 버튼의 G 표시도 이때만 (한도 · 만료 뒤에 G 가 보이는데 안 되던 것, QA T5-07)
+  const ready = on && (phase === "idle" || (phase === "error" && !!fail && RETRY.includes(fail.kind)));
   const button = on && (
     <Button
       variant="secondary"
@@ -146,7 +160,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
       className="grade__btn"
       icon="sparkles"
       label={phase === "done" ? "다시 채점 보조" : "ChatGPT로 채점 보조"}
-      shortcut={phase === "done" ? undefined : actionKey("grade")}
+      shortcut={ready ? actionKey("grade") : undefined}
       disabled={phase === "busy"}
       aria-keyshortcuts={actionKey("grade")}
       onClick={start}
@@ -258,9 +272,8 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
     /** ChatGPT 추천 (결과가 있을 때만) */
     rating: phase === "done" && result ? result.rating : null,
     busy: phase === "busy",
-    /** 단축키 G 를 받을 때 (힌트 줄도 이때만). 결과가 있으면 받지 않는다 (실수로 다시 보내 사용량을 쓰지 않게, 다시 받으려면 버튼).
-     *  오류 뒤에는 다시 보내 볼 만할 때만 */
-    ready: on && (phase === "idle" || (phase === "error" && !!fail && RETRY.includes(fail.kind))),
+    /** 단축키 G 를 받을 때 (힌트 줄도 이때만) */
+    ready,
     start,
     stop,
     button,

@@ -124,8 +124,8 @@ const CAPTION_NO = /^(그림|표|도표|사진|Fig\.?|Figure|Table)\s*[\dA-Z][\w
 /** 쪽 위 이름표 · 목록 · 창 머리가 같은 이름을 쓴다: 이름표가 있으면 그 번호, 없으면 "그림 n" */
 const labelOf = (items: PdfItem[], it: PdfItem) => it.name.match(CAPTION_NO)?.[0] ?? `${it.kind === "figure" ? "그림" : "표"} ${numberOf(items, it)}`;
 
-// 무시한 제안 · 목록에서 뺀 그림은 이 기기에만 둔다 (동기화하지 않는 작은 기록)
-const HIDDEN = "neoanki.figures.hidden";
+// 무시한 제안 · 목록에서 뺀 그림은 이 기기에만 둔다 (동기화하지 않는 작은 기록). 자료 id 가 키라 모든 데이터 삭제 때 같이 지운다 (QA T4-11)
+export const HIDDEN = "neoanki.figures.hidden";
 const readHidden = (): Record<string, string[]> => {
   try {
     return JSON.parse(localStorage.getItem(HIDDEN) ?? "{}");
@@ -312,7 +312,16 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
     [0, 1, 2, 3].map((c) => (
       <span key={c} className="pf-handle" data-corner={c} style={{ left: `${(r[0] + (c % 2 ? r[2] : 0)) * 100}%`, top: `${(r[1] + (c < 2 ? 0 : r[3])) * 100}%` }} aria-hidden />
     ));
-  const menuAt = (r: Rect) => ({ left: `min(${(r[0] + r[2] * 0.45) * 100}%, calc(100% - 276px))`, top: `calc(${r[1] * 100}% + 16px)` });
+  // 메뉴(약 270×230px)는 영역 아래, 모자라면 위에 둔다. 영역 위에 띄우면 오른쪽 아래 손잡이를 덮었다 (QA T4-01).
+  // 위아래 모두 모자라는 긴 영역만 안쪽 위 (그때는 아래 손잡이와 떨어져 있다)
+  const menuAt = (r: Rect): React.CSSProperties => {
+    const pageH = PAGE_W * (lay ? lay.h / lay.w : Math.SQRT2);
+    const room = 250; // 메뉴 높이 + 틈 (px)
+    const left = `min(${r[0] * 100}%, calc(100% - 276px))`;
+    if ((1 - r[1] - r[3]) * pageH >= room) return { left, top: `calc(${(r[1] + r[3]) * 100}% + 10px)` };
+    if (r[1] * pageH >= room) return { left, top: "auto", bottom: `calc(${(1 - r[1]) * 100}% + 10px)` };
+    return { left: `min(${(r[0] + r[2] * 0.45) * 100}%, calc(100% - 276px))`, top: `calc(${r[1] * 100}% + 16px)` };
+  };
   const barAt = (r: Rect) => ({ left: `min(${r[0] * 100}%, calc(100% - 360px))`, top: r[1] + r[3] > 0.86 ? `calc(${r[1] * 100}% - 58px)` : `calc(${(r[1] + r[3]) * 100}% + 10px)` });
 
   // 메뉴: 찾은 그림은 두 갈래 + 목록에서 빼기, 끌어서 잡은 영역은 표로도 + 영역 다시 잡기 (Figma 노트 170:14075)

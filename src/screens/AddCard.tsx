@@ -2,11 +2,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, type DeckDetail, type Level } from "../api";
 import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge, Toggle } from "../ui";
-import { n, useNav, type Route } from "../nav";
+import { n, useLeaveGuard, useNav, type Route } from "../nav";
 import { actionKey, chordOf, getKeys, matchAction, useKeymap } from "../keys";
 import { imageTag, plainText, renderCardHtml, sanitize, toStoredHtml } from "../cardHtml";
 import { checkMath, findMath, withMath } from "../math";
-import { Modal } from "./NewDeck";
+import { DiscardModal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { KeywordEditor } from "./StudyParts";
 import { written, type Keyword } from "../written";
@@ -137,23 +137,24 @@ export function AddCard({ deckId }: { deckId: number }) {
         q.current?.focus();
         refresh();
       } else {
-        nav({ name: "deck", deckId });
+        nav({ name: "deck", deckId }, true); // 방금 저장했다 (칸은 비우지 않았지만 버릴 것은 없다)
       }
     } catch (e) {
       setError(errorText(e));
     }
   };
 
-  // 쓰던 내용이 있으면 말없이 버리지 않고 먼저 묻는다
-  const leave = (r: Route) => {
+  // 쓰던 내용이 있으면 말없이 버리지 않고 먼저 묻는다. 뒤로 · Esc 뿐 아니라 상단 메뉴 · 동기화 팝오버 등 이 화면을 떠나는 모든 이동 (QA T6-04)
+  useLeaveGuard((r: Route) => {
     const typed = [q, a, memo].some((f) => {
       const html = f.current?.html() ?? "";
       return plainText(html).replace(/​/g, "") !== "" || html.includes("<img"); // 빈칸 뒤 공백 문자는 내용이 아니다
     });
     const drafted = (kind === "list" && list.items.some((t) => t.trim())) || (kind === "choice" && choice.options.some((t) => t.trim()));
-    if (typed || pic || drafted) setLeaving(r);
-    else nav(r);
-  };
+    if (!(typed || pic || drafted)) return false;
+    setLeaving(r);
+    return true;
+  });
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (leaving || editing) return; // 확인 창의 Esc 는 창이 처리한다 (넣을 곳 드롭다운은 제 키를 스스로 멈춘다). 편집기는 제 키를 먼저 받는다
@@ -165,7 +166,8 @@ export function AddCard({ deckId }: { deckId: number }) {
       makeCloze(q.current?.el());
       refresh();
     } else if (e.key === "Escape") {
-      leave({ name: "deck", deckId });
+      e.preventDefault(); // 여기서 띄운 확인 창의 Esc 가 같은 키를 또 받아 바로 닫히지 않게 (QA T6-03)
+      nav({ name: "deck", deckId });
     }
   };
 
@@ -187,7 +189,7 @@ export function AddCard({ deckId }: { deckId: number }) {
 
   return (
     <main className="addcard" onKeyDown={onKeyDown}>
-      <button className="backlink t-label-m c-secondary" onClick={() => leave({ name: "deck", deckId })}>
+      <button className="backlink t-label-m c-secondary" onClick={() => nav({ name: "deck", deckId })}>
         <Icon name="chevron-left" size={18} />
         {deck?.name ?? ""}
       </button>
@@ -204,7 +206,7 @@ export function AddCard({ deckId }: { deckId: number }) {
           size="M"
           icon="arrow-right"
           label="추가 끝내고 학습 시작"
-          onClick={() => leave({ name: "summary", deckIds: [deckId] })}
+          onClick={() => nav({ name: "summary", deckIds: [deckId] })}
         />
       </div>
 
@@ -520,15 +522,14 @@ export function AddCard({ deckId }: { deckId: number }) {
         />
       )}
       {leaving && (
-        <Modal title="작성 중인 카드가 있어요" onClose={() => setLeaving(null)}>
-          <div className="modal__body">
-            <p className="t-body-m c-secondary">저장하지 않고 나갈까요?</p>
-            <div className="modal__actions">
-              <Button variant="ghost" size="M" label="계속 쓰기" shortcut="Esc" onClick={() => setLeaving(null)} />
-              <Button variant="danger" size="M" label="버리고 나가기" onClick={() => nav(leaving)} />
-            </div>
-          </div>
-        </Modal>
+        <DiscardModal
+          title="작성 중인 카드가 있어요"
+          text="저장하지 않고 나갈까요?"
+          keep="계속 쓰기"
+          discard="버리고 나가기"
+          onKeep={() => setLeaving(null)}
+          onDiscard={() => nav(leaving, true)}
+        />
       )}
     </main>
   );

@@ -71,9 +71,11 @@ export function SignalBadge({ signal }: { signal: Signal }) {
 }
 
 const rankOf = (s: Segment) => SIGNAL_ORDER.indexOf(topSignal(s));
+/** 열지 못한 파일 (깨짐 · 0바이트 · 암호): 쪽 수도 모른다. 스캔본은 쪽은 있고 글자만 없다 (QA T4-05) */
+const unopened = (m: Material) => m.status === "unsupported" && m.pages === 0;
 const metaOf = (m: Material, gaps: boolean) =>
   m.status === "unsupported"
-    ? "글자를 읽을 수 없어요"
+    ? unopened(m) ? "열 수 없는 파일이에요" : "글자를 읽을 수 없어요"
     : m.status === "pending"
       ? "읽는 중…"
       : gaps
@@ -540,7 +542,11 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           {/* 그림·표 탭은 Figures 가 같은 자리에 목록을 그린다 */}
           <section className="panel src-list" aria-label="강조된 구간" hidden={objView}>
             {head}
-            {current?.status === "unsupported" && (
+            {current && unopened(current) ? (
+              <p className="src-list__note t-body-s c-secondary">
+                이 파일을 열 수 없어요. 파일이 깨졌거나 비어 있거나 암호가 걸려 있을 수 있어요. 원래 프로그램에서 암호 없이 다시 저장한 뒤 넣어 주세요.
+              </p>
+            ) : current?.status === "unsupported" && (
               <p className="src-list__note t-body-s c-secondary">
                 이 자료에서는 글자를 읽을 수 없어요. 스캔본이나 손글씨 자료의 강조는 아직 찾지 못해요.
                 {pdfId ? " [그림·표] 탭에서 끌어서 잡은 영역으로 그림 카드를 만들 수 있어요." : ""}
@@ -862,7 +868,11 @@ export function PdfPage({
     renderPage(materialId, page, c, width)
       .then((t) => {
         task = t;
-        if (!live) return t.cancel();
+        // 그리는 도중 사라졌다: 멈추고 그 거부도 아래 catch 가 받는다 (처리 안 된 "Rendering cancelled" 가 남던 것, QA T4-08)
+        if (!live) {
+          t.cancel();
+          return t.promise;
+        }
         setSize({ w: width, h: parseFloat(c.style.height) });
         return t.promise;
       })

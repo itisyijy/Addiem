@@ -859,6 +859,7 @@ fn parse_objects(xml: &str, rels: &HashMap<String, String>, size: (f64, f64)) ->
     let mut tbl: Option<Vec<Vec<Cell>>> = None;
     let mut cell: Option<Cell> = None;
     let mut fallback = 0usize;
+    let mut unplaced = 0usize; // 위치(xfrm) 없는 그림 수
     let round = |v: f64| (v * 10000.0).round() / 10000.0;
     loop {
         let ev = match reader.read_event() {
@@ -970,7 +971,15 @@ fn parse_objects(xml: &str, rels: &HashMap<String, String>, size: (f64, f64)) ->
                         {
                             let ext = target.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
                             let supported = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp");
-                            images.push(SlideImage { index: images.len(), name, descr, rect: rect(), ext, supported, path: target.clone() });
+                            let mut rect = rect();
+                            // 자리표시자 그림은 xfrm 없이 레이아웃 위치를 물려받는다. 위치 없는 그림은 그 순번을 x 에 넣어 그림마다 다른 영역이 되게 한다
+                            // (모두 [0,0,0,0] 이라 한 구간으로 묶여 카드 수 · I2 그림이 섞였다, QA T4-02). 첫째는 [0,0,0,0] 그대로라 전에 만든 연결은 첫째 그림에 남는다.
+                            // ponytail: 레이아웃(slideLayout) 의 자리표시자 위치는 읽지 않는다. 쪽 보기에 자리를 그려야 하면 ph idx 로 따라간다
+                            if rect[2] == 0.0 && rect[3] == 0.0 {
+                                rect[0] = round(unplaced as f64 / 10000.0);
+                                unplaced += 1;
+                            }
+                            images.push(SlideImage { index: images.len(), name, descr, rect, ext, supported, path: target.clone() });
                         }
                     }
                     "tc" => {
@@ -1471,6 +1480,15 @@ mod tests {
         assert_eq!((segs[1].page, segs[1].before.as_deref(), segs[1].after.as_deref()), (2, Some("평범한 문장"), Some("다중공선성 주의")));
         assert_eq!(weight_of(&sorted_signals(&segs[0].signals)), 5.0);
         assert!(pptx_slides(b"not a zip").is_err());
+    }
+
+    #[test]
+    fn placeholder_pictures_without_xfrm_stay_apart() {
+        let pic = |id: &str| format!(r#"<p:pic><p:nvPicPr><p:cNvPr id="1" name="자리표시자 {id}"/></p:nvPicPr><p:blipFill><a:blip r:embed="{id}"/></p:blipFill><p:spPr/></p:pic>"#);
+        let xml = format!("<p:sld><p:cSld><p:spTree>{}{}</p:spTree></p:cSld></p:sld>", pic("rId1"), pic("rId2"));
+        let rels = HashMap::from([("rId1".to_string(), "ppt/media/a.png".to_string()), ("rId2".to_string(), "ppt/media/b.png".to_string())]);
+        let (images, _) = parse_objects(&xml, &rels, (100.0, 100.0));
+        assert_eq!(images.iter().map(|i| i.rect).collect::<Vec<_>>(), vec![[0.0, 0.0, 0.0, 0.0], [0.0001, 0.0, 0.0, 0.0]]);
     }
 
     #[test]

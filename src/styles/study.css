@@ -339,6 +339,9 @@
 
 /* ---------------------------------------------------------------- H3 압축 회독 (Figma 53:6439) */
 .cram__gap { height: 16px; }
+.summary__left > .badge { max-width: 100%; }
+.cram__exam-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cram__exam-day { flex-shrink: 0; margin-left: 0.3em; }
 .cram__title { margin-top: 10px; font: 300 56px/64px var(--font-sans); letter-spacing: -0.03em; }
 .cram__lead { padding: 8px 0 20px; }
 .cram__num { font: 300 120px/126px var(--font-sans); letter-spacing: -0.06em; }

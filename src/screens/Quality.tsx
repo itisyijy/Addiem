@@ -9,7 +9,7 @@ import { Badge, Button, Checkbox, Icon, Spinner } from "../ui";
 import { AiConnect, AiErrorBox, ScopeLine, SendList, UsingPlan, refreshAi, sendConfirmed, sentRows, setSendConfirmed, useAiStatus } from "../ai";
 import { placeOf, ragApi, type Sent } from "../sourceApi";
 import { SegmentPanel } from "./SourcePanel";
-import { Modal } from "./NewDeck";
+import { DiscardModal, Modal } from "./NewDeck";
 import { splitLater } from "../written";
 
 type View = "all" | "again" | "long" | "multi";
@@ -266,6 +266,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   const [p, setP] = useState<SplitProposal | null>(null);
   const [parts, setParts] = useState<SplitPart[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
+  const [discard, setDiscard] = useState<(() => void) | null>(null); // 고친 카드를 버리고 할 일 (묻는 중)
   const [archive, setArchive] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -328,7 +329,8 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
     setAiFail(null);
     setAsking(false);
     setMode("rule");
-    if (p) setParts(p.parts);
+    // 규칙 제안을 고치다가 보내기 확인만 닫는 것이면 고친 것을 그대로 둔다
+    if (p && mode === "ai") setParts(p.parts);
     setEditing(null);
   };
   /** 이 카드 한 장을 보낸다 (처음 보내기 확인 · [다시 묶기] · [다시 시도]). 사용량이 줄어든다 */
@@ -422,6 +424,9 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   const listed = !(mode === "ai" && (aiBusy || (aiFail && aiFail.kind !== "bad_output")));
   const ready = listed ? parts.filter((x) => x.front.trim() && lines(x.back).length) : [];
   const set = (i: number, patch: Partial<SplitPart>) => setParts(parts.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  // 보이는 제안에서 고친 것(질문 · 답 · 빼기 · 더하기)이 있으면 다른 제안으로 바꾸기 전에 묻는다 (QA T5-02)
+  const edited = listed && JSON.stringify(parts) !== JSON.stringify(shown.parts);
+  const guard = (f: () => void) => () => (edited ? setDiscard(() => f) : f());
   const apply = () => {
     setBusy(true);
     qualityApi.apply(cardId, ready, archive).then(
@@ -495,7 +500,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
             </>
           ) : (
             <>
-              {mode === "ai" && aiFail && <AiErrorBox e={aiFail} onRule={toRule} onRetry={send} onReconnect={(reconsent) => setConnect({ start: "wait", reconsent })} />}
+              {mode === "ai" && aiFail && <AiErrorBox e={aiFail} onRule={guard(toRule)} onRetry={guard(send)} onReconnect={(reconsent) => setConnect({ start: "wait", reconsent })} />}
               {listed && (
                 <>
                   <span className="t-label-s c-tertiary">
@@ -634,10 +639,10 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
             </div>
           )}
           <span className="segment segment--boxed" role="radiogroup" aria-label="나누는 방법">
-            <button role="radio" aria-checked={!aiSel} className={`segment__item t-label-m ${aiSel ? "" : "is-selected"}`} onClick={toRule}>
+            <button role="radio" aria-checked={!aiSel} className={`segment__item t-label-m ${aiSel ? "" : "is-selected"}`} onClick={mode === "ai" ? guard(toRule) : toRule}>
               규칙으로 나누기
             </button>
-            <button role="radio" aria-checked={aiSel} className={`segment__item t-label-m ${aiSel ? "is-selected" : ""}`} onClick={pickAi}>
+            <button role="radio" aria-checked={aiSel} className={`segment__item t-label-m ${aiSel ? "is-selected" : ""}`} onClick={aiSel ? pickAi : guard(pickAi)}>
               비슷한 내용끼리 나누기
             </button>
           </span>
@@ -661,13 +666,13 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
               (aiP || aiFail?.kind === "bad_output") &&
               !aiBusy &&
               !asking && (
-                <button type="button" className="ai-mini t-label-s" onClick={send}>
+                <button type="button" className="ai-mini t-label-s" onClick={guard(send)}>
                   <Icon name="rotate" size={14} />
                   다시 나누기
                 </button>
               )
             ) : (
-              <button type="button" className="ai-mini t-label-s" disabled={nextPer === null} onClick={() => nextPer && suggest(nextPer)}>
+              <button type="button" className="ai-mini t-label-s" disabled={nextPer === null} onClick={guard(() => nextPer && suggest(nextPer))}>
                 <Icon name="rotate" size={14} />
                 다른 제안 받기
               </button>
@@ -684,6 +689,19 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
       <div className="split__source">
         <SegmentPanel key={panelSeg} segmentId={panelSeg} onClose={() => setPanelSeg(null)} />
       </div>
+    )}
+    {discard && (
+      <DiscardModal
+        title="고친 카드가 있어요"
+        text="다른 제안으로 바꾸면 고친 질문과 답은 사라져요."
+        keep="계속 고치기"
+        discard="버리고 바꾸기"
+        onKeep={() => setDiscard(null)}
+        onDiscard={() => {
+          setDiscard(null);
+          discard();
+        }}
+      />
     )}
     </>
   );

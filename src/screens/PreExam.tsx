@@ -118,7 +118,13 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           {deckIds?.length === 1 ? "덱" : "홈"}
         </button>
         <div className="cram__gap" />
-        {plan && <Badge tone={plan.dday <= 3 ? "danger" : "warn"}>{plan.name} {plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`}</Badge>}
+        {/* 덱 이름이 길면 이름만 말줄임. "시험까지 n일"은 늘 보인다 (QA T6-06) */}
+        {plan && (
+          <Badge tone={plan.dday <= 3 ? "danger" : "warn"}>
+            <span className="cram__exam-name" title={plan.name}>{plan.name}</span>
+            <span className="cram__exam-day">{plan.dday === 0 ? "시험이 오늘이에요" : `시험까지 ${n(plan.dday)}일`}</span>
+          </Badge>
+        )}
         <h1 className="cram__title">시험 전 회독</h1>
         {plan ? (
           <>

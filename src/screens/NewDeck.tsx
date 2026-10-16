@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type DeckDetail, type Level } from "../api";
 import { Button, Icon, Input, LEVEL_LABEL, type IconName } from "../ui";
-import { useKey, useModalScope, useNav } from "../nav";
+import { useModalScope, useNav } from "../nav";
 
 export function Modal({ title, sub, onClose, children, wide, variant, icon = "alert", className = "" }: {
   title: string;
@@ -19,9 +19,8 @@ export function Modal({ title, sub, onClose, children, wide, variant, icon = "al
   className?: string;
 }) {
   useModalScope();
-  useKey("Escape", onClose, true, { modal: true });
   const box = useRef<HTMLDivElement>(null);
-  useFocusTrap(box);
+  useFocusTrap(box, onClose);
   return (
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
@@ -64,17 +63,27 @@ const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabi
 /** 열린 모달. 맨 위 것만 Tab 을 가둔다 (C3-e 위의 새 하위 덱 창처럼 겹칠 때) */
 const openBoxes: HTMLElement[] = [];
 
-/** Tab 이 모달 밖으로 나가지 않게 하고, 닫히면 열기 전 초점(연 버튼)으로 돌려준다 */
-export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>) {
+/**
+ * Tab 이 모달 밖으로 나가지 않게 한다. onEscape 가 있으면 맨 위 창만 Esc 를 받는다 (창 위에 뜬 확인 창의 Esc 가 아래 창까지 닫지 않게).
+ * 닫힌 뒤 연 버튼으로 초점을 돌려주는 것은 useModalScope (nav.tsx)
+ */
+export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>, onEscape?: () => void) {
+  const esc = useRef(onEscape);
+  esc.current = onEscape;
   useEffect(() => {
     const box = ref.current;
     if (!box) return;
-    const opener = document.activeElement as HTMLElement | null;
     openBoxes.push(box);
     // autoFocus 한 입력이 있으면 그대로, 없으면 창 자체에 (스크린리더가 제목을 읽는다)
     if (!box.contains(document.activeElement)) box.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Tab" || openBoxes[openBoxes.length - 1] !== box) return;
+      if (openBoxes[openBoxes.length - 1] !== box) return;
+      if (e.key === "Escape" && esc.current) {
+        if (e.defaultPrevented) return; // 창 안의 팝오버 · 입력 칸이 먼저 받았다
+        e.preventDefault();
+        return esc.current();
+      }
+      if (e.key !== "Tab") return;
       const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
       if (!items.length) return e.preventDefault();
       const [first, last] = [items[0], items[items.length - 1]];
@@ -88,9 +97,28 @@ export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>) {
     return () => {
       document.removeEventListener("keydown", onKey);
       openBoxes.splice(openBoxes.indexOf(box), 1);
-      if (opener?.isConnected) opener.focus();
     };
   }, [ref]);
+}
+
+/** 쓰던 글 · 고친 내용을 버리기 전에 묻는 창 (C3 카드 추가 · R1-c 초안 · G2 나누기 제안이 같이 쓴다). Esc 는 계속 쓰기 */
+export function DiscardModal({ title, text, keep, discard, onKeep, onDiscard }: {
+  title: string;
+  text: string;
+  keep: string;
+  discard: string;
+  onKeep: () => void;
+  onDiscard: () => void;
+}) {
+  return (
+    <Modal title={title} onClose={onKeep} variant="confirm" icon="trash">
+      <p className="t-body-m c-secondary">{text}</p>
+      <div className="modal__actions">
+        <Button variant="ghost" size="M" label={keep} shortcut="Esc" onClick={onKeep} />
+        <Button variant="danger" size="M" icon="trash" label={discard} onClick={onDiscard} />
+      </div>
+    </Modal>
+  );
 }
 
 const LEVELS: Level[] = [2, 1, 0];
