@@ -272,7 +272,7 @@ fn secret_name(name: &str) -> String {
 }
 
 pub fn save_secret(name: &str, value: &str) -> Result<(), String> {
-    keyring::Entry::new(SERVICE, &secret_name(name)).and_then(|e| e.set_password(value)).map_err(|e| format!("키체인에 저장하지 못했어요: {e}"))
+    keyring::Entry::new(SERVICE, &secret_name(name)).and_then(|e| e.set_password(value)).map_err(|e| format!("이 기기에 저장하지 못했어요: {e}"))
 }
 
 pub fn load_secret(name: &str) -> Option<String> {
