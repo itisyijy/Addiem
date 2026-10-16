@@ -6,8 +6,8 @@ import { useModalScope, useNav } from "../nav";
 
 export function Modal({ title, sub, onClose, children, wide, variant, icon = "alert", className = "" }: {
   title: string;
-  /** 제목 아래 한 줄 설명 (C1-s) */
-  sub?: string;
+  /** 제목 아래 한 줄 설명 (C1-s). 카드 편집은 노트 유형 칩도 (NT13) */
+  sub?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;

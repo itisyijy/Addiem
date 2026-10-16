@@ -22,7 +22,7 @@ export type Route =
   | { name: "plan"; deckId: number | null } // H1 학습 계획. null 이면 모든 덱
   | { name: "planConflict"; back?: Route } // H2 목표일 충돌
   | { name: "summary"; deckIds: number[] | null; cram?: boolean } // D1. cram: P1 시험 전 회독 화면으로
-  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이), mix: P2 혼합 회독
+  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun; edit?: number } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이), mix: P2 혼합 회독. edit: 노트 유형 편집기에서 돌아왔다 (그 카드가 먼저 나오면 카드 편집을 다시 연다, NT13)
   | { name: "done"; sessionId: number; summary: SessionSummary; completed: boolean; deckIds: number[] | null; scale: number } // D5
   | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats; minutes: number; completed: boolean } // P3 혼합 회독 끝난 뒤
   | { name: "settings"; focus?: "archived" } // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
