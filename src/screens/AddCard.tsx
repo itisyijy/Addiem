@@ -9,6 +9,7 @@ import { imageTag, plainText, renderCardHtml, sanitize, toStoredHtml } from "../
 import { deckFace, scopeCss } from "../cardCss";
 import { checkMath, findMath, withMath } from "../math";
 import { useToast } from "../toast";
+import { when } from "../sync";
 import { DiscardModal } from "./NewDeck";
 import { menuKeys } from "./Deck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
@@ -49,6 +50,11 @@ const nativeKey = (k: Kind) => (k === "occlusion" ? "io" : k);
 const kindOf = (nativeKind: string) => (nativeKind === "io" ? "occlusion" : nativeKind) as Native;
 /** 앱 기본 유형의 화면 이름 (native_kind -> 세그먼트 이름). 카드 편집 머리(NT13)도 쓴다 */
 export const TYPE_LABEL: Record<string, string> = Object.fromEntries(KINDS.map(([k, label]) => [nativeKey(k), label]));
+/** 두 기기에서 따로 만든 같은 이름 유형은 합치지 않는다 (NT18). 그 둘을 가리는 "10월 16일 14:05 만듦 · 이 기기" (Q2-11) */
+export function twin(r: NoteTypeRow, rows: NoteTypeRow[]) {
+  if (r.native_kind || !rows.some((x) => x.id !== r.id && !x.native_kind && x.name === r.name)) return null;
+  return `${when(r.created_at)} 만듦 · ${r.made_here ? "이 기기" : "다른 기기"}`;
+}
 /** Q 목록 · 선택형 */
 const isRecall = (k: Kind) => k === "list" || k === "choice";
 
@@ -1040,10 +1046,14 @@ function TypeMenu({ open, setOpen, types, deckTypes, current, onPick, onEdit, on
       {open && (
         <div className="menu__list menu--panel addcard__types" role="menu" aria-label="노트 유형" onKeyDown={menuKeys} onClick={(e) => e.stopPropagation()}>
           {mine.length > 0 && <p className="menu__cap t-label-s c-tertiary">이 덱이 쓰는 노트 유형</p>}
-          {mine.map((r, i) => item(r, `${shape(r)} · ${r.cloze ? "빈칸마다 카드 1장" : `카드 ${n(r.templates)}장씩`}`, i === 0))}
+          {mine.map((r, i) => item(r, [shape(r), r.cloze ? "빈칸마다 카드 1장" : `카드 ${n(r.templates)}장씩`, twin(r, types)].filter(Boolean).join(" · "), i === 0))}
           {others.length > 0 && <p className="menu__cap t-label-s c-tertiary">다른 노트 유형</p>}
           {others.map((r, i) =>
-            item(r, `${shape(r)} · ${r.imported ? "Anki에서 가져옴" : "내가 만든 것"} · ${r.decks[0] ? `${r.decks[0]}에서 씀` : "아직 쓰는 덱이 없어요"}`, !mine.length && i === 0),
+            item(
+              r,
+              [shape(r), r.imported ? "Anki에서 가져옴" : "내가 만든 것", r.decks[0] ? `${r.decks[0]}에서 씀` : "아직 쓰는 덱이 없어요", twin(r, types)].filter(Boolean).join(" · "),
+              !mine.length && i === 0,
+            ),
           )}
           {(mine.length > 0 || others.length > 0) && <div className="menu__sep" />}
           <button role="menuitem" className="menu__item t-body-m" disabled={current === undefined} autoFocus={!mine.length && !others.length} onClick={onEdit}>

@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
   api, errorText,
-  type Layout, type Look, type NoteTypeDetail as Detail, type NoteTypeEdit as TypeEdit, type NoteTypeImpact as SaveImpact, type NoteTypeSample as Sample, type Part,
+  type Layout, type Look, type NoteTypeConflict, type NoteTypeDetail as Detail, type NoteTypeEdit as TypeEdit, type NoteTypeImpact as SaveImpact,
+  type NoteTypeSample as Sample, type Part,
 } from "../api";
+import { useSyncStatus, when } from "../sync";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
 import { iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, matchAction } from "../keys";
@@ -105,12 +107,17 @@ function dropLine(lines: Part[][], i: number) {
 export function NoteTypeEdit({ id, ord, back }: { id: number; ord?: number; back?: Route }) {
   const [d, setD] = useState<Detail | null>(null);
   const [error, setError] = useState<string>();
+  const load = useCallback(() => api.noteTypeDetail(id).then(setD, (e) => setError(errorText(e))), [id]);
   useEffect(() => {
-    api.noteTypeDetail(id).then(setD, (e) => setError(errorText(e)));
-  }, [id]);
+    load();
+  }, [load]);
   if (!d) return error ? <p className="load-error t-body-m c-danger">{error}</p> : null;
-  return <Editor d={d} ord={ord} back={back ?? { name: "noteTypes" }} />;
+  // 다시 불러오면 초안을 새 정의로 처음부터 (key)
+  return <Editor key={d.version} d={d} ord={ord} back={back ?? { name: "noteTypes" }} reload={load} />;
 }
+
+/** 저장 거부 문구 (notetype.rs STALE) */
+const STALE = "다른 기기에서 이 노트 유형이 바뀌었어요";
 
 const initDraft = (d: Detail): Draft => ({
   fields: d.fields.map((f) => ({ key: f.slot, slot: f.slot, name: f.name })),
@@ -120,10 +127,27 @@ const initDraft = (d: Detail): Draft => ({
 const draftKey = (x: Draft) =>
   JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt]), x.css]);
 
-function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
+function Editor({ d, ord, back, reload }: { d: Detail; ord?: number; back: Route; reload: () => void }) {
   const nav = useNav();
   const toast = useToast();
   const readOnly = !d.editable;
+  // Q2-07: 연 뒤 동기화가 이 유형을 바꾸면 낡은 초안으로 저장하지 못하게 (다른 기기가 더한 필드 · 카드 종류를 지우게 된다)
+  const [stale, setStale] = useState(false);
+  const sync = useSyncStatus();
+  const seen = useRef(sync?.changed_seq);
+  useEffect(() => {
+    const seq = sync?.changed_seq;
+    if (seq === undefined || seq === seen.current) return;
+    seen.current = seq;
+    api.noteTypeDetail(d.id).then((now) => now.version !== d.version && setStale(true), () => {});
+  }, [sync?.changed_seq, d.id, d.version]);
+  // K39 다른 기기와 동시에 고쳐 진 쪽 정의
+  const [conflicts, setConflicts] = useState<NoteTypeConflict[]>([]);
+  const [showConflicts, setShowConflicts] = useState(false);
+  useEffect(() => {
+    if (!readOnly) api.noteTypeConflicts(d.id).then(setConflicts, () => {});
+  }, [d.id, readOnly]);
+  const unseen = conflicts.filter((c) => !c.seen).length;
   const drawn = !d.cloneable && !!d.native_kind; // 목록 · 선택형 · 그림 가리기
   const initial = useMemo(() => initDraft(d), [d]);
   const [draft, setDraft] = useState<Draft>(initial);
@@ -158,7 +182,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     return true;
   });
   const goBack = useCallback(() => nav(back), [nav, back]);
-  const overlay = !!(leaving || ask || cloning);
+  const overlay = !!(leaving || ask || cloning || showConflicts);
   useKey("Escape", goBack, !overlay && !renaming && !menu);
   useOverlayScope(menu !== null);
   useKey("Escape", () => setMenu(null), menu !== null, { modal: true });
@@ -396,28 +420,32 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
     try {
       // 지우는 저장은 이 기기 백업을 먼저 (디자인 NT8)
       if (impact.templates.length || impact.fields.length) await api.createBackup();
-      await api.saveNoteType(d.id, editOf(), false);
+      await api.saveNoteType(d.id, editOf(), false, d.version);
       toast({ title: "노트 유형을 저장했어요", text: impact.made ? `카드 ${n(impact.made)}장을 새로 만들었어요` : undefined });
       nav(back, true);
     } catch (e) {
       setAsk(null);
-      setSaveError(errorText(e));
-      setSaving(false);
+      failed(e);
     }
   };
+  const failed = (e: unknown) => {
+    const text = errorText(e);
+    if (text.startsWith(STALE)) setStale(true);
+    else setSaveError(text);
+    setSaving(false);
+  };
   const save = async () => {
-    if (readOnly || saving || fixes > 0 || renaming) return;
+    if (readOnly || saving || fixes > 0 || renaming || stale) return;
     if (!dirty) return nav(back, true);
     setSaving(true);
     setSaveError(undefined);
     try {
-      const impact = await api.saveNoteType(d.id, editOf(), true);
+      const impact = await api.saveNoteType(d.id, editOf(), true, d.version);
       setSaving(false);
       if (impact.empty_fronts || impact.templates.length || impact.fields.length || impact.made) setAsk(impact);
       else await commit(impact);
     } catch (e) {
-      setSaveError(errorText(e));
-      setSaving(false);
+      failed(e);
     }
   };
   const onKeyDown = (e: KeyboardEvent) => {
@@ -469,7 +497,7 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
           <>
             {fixes > 0 && <span className="t-label-s c-danger">고칠 곳 {n(fixes)}개</span>}
             <Button variant="ghost" size="M" label="취소" onClick={goBack} />
-            <Button size="M" label="저장" shortcut={actionKey("save")} disabled={fixes > 0} busy={saving} busyLabel="저장하는 중" onClick={save} />
+            <Button size="M" label="저장" shortcut={actionKey("save")} disabled={fixes > 0 || stale} busy={saving} busyLabel="저장하는 중" onClick={save} />
           </>
         )}
       </div>
@@ -512,6 +540,20 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
           </div>
         ) : (
           <>
+            {stale && (
+              <p className="nte__notice nte__notice--warn t-label-m" role="alert">
+                <Icon name="cloud" size={16} />
+                다른 기기에서 이 노트 유형이 바뀌었어요. 지금 화면으로는 저장할 수 없어요 · 다시 불러오면 고친 내용은 사라져요
+                <Button variant="ghost" size="M" label="다시 불러오기" onClick={reload} />
+              </p>
+            )}
+            {unseen > 0 && (
+              <p className="nte__notice t-label-m">
+                <Icon name="info" size={16} />
+                다른 기기와 동시에 고친 내용 {n(unseen)}건은 나중에 고친 쪽으로 맞췄어요
+                <Button variant="ghost" size="M" label="진 쪽 보기" onClick={() => setShowConflicts(true)} />
+              </p>
+            )}
             {saveError && (
               <p className="nte__notice nte__notice--danger t-label-m" role="alert">
                 <Icon name="alert" size={16} />
@@ -550,6 +592,16 @@ function Editor({ d, ord, back }: { d: Detail; ord?: number; back: Route }) {
       )}
       {ask && <SaveConfirm impact={ask} labels={labelsOf(d)} busy={saving} onBack={() => setAsk(null)} onSave={() => commit(ask)} />}
       {cloning && <CloneDialog from={d} back={back} onClose={() => setCloning(false)} />}
+      {showConflicts && (
+        <ConflictList
+          list={conflicts}
+          onClose={() => {
+            setShowConflicts(false);
+            setConflicts((c) => c.map((x) => ({ ...x, seen: true })));
+            api.noteTypeConflictsSeen(d.id).catch(() => {});
+          }}
+        />
+      )}
     </main>
   );
 
@@ -1242,3 +1294,27 @@ function SaveConfirm({ impact, labels, busy, onBack, onSave }: {
   );
 }
 
+/** K39 다른 기기와 동시에 고쳐 진 쪽 정의. 진 쪽 HTML 을 복사해 다시 넣을 수 있게 그대로 보인다 (지난 30일) */
+function ConflictList({ list, onClose }: { list: NoteTypeConflict[]; onClose: () => void }) {
+  useKey("Escape", onClose, true, { modal: true });
+  return (
+    <Modal title="동시에 고친 내용" sub="두 기기에서 같은 곳을 고쳐 나중에 고친 쪽으로 맞췄어요. 진 쪽 내용은 30일 동안 여기 남아요" wide onClose={onClose}>
+      <ul className="nte-conflicts">
+        {list.map((c, i) => (
+          <li key={i} className="nte-conflicts__item">
+            <span className="t-label-m">{c.what}</span>
+            <span className="t-caption c-tertiary">
+              지금 내용 · {c.winner_device} · {when(c.at)}
+            </span>
+            <pre className="nte-conflicts__text t-body-s">{c.winner || "(비어 있음)"}</pre>
+            <span className="t-caption c-tertiary">진 쪽 · {c.loser_device}</span>
+            <pre className="nte-conflicts__text t-body-s">{c.loser || "(비어 있음)"}</pre>
+          </li>
+        ))}
+      </ul>
+      <div className="modal__actions">
+        <Button size="M" label="닫기" onClick={onClose} />
+      </div>
+    </Modal>
+  );
+}

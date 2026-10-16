@@ -538,7 +538,12 @@ pub(crate) fn anki_clone(con: &Connection, kind: &str, name: Option<&str>) -> i6
 }
 
 pub(crate) fn rename_type(con: &Connection, id: i64, name: &str) -> Res<()> {
-    load(con, id)?.editable()?;
+    let nt = load(con, id)?;
+    nt.editable()?;
+    // 이름을 그대로 두고 저장하면 할 일이 없다 (같은 이름 유형이 동기화로 둘이어도 막지 않는다, Q2-11)
+    if name.trim() == nt.name {
+        return Ok(());
+    }
     let name = type_name(con, name, Some(id))?;
     con.execute("UPDATE note_type SET name = ?2, updated_at = ?3 WHERE id = ?1", params![id, name, now_ms()]).map_err(err)?;
     Ok(())
@@ -1447,6 +1452,9 @@ pub struct TypeRow {
     cards: i64,
     /// 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저)
     decks: Vec<String>,
+    /// 만든 시각 · 이 기기에서 만들었나 (같은 이름 유형을 가린다, Q2-11). 다른 기기에서 받은 유형만 false
+    created_at: i64,
+    made_here: bool,
 }
 
 fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
@@ -1473,6 +1481,19 @@ fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
                 .map_err(err)?;
             st.query_map([nt.id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
         },
+        created_at: count("SELECT created_at FROM note_type WHERE id = ?1")?,
+        // 동기화 행 시계의 기기 = 그 행을 만든 기기 (받은 행은 보낸 기기). 동기화 표가 없으면 모두 이 기기 것
+        made_here: con
+            .query_row(
+                "SELECT r.hlc NOT LIKE '%-' || (SELECT value FROM schema_meta WHERE key = 'device_uid') FROM sync_row r JOIN note_type nt ON nt.uid = r.uid
+                 WHERE r.table_name = 'note_type' AND nt.id = ?1",
+                [nt.id],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .is_none_or(|elsewhere| !elsewhere),
     })
 }
 
@@ -1512,6 +1533,8 @@ pub struct Detail {
     templates: Vec<TemplateView>,
     /// 줄 상자 CSS (미리보기가 초안 CSS 에 없으면 붙인다. 저장은 apply_edit 가 붙인다)
     layout_css: &'static str,
+    /// 연 때의 정의 (save_note_type 이 확인한다, Q2-07)
+    version: String,
 }
 
 pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
@@ -1532,8 +1555,24 @@ pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
             })
             .collect(),
         layout_css: LAYOUT_CSS,
+        version: version(&nt),
     })
 }
+
+/// 정의(이름 · 필드 · 순서 · CSS · 카드 종류)의 지문. 편집기가 연 뒤 동기화가 그 유형을 바꿨는지 본다 (Q2-07).
+/// updated_at 은 열 단위로 합쳐져 다른 기기의 카드 종류만 바뀌었을 때 그대로일 수 있어 쓰지 않는다
+pub(crate) fn version(nt: &Nt) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (&nt.name, &nt.slots, &nt.ids, &nt.order, &nt.css, nt.next_ord).hash(&mut h);
+    for t in &nt.templates {
+        (t.ord, &t.name, &t.qfmt, &t.afmt).hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// 편집기가 연 뒤 다른 기기에서 바뀐 유형은 저장하지 않는다: 낡은 초안에 없는 필드 · 카드 종류를 지우게 된다
+pub(crate) const STALE: &str = "다른 기기에서 이 노트 유형이 바뀌었어요. 다시 불러온 뒤 고쳐 주세요.";
 
 /// 그 덱(하위 덱 포함) 노트가 쓰는 유형, 많이 쓰는 것 먼저 (같으면 최근에 쓴 쪽). 디자인 NT11 [⋯] "이 덱이 쓰는 노트 유형 먼저",
 /// NT12 처음 열 유형 = 첫째. "마지막에 쓴 유형"은 화면이 이 기기에만 기억한다 (2단계)
@@ -1642,11 +1681,15 @@ pub fn note_type_samples(state: State<AppState>, id: i64) -> Res<Vec<Sample>> {
     samples(&*state.db.lock().map_err(err)?, id, 20)
 }
 
-/// 편집기 [저장]. dry_run 이면 확인 창의 수만 세고 되돌린다 (같은 트랜잭션을 버린다)
+/// 편집기 [저장]. dry_run 이면 확인 창의 수만 세고 되돌린다 (같은 트랜잭션을 버린다).
+/// version: 편집기가 연 때의 정의 (note_type_detail.version). 다르면 저장하지 않는다 (Q2-07)
 #[tauri::command]
-pub fn save_note_type(state: State<AppState>, id: i64, edit: TypeEdit, dry_run: bool) -> Res<SaveImpact> {
+pub fn save_note_type(state: State<AppState>, id: i64, edit: TypeEdit, dry_run: bool, version: Option<String>) -> Res<SaveImpact> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
+    if version.is_some_and(|v| load(&tx, id).is_ok_and(|nt| v != self::version(&nt))) {
+        return Err(STALE.into());
+    }
     let out = apply_edit(&tx, id, &edit)?;
     if !dry_run {
         tx.commit().map_err(err)?;
@@ -2241,6 +2284,23 @@ mod tests {
         assert_eq!((m[&0], m[&1]), (0, 2));
         assert_eq!(incoming_ords(&t, &[q(0, "앞", &t.templates[0].qfmt), q(1, "뒤", "{{Extra}}")]), HashMap::from([(0, 0), (1, 2)]));
         let _ = deck;
+    }
+
+    #[test]
+    fn version_changes_with_the_definition_and_same_name_rename_is_a_no_op() {
+        let (con, _) = setup();
+        let a = anki_clone(&con, "basic", Some("내 단어"));
+        let v = version(&load(&con, a).unwrap());
+        touch(&con, a).unwrap();
+        assert_eq!(version(&load(&con, a).unwrap()), v, "고친 시각만 바뀌면 같다");
+        add_template(&con, a, Some("거꾸로"), "{{Back}}", "{{FrontSide}}").unwrap();
+        assert_ne!(version(&load(&con, a).unwrap()), v, "카드 종류가 바뀌면 다르다 (Q2-07)");
+        // Q2-11: 동기화로 같은 이름 유형이 둘이어도 이름을 그대로 두고 저장하면 막지 않는다
+        con.execute("INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id, user_made) VALUES ('내 단어', '[\"Front\"]', '', 5, 5, 99, 1)", []).unwrap();
+        rename_type(&con, a, " 내 단어 ").unwrap();
+        assert!(rename_type(&con, a, "Basic").is_err(), "다른 유형 이름과는 여전히 겹칠 수 없다");
+        let rows = list(&con).unwrap();
+        assert!(rows.iter().any(|r| r.created_at == 5 && r.made_here), "만든 시각 · 이 기기에서 만듦 (동기화 전)");
     }
 
     #[test]

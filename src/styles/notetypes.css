@@ -161,3 +161,8 @@
 .nte-ask__text { display: flex; flex-direction: column; gap: 2px; }
 /* 이름 고치는 입력칸은 테두리가 초점 표시다 (전역 :focus-visible 링과 겹치지 않게) */
 .nte__field .nte__fname-input:focus-visible, .nte__kinds .nte__kind-input:focus-visible { outline: none; }
+
+/* K39 동시에 고친 내용 (진 쪽 정의) */
+.nte-conflicts { display: flex; flex-direction: column; gap: 16px; max-height: 60vh; overflow: auto; margin: 0; padding: 0; list-style: none; }
+.nte-conflicts__item { display: flex; flex-direction: column; gap: 4px; }
+.nte-conflicts__text { margin: 0 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); white-space: pre-wrap; word-break: break-all; font-family: var(--font-mono, monospace); }

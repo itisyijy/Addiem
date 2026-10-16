@@ -94,7 +94,7 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
          -- K39 두 기기에서 고친 노트 유형 정의 (카드 종류 앞 · 뒷면 · 이름, CSS, 필드 이름, 같은 자리에 더한 필드). 진 쪽을 남긴다 (30일)
          CREATE TABLE IF NOT EXISTS sync_type_conflict (
              id INTEGER PRIMARY KEY, type_uid TEXT NOT NULL, what TEXT NOT NULL, at INTEGER NOT NULL,
-             winner_device TEXT, winner TEXT, loser_device TEXT, loser TEXT);",
+             winner_device TEXT, winner TEXT, loser_device TEXT, loser TEXT, seen INTEGER NOT NULL DEFAULT 0);",
     )
     .map_err(dbe)?;
     // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다)
