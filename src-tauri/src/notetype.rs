@@ -436,7 +436,17 @@ fn new_model_id(con: &Connection) -> Res<i64> {
     Ok(id)
 }
 
-/// [복제해서 고치기]. 지운 자리 · 보이는 순서는 정리해서(보이는 순서대로 새 자리) 옮기고, 템플릿은 0 부터 다시 센다 (아직 카드가 없다)
+/// 앱 기본 유형의 화면 이름 (카드 추가 세그먼트와 같다). 복제 기본 이름 "내 질문과 답변"에 쓴다
+const NATIVE_LABEL: [(&str, &str); 4] = [("basic", "질문과 답변"), ("reversed", "양방향"), ("cloze", "빈칸"), ("written", "서술형")];
+/// 앱 유형을 복제하면 필드를 화면 이름으로 만든다 (C3 · E 의 칸 이름, NT54). 서술형은 이미 한글
+const CLONE_FIELDS: [(&str, &[(&str, &str)]); 3] = [
+    ("basic", &[("Front", "질문"), ("Back", "답변")]),
+    ("reversed", &[("Front", "질문"), ("Back", "답변")]),
+    ("cloze", &[("Text", "본문"), ("Back Extra", "추가 설명")]),
+];
+
+/// [복제해서 고치기]. 지운 자리 · 보이는 순서는 정리해서(보이는 순서대로 새 자리) 옮기고, 템플릿은 0 부터 다시 센다 (아직 카드가 없다).
+/// 앱 유형은 필드를 화면 이름(질문 · 답변 등)으로 바꾸고 템플릿 참조도 같이 바꾼다. 원본과 그 카드는 그대로
 pub(crate) fn clone_type(con: &Connection, id: i64, name: Option<&str>) -> Res<i64> {
     let src = load(con, id)?;
     if !src.cloneable() {
@@ -445,7 +455,11 @@ pub(crate) fn clone_type(con: &Connection, id: i64, name: Option<&str>) -> Res<i
     let name = match name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => type_name(con, n, None)?,
         None => {
-            let base = format!("{} 복사본", src.name);
+            // 앱 유형은 "내 질문과 답변" (세그먼트에서 앞부분으로 구분된다, NT55), 그 밖은 "X 복사본"
+            let base = match NATIVE_LABEL.iter().find(|(k, _)| src.native_kind.as_deref() == Some(*k)) {
+                Some((_, label)) => format!("내 {label}"),
+                None => format!("{} 복사본", src.name),
+            };
             let mut n = base.clone();
             let mut i = 2;
             while name_taken(con, &n, None)? {
@@ -462,7 +476,10 @@ pub(crate) fn clone_type(con: &Connection, id: i64, name: Option<&str>) -> Res<i
         Some("cloze") => Some(5),
         _ => None,
     });
-    let fields: Vec<String> = src.visible().into_iter().map(|(_, n)| n).collect();
+    let renames: &[(&str, &str)] = CLONE_FIELDS.iter().find(|(k, _)| src.native_kind.as_deref() == Some(*k)).map_or(&[], |(_, r)| *r);
+    let shown = |n: String| renames.iter().find(|(o, _)| *o == n).map_or(n.clone(), |(_, x)| x.to_string());
+    let fields: Vec<String> = src.visible().into_iter().map(|(_, n)| shown(n)).collect();
+    let refs_renamed = |t: &str| renames.iter().fold(t.to_string(), |t, (o, x)| rename_refs(&t, o, x));
     let now = now_ms();
     con.execute(
         "INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id, anki_stock_kind, user_made, next_ord)
@@ -474,11 +491,23 @@ pub(crate) fn clone_type(con: &Connection, id: i64, name: Option<&str>) -> Res<i
     for (ord, t) in src.templates.iter().enumerate() {
         con.execute(
             "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![new, ord as i64, t.name, t.qfmt, t.afmt, now],
+            params![new, ord as i64, t.name, refs_renamed(&t.qfmt), refs_renamed(&t.afmt), now],
         )
         .map_err(err)?;
     }
     Ok(new)
+}
+
+/// 시험용: 앱 유형을 복제하고 필드를 Anki 이름(Front · Back · Text · Back Extra)으로 되돌린다.
+/// 필드 · 템플릿 규칙 테스트가 Anki 이름으로 쓴다 (복제할 때 이름을 바꾸는 것은 app_types_are_read_only_and_clone_scope 가 본다)
+#[cfg(test)]
+pub(crate) fn anki_clone(con: &Connection, kind: &str, name: Option<&str>) -> i64 {
+    let id = clone_type(con, crate::db::native_type_id(con, kind).unwrap(), name).unwrap();
+    for (old, new) in CLONE_FIELDS.iter().find(|(k, _)| *k == kind).map_or(&[][..], |(_, r)| *r) {
+        let slot = load(con, id).unwrap().visible().into_iter().find(|(_, n)| n == new).unwrap().0;
+        rename_field(con, id, slot, old).unwrap();
+    }
+    id
 }
 
 pub(crate) fn rename_type(con: &Connection, id: i64, name: &str) -> Res<()> {
@@ -976,8 +1005,9 @@ pub enum Align {
     Center,
 }
 
-/// 줄 모양 (디자인 NT5). 그 면의 기본(앞면 L · 왼쪽, 뒷면 M · 왼쪽 = 감싸지 않은 줄이 그려지는 모양, 글자는 학습 화면의 질문 · 답)과 다르면
-/// 그 줄을 `<div class="nt-크기 nt-정렬">` 로 감싸고, 클래스의 CSS(LAYOUT_CSS)는 노트 유형 CSS 에 넣는다 (Anki 로 내보내도 같은 모양)
+/// 줄 모양 (디자인 NT5). 쉬운 편집이 쓰는 줄은 기본 모양이어도 늘 `<div class="nt-크기 nt-정렬">` 로 감싸고, 클래스의 CSS(LAYOUT_CSS)는
+/// 노트 유형 CSS 에 넣는다. 그래서 학습 화면(.study__q 가운데) · Anki(.card 가운데) · 덱 CSS 어디서든 줄 설정이 이겨 세 곳이 같다.
+/// 감싸지 않은 줄(앱 기본 유형 · 예전 템플릿)은 그 면의 기본(앞면 L · 가운데, 뒷면 M · 왼쪽 = 학습 화면의 질문 · 답)으로 읽는다
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Look {
     pub size: Size,
@@ -986,7 +1016,7 @@ pub struct Look {
 
 impl Look {
     pub const fn base(back: bool) -> Look {
-        Look { size: if back { Size::M } else { Size::L }, align: Align::Left }
+        if back { Look { size: Size::M, align: Align::Left } } else { Look { size: Size::L, align: Align::Center } }
     }
 
     fn class(self) -> String {
@@ -1023,7 +1053,7 @@ impl Look {
 const LAYOUT_MARK: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */";
 /// 줄 상자의 CSS. 템플릿이 줄 상자를 쓰면 저장할 때 노트 유형 CSS 끝에 붙인다 (첫 줄로 이미 있는지 본다).
 /// 학습 화면은 노트 CSS 를 카드 안에 가두므로(cardCss.ts scopeCss) 앱 화면은 그대로다
-pub const LAYOUT_CSS: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */\n.nt-s { font-size: 13px; }\n.nt-m { font-size: 20px; }\n.nt-l { font-size: 30px; }\n.nt-left { text-align: left; }\n.nt-center { text-align: center; }\n";
+pub const LAYOUT_CSS: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */\ndiv.nt-s { font-size: 13px; }\ndiv.nt-m { font-size: 20px; }\ndiv.nt-l { font-size: 30px; }\ndiv.nt-left { text-align: left; }\ndiv.nt-center { text-align: center; }\n";
 const BOX: &str = "<div class=\"nt-";
 
 /// 템플릿이 줄 상자를 쓰는데 CSS 에 없으면 붙인다
@@ -1175,9 +1205,6 @@ fn parse_side(tpl: &str, back: bool) -> Result<Vec<Part>, String> {
     while !rest.is_empty() {
         let (line, after): (Vec<Part>, &str) = match take_box(rest) {
             Some((look, inner, after)) => {
-                if look == Look::base(back) {
-                    return Err(html_div()); // 기본 모양 상자는 다시 쓰면 사라진다
-                }
                 let (inner, lead) = gap(inner);
                 let (mut first, mut r) = take_tag(inner, side)?;
                 match &mut first {
@@ -1267,7 +1294,8 @@ fn build_side(parts: &[Part], back: bool) -> String {
             if boxed {
                 out.push_str("</div>");
             }
-            let look = p.look().filter(|l| *l != Look::base(back));
+            // 필드 · 빈칸 줄은 기본 모양이어도 감싼다 (NT41). 줄 머리가 입력칸 · 읽어주기면(FrontSide 바로 뒤) 상자 없이
+            let look = matches!(p, Part::Field { .. } | Part::Cloze { .. }).then(|| p.look().unwrap_or(Look::base(back)));
             match prev {
                 Some(Part::FrontSide) => out.push_str("<hr id=answer>"),
                 Some(_) if !boxed && look.is_none() => out.push_str("<br>"),
@@ -1286,7 +1314,7 @@ fn build_side(parts: &[Part], back: bool) -> String {
     out
 }
 
-/// 구조 -> (qfmt, afmt). 칸 사이 <br>, 입력칸 · 읽어주기는 앞 줄에 붙인다, 기본과 다른 모양의 줄만 줄 상자로. 앱 Basic · 앞뒤 · Cloze 템플릿과 같은 모양
+/// 구조 -> (qfmt, afmt). 필드 · 빈칸 줄은 줄 상자, 입력칸 · 읽어주기는 앞 줄(상자 안)에 붙인다, FrontSide 뒤 <hr id=answer>
 pub fn build_layout(layout: &Layout) -> (String, String) {
     (build_side(&layout.front, false), build_side(&layout.back, true))
 }
@@ -1666,20 +1694,25 @@ mod tests {
 
     #[test]
     fn layout_round_trips_and_html_only() {
-        // 앱 Basic · 앞뒤 · Cloze · 서술형 앞면은 바이트 그대로 돌아온다
-        for (q, a) in [
-            ("{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}"),
-            ("{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}"),
-            ("{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}"),
-            ("{{질문}}{{type:모범 답안}}", "{{FrontSide}}"),
-            ("{{Front}}{{tts en_US:Front}}<br>{{Extra}}", ""),
+        use Align::*;
+        use Size::*;
+        // 앱 Basic · 앞뒤 · Cloze · 서술형 앞면은 감싸지 않은 줄이라 그 면의 기본 모양으로 읽는다 (앱 유형은 읽기 전용이라 다시 쓰지 않는다)
+        for (q, a, front, back) in [
+            ("{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}", vec![f("Front", None)], vec![Part::FrontSide, f("Back", None)]),
+            ("{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}", vec![f("Back", None)], vec![Part::FrontSide, f("Front", None)]),
+            ("{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", vec![Part::Cloze { name: "Text".into(), look: None }], vec![Part::Cloze { name: "Text".into(), look: None }, f("Back Extra", None)]),
+            ("{{질문}}{{type:모범 답안}}", "{{FrontSide}}", vec![f("질문", None), Part::Type { name: "모범 답안".into() }], vec![Part::FrontSide]),
+            ("{{Front}}{{tts en_US:Front}}<br>{{Extra}}", "", vec![f("Front", None), Part::Tts { opts: "en_US".into(), name: "Front".into() }, f("Extra", None)], vec![]),
         ] {
-            let l = parse_layout(q, a).unwrap_or_else(|| panic!("{q} | {a}"));
-            assert_eq!(build_layout(&l), (q.to_string(), a.to_string()));
+            assert_eq!(parse_layout(q, a), Some(Layout { front, back }), "{q} | {a}");
         }
-        // Anki 가 만든 Basic 은 공백만 다르다: 구조로 열고 다시 쓰면 정해진 모양
+        // Anki 가 만든 Basic 은 공백만 다르다
         let l = parse_layout("{{Front}}", "{{FrontSide}}\n\n<hr id=answer>\n\n{{Back}}").unwrap();
         assert_eq!(l.back, [Part::FrontSide, f("Back", None)]);
+        // 다시 쓰면 줄마다 상자 (기본 모양 그대로): 앞면 L · 가운데, 뒷면 M · 왼쪽
+        let (q, a) = build_layout(&l);
+        assert_eq!((q.as_str(), a.as_str()), (r#"<div class="nt-l nt-center">{{Front}}</div>"#, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{Back}}</div>"#));
+        assert_eq!(parse_layout(&q, &a), Some(Layout { front: vec![f("Front", Some((L, Center)))], back: vec![Part::FrontSide, f("Back", Some((M, Left)))] }));
         // HTML 전용: 조건 구간 · 서식 · 한 줄에 필드 여럿 · 빈 줄 · FrontSide 위치 · 특수 필드
         for (q, a) in [
             ("{{Front}}", "{{FrontSide}}<hr id=answer>{{모범 답안}}{{#채점 메모}}<div>{{채점 메모}}</div>{{/채점 메모}}"),
@@ -1699,13 +1732,14 @@ mod tests {
         ] {
             assert_eq!(parse_layout(q, a), None, "{q} | {a}");
         }
-        // 구조 -> 글 -> 구조
+        // 구조 -> 글 -> 구조. 입력칸 · 읽어주기는 상자 안
         let l = Layout {
-            front: vec![f("단어", None), Part::Tts { opts: "en_US speed=1.2".into(), name: "단어".into() }, f("품사", None)],
-            back: vec![Part::FrontSide, f("뜻", None), Part::Type { name: "뜻".into() }, f("예문", None)],
+            front: vec![f("단어", Some((L, Center))), Part::Tts { opts: "en_US speed=1.2".into(), name: "단어".into() }, f("품사", Some((S, Center)))],
+            back: vec![Part::FrontSide, f("뜻", Some((M, Left))), Part::Type { name: "뜻".into() }, f("예문", Some((M, Left)))],
         };
         let (q, a) = build_layout(&l);
-        assert_eq!(a, "{{FrontSide}}<hr id=answer>{{뜻}}{{type:뜻}}<br>{{예문}}");
+        assert_eq!(q, r#"<div class="nt-l nt-center">{{단어}}{{tts en_US speed=1.2:단어}}</div><div class="nt-s nt-center">{{품사}}</div>"#);
+        assert_eq!(a, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{뜻}}{{type:뜻}}</div><div class="nt-m nt-left">{{예문}}</div>"#);
         assert_eq!(parse_layout(&q, &a), Some(l));
     }
 
@@ -1713,36 +1747,34 @@ mod tests {
     fn layout_line_looks_round_trip() {
         use Align::*;
         use Size::*;
-        // 면의 기본(앞면 L 가운데 · 뒷면 M 왼쪽)과 다른 줄만 줄 상자로. 상자 앞뒤에는 <br> 이 없고, 읽어주기 · 입력칸은 상자 안에 붙는다
+        // 쉬운 편집이 쓰는 필드 · 빈칸 줄은 기본 모양이어도 늘 상자 (NT41). 모양을 정하지 않은 줄은 그 면의 기본으로 쓴다
         let l = Layout {
             front: vec![f("단어", None), Part::Tts { opts: "en_US".into(), name: "단어".into() }, f("소리", Some((S, Center)))],
-            back: vec![Part::FrontSide, f("뜻", Some((M, Center))), Part::Type { name: "뜻".into() }, f("예문", Some((S, Left))), f("발음", None), f("메모", None)],
+            back: vec![Part::FrontSide, f("뜻", Some((M, Center))), Part::Type { name: "뜻".into() }, f("예문", Some((S, Left))), f("발음", None)],
         };
         let (q, a) = build_layout(&l);
-        assert_eq!(q, r#"{{단어}}{{tts en_US:단어}}<div class="nt-s nt-center">{{소리}}</div>"#);
-        assert_eq!(a, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-center">{{뜻}}{{type:뜻}}</div><div class="nt-s nt-left">{{예문}}</div>{{발음}}<br>{{메모}}"#);
-        assert_eq!(parse_layout(&q, &a), Some(l.clone()));
+        assert_eq!(q, r#"<div class="nt-l nt-center">{{단어}}{{tts en_US:단어}}</div><div class="nt-s nt-center">{{소리}}</div>"#);
+        assert_eq!(a, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-center">{{뜻}}{{type:뜻}}</div><div class="nt-s nt-left">{{예문}}</div><div class="nt-m nt-left">{{발음}}</div>"#);
+        let back_in = Layout {
+            front: vec![f("단어", Some((L, Center))), Part::Tts { opts: "en_US".into(), name: "단어".into() }, f("소리", Some((S, Center)))],
+            back: vec![Part::FrontSide, f("뜻", Some((M, Center))), Part::Type { name: "뜻".into() }, f("예문", Some((S, Left))), f("발음", Some((M, Left)))],
+        };
+        assert_eq!(parse_layout(&q, &a), Some(back_in.clone()));
         // 공백 · 줄바꿈 글자는 받는다
-        assert_eq!(parse_layout(&q.replace("<div", "\n<div"), &a.replace("</div>", "</div>\n")), Some(l));
-        // 기본 모양(앞면 L · 왼쪽, 뒷면 M · 왼쪽)을 고르면 상자 없이 (앱 Basic 과 바이트까지 같다). 가운데는 늘 상자
-        let basic = Layout { front: vec![f("Front", Some((L, Left)))], back: vec![Part::FrontSide, f("Back", Some((M, Left)))] };
-        assert_eq!(build_layout(&basic), ("{{Front}}".into(), "{{FrontSide}}<hr id=answer>{{Back}}".into()));
-        let centered = Layout { front: vec![f("Front", Some((L, Center)))], back: vec![Part::FrontSide, f("Back", Some((M, Center)))] };
-        let (q, a) = build_layout(&centered);
-        assert_eq!((q.as_str(), a.as_str()), (r#"<div class="nt-l nt-center">{{Front}}</div>"#, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-center">{{Back}}</div>"#));
-        assert_eq!(parse_layout(&q, &a), Some(centered));
-        for (q, a) in [("{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}"), ("{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}"), ("{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}")] {
-            let l = parse_layout(q, a).unwrap();
-            assert!(l.front.iter().chain(&l.back).all(|p| p.look().is_none()), "앱 템플릿은 모두 기본 모양");
-            assert_eq!(build_layout(&l), (q.to_string(), a.to_string()));
-        }
+        assert_eq!(parse_layout(&q.replace("<div", "\n<div"), &a.replace("</div>", "</div>\n")), Some(back_in));
+        // 예전 템플릿: 감싼 줄과 감싸지 않은 줄이 섞여도 읽는다 (감싸지 않은 줄은 기본 모양)
+        let old = parse_layout("{{A}}", r#"{{FrontSide}}<hr id=answer><div class="nt-s nt-left">{{B}}</div>{{C}}<br>{{D}}"#).unwrap();
+        assert_eq!(old.back, [Part::FrontSide, f("B", Some((S, Left))), f("C", None), f("D", None)]);
+        // 빈칸 줄도 상자, FrontSide 바로 뒤의 입력칸 줄은 상자 없이
+        let cz = Layout { front: vec![Part::Cloze { name: "본문".into(), look: None }], back: vec![Part::FrontSide, Part::Type { name: "답".into() }, f("추가 설명", Some((S, Left)))] };
+        let (q, a) = build_layout(&cz);
+        assert_eq!((q.as_str(), a.as_str()), (r#"<div class="nt-l nt-center">{{cloze:본문}}</div>"#, r#"{{FrontSide}}<hr id=answer>{{type:답}}<div class="nt-s nt-left">{{추가 설명}}</div>"#));
+        assert!(parse_layout(&q, &a).is_some());
         // JSON: 모양이 없으면 look 키도 없다 (화면 Part 타입)
         assert_eq!(serde_json::to_string(&f("A", None)).unwrap(), r#"{"kind":"field","name":"A"}"#);
         assert_eq!(serde_json::to_string(&f("A", Some((S, Left)))).unwrap(), r#"{"kind":"field","name":"A","look":{"size":"s","align":"left"}}"#);
-        // HTML 전용: 기본 모양 상자 · 모르는 클래스 · 상자 뒤 <br> · 상자 밖에 붙은 입력칸 · 상자 안 필드 둘
+        // HTML 전용: 모르는 클래스 · 상자 뒤 <br> · 상자 밖에 붙은 입력칸 · 상자 안 필드 둘
         for (q, a) in [
-            ("{{A}}", r#"<div class="nt-m nt-left">{{B}}</div>"#),
-            (r#"<div class="nt-l nt-left">{{A}}</div>"#, ""),
             (r#"<div class="nt-x nt-left">{{A}}</div>"#, ""),
             (r#"<div class="nt-s nt-left">{{A}}</div><br>{{B}}"#, ""),
             (r#"<div class="nt-s nt-left">{{A}}</div>{{type:A}}"#, ""),
@@ -1772,7 +1804,7 @@ mod tests {
     #[test]
     fn apply_edit_in_one_go() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "reversed").unwrap(), Some("단어")).unwrap();
+        let nt = anki_clone(&con, "reversed", Some("단어"));
         add_field(&con, nt, "메모").unwrap();
         note(&con, deck, nt, &["apple", "사과", "비밀"]);
         note(&con, deck, nt, &["pear", "배", ""]);
@@ -1827,9 +1859,9 @@ mod tests {
     #[test]
     fn empty_fronts_are_found_without_rendering() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "reversed").unwrap(), None).unwrap();
+        let nt = anki_clone(&con, "reversed", None);
         note(&con, deck, nt, &["q", "a"]);
-        let cz = clone_type(&con, db::native_type_id(&con, "cloze").unwrap(), None).unwrap();
+        let cz = anki_clone(&con, "cloze", None);
         note(&con, deck, cz, &["{{c1::a}} {{c2::b}}", ""]);
         let fr = Fronts::load(&con).unwrap();
         let j = |v: &[&str]| serde_json::to_string(&s(v)).unwrap();
@@ -1855,7 +1887,7 @@ mod tests {
     #[test]
     fn preview_with_draft_names_and_samples() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "basic").unwrap(), None).unwrap();
+        let nt = anki_clone(&con, "basic", None);
         let names = s(&["앞", "새 필드"]);
         let p = preview(&con, nt, "{{앞}}<br>{{새 필드}}", "", 0, None, Some(&names)).unwrap();
         assert_eq!(p.front, "(앞)<br>(새 필드)");
@@ -1934,10 +1966,22 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(2));
         let b = clone_type(&con, id("basic"), None).unwrap();
         let (na, nb) = (load(&con, a).unwrap(), load(&con, b).unwrap());
-        assert_eq!((na.name.as_str(), nb.name.as_str()), ("Basic 복사본", "Basic 복사본 2"));
+        assert_eq!((na.name.as_str(), nb.name.as_str()), ("내 질문과 답변", "내 질문과 답변 2"), "세그먼트에서 앞부분으로 구분되게 (NT55)");
+        // 앱 유형 복제본은 필드를 화면 이름으로, 템플릿 참조도 같이 (NT54). 원본 · 그 카드는 그대로
+        assert_eq!((na.slots.clone(), na.templates[0].qfmt.as_str(), na.templates[0].afmt.as_str()), (s(&["질문", "답변"]), "{{질문}}", "{{FrontSide}}<hr id=answer>{{답변}}"));
+        assert_eq!(load(&con, id("basic")).unwrap().slots, ["Front", "Back"]);
+        let r = load(&con, clone_type(&con, id("reversed"), None).unwrap()).unwrap();
+        assert_eq!(r.name, "내 양방향");
+        assert_eq!(r.templates.iter().map(|t| (t.qfmt.as_str(), t.afmt.as_str())).collect::<Vec<_>>(), [("{{질문}}", "{{FrontSide}}<hr id=answer>{{답변}}"), ("{{답변}}", "{{FrontSide}}<hr id=answer>{{질문}}")]);
+        let c = load(&con, clone_type(&con, id("cloze"), None).unwrap()).unwrap();
+        assert_eq!((c.slots.clone(), c.templates[0].qfmt.as_str(), c.templates[0].afmt.as_str()), (s(&["본문", "추가 설명"]), "{{cloze:본문}}", "{{cloze:본문}}<br>{{추가 설명}}"));
+        assert!(c.cloze(), "빈칸 유형 그대로");
+        assert_eq!(load(&con, id("cloze")).unwrap().templates[0].qfmt, "{{cloze:Text}}");
         assert!(na.user_made && na.native_kind.is_none() && na.stock == Some(1));
         assert!(na.anki_model_id.is_some() && na.anki_model_id != nb.anki_model_id, "만들 때 모델 id 를 정한다");
-        assert_eq!(clone_type(&con, a, Some("Basic 복사본 2")), Err("'Basic 복사본 2' 유형이 이미 있어요.".into()));
+        assert_eq!(clone_type(&con, a, Some("내 질문과 답변 2")), Err("'내 질문과 답변 2' 유형이 이미 있어요.".into()));
+        let copy = load(&con, clone_type(&con, a, None).unwrap()).unwrap();
+        assert_eq!((copy.name.as_str(), copy.slots.clone()), ("내 질문과 답변 복사본", s(&["질문", "답변"])), "사용자 유형 복제는 이름 · 필드 그대로");
         let rows = list(&con).unwrap();
         let ra = rows.iter().find(|r| r.id == a).unwrap();
         assert!(ra.editable && ra.cloneable && !ra.imported && ra.templates == Some(1) && ra.fields == Some(2));
@@ -1958,7 +2002,7 @@ mod tests {
     #[test]
     fn fields_keep_their_slots() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("단어")).unwrap();
+        let nt = anki_clone(&con, "basic", Some("단어"));
         note(&con, deck, nt, &["apple", "사과"]);
         assert!(delete_type(&con, nt).unwrap_err().contains("노트가 1개"));
         // 추가: 끝에 새 자리, 노트는 그대로
@@ -1997,7 +2041,7 @@ mod tests {
     #[test]
     fn templates_keep_ords_and_make_cards() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "basic").unwrap(), None).unwrap();
+        let nt = anki_clone(&con, "basic", None);
         add_field(&con, nt, "Extra").unwrap();
         note(&con, deck, nt, &["q1", "a1", ""]);
         note(&con, deck, nt, &["q2", "a2", "e2"]);
@@ -2039,7 +2083,7 @@ mod tests {
             assert!(add_template(&con, nt, None, qf, af).unwrap_err().contains(want), "{qf}");
         }
         // 빈칸 유형: 템플릿을 더할 수 없고, 앞면의 {{cloze: 를 뺄 수 없다
-        let cz = clone_type(&con, db::native_type_id(&con, "cloze").unwrap(), None).unwrap();
+        let cz = anki_clone(&con, "cloze", None);
         assert!(add_template(&con, cz, None, "{{cloze:Text}}", "").is_err());
         assert!(save_template(&con, cz, 0, None, "{{Text}}", "").unwrap_err().contains("빈칸 유형"));
         assert_eq!(note(&con, deck, cz, &["{{c1::a}} {{c3::b}}", ""]), 2);
@@ -2055,7 +2099,7 @@ mod tests {
     #[test]
     fn empty_front_count_before_saving() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "reversed").unwrap(), None).unwrap();
+        let nt = anki_clone(&con, "reversed", None);
         note(&con, deck, nt, &["q1", "a1"]);
         note(&con, deck, nt, &["q2", "a2"]);
         let d = |ord, qfmt: &str| Draft { ord, qfmt: qfmt.into() };
@@ -2063,7 +2107,7 @@ mod tests {
         assert_eq!(empty_front_count(&con, nt, &[d(1, "고정 글자")], &[]).unwrap(), 2, "Card 2 앞면에서 Back 을 뺐다");
         assert_eq!(empty_front_count(&con, nt, &[d(1, "{{Back}}")], &[1]).unwrap(), 2, "Back 을 지운다");
         assert_eq!(empty_front_count(&con, nt, &[d(0, "{{Front}}{{Back}}"), d(1, "{{Front}}{{Back}}")], &[1]).unwrap(), 0);
-        let cz = clone_type(&con, db::native_type_id(&con, "cloze").unwrap(), None).unwrap();
+        let cz = anki_clone(&con, "cloze", None);
         note(&con, deck, cz, &["{{c1::a}}", "{{c2::b}}"]);
         assert_eq!(empty_front_count(&con, cz, &[d(0, "{{cloze:Back Extra}}")], &[]).unwrap(), 1, "c1 은 Back Extra 에 없다");
     }
@@ -2071,7 +2115,7 @@ mod tests {
     #[test]
     fn preview_and_deck_type() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "cloze").unwrap(), None).unwrap();
+        let nt = anki_clone(&con, "cloze", None);
         let p = preview(&con, nt, "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", 0, None, None).unwrap();
         assert!(p.front.contains("class=\"cloze\"") && p.back.contains("(Back Extra)"), "{p:?}");
         let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"])), None).unwrap();
@@ -2099,7 +2143,7 @@ mod tests {
     #[test]
     fn reimport_maps_fields_and_ords_by_name() {
         let (con, deck) = setup();
-        let nt = clone_type(&con, db::native_type_id(&con, "basic").unwrap(), None).unwrap();
+        let nt = anki_clone(&con, "basic", None);
         add_field(&con, nt, "Extra").unwrap();
         reorder_fields(&con, nt, &[2, 0, 1]).unwrap();
         add_template(&con, nt, Some("거꾸로"), "{{Back}}", "{{FrontSide}}").unwrap();

@@ -27,7 +27,7 @@ type Draft = { fields: DField[]; tpls: DTpl[]; css: string };
 
 const SIDE_LABEL: Record<Side, string> = { front: "앞면", back: "뒷면" };
 /** 면의 기본 줄 모양 (notetype.rs Look::base: 학습 화면의 질문 · 답 글자) */
-const BASE_LOOK: Record<Side, Look> = { front: { size: "l", align: "left" }, back: { size: "m", align: "left" } };
+const BASE_LOOK: Record<Side, Look> = { front: { size: "l", align: "center" }, back: { size: "m", align: "left" } };
 const SPECIAL = ["FrontSide", "Card", "CardFlag", "CardID", "Deck", "Subdeck", "Tags", "Type"];
 /** 읽어주기 언어 (Anki {{tts 언어:필드}}) */
 const TTS_LANGS: [string, string][] = [
@@ -1083,7 +1083,8 @@ function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undef
   const mark = d.layout_css.split("\n")[0];
   const css = tpl && usesBox(tpl) && !draft.css.includes(mark) ? `${draft.css}\n${d.layout_css}` : draft.css;
   const face = theme === "dark" && css.trim() ? deckFace(css) : null;
-  const scoped = useMemo(() => scopeCss(css, face === "other", ".nte-card__body"), [css, face]);
+  // 학습 화면과 같은 가두기 · 같은 구조 (.study › .study__card-content › 질문 면 .study__q / 답 면 .study__a). 그래서 면마다 학습 화면의 정렬 · 줄 높이 · 그림 크기가 그대로다
+  const scoped = useMemo(() => scopeCss(css, face === "other"), [css, face]);
   // 카드 고르기 이름: 첫 필드 글자 (빈칸 표시는 답만) · 덱
   const label = (s: Sample) => {
     const first = plainText(s.slots[draft.fields.find((f) => f.slot !== null)?.slot ?? 0] ?? "").replace(/\{\{c\d+::(.*?)(::.*?)?\}\}/g, "$1");
@@ -1123,9 +1124,9 @@ function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undef
         </span>
         <Mini label="미리볼 테마" value={theme} options={[["light", "라이트"], ["dark", "다크"]]} onChange={setTheme} />
       </div>
-      <div className="nte-card" data-theme={face === "light" ? "light" : theme}>
+      <div className="nte-card study" data-theme={face === "light" ? "light" : theme}>
         {scoped && <style>{scoped}</style>}
-        <div className="nte-card__body">
+        <div className="study__card-content">
           <div className={face === "night" ? "nightMode night_mode" : undefined}>
             {error ? (
               <p className="t-body-s c-danger">{error}</p>
@@ -1133,7 +1134,7 @@ function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undef
               <div className="study__q card-html" dangerouslySetInnerHTML={{ __html: html.front }} />
             ) : (
               <div className="study__a">
-                {plainText(html.question) || html.question.includes("<img") ? (
+                {plainText(html.question) || html.question.includes("<img") || html.question.includes('class="snd') ? (
                   <>
                     <div className="study__a-q t-title-m c-tertiary card-html" dangerouslySetInnerHTML={{ __html: html.question }} />
                     <div className="study__rule" />

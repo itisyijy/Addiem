@@ -1328,7 +1328,7 @@ fn user_type(env: &Env, a: &Dev, b: &Dev) -> (i64, String) {
     let (id, note) = {
         let con = a.con();
         let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '2과목'", [], |r| r.get(0)).unwrap();
-        let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("내 유형")).unwrap();
+        let id = nt::anki_clone(&con, "basic", Some("내 유형"));
         let values = vec!["질문".to_string(), "답".to_string()];
         nt::add_note(&con, &nt::TypedNote { deck_id: deck, note_type_id: id, values, importance: None }).unwrap();
         (id, con.last_insert_rowid())
@@ -1433,7 +1433,7 @@ fn same_named_user_types_from_two_devices_stay_apart() {
     let make = |d: &Dev, front: &str| {
         let con = d.con();
         let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '2과목'", [], |r| r.get(0)).unwrap();
-        let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("내 유형")).unwrap();
+        let id = nt::anki_clone(&con, "basic", Some("내 유형"));
         let values = vec![front.to_string(), "답".to_string()];
         nt::add_note(&con, &nt::TypedNote { deck_id: deck, note_type_id: id, values, importance: None }).unwrap();
     };

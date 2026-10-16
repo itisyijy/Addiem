@@ -139,12 +139,8 @@
 
 /* 미리보기: 학습 화면의 질문 · 답 글자 (study__q · study__a) 와 같은 렌더 */
 .nte__preview { position: sticky; top: 82px; gap: 12px; }
-.nte-card { max-height: calc(100vh - 250px); padding: 24px 20px; overflow: auto; border-radius: 20px; background: var(--bg-canvas); color: var(--text-primary); }
-.nte-card .study__q { line-height: calc(46 / 30); }
-.nte-card .study__a { padding-top: 0; }
-.nte-card .study__a-q { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: calc(28 / 20); }
-.nte-card .study__a-body { line-height: calc(34 / 20); }
-.nte-card img { max-width: 100%; max-height: 200px; object-fit: contain; }
+/* .study 를 붙여 학습 화면의 카드 규칙(.study .study__q · .study__a-q · 그림)을 그대로 받는다. 화면 틀(.study 의 높이)만 지운다 */
+.nte-card.study { min-height: 0; max-height: calc(100vh - 250px); padding: 24px 20px; overflow: auto; border-radius: 20px; background: var(--bg-canvas); color: var(--text-primary); }
 
 /* NT4 앱이 직접 그리는 유형 */
 .nte__drawn { display: flex; gap: 16px; padding: 18px 20px; border: 1px dashed var(--border-strong); border-radius: 18px; background: var(--bg-surface); }

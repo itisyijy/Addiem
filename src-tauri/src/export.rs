@@ -1297,6 +1297,8 @@ mod tests {
     }
 
     /// 쉬운 편집 줄 모양: 앱 유형 복제본(빈 CSS)에 줄 상자를 쓰면 노트 CSS 는 줄 상자 CSS 뿐이다. Anki 에는 기본 CSS 뒤에 붙여 같은 모양으로 나간다
+    /// 쉬운 편집 줄 모양을 Anki 로: 앱 유형 복제본(빈 CSS)은 노트 CSS 가 줄 상자 CSS 뿐이라 Anki 기본 CSS 뒤에 붙는다.
+    /// Anki 기본 `.card { text-align: center }` 아래에서도 줄 상자(앞면 L · 가운데, 뒷면 M · 왼쪽)가 제 정렬을 가진다 (NT41)
     #[test]
     fn layout_css_exports_after_anki_default() {
         use crate::notetype as nt;
@@ -1307,14 +1309,13 @@ mod tests {
         let root = con.last_insert_rowid();
         let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("줄 모양")).unwrap();
         let field = |slot, name: &str| nt::FieldEdit { slot: Some(slot), name: name.into() };
+        // 쉬운 편집이 만든 템플릿: 모양을 정하지 않은 줄도 그 면의 기본 모양 상자로
+        let layout = nt::layout_of("{{질문}}", "{{FrontSide}}<hr id=answer>{{답변}}").unwrap();
+        let (qfmt, afmt) = nt::build_layout(&layout);
+        assert_eq!((qfmt.as_str(), afmt.as_str()), (r#"<div class="nt-l nt-center">{{질문}}</div>"#, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{답변}}</div>"#));
         let edit = nt::TypeEdit {
-            fields: vec![field(0, "Front"), field(1, "Back")],
-            templates: vec![nt::TemplateEdit {
-                ord: Some(0),
-                name: None,
-                qfmt: "<div class=\"nt-s nt-left\">{{Front}}</div>".into(),
-                afmt: "{{FrontSide}}<hr id=answer>{{Back}}".into(),
-            }],
+            fields: vec![field(0, "질문"), field(1, "답변")],
+            templates: vec![nt::TemplateEdit { ord: Some(0), name: None, qfmt: qfmt.clone(), afmt: afmt.clone() }],
             css: String::new(),
         };
         nt::apply_edit(&con, id, &edit).unwrap();
@@ -1331,8 +1332,14 @@ mod tests {
         std::fs::write(&col, raw).unwrap();
         let c = Connection::open(&col).unwrap();
         let models: Value = serde_json::from_str(&c.query_row("SELECT models FROM col", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
-        let css = models[model_id.to_string()]["css"].as_str().unwrap().to_string();
+        let m = &models[model_id.to_string()];
+        let css = m["css"].as_str().unwrap().to_string();
         assert!(css.starts_with(CSS) && css.ends_with(nt::LAYOUT_CSS), "{css}");
+        // 내보낸 HTML + CSS: 상자 그대로, 정렬 규칙이 .card 뒤에 있어 상자가 제 정렬을 가진다 (상자 안 글자는 .card 의 가운데를 물려받지 않는다)
+        assert_eq!((m["tmpls"][0]["qfmt"].as_str(), m["tmpls"][0]["afmt"].as_str()), (Some(qfmt.as_str()), Some(afmt.as_str())));
+        let at = |rule: &str| css.find(rule).unwrap_or_else(|| panic!("{rule} 없음: {css}"));
+        assert!(at(".card {") < at("div.nt-center { text-align: center; }") && at(".card {") < at("div.nt-left { text-align: left; }"));
+        assert!(at("div.nt-l { font-size: 30px; }") > 0 && at("div.nt-m { font-size: 20px; }") > 0);
     }
 
     /// 8.1 사용자 유형 (필드 순서 바꿈 · 지운 필드 · 더한 템플릿 · 지운 템플릿 번호) -> .apkg -> 새 DB 와 같은 DB 로 가져오기
@@ -1344,7 +1351,7 @@ mod tests {
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
         let root = con.last_insert_rowid();
-        let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("내 단어")).unwrap();
+        let id = nt::anki_clone(&con, "basic", Some("내 단어"));
         nt::add_field(&con, id, "예문").unwrap();
         nt::add_field(&con, id, "메모").unwrap();
         nt::reorder_fields(&con, id, &[2, 0, 1, 3]).unwrap();
