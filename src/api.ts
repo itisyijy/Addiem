@@ -127,6 +127,8 @@ export type CardRow = {
   occlusion: IoPos | null;
   /** AU6 소리가 있는 칸 [질문, 답]. 목록은 칩 대신 스피커 아이콘만 */
   sounds: [boolean, boolean];
+  /** 앞면이 빈 카드 (학습에 나오지 않는다, NT49) */
+  front_empty: boolean;
 };
 /** 그림 가리기 카드의 자리. ordinal: 칸 번호(편집기 focus), n/count: "그림 가리기 · n/N" */
 export type IoPos = { ordinal: number; n: number; count: number };
@@ -244,7 +246,7 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   /** 줄 상자 CSS. 템플릿이 쓰는데 CSS 에 없으면 저장할 때 붙는다 (편집기 미리보기도 붙여 그린다) */
   layout_css: string;
 };
-/** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽) */
+/** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 왼쪽, 뒷면 M · 왼쪽, NT41) */
 export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };
 export type Part =
   | { kind: "field"; name: string; look?: Look }

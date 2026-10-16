@@ -802,6 +802,7 @@ mod tests {
                 note_id: start + i,
                 weak: false,
                 exam: false,
+                front_empty: false,
             })
             .collect()
     }

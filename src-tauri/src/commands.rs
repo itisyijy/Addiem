@@ -105,10 +105,11 @@ pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
 }
 
 pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
+    let fronts = crate::notetype::Fronts::load(con)?;
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.deck_id, c.state, c.eff_importance, c.due_at, COALESCE(c.anki_card_id, c.id), c.buried_until,
-                    CASE WHEN {IS_CLOZE} THEN NULL ELSE c.note_id END, c.note_id, {}
+                    CASE WHEN {IS_CLOZE} THEN NULL ELSE c.note_id END, c.note_id, {}, n.note_type_id, c.template_ord, n.fields
              FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id",
             crate::exam::IS_EXAM
         ))
@@ -127,6 +128,7 @@ pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
                 note_id: r.get(8)?,
                 weak: false,
                 exam: r.get(9)?,
+                front_empty: fronts.empty(r.get(10)?, r.get(11)?, &r.get::<_, String>(12)?),
             })
         })
         .map_err(err)?;
@@ -1075,6 +1077,8 @@ pub struct CardRow {
     occlusion: Option<IoPos>,
     /// AU6 소리가 있는 칸 [질문, 답]. 목록은 칩 대신 스피커 아이콘만
     sounds: [bool; 2],
+    /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). C2 상태 배지 "앞면 빔"
+    front_empty: bool,
 }
 
 /// 그림 가리기 카드의 자리 (M3 배지 "그림 가리기 · n/N", M4 행)
@@ -1199,6 +1203,7 @@ pub fn list_cards(
         ))
         .map_err(err)?;
     let field_names = note_field_names(&con)?;
+    let fronts = crate::notetype::Fronts::load(&con)?;
     let rows = st
         .query_map(params![q, limit.unwrap_or(100)], |r| {
             let fields: String = r.get(3)?;
@@ -1230,6 +1235,7 @@ pub fn list_cards(
                 exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
                 occlusion,
                 sounds: [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK)),
+                front_empty: fronts.empty(nt, r.get(10)?, &fields),
             })
         })
         .map_err(err)?

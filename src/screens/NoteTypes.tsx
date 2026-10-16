@@ -6,7 +6,7 @@ import { n, eul, useKey, useNav, useOverlayScope, type Route } from "../nav";
 import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
 import { menuKeys } from "./Deck";
-import { TYPE_LABEL } from "./AddCard";
+import { TYPE_LABEL, rememberType } from "./AddCard";
 import "../styles/notetypes.css";
 
 /** 앱 기본 유형 행 순서. 목록 · 선택형 · 그림 가리기는 한 행으로 묶는다 (앱이 직접 그리는 유형) */
@@ -214,7 +214,7 @@ export function NoteTypes({ back }: { back?: Route }) {
         </div>
       </section>
 
-      {cloning && <CloneDialog rows={rows} from={cloning === "new" ? undefined : cloning} back={back} onClose={() => setCloning(null)} />}
+      {cloning && <CloneDialog rows={rows} from={cloning === "new" ? undefined : cloning} back={{ name: "noteTypes", back }} onClose={() => setCloning(null)} />}
       {renaming && (
         <RenameDialog
           row={renaming}
@@ -258,11 +258,17 @@ export function NoteTypes({ back }: { back?: Route }) {
 
 // ---------------------------------------------------------------- 복제 (새 노트 유형 · NT4 [복제해서 고치기])
 
-/** from 이 없으면 "어떤 유형에서 시작할까요?" (복제할 수 있는 유형만, 빈 유형 없음 NT3). 만들면 그 사본을 편집기로 연다 */
+/** 이 경로를 거슬러 카드 추가(C3)가 있으면 그 덱 */
+const addCardDeck = (r: Route | undefined): number | undefined => (!r ? undefined : r.name === "addCard" ? r.deckId : "back" in r ? addCardDeck(r.back) : undefined);
+
+/**
+ * from 이 없으면 "어떤 유형에서 시작할까요?" (복제할 수 있는 유형만, 빈 유형 없음 NT3). 만들면 그 사본을 편집기로 연다 (back: 편집기에서 돌아갈 곳).
+ * 카드 추가에서 왔으면 그 덱의 마지막 유형(NT12)을 사본으로 바꿔, 돌아가면 사본이 골라져 있다 (NT52)
+ */
 export function CloneDialog({ rows: given, from, back, onClose }: {
   rows?: TypeRow[];
   from?: Pick<TypeRow, "id" | "name" | "native_kind">;
-  back?: Route;
+  back: Route;
   onClose: () => void;
 }) {
   const nav = useNav();
@@ -290,7 +296,9 @@ export function CloneDialog({ rows: given, from, back, onClose }: {
     setBusy(true);
     try {
       const id = await api.cloneNoteType(pick.id, name.trim());
-      nav({ name: "noteTypeEdit", id, back: back?.name === "noteTypes" ? back : { name: "noteTypes", back } }, true);
+      const deck = addCardDeck(back);
+      if (deck !== undefined) rememberType(deck, id);
+      nav({ name: "noteTypeEdit", id, back }, true);
     } catch (e) {
       setError(errorText(e));
       setBusy(false);

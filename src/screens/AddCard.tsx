@@ -42,6 +42,8 @@ const LABELS: Record<Native, string[]> = {
   list: ["질문", "추가 설명"],
   choice: ["질문", "추가 설명"],
 };
+/** 앱 기본 유형의 칸 이름 (노트 유형 편집기가 DB 필드 이름 대신 보인다, NT51). native_kind 로 */
+export const nativeLabels = (nativeKind: string): string[] | undefined => LABELS[(nativeKind === "io" ? "occlusion" : nativeKind) as Native];
 /** 앱 유형의 native_kind (그림 가리기만 io) */
 const nativeKey = (k: Kind) => (k === "occlusion" ? "io" : k);
 const kindOf = (nativeKind: string) => (nativeKind === "io" ? "occlusion" : nativeKind) as Native;
@@ -60,7 +62,7 @@ function lastType(deckId: number): number | undefined {
     return undefined; // 못 읽으면 그 덱 노트가 가장 많이 쓰는 유형으로 연다
   }
 }
-function rememberType(deckId: number, typeId: number) {
+export function rememberType(deckId: number, typeId: number) {
   try {
     const all = JSON.parse(localStorage.getItem(LAST_TYPE) ?? "{}");
     localStorage.setItem(LAST_TYPE, JSON.stringify({ ...all, [deckId]: typeId }));

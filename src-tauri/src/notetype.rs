@@ -292,6 +292,43 @@ pub(crate) fn card_ords(nt: &Nt, values: &[String]) -> Vec<u32> {
     nt.templates.iter().filter(|t| has_front(&t.qfmt, &map)).map(|t| t.ord).collect()
 }
 
+/// 앞면이 빈 카드 판정 (Anki 의 "빈 카드"). 노트 유형마다 앞면 템플릿이 쓰는 자리를 한 번 읽어 둔다:
+/// 일반 카드는 그 앞면이 쓰는 필드가 모두 비었으면(그림 · 소리는 비지 않았다), 빈칸 카드는 그 번호의 빈칸이 {{cloze:}} 필드에 없으면 빈 앞면.
+/// 오늘의 학습 · 회독(압축 · 혼합)이 빼고 카드 목록이 "앞면 빔"을 붙인다 (상태 · 일정은 그대로, 필드를 채우면 다시 나온다).
+/// 조건 구간이 숨기는 필드(`{{#A}}{{B}}{{/A}}` 에서 A 가 빈 경우)는 비지 않은 것으로 본다: 빼는 쪽으로는 틀리지 않는다
+pub(crate) struct Fronts(HashMap<i64, (bool, HashMap<u32, Vec<usize>>)>);
+
+impl Fronts {
+    pub fn load(con: &Connection) -> Res<Fronts> {
+        let ids: Vec<i64> = {
+            let mut st = con.prepare("SELECT id FROM note_type").map_err(err)?;
+            st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
+        };
+        let mut out = HashMap::new();
+        for id in ids {
+            let nt = load(con, id)?;
+            let slot: HashMap<String, usize> = nt.visible().into_iter().map(|(s, n)| (n, s)).collect();
+            let cloze = nt.cloze();
+            let by = nt
+                .templates
+                .iter()
+                .map(|t| (t.ord, if cloze { cloze_refs(&t.qfmt) } else { refs(&t.qfmt) }.iter().filter_map(|n| slot.get(n).copied()).collect()))
+                .collect();
+            out.insert(id, (cloze, by));
+        }
+        Ok(Fronts(out))
+    }
+
+    /// fields: note.fields JSON (자리 순서)
+    pub fn empty(&self, type_id: i64, ord: u32, fields: &str) -> bool {
+        let Some((cloze, by)) = self.0.get(&type_id) else { return false };
+        let Some(slots) = by.get(&if *cloze { 0 } else { ord }).filter(|s| !s.is_empty()) else { return false };
+        let values: Vec<String> = serde_json::from_str(fields).unwrap_or_default();
+        let value = |s: &usize| values.get(*s).map_or("", String::as_str);
+        if *cloze { !slots.iter().any(|s| render::cloze_numbers(value(s)).contains(&(ord + 1))) } else { slots.iter().all(|s| blank_field(value(s))) }
+    }
+}
+
 /// 일반 유형 노트의 빠진 카드를 만든다 (Anki 처럼 만들기만 하고 지우지 않는다). 덱 · 중요도는 그 노트의 첫 카드를 따른다 (C3-r). 만든 수
 pub(crate) fn add_missing_cards(con: &Connection, nt: &Nt, note_id: i64, values: &[String]) -> Res<usize> {
     if nt.cloze() {
@@ -939,7 +976,7 @@ pub enum Align {
     Center,
 }
 
-/// 줄 모양 (디자인 NT5). 그 면의 기본(앞면 L · 가운데, 뒷면 M · 왼쪽 = 학습 화면의 질문 · 답 글자)과 다르면
+/// 줄 모양 (디자인 NT5). 그 면의 기본(앞면 L · 왼쪽, 뒷면 M · 왼쪽 = 감싸지 않은 줄이 그려지는 모양, 글자는 학습 화면의 질문 · 답)과 다르면
 /// 그 줄을 `<div class="nt-크기 nt-정렬">` 로 감싸고, 클래스의 CSS(LAYOUT_CSS)는 노트 유형 CSS 에 넣는다 (Anki 로 내보내도 같은 모양)
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Look {
@@ -949,7 +986,7 @@ pub struct Look {
 
 impl Look {
     pub const fn base(back: bool) -> Look {
-        if back { Look { size: Size::M, align: Align::Left } } else { Look { size: Size::L, align: Align::Center } }
+        Look { size: if back { Size::M } else { Size::L }, align: Align::Left }
     }
 
     fn class(self) -> String {
@@ -1687,15 +1724,25 @@ mod tests {
         assert_eq!(parse_layout(&q, &a), Some(l.clone()));
         // 공백 · 줄바꿈 글자는 받는다
         assert_eq!(parse_layout(&q.replace("<div", "\n<div"), &a.replace("</div>", "</div>\n")), Some(l));
-        // 기본 모양을 고르면 상자 없이 (앱 Basic 과 바이트까지 같다)
-        let basic = Layout { front: vec![f("Front", Some((L, Center)))], back: vec![Part::FrontSide, f("Back", Some((M, Left)))] };
+        // 기본 모양(앞면 L · 왼쪽, 뒷면 M · 왼쪽)을 고르면 상자 없이 (앱 Basic 과 바이트까지 같다). 가운데는 늘 상자
+        let basic = Layout { front: vec![f("Front", Some((L, Left)))], back: vec![Part::FrontSide, f("Back", Some((M, Left)))] };
         assert_eq!(build_layout(&basic), ("{{Front}}".into(), "{{FrontSide}}<hr id=answer>{{Back}}".into()));
+        let centered = Layout { front: vec![f("Front", Some((L, Center)))], back: vec![Part::FrontSide, f("Back", Some((M, Center)))] };
+        let (q, a) = build_layout(&centered);
+        assert_eq!((q.as_str(), a.as_str()), (r#"<div class="nt-l nt-center">{{Front}}</div>"#, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-center">{{Back}}</div>"#));
+        assert_eq!(parse_layout(&q, &a), Some(centered));
+        for (q, a) in [("{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}"), ("{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}"), ("{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}")] {
+            let l = parse_layout(q, a).unwrap();
+            assert!(l.front.iter().chain(&l.back).all(|p| p.look().is_none()), "앱 템플릿은 모두 기본 모양");
+            assert_eq!(build_layout(&l), (q.to_string(), a.to_string()));
+        }
         // JSON: 모양이 없으면 look 키도 없다 (화면 Part 타입)
         assert_eq!(serde_json::to_string(&f("A", None)).unwrap(), r#"{"kind":"field","name":"A"}"#);
         assert_eq!(serde_json::to_string(&f("A", Some((S, Left)))).unwrap(), r#"{"kind":"field","name":"A","look":{"size":"s","align":"left"}}"#);
         // HTML 전용: 기본 모양 상자 · 모르는 클래스 · 상자 뒤 <br> · 상자 밖에 붙은 입력칸 · 상자 안 필드 둘
         for (q, a) in [
             ("{{A}}", r#"<div class="nt-m nt-left">{{B}}</div>"#),
+            (r#"<div class="nt-l nt-left">{{A}}</div>"#, ""),
             (r#"<div class="nt-x nt-left">{{A}}</div>"#, ""),
             (r#"<div class="nt-s nt-left">{{A}}</div><br>{{B}}"#, ""),
             (r#"<div class="nt-s nt-left">{{A}}</div>{{type:A}}"#, ""),
@@ -1775,6 +1822,34 @@ mod tests {
         assert_eq!(load(&con, nt).unwrap().templates[0].afmt, spaced);
         // 앱 유형은 거부
         assert_eq!(apply_edit(&con, db::native_type_id(&con, "basic").unwrap(), &keep), Err(APP_TYPE.to_string()));
+    }
+
+    #[test]
+    fn empty_fronts_are_found_without_rendering() {
+        let (con, deck) = setup();
+        let nt = clone_type(&con, db::native_type_id(&con, "reversed").unwrap(), None).unwrap();
+        note(&con, deck, nt, &["q", "a"]);
+        let cz = clone_type(&con, db::native_type_id(&con, "cloze").unwrap(), None).unwrap();
+        note(&con, deck, cz, &["{{c1::a}} {{c2::b}}", ""]);
+        let fr = Fronts::load(&con).unwrap();
+        let j = |v: &[&str]| serde_json::to_string(&s(v)).unwrap();
+        // 카드 2(앞면 {{Back}}): Back 이 비면 빈 앞면. 그림 · 소리만 있으면 비지 않았다
+        assert!(!fr.empty(nt, 1, &j(&["q", "a"])));
+        assert!(fr.empty(nt, 1, &j(&["q", "&nbsp;<br>"])));
+        assert!(!fr.empty(nt, 1, &j(&["q", "<img src=\"a.png\">"])) && !fr.empty(nt, 1, &j(&["q", "[sound:a.mp3]"])));
+        assert!(!fr.empty(nt, 0, &j(&["q", ""])), "카드 1 은 Front");
+        assert!(fr.empty(nt, 1, &j(&["q"])), "짧은 배열의 없는 칸은 빈 값");
+        // 빈칸: 그 번호가 {{cloze:Text}} 에 없으면 빈 앞면 (빈칸을 지운 노트에 남은 카드)
+        assert!(!fr.empty(cz, 1, &j(&["{{c1::a}} {{c2::b}}", ""])));
+        assert!(fr.empty(cz, 1, &j(&["{{c1::a}} b", "{{c2::x}}"])), "추가 설명의 빈칸은 세지 않는다");
+        // 모르는 유형 · 카드 종류는 빼지 않는다
+        assert!(!fr.empty(999, 0, &j(&[""])) && !fr.empty(nt, 7, &j(&["", ""])));
+        // 큐 (commands::load_cards) 가 표시한다
+        crate::commands::save_note_fields(&con, q(&con, &format!("SELECT min(id) || '' FROM note WHERE note_type_id = {nt}"))[0].parse().unwrap(), &s(&["q", ""])).unwrap();
+        let cards = crate::commands::load_cards(&con).unwrap();
+        let empty: Vec<bool> = cards.iter().filter(|c| c.note_id == cards[0].note_id).map(|c| c.front_empty).collect();
+        assert_eq!(empty.len(), 2);
+        assert_eq!(empty.iter().filter(|e| **e).count(), 1, "카드 2 만");
     }
 
     #[test]
