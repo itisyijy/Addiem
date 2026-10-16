@@ -7,6 +7,7 @@ mod embed;
 mod exam;
 mod export;
 mod import;
+mod notetype;
 mod occlusion;
 mod plan;
 mod quality;
@@ -126,6 +127,12 @@ pub fn run() {
             // Q 목록 회상 · 선택형
             recall::add_list_card, recall::add_choice_card, recall::recall_suggest, recall::save_recall_marks,
             recall::update_list_note, recall::update_choice_note,
+            // 8.1 노트 유형 · 카드 템플릿 (1단계 엔진, 화면은 2단계)
+            notetype::note_types, notetype::note_type_detail, notetype::deck_note_type, notetype::clone_note_type, notetype::rename_note_type,
+            notetype::delete_note_type, notetype::add_note_field, notetype::rename_note_field, notetype::reorder_note_fields,
+            notetype::delete_note_field, notetype::add_card_template, notetype::delete_card_template, notetype::save_card_template,
+            notetype::save_note_type_css, notetype::note_type_empty_fronts, notetype::preview_template, notetype::add_typed_note,
+            notetype::template_layout, notetype::build_template_layout, notetype::suggest_card_kind,
             // 8.4 기출 이력
             exam::mark_exam, exam::set_exam, exam::exam_list, exam::exam_summary,
             // I 원자료 (자료 · 강조 구간 · 카드 연결 · 자료 기반 중요도 제안)

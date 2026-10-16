@@ -24,8 +24,8 @@ pub fn set_cutoff_hour(con: &Connection, hour: i64) -> rusqlite::Result<()> {
 pub fn open_in_memory() -> rusqlite::Result<Connection> {
     let con = Connection::open_in_memory()?;
     con.execute_batch(SCHEMA)?;
-    seed_note_types(&con)?;
     migrate(&con)?;
+    seed_note_types(&con)?;
     Ok(con)
 }
 
@@ -65,6 +65,12 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         // 8.5 시험 전 회독 · 혼합 (cram.rs): 'mix' 세션의 평가는 일정에 반영하고 회독 진행으로 센다. [처음부터 다시] 를 누른 시각
         ("study_session", "mode", "TEXT"),
         ("deck_config", "mix_since", "INTEGER"),
+        // 8.1 노트 유형 (notetype.rs, docs/engineering/note-types.md): 앱 유형의 종류(이름 대신), 앱에서 만든 사용자 유형,
+        // 보이는 필드 순서(자리 번호 JSON, NULL = 자리 순서), 다음 템플릿 번호(지운 ord 를 다시 쓰지 않는다)
+        ("note_type", "native_kind", "TEXT"),
+        ("note_type", "user_made", "INTEGER NOT NULL DEFAULT 0"),
+        ("note_type", "field_order", "TEXT"),
+        ("note_type", "next_ord", "INTEGER"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
@@ -98,9 +104,9 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     con.pragma_update(None, "foreign_keys", "ON")?;
     // 스키마는 멱등이다 (IF NOT EXISTS). 새 테이블이 기존 DB 에도 생긴다
     con.execute_batch(SCHEMA)?;
-    // 기본 노트 유형도 멱등. 나중에 더한 유형(앞뒤 둘 다)이 기존 DB 에도 생긴다
-    seed_note_types(&con)?;
     migrate(&con)?;
+    // 기본 노트 유형도 멱등. 나중에 더한 유형(앞뒤 둘 다)이 기존 DB 에도 생긴다. native_kind 열을 쓰므로 migrate 뒤
+    seed_note_types(&con)?;
     // 8.4 이 기능보다 먼저 가져온 노트 · 다른 기기에서 받은 노트의 기출 태그
     let tx = con.unchecked_transaction()?;
     crate::exam::fill_from_tags(&tx)?;
@@ -202,18 +208,20 @@ fn sync_schema(con: &Connection) -> rusqlite::Result<()> {
 }
 
 /// (이름, 앞면, 뒷면)
-type Template = (&'static str, &'static str, &'static str);
-/// 앱이 직접 만드는 노트 유형 (Anki 기본 유형과 같은 이름·필드·템플릿). 없는 것만 넣는다
-const NATIVE_TYPES: [(&str, &str, &[Template]); 6] = [
-    ("Basic", r#"["Front","Back"]"#, &[("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")]),
-    ("Cloze", r#"["Text","Back Extra"]"#, &[("Cloze", "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}")]),
+type Template<'a> = (&'a str, &'a str, &'a str);
+/// 앱이 직접 만드는 노트 유형 (종류, Anki 기본 유형과 같은 이름·필드·템플릿). 없는 종류만 넣는다
+const NATIVE_TYPES: [(&str, &str, &str, &[Template<'static>]); 6] = [
+    ("basic", "Basic", r#"["Front","Back"]"#, &[("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")]),
+    ("cloze", "Cloze", r#"["Text","Back Extra"]"#, &[("Cloze", "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}")]),
     (
+        "reversed",
         "Basic (and reversed card)",
         r#"["Front","Back"]"#,
         &[("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}"), ("Card 2", "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}")],
     ),
     // J 서술형 (C3 네 번째 유형). Anki 에 내보내면 type-in 입력칸이 있는 카드가 된다. Anki 에 같은 기본 유형이 없어 이름은 우리말
     (
+        "written",
         "서술형",
         r#"["질문","모범 답안","채점 메모"]"#,
         &[(
@@ -223,29 +231,47 @@ const NATIVE_TYPES: [(&str, &str, &[Template]); 6] = [
         )],
     ),
     // Q 목록 회상 · 선택형 (C3 여섯 · 일곱 번째 유형). Anki 에 같은 기본 유형이 없어 앱 전용 이름. 스크립트 없는 템플릿 (recall.rs)
-    (crate::recall::LIST, crate::recall::LIST_FIELDS_JSON, &[("Card 1", crate::recall::LIST_QFMT, crate::recall::LIST_AFMT)]),
-    (crate::recall::CHOICE, crate::recall::CHOICE_FIELDS_JSON, &[("Card 1", crate::recall::CHOICE_QFMT, crate::recall::CHOICE_AFMT)]),
+    ("list", crate::recall::LIST, crate::recall::LIST_FIELDS_JSON, &[("Card 1", crate::recall::LIST_QFMT, crate::recall::LIST_AFMT)]),
+    ("choice", crate::recall::CHOICE, crate::recall::CHOICE_FIELDS_JSON, &[("Card 1", crate::recall::CHOICE_QFMT, crate::recall::CHOICE_AFMT)]),
 ];
 
 pub(crate) fn seed_note_types(con: &Connection) -> rusqlite::Result<()> {
-    let now = now_ms();
-    for (name, fields, templates) in NATIVE_TYPES {
-        let exists: bool =
-            con.query_row("SELECT EXISTS (SELECT 1 FROM note_type WHERE name = ?1 AND anki_model_id IS NULL)", [name], |r| r.get(0))?;
-        if exists {
-            continue;
-        }
-        con.execute("INSERT INTO note_type (name, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)", rusqlite::params![name, fields, now])?;
-        let id = con.last_insert_rowid();
-        for (ord, (tname, qfmt, afmt)) in templates.iter().enumerate() {
-            con.execute(
-                "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![id, ord as i64, tname, qfmt, afmt],
-            )?;
-        }
+    for (kind, name, fields, templates) in NATIVE_TYPES {
+        seed_one(con, kind, name, fields, templates)?;
     }
     // M 그림 가리기: Anki 의 Image Occlusion 과 같은 유형 (템플릿이 길어 occlusion.rs 에 둔다)
     crate::occlusion::seed(con)
+}
+
+/// 앱 유형 하나. native_kind 가 생기기 전 DB · 옛 앱의 Drive 스냅샷은 이름으로 한 번 채운다 (모델 id 가 있는 가져온 유형은 건드리지 않는다).
+/// 그다음 그 종류가 없을 때만 넣는다 (이름을 보지 않는다)
+pub(crate) fn seed_one(con: &Connection, kind: &str, name: &str, fields: &str, templates: &[Template]) -> rusqlite::Result<()> {
+    con.execute(
+        "UPDATE note_type SET native_kind = ?1 WHERE native_kind IS NULL AND anki_model_id IS NULL AND user_made = 0 AND name = ?2",
+        [kind, name],
+    )?;
+    let exists: bool = con.query_row("SELECT EXISTS (SELECT 1 FROM note_type WHERE native_kind = ?1)", [kind], |r| r.get(0))?;
+    if exists {
+        return Ok(());
+    }
+    let now = now_ms();
+    con.execute(
+        "INSERT INTO note_type (name, fields, created_at, updated_at, native_kind) VALUES (?1, ?2, ?3, ?3, ?4)",
+        rusqlite::params![name, fields, now, kind],
+    )?;
+    let id = con.last_insert_rowid();
+    for (ord, (tname, qfmt, afmt)) in templates.iter().enumerate() {
+        con.execute(
+            "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, ord as i64, tname, qfmt, afmt],
+        )?;
+    }
+    Ok(())
+}
+
+/// 앱 유형의 id (basic · reversed · cloze · written · list · choice · io)
+pub(crate) fn native_type_id(con: &Connection, kind: &str) -> rusqlite::Result<i64> {
+    con.query_row("SELECT id FROM note_type WHERE native_kind = ?1 ORDER BY id LIMIT 1", [kind], |r| r.get(0))
 }
 
 pub fn now_ms() -> i64 {

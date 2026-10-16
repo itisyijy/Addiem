@@ -321,13 +321,15 @@ struct CardInfo {
 
 fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
     let names = commands::note_field_names(con)?;
-    let (note_id, fields, nt, q, a, ord): (i64, String, String, Option<String>, Option<String>, u32) = con
+    let (note_id, fields, nt, q, a, ord): (i64, String, i64, Option<String>, Option<String>, u32) = con
         .query_row(
-            "SELECT c.note_id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord
-             FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
-             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id
-                  AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{cloze:%' THEN 0 ELSE c.template_ord END)
-             WHERE c.id = ?1",
+            &format!(
+                "SELECT c.note_id, n.fields, n.note_type_id, t.qfmt, t.afmt, c.template_ord
+                 FROM card c JOIN note n ON n.id = c.note_id
+                 LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {}
+                 WHERE c.id = ?1",
+                crate::notetype::TEMPLATE_OF_CARD
+            ),
             [card_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
@@ -339,9 +341,9 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
         Some(f) => {
             let values: Vec<String> = serde_json::from_str(&fields).unwrap_or_default();
             // AU6 소리 표기는 정답 글자가 아니다
-            names.get(&nt).and_then(|n| n.iter().position(|x| x == f)).and_then(|i| values.get(i)).map(|v| render::strip_sound(v)).unwrap_or_default()
+            names.get(&nt).and_then(|(_, n)| n.iter().position(|x| x == f)).and_then(|i| values.get(i)).map(|v| render::strip_sound(v)).unwrap_or_default()
         }
-        None => commands::answer_part(&commands::render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), ord).back).to_string(),
+        None => commands::answer_part(&commands::render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), ord).back).to_string(),
     };
     // ---- C4 덱 기본값 (덱 담당): 노트 스위치 > 덱 "써서 답하기"(가장 가까운 위 덱까지) > {{type:}} 템플릿
     let deck_writes = || -> Res<bool> {
@@ -349,7 +351,7 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
         Ok(commands::write_mode_source(con, deck)?.is_some())
     };
     // Q12 목록 · 선택형은 써서 답하기 덱에서도 자기 방식으로 묻는다
-    let special = names.get(&nt).is_some_and(|n| crate::recall::is_special(&nt, n));
+    let special = names.get(&nt).is_some_and(|(name, n)| crate::recall::is_special(name, n));
     let written = !special
         && match setting.write {
             Some(w) => w,
@@ -444,15 +446,12 @@ pub struct WrittenNote {
 #[tauri::command]
 pub fn written_note(state: State<AppState>, note_id: i64) -> Res<WrittenNote> {
     let con = state.db.lock().map_err(err)?;
-    let (nt, names, qfmt): (String, String, String) = con
-        .query_row(
-            "SELECT nt.name, nt.fields, coalesce((SELECT group_concat(t.qfmt, ' ') FROM card_template t WHERE t.note_type_id = nt.id), '')
-             FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1",
-            [note_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(err)?;
-    let names: Vec<String> = serde_json::from_str(&names).map_err(err)?;
+    let ntid: i64 = con.query_row("SELECT note_type_id FROM note WHERE id = ?1", [note_id], |r| r.get(0)).map_err(err)?;
+    let t = crate::notetype::load(&con, ntid)?;
+    let qfmt = t.templates.iter().map(|t| t.qfmt.as_str()).collect::<Vec<_>>().join(" ");
+    let nt = t.name.clone();
+    // note_edit 의 values 와 같은 보이는 순서
+    let names: Vec<String> = t.visible().into_iter().map(|(_, n)| n).collect();
     let field = type_field(&qfmt);
     let s = load_setting(&con, note_id)?;
     // ---- C4 덱 기본값 (덱 담당): 노트 스위치가 없으면 덱 "써서 답하기", 그다음 템플릿
@@ -505,9 +504,7 @@ pub fn add_written_card(state: State<AppState>, card: WrittenNew) -> Res<i64> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
     let now = now_ms();
-    let ntid: i64 = tx
-        .query_row("SELECT id FROM note_type WHERE name = ?1 AND anki_model_id IS NULL ORDER BY id LIMIT 1", [NATIVE], |r| r.get(0))
-        .map_err(err)?;
+    let ntid = crate::db::native_type_id(&tx, "written").map_err(err)?;
     tx.execute(
         "INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
         params![ntid, serde_json::to_string(&[&card.question, &card.answer, &card.memo]).map_err(err)?, now],

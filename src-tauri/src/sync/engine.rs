@@ -1138,14 +1138,17 @@ fn add_aliases(con: &Connection, list: &[J]) -> SRes<()> {
 
 /// 같은 것을 가리키는 이 기기의 행 (자연 키). 있으면 (rowid, uid).
 /// 유일 인덱스(이름 경로가 같은 덱, 같은 파일 이름의 그림, 같은 날 같은 덱의 계획 …)와 그 밖에 몇 가지:
-/// 기본 노트 유형은 이름, 가져온 노트 유형은 Anki 모델 id. 처음 합칠 때만 같은 .apkg 의 노트(guid)와 복습 기록(revlog id)
+/// 기본 노트 유형은 종류(native_kind, 옛 앱이 보낸 것은 이름), 가져온 · 사용자 노트 유형은 Anki 모델 id. 처음 합칠 때만 같은 .apkg 의 노트(guid)와 복습 기록(revlog id)
 fn natural_match(con: &Connection, table: &Table, vals: &HashMap<String, Value>, mode: Mode) -> SRes<Option<(i64, String)>> {
     let v = |c: &str| vals.get(c).cloned().unwrap_or(Value::Null);
     let mut keys: Vec<Vec<String>> = vec![];
     let own = |cols: &[&str]| cols.iter().map(|c| c.to_string()).collect::<Vec<_>>();
     match table.name {
-        "note_type" if v("anki_model_id") == Value::Null => keys.push(own(&["name", "anki_model_id"])),
-        "note_type" => keys.push(own(&["anki_model_id"])),
+        // 8.1: 가져온 · 사용자 유형은 모델 id (두 기기에서 따로 만든 같은 이름 유형은 다른 것), 앱 유형은 종류,
+        // 종류가 없으면(옛 앱이 보낸 기본 유형) 예전처럼 이름
+        "note_type" if v("anki_model_id") != Value::Null => keys.push(own(&["anki_model_id"])),
+        "note_type" if v("native_kind") != Value::Null => keys.push(own(&["native_kind", "anki_model_id"])),
+        "note_type" => keys.push(own(&["name", "anki_model_id"])),
         "note" if mode == Mode::Merge && v("anki_guid") != Value::Null => keys.push(own(&["anki_guid"])),
         "review_log" if mode == Mode::Merge && v("anki_revlog_id") != Value::Null => keys.push(own(&["anki_revlog_id"])),
         // 같은 DB 를 복사해 따로 쓰다 처음 합칠 때: 앱에서 만든 노트 · 복습 기록 · 세션은 Anki id 가 없다.

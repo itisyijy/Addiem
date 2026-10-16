@@ -70,7 +70,7 @@ pub(crate) fn html_lines(html: &str) -> Vec<String> {
 }
 
 /// 목록 항목 표시로 시작하는가 (①, 1., 1), -, •, · 등)
-fn item_marker(line: &str) -> Option<usize> {
+pub(crate) fn item_marker(line: &str) -> Option<usize> {
     let mut chars = line.char_indices();
     let (_, first) = chars.next()?;
     if ('\u{2460}'..='\u{2473}').contains(&first) || ['-', '•', '·', '*', '▪', '○', '●', '◦', '■', '□'].contains(&first) {
@@ -206,22 +206,22 @@ fn card_texts(con: &Connection, filter: &str, args: &[&dyn rusqlite::ToSql]) -> 
     let names = commands::note_field_names(con)?;
     let mut st = con
         .prepare(&format!(
-            "SELECT c.id, c.deck_id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord
-             FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
-             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id
-                  AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
-             WHERE {filter} ORDER BY c.id"
+            "SELECT c.id, c.deck_id, n.fields, n.note_type_id, t.qfmt, t.afmt, c.template_ord
+             FROM card c JOIN note n ON n.id = c.note_id
+             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {}
+             WHERE {filter} ORDER BY c.id",
+            crate::notetype::TEMPLATE_OF_CARD
         ))
         .map_err(err)?;
     let rows = st
         .query_map(args, |r| {
             let fields: String = r.get(2)?;
-            let nt: String = r.get(3)?;
+            let nt: i64 = r.get(3)?;
             let q: Option<String> = r.get(4)?;
             let a: Option<String> = r.get(5)?;
-            let rendered = commands::render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(6)?);
+            let rendered = commands::render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(6)?);
             // Q 목록 · 선택형은 항목이 많아도 나누기 제안을 하지 않는다 (나누면 일반 카드가 된다. Q4 는 10개 넘을 때 경고만)
-            let special = names.get(&nt).is_some_and(|n| crate::recall::is_special(&nt, n));
+            let special = names.get(&nt).is_some_and(|(name, n)| crate::recall::is_special(name, n));
             Ok((
                 r.get::<_, i64>(0)?,
                 CardText {

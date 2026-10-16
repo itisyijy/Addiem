@@ -664,6 +664,9 @@ struct ADeck {
     filtered: bool,
 }
 
+/// 이미 있던 노트 유형에 들어오는 것: (Anki 필드 i -> 우리 자리, 우리 자리 수, Anki 템플릿 ord -> 우리 ord)
+type Remap = (Vec<Option<usize>>, usize, HashMap<u32, u32>);
+
 struct AType {
     name: String,
     fields: Vec<String>,
@@ -1378,13 +1381,20 @@ fn run_import_selected(
 
     // 노트타입. 같은 Anki 노트타입을 다시 가져오면 재사용한다
     let mut nt_map: HashMap<i64, i64> = HashMap::new();
+    // 8.1 이미 있던 유형(같은 모델 id)은 사용자가 필드 순서 · 이름 · 카드 종류를 고쳤을 수 있다: 들어오는 필드는 자리로, 카드 ord 는 우리 ord 로
+    let mut remap: HashMap<i64, Remap> = HashMap::new();
     for (aid, t) in &pkg.types {
         if !by_type.contains_key(aid) {
             continue;
         }
         let existing: Option<i64> = tx.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [aid], |r| r.get(0)).optional().map_err(err)?;
         let id = match existing {
-            Some(id) => id,
+            Some(id) => {
+                let ours = crate::notetype::load(&tx, id)?;
+                let tmpls: Vec<(u32, String)> = t.templates.iter().map(|(o, n, _, _)| (*o, n.clone())).collect();
+                remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.len(), crate::notetype::incoming_ords(&ours, &tmpls)));
+                id
+            }
             None => {
                 tx.execute(
                     "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id, anki_stock_kind)
@@ -1438,6 +1448,7 @@ fn run_import_selected(
 
     // 노트. 같은 guid 가 이미 있으면 다시 넣지 않는다 (재가져오기)
     let mut note_map: HashMap<i64, (i64, String)> = HashMap::new();
+    let mut note_mid: HashMap<i64, i64> = HashMap::new(); // 다시 맞출 유형의 노트만 (Anki 노트 id -> 모델 id)
     let mut dup = 0;
     let mut refs: HashSet<String> = HashSet::new(); // 고른 노트가 쓰는 미디어 (덱을 골랐을 때만 쓴다)
     {
@@ -1462,7 +1473,17 @@ fn run_import_selected(
             if chosen.is_some() {
                 crate::export::media_refs(&flds, &mut refs); // 새로 넣는 노트가 쓰는 미디어만 (이미 있는 노트의 것은 이미 있다)
             }
-            let fields: Vec<&str> = flds.split(SEP).collect();
+            let mut fields: Vec<&str> = flds.split(SEP).collect();
+            if let Some((slots, n, _)) = remap.get(&mid) {
+                let mut out = vec![""; *n];
+                for (v, s) in fields.iter().zip(slots) {
+                    if let Some(s) = s {
+                        out[*s] = v;
+                    }
+                }
+                fields = out;
+                note_mid.insert(anid, mid);
+            }
             // .apkg 로 내보낼 때만 다는 출처 태그(Neo-Anki::출처::)는 들이지 않는다 (export::source_tags, 쌓이지 않게). 사용자의 출처:: 태그는 그대로
             let tags = crate::export::without_source_tags(&tags);
             tx.execute(
@@ -1515,6 +1536,7 @@ fn run_import_selected(
             .map_err(err)?;
         for row in rows {
             let ((acid, anid, did, ord, odid), anki) = row.map_err(err)?;
+            let ord = note_mid.get(&anid).and_then(|m| remap[m].2.get(&(ord as u32))).map_or(ord, |o| *o as i64);
             if !picked_card(acid) {
                 continue;
             }

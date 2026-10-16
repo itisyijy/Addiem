@@ -265,9 +265,7 @@ pub(crate) fn check_fields(nt: &str, names: &[String], values: &[String]) -> Res
 /// 노트 하나 + 카드 한 장. 노트 id 를 돌려준다. tags · batch 는 JSON 가져오기 (E2)
 pub(crate) fn insert(con: &Connection, nt: &str, deck_id: i64, fields: &[String], importance: Option<i64>, tags: &str, batch: Option<i64>) -> Res<i64> {
     let now = now_ms();
-    let ntid: i64 = con
-        .query_row("SELECT id FROM note_type WHERE name = ?1 AND anki_model_id IS NULL ORDER BY id LIMIT 1", [nt], |r| r.get(0))
-        .map_err(err)?;
+    let ntid = crate::db::native_type_id(con, if nt == LIST { "list" } else { "choice" }).map_err(err)?;
     con.execute(
         "INSERT INTO note (note_type_id, fields, tags, created_at, updated_at, import_batch_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
         params![ntid, serde_json::to_string(fields).map_err(err)?, tags, now, batch],
@@ -345,7 +343,9 @@ fn note_fields(state: &State<AppState>, note_id: i64) -> Res<Vec<String>> {
 pub fn update_list_note(state: State<AppState>, note_id: i64, question: String, items: Vec<String>, ordered: bool, extra: String) -> Res<()> {
     let mut fields = list_fields(&ListNew { deck_id: 0, question, items, ordered, extra, importance: None })?;
     keep_untouched(LIST, &note_fields(&state, note_id)?, &mut fields);
-    crate::commands::update_note(state, note_id, fields)
+    // 자리 순서 그대로 (보이는 순서를 바꾼 가져온 목록 · 선택형 유형도 자리로 읽는다)
+    let slots = (0..fields.len()).collect();
+    crate::commands::update_note(state, note_id, fields, Some(slots))
 }
 
 #[tauri::command]
@@ -360,7 +360,9 @@ pub fn update_choice_note(
 ) -> Res<()> {
     let mut fields = choice_fields(&ChoiceNew { deck_id: 0, question, options, correct, shuffle, extra, importance: None })?;
     keep_untouched(CHOICE, &note_fields(&state, note_id)?, &mut fields);
-    crate::commands::update_note(state, note_id, fields)
+    // 자리 순서 그대로 (보이는 순서를 바꾼 가져온 목록 · 선택형 유형도 자리로 읽는다)
+    let slots = (0..fields.len()).collect();
+    crate::commands::update_note(state, note_id, fields, Some(slots))
 }
 
 #[cfg(test)]

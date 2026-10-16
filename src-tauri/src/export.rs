@@ -252,8 +252,6 @@ pub struct CsvResult {
 /// 열 이름(화면) 과 제목 줄. 제목은 B2-c 가 다시 가져올 때 자동으로 연결되는 이름이다
 const CSV_COLUMNS: [(&str, &str); 6] =
     [("front", "앞면"), ("back", "뒷면"), ("deck", "하위 덱"), ("tags", "태그"), ("importance", "중요도"), ("due", "다음 복습일")];
-/// 앱이 만드는 노트 유형. 필드를 그대로 쓴다 (빈칸 표시 {{c1::}} 도 지킨다). 그 밖은 카드에 그려진 앞면·답을 쓴다
-const NATIVE: [&str; 3] = ["Basic", "Basic (and reversed card)", "Cloze"];
 
 /// C1-xc. 노트 한 줄. UTF-8(BOM), 쉼표, 모든 칸 따옴표 (엑셀에서 한글이 깨지지 않게).
 /// 중요도는 직접 정한 것만 쓴다. 비우면 다시 가져올 때 하위 덱 설정을 따른다
@@ -297,11 +295,12 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
     let in_decks = paths.keys().map(i64::to_string).collect::<Vec<_>>().join(",");
     let mut st = con
         .prepare(&format!(
-            "SELECT n.fields, n.tags, nt.name, nt.fields, nt.anki_model_id IS NULL, c.deck_id, c.importance, c.state, c.due_at, t.qfmt, t.afmt, c.template_ord
+            "SELECT n.fields, n.tags, nt.name, nt.fields, nt.native_kind IN ('basic', 'reversed', 'cloze'), c.deck_id, c.importance, c.state, c.due_at, t.qfmt, t.afmt, c.template_ord
              FROM note n JOIN note_type nt ON nt.id = n.note_type_id
              JOIN card c ON c.id = (SELECT min(id) FROM card WHERE note_id = n.id AND deck_id IN ({in_decks}))
-             LEFT JOIN card_template t ON t.note_type_id = nt.id AND t.ord = (CASE WHEN t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
-             ORDER BY n.id"
+             LEFT JOIN card_template t ON t.note_type_id = nt.id AND {}
+             ORDER BY n.id",
+            crate::notetype::TEMPLATE_OF_CARD
         ))
         .map_err(err)?;
     let mut rows = st.query([]).map_err(err)?;
@@ -314,7 +313,8 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
     while let Some(r) = rows.next().map_err(err)? {
         // CSV 는 글자만: [sound:] 은 지운다 (카드 화면의 소리 칩 자리 표시도 남지 않게 렌더 전에)
         let fields: Vec<String> = serde_json::from_str::<Vec<String>>(&r.get::<_, String>(0).map_err(err)?).map_err(err)?.iter().map(|f| strip_sound(f)).collect();
-        let (ntname, native): (String, bool) = (r.get(2).map_err(err)?, r.get(4).map_err(err)?);
+        // 앱 Basic · 앞뒤 · Cloze 는 필드를 그대로 쓴다 (빈칸 표시 {{c1::}} 도 지킨다). 그 밖은 카드에 그려진 앞면·답을 쓴다
+        let native: bool = r.get::<_, Option<bool>>(4).map_err(err)?.unwrap_or(false);
         let (q, a): (Option<String>, Option<String>) = (r.get(9).map_err(err)?, r.get(10).map_err(err)?);
         let q = q.unwrap_or_default();
         let names: Vec<String> = serde_json::from_str(&r.get::<_, String>(3).map_err(err)?).unwrap_or_default();
@@ -323,12 +323,12 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
         let cloze = crate::occlusion::cloze_field(&q).and_then(|f| names.iter().position(|n| n == f));
         let (front, back) = if crate::occlusion::is_template(&q) {
             crate::occlusion::csv_cells(&fields)
-        } else if native && NATIVE.contains(&ntname.as_str()) {
+        } else if native {
             (field(0), field(1))
         } else if let Some(i) = cloze {
             (field(i), field(usize::from(i == 0))) // 뒷면 = 빈칸 필드가 아닌 첫 필드 (Back Extra)
         } else {
-            let map: HashMap<String, String> = names.into_iter().zip(fields.iter().cloned()).collect();
+            let map: HashMap<String, String> = names.into_iter().zip(fields.iter().cloned()).filter(|(k, _)| !k.is_empty()).collect();
             let ord: i64 = r.get(11).map_err(err)?;
             let shown = render_card(&q, &a.unwrap_or_default(), &map, ord as u32);
             (shown.front, crate::commands::answer_part(&shown.back).to_string())
@@ -623,8 +623,10 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
             job.tick("notes", i, total)?;
         }
         let m = &models[&n.note_type_id];
-        let mut flds: Vec<String> = serde_json::from_str(&n.fields).map_err(err)?;
-        flds.resize(m.nfields.max(1), String::new()); // Anki 는 필드 수가 노트 유형과 같아야 한다
+        // 8.1 자리 고정 필드: 보이는 순서로 다시 배열한다 (지운 자리는 빠진다). Anki 는 필드 수가 노트 유형과 같아야 한다
+        let stored: Vec<String> = serde_json::from_str(&n.fields).map_err(err)?;
+        let mut flds: Vec<String> = m.slots.iter().map(|s| stored.get(*s).cloned().unwrap_or_default()).collect();
+        flds.resize(m.nfields.max(1), String::new());
         if m.io {
             labels += crate::occlusion::label_count(&flds[0]);
         }
@@ -662,6 +664,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     }
 
     // 카드. 같은 노트의 카드는 신규 순서가 같다 (Anki 와 같다)
+    let note_type: HashMap<i64, i64> = notes.iter().map(|n| (n.id, n.note_type_id)).collect();
     let mut card_ids: HashMap<i64, i64> = HashMap::new();
     let mut positions: HashMap<i64, i64> = HashMap::new();
     let mut used = HashSet::new();
@@ -686,7 +689,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
                 id,
                 note_ids[&c.note_id],
                 deck_map[&c.deck_id],
-                c.ord,
+                note_type.get(&c.note_id).and_then(|t| models[t].ords.get(&c.ord)).copied().unwrap_or(c.ord),
                 c.updated_at / 1000,
                 s.ctype,
                 s.queue,
@@ -849,14 +852,18 @@ struct Model {
     sortf: usize,
     /// Anki 그림 가리기 유형 (occlusion.rs). 칸 필드는 첫 필드다
     io: bool,
+    /// Anki 필드 순서대로 우리 자리 번호 (보이는 순서, 지운 자리는 없다)
+    slots: Vec<usize>,
+    /// 우리 템플릿 ord -> Anki ord (Anki 는 0 부터 빈틈없이 센다. 지운 ord 의 빈자리를 메운다). 빈칸 유형은 비어 있다 (카드 ord = 빈칸 번호)
+    ords: HashMap<i64, i64>,
 }
 
 /// 노트 유형 -> Anki 모델. 원본 JSON(anki_raw)이 있으면 그대로 쓰고, 없으면 스키마 11 기본값으로 만든다.
 /// id 는 Anki 에서 온 유형이면 그 id, 아니면 만든 시각(ms) + 행 번호 (기본 유형 셋은 만든 시각이 같다)
 fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<Model> {
-    let (name, fields, css, created, updated, anki_id, raw): (String, String, String, i64, i64, Option<i64>, Option<String>) = con
+    let (name, css, created, updated, anki_id, raw, kind): (String, String, i64, i64, Option<i64>, Option<String>, Option<String>) = con
         .query_row(
-            "SELECT name, fields, css, created_at, updated_at, anki_model_id, anki_raw FROM note_type WHERE id = ?1",
+            "SELECT name, css, created_at, updated_at, anki_model_id, anki_raw, native_kind FROM note_type WHERE id = ?1",
             [ntid],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )
@@ -872,15 +879,15 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
         let nfields = v["flds"].as_array().map_or(1, Vec::len);
         let sortf = v["sortf"].as_u64().unwrap_or(0) as usize;
         let io = crate::occlusion::is_template(&v["tmpls"].to_string());
-        return Ok(Model { id, json: v, nfields, sortf, io });
+        return Ok(Model { id, json: v, nfields, sortf, io, slots: (0..nfields).collect(), ords: HashMap::new() });
     }
 
-    let fields: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
-    let tmpls: Vec<(i64, String, String, String)> = con
-        .prepare("SELECT ord, name, qfmt, afmt FROM card_template WHERE note_type_id = ?1 ORDER BY ord")
-        .and_then(|mut s| s.query_map([ntid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect())
-        .map_err(err)?;
-    let cloze = tmpls.iter().any(|t| t.2.contains("{{cloze:"));
+    let nt = crate::notetype::load(con, ntid)?;
+    let (slots, fields): (Vec<usize>, Vec<String>) = nt.visible().into_iter().unzip();
+    let tmpls: Vec<(i64, String, String, String)> =
+        nt.templates.iter().enumerate().map(|(i, t)| (i as i64, t.name.clone(), t.qfmt.clone(), t.afmt.clone())).collect();
+    let cloze = nt.cloze();
+    let ords: HashMap<i64, i64> = if cloze { HashMap::new() } else { nt.templates.iter().enumerate().map(|(i, t)| (t.ord as i64, i as i64)).collect() };
     let io = tmpls.iter().any(|t| crate::occlusion::is_template(&t.2));
     let id = unique(used, anki_id.unwrap_or(created + ntid));
     let css = match (css.trim().is_empty(), io) {
@@ -900,16 +907,15 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
         "req": tmpls.iter().map(|(ord, _, q, _)| json!([ord, "any", referenced(q, &fields)])).collect::<Vec<_>>(),
         "tags": [], "vers": [],
     });
-    // Anki 기본 유형 표시 (rslib notetype/schema11.rs). 가져온 유형은 원래 값, 앱 유형은 이름으로 (I78).
+    // Anki 기본 유형 표시 (rslib notetype/schema11.rs). 가져온 · 복제한 유형은 남긴 값, 앱 유형은 종류로 (I78).
     // 없으면 Anki 가 사용자 정의 유형으로 보고 "기본값으로 되돌리기"를 숨긴다
-    let native = match name.as_str() {
-        "Basic" => Some(1),
-        "Basic (and reversed card)" => Some(2),
-        "Cloze" => Some(5),
+    let native = match kind.as_deref() {
+        Some("basic") => Some(1),
+        Some("reversed") => Some(2),
+        Some("cloze") => Some(5),
         _ => None,
     };
-    let stock: Option<i64> = con.query_row("SELECT anki_stock_kind FROM note_type WHERE id = ?1", [ntid], |r| r.get(0)).map_err(err)?;
-    let stock = stock.or(native.filter(|_| anki_id.is_none())).or(io.then_some(crate::occlusion::STOCK_KIND));
+    let stock = nt.stock.or(native).or(io.then_some(crate::occlusion::STOCK_KIND));
     if let Some(k) = stock.filter(|k| *k > 0) {
         json["originalStockKind"] = json!(k);
     }
@@ -921,7 +927,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
             f["preventDeletion"] = json!(i < 4);
         }
     }
-    Ok(Model { id, json, nfields: fields.len(), sortf: 0, io })
+    Ok(Model { id, json, nfields: fields.len(), sortf: 0, io, slots, ords })
 }
 
 /// 앞면 템플릿이 쓰는 필드 번호. 구버전 Anki 가 카드를 만들지 판단하는 req 에 쓴다
@@ -1285,6 +1291,77 @@ mod tests {
         models.as_object().unwrap().values().find(|m| m["originalStockKind"] == 6).cloned().expect("그림 가리기 모델")
     }
 
+    /// 8.1 사용자 유형 (필드 순서 바꿈 · 지운 필드 · 더한 템플릿 · 지운 템플릿 번호) -> .apkg -> 새 DB 와 같은 DB 로 가져오기
+    #[test]
+    fn user_note_type_round_trip() {
+        use crate::notetype as nt;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-nt-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("내 단어")).unwrap();
+        nt::add_field(&con, id, "예문").unwrap();
+        nt::add_field(&con, id, "메모").unwrap();
+        nt::reorder_fields(&con, id, &[2, 0, 1, 3]).unwrap();
+        nt::add_template(&con, id, Some("거꾸로"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
+        nt::add_template(&con, id, Some("예문"), "{{예문}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
+        nt::delete_template(&con, id, 1, false).unwrap();
+        nt::save_css(&con, id, ".card { color: red; }").unwrap();
+        let typed = |v: [&str; 4]| nt::TypedNote { deck_id: root, note_type_id: id, values: v.map(String::from).to_vec(), importance: None };
+        assert_eq!(nt::add_note(&con, &typed(["He ate an apple.", "apple", "사과", "비밀 메모"])).unwrap(), 2);
+        nt::delete_field(&con, id, 3).unwrap();
+        let model_id: i64 = con.query_row("SELECT anki_model_id FROM note_type WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(strings(&con, "SELECT fields FROM note"), [r#"["apple","사과","He ate an apple.","비밀 메모"]"#]);
+
+        let out = tmp.0.join("nt.apkg");
+        export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+        // Anki 모델: 보이는 순서의 필드 (지운 필드 없음), 템플릿 ord 0 · 1, 만들 때 정한 모델 id
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        let mut raw = vec![];
+        std::io::Read::read_to_end(&mut zip.by_name("collection.anki2").unwrap(), &mut raw).unwrap();
+        let col = tmp.0.join("nt.anki2");
+        std::fs::write(&col, raw).unwrap();
+        let c = Connection::open(&col).unwrap();
+        let models: Value = serde_json::from_str(&c.query_row("SELECT models FROM col", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        let m = &models[model_id.to_string()];
+        let names: Vec<&str> = m["flds"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["예문", "Front", "Back"]);
+        let tmpls: Vec<(i64, &str)> = m["tmpls"].as_array().unwrap().iter().map(|t| (t["ord"].as_i64().unwrap(), t["name"].as_str().unwrap())).collect();
+        assert_eq!(tmpls, [(0, "Card 1"), (1, "예문")]);
+        assert_eq!((m["originalStockKind"].as_i64(), m["css"].as_str(), m["type"].as_i64()), (Some(1), Some(".card { color: red; }"), Some(0)));
+        assert_eq!(m["req"], json!([[0, "any", [1]], [1, "any", [0]]]), "req 는 Anki 필드 번호");
+        let flds: String = c.query_row("SELECT flds FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(flds, ["He ate an apple.", "apple", "사과"].join(SEP), "지운 필드 값은 나가지 않는다");
+        assert_eq!(strings(&c, "SELECT group_concat(ord) FROM (SELECT ord FROM cards ORDER BY ord)"), ["0,1"]);
+
+        // 새 DB: 자리 = Anki 순서, 카드 ord 그대로
+        let b = state(&tmp.0.join("b"));
+        crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
+        {
+            let bc = b.db.lock().unwrap();
+            let bid: i64 = bc.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [model_id], |r| r.get(0)).unwrap();
+            let t = nt::load(&bc, bid).unwrap();
+            assert_eq!((t.name.as_str(), t.slots.clone(), t.css.as_str()), ("내 단어", vec!["예문".to_string(), "Front".into(), "Back".into()], ".card { color: red; }"));
+            assert_eq!(t.templates.iter().map(|t| (t.ord, t.qfmt.as_str())).collect::<Vec<_>>(), [(0, "{{Front}}"), (1, "{{예문}}")]);
+            assert_eq!(strings(&bc, "SELECT fields FROM note"), [r#"["He ate an apple.","apple","사과"]"#]);
+            let names = crate::commands::note_field_names(&bc).unwrap();
+            let q: String = bc.query_row(&format!("SELECT t.qfmt FROM card c JOIN card_template t ON t.note_type_id = {bid} AND {} WHERE c.template_ord = 1", nt::TEMPLATE_OF_CARD), [], |r| r.get(0)).unwrap();
+            let r = crate::commands::render_fields(&names, bid, &strings(&bc, "SELECT fields FROM note")[0], Some(&q), Some(""), 1);
+            assert_eq!(r.front, "He ate an apple.");
+        }
+
+        // 같은 DB 로 다시 (Anki 에서 새로 만든 노트처럼 guid 가 없는 노트): 유형은 덮지 않고, 값은 자리로 · 카드는 우리 ord 로
+        con.execute("DELETE FROM note", []).unwrap();
+        drop(con);
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &a, out.to_str().unwrap(), false, &mut vec![]).unwrap()).unwrap();
+        assert_eq!((res["notes"].as_u64(), res["cards"].as_u64()), (Some(1), Some(2)));
+        let con = a.db.lock().unwrap();
+        assert_eq!(strings(&con, "SELECT count(*) || '' FROM note_type WHERE user_made = 1"), ["1"]);
+        assert_eq!(strings(&con, "SELECT fields FROM note"), [r#"["apple","사과","He ate an apple.",""]"#]);
+        assert_eq!(strings(&con, "SELECT group_concat(template_ord) FROM (SELECT template_ord FROM card ORDER BY 1)"), ["0,2"]);
+    }
+
     /// M8: 그림 가리기 노트를 내보내고 다시 가져오면 칸 · 이름 · 카드 번호가 그대로고, Anki 가 IO 유형으로 알아볼 표시가 붙는다
     #[test]
     fn image_occlusion_round_trip() {
@@ -1386,7 +1463,8 @@ mod tests {
             // Anki 쪽 모습: 앞면 질문 + 순서, 뒷면 항목 (스크립트 없음)
             let names = crate::commands::note_field_names(&con).unwrap();
             let fields: String = con.query_row("SELECT fields FROM note", [], |r| r.get(0)).unwrap();
-            let r = crate::commands::render_fields(&names, recall::LIST, &fields, Some(recall::LIST_QFMT), Some(recall::LIST_AFMT), 0);
+            let nt = crate::db::native_type_id(&con, "list").unwrap();
+            let r = crate::commands::render_fields(&names, nt, &fields, Some(recall::LIST_QFMT), Some(recall::LIST_AFMT), 0);
             assert!(r.front.contains("순서대로") && !r.front.contains("세션 계층"));
             assert!(crate::commands::answer_part(&r.back).contains("응용 계층<br>표현 계층"));
             deck_id
@@ -1429,7 +1507,8 @@ mod tests {
             assert_eq!(recall::suggest_for(&con, id, &[]).unwrap(), None, "고르지 않으면 추천 없음");
             let names = crate::commands::note_field_names(&con).unwrap();
             let fields: String = con.query_row("SELECT fields FROM note", [], |r| r.get(0)).unwrap();
-            let r = crate::commands::render_fields(&names, recall::CHOICE, &fields, Some(recall::CHOICE_QFMT), Some(recall::CHOICE_AFMT), 0);
+            let nt = crate::db::native_type_id(&con, "choice").unwrap();
+            let r = crate::commands::render_fields(&names, nt, &fields, Some(recall::CHOICE_QFMT), Some(recall::CHOICE_AFMT), 0);
             assert!(r.front.contains("<li class=\"o2\">SYN-ACK</li>") && !r.front.contains("o5") && !r.front.contains("<script"));
             assert!(r.back.contains("data-answer=\",2,\""));
             deck_id
@@ -1478,16 +1557,16 @@ mod tests {
         let names = crate::commands::note_field_names(&con).unwrap();
         let mut st = con
             .prepare(
-                "SELECT n.id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord FROM card c JOIN note n ON n.id = c.note_id
+                "SELECT n.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord FROM card c JOIN note n ON n.id = c.note_id
                  JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id ORDER BY n.id, c.template_ord",
             )
             .unwrap();
-        let rows: Vec<(i64, String, String, String, String, u32)> =
+        let rows: Vec<(i64, String, i64, String, String, u32)> =
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap().collect::<Result<_, _>>().unwrap();
         assert!(!rows.is_empty());
         for (nid, fields, nt, q, a, ord) in rows {
             assert!(crate::occlusion::is_note(&con, nid).unwrap(), "{nt}");
-            let r = crate::commands::render_fields(&names, &nt, &fields, Some(&q), Some(&a), ord);
+            let r = crate::commands::render_fields(&names, nt, &fields, Some(&q), Some(&a), ord);
             println!("note {nid} c{} front: {}\n  back: {}", ord + 1, r.front.replace('\n', " "), r.back.replace('\n', " "));
             assert!(r.front.contains("<div class=\"io\">") && r.front.contains("io-mask--ask") && !r.front.contains("<script"));
         }

@@ -1402,7 +1402,7 @@ fn render_note(c: &Connection, note_uid: &str, fields: &str) -> Vec<String> {
         .flatten();
     let Some((names, q, a, ord)) = tpl else { return values.iter().map(|v| text(v)).collect() };
     let names: Vec<String> = serde_json::from_str(&names).unwrap_or_default();
-    let map = names.into_iter().zip(values).collect();
+    let map = names.into_iter().zip(values).filter(|(k, _)| !k.is_empty()).collect();
     let r = crate::render::render_card(&q, &a, &map, ord as u32);
     vec![text(&r.front), text(crate::commands::answer_part(&r.back))]
 }

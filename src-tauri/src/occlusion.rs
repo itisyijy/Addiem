@@ -39,18 +39,7 @@ pub const STOCK_KIND: i64 = 6;
 
 /// 기본 노트 유형으로 넣는다 (db::seed_note_types). CSS 는 비워 앱 테마(다크 포함)를 따르고, 내보낼 때 Anki CSS 를 채운다
 pub(crate) fn seed(con: &Connection) -> rusqlite::Result<()> {
-    let exists: bool =
-        con.query_row("SELECT EXISTS (SELECT 1 FROM note_type WHERE name = ?1 AND anki_model_id IS NULL)", [NATIVE], |r| r.get(0))?;
-    if exists {
-        return Ok(());
-    }
-    let now = now_ms();
-    con.execute("INSERT INTO note_type (name, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)", params![NATIVE, FIELDS, now])?;
-    con.execute(
-        "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, 0, ?2, ?3, ?4)",
-        params![con.last_insert_rowid(), NATIVE, QFMT, format!("{QFMT}{AFMT_TAIL}")],
-    )?;
-    Ok(())
+    crate::db::seed_one(con, "io", NATIVE, FIELDS, &[(NATIVE, QFMT, &format!("{QFMT}{AFMT_TAIL}"))])
 }
 
 /// IO 템플릿인가. 컨테이너 id 는 Anki 가 번역하지 않는다 (가져온 한국어 Anki 노트도 같다)
@@ -449,9 +438,7 @@ pub(crate) fn save(con: &Connection, input: &OcclusionInput) -> Res<i64> {
             Ok(nid)
         }
         None => {
-            let ntid: i64 = con
-                .query_row("SELECT id FROM note_type WHERE name = ?1 AND anki_model_id IS NULL ORDER BY id LIMIT 1", [NATIVE], |r| r.get(0))
-                .map_err(err)?;
+            let ntid = crate::db::native_type_id(con, "io").map_err(err)?;
             let now = now_ms();
             let fields = serde_json::to_string(&[occlusion.as_str(), &img, &input.header, &input.back_extra, ""]).map_err(err)?;
             con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)", params![ntid, fields, now])
