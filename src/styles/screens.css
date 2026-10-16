@@ -619,10 +619,10 @@
 }
 .cards__scope-list { top: 52px; left: 0; right: auto; }
 .cards__table { border: 1px solid var(--border-default); border-radius: 24px; background: var(--bg-surface); }
-/* 열 너비는 Figma 그대로: 380 / 290 / 170 / 110 / 90 / 60 */
+/* 열 너비는 Figma 그대로: 378 / 290 / 170 / 110 / 92 / 60 */
 .cards__row {
   display: grid;
-  grid-template-columns: 380px 290px 170px 110px 90px 60px;
+  grid-template-columns: 378px 290px 170px 110px 92px 60px;
   align-items: center;
   padding: 14px 8px 14px 20px;
   border-bottom: 1px solid var(--border-default);
