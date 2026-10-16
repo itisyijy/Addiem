@@ -1344,13 +1344,15 @@ fn run_import_selected(
                 crate::export::media_refs(&flds, &mut refs); // 새로 넣는 노트가 쓰는 미디어만 (이미 있는 노트의 것은 이미 있다)
             }
             let fields: Vec<&str> = flds.split(SEP).collect();
+            // .apkg 로 내보낼 때만 다는 출처 태그(Neo-Anki::출처::)는 들이지 않는다 (export::source_tags, 쌓이지 않게). 사용자의 출처:: 태그는 그대로
+            let tags = crate::export::without_source_tags(&tags);
             tx.execute(
                 "INSERT INTO note (note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid, import_batch_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?6, ?7)",
-                params![ntid, serde_json::to_string(&fields).map_err(err)?, tags.trim(), anid, modified * 1000, guid, batch],
+                params![ntid, serde_json::to_string(&fields).map_err(err)?, tags, anid, modified * 1000, guid, batch],
             )
             .map_err(err)?;
-            note_map.insert(anid, (tx.last_insert_rowid(), tags.trim().to_string()));
+            note_map.insert(anid, (tx.last_insert_rowid(), tags));
         }
     }
     result.notes = note_map.len();

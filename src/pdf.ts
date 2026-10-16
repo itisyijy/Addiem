@@ -4,6 +4,7 @@ import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { sourceApi, type NewSegment, type Rect, type Signal } from "./sourceApi";
+import { layoutOf, type Layout } from "./figures";
 
 // 한글 PDF 는 내장 CMap(KSCms-UHC-H 등)을 쓰는 일이 많다. connect-src 가 ipc 만 열려 있어 fetch 대신
 // 작은 JS 조각(data URL)으로 묶어 필요할 때만 불러온다. ?inline 만으로는 모르는 확장자를 자산으로 보지 않아 ?url&inline
@@ -62,6 +63,52 @@ export async function renderPage(materialId: number, pageNo: number, canvas: HTM
   canvas.style.width = `${width}px`;
   canvas.style.height = `${Math.round(base.height * scale)}px`;
   return page.render({ canvas, viewport: vp });
+}
+
+// ---------------------------------------------------------------- 8.4 그림 · 표 (figures.ts)
+
+const layouts = new Map<string, Promise<Layout>>();
+/** 쪽 하나의 그림 상자 · 글자 · 괘선. 자료 · 쪽마다 한 번 읽어 둔다 (연산자 목록이 해독한 그림은 cleanup 으로 바로 놓는다) */
+export function pageLayout(materialId: number, pageNo: number): Promise<Layout> {
+  const key = `${materialId}:${pageNo}`;
+  let p = layouts.get(key);
+  if (!p) {
+    p = (async () => {
+      const { OPS } = await pdfjs();
+      const page = await (await openPdf(materialId)).getPage(pageNo);
+      const [ops, text] = await Promise.all([page.getOperatorList(), page.getTextContent()]);
+      const lay = layoutOf(ops, OPS, text.items.filter((i): i is TextItem => "str" in i), page.getViewport({ scale: 1 }));
+      page.cleanup();
+      return lay;
+    })();
+    p.catch(() => layouts.delete(key));
+    layouts.set(key, p);
+  }
+  return p;
+}
+
+/** 자른 그림 크기: 긴 변 long px, 한 변은 4096px 까지 */
+export const cropSize = (lay: { w: number; h: number }, r: Rect, long = 1600) => {
+  const [w, h] = [r[2] * lay.w, r[3] * lay.h];
+  const scale = Math.min(long / Math.max(w, h, 1), 4096 / Math.max(w, 1), 4096 / Math.max(h, 1));
+  return { scale, width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
+};
+
+/** 쪽의 한 영역만 그려 PNG data URL 로 (IT3 원래 해상도로 자르기). CSP 가 blob: fetch 를 막아 data URL. 캔버스는 바로 비운다 */
+export async function cropPage(materialId: number, pageNo: number, r: Rect, long = 1600): Promise<{ url: string; width: number; height: number }> {
+  const page = await (await openPdf(materialId)).getPage(pageNo);
+  const base = page.getViewport({ scale: 1 });
+  const { scale, width, height } = cropSize({ w: base.width, h: base.height }, r, long);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  try {
+    const viewport = page.getViewport({ scale, offsetX: -r[0] * base.width * scale, offsetY: -r[1] * base.height * scale });
+    await page.render({ canvas, viewport }).promise;
+    return { url: canvas.toDataURL("image/png"), width, height };
+  } finally {
+    canvas.width = canvas.height = 0;
+  }
 }
 
 type Line = { text: string; box: [number, number, number, number]; bold: boolean; size: number };

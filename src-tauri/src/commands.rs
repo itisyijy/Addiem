@@ -1108,6 +1108,19 @@ pub(crate) fn answer_part(back: &str) -> &str {
     }
 }
 
+/// 8.4 표 카드(질문 아래 표): 목록 한 줄은 표 앞 질문만, 빈칸 답은 가린 칸 글자만 (표 글자가 질문 · 답에 이어 붙지 않게).
+/// 표가 없거나 표 앞에 글이 없으면 None (원래대로)
+fn table_brief(front: &str, back: &str) -> Option<(String, String)> {
+    let at = front.to_ascii_lowercase().find("<table")?;
+    let question = render::strip_tags(&front[..at]);
+    if question.is_empty() {
+        return None;
+    }
+    let answer = back.split("<span class=\"cloze\">").skip(1).filter_map(|s| s.split("</span>").next()).map(render::strip_tags).collect::<Vec<_>>().join(" · ");
+    let answer = if answer.is_empty() { render::strip_tags(answer_part(back)) } else { answer };
+    Some((question, answer))
+}
+
 /// C2 검색 대상: 필드 원문 (JSON 의 \" 만 " 로 푼다)
 const SEARCH_TEXT: &str = "replace(n.fields, '\\\"', '\"')";
 
@@ -1196,11 +1209,12 @@ pub fn list_cards(
                 Some(_) => serde_json::from_str::<Vec<String>>(&fields).ok().and_then(|v| v.get(3).map(|x| render::strip_tags(x))).unwrap_or_default(),
                 None => render::strip_tags(answer_part(&rendered.back)),
             };
+            let (question, answer) = table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer));
             Ok(CardRow {
                 id: r.get(0)?,
                 note_id: r.get(1)?,
                 deck_path: path_of(r.get(2)?, &by_id),
-                question: render::strip_tags(&rendered.front),
+                question,
                 answer,
                 state: r.get(4)?,
                 importance: r.get(5)?,
@@ -2639,6 +2653,15 @@ mod tests {
         assert_eq!(found("ABANDON.MP3"), Vec::<i64>::new(), "대소문자를 가리지 않는 것도 LIKE 와 같다");
         assert_eq!(found("ogg"), Vec::<i64>::new());
         assert_eq!(found("버리"), [1]);
+    }
+
+    #[test]
+    fn table_card_rows_show_question_only() {
+        let front = "<div>t-검정의 귀무가설은?</div><table><tr><th>검정</th><th>귀무가설</th></tr><tr><td>t-검정</td><td><span class=\"cloze\">[...]</span></td></tr></table>";
+        let back = front.replace("[...]", "두 집단 평균이 같다");
+        assert_eq!(super::table_brief(front, &back), Some(("t-검정의 귀무가설은?".into(), "두 집단 평균이 같다".into())));
+        assert_eq!(super::table_brief("<table><tr><td>a</td></tr></table>", "b"), None, "표 앞에 글이 없으면 원래대로");
+        assert_eq!(super::table_brief("질문", "답"), None);
     }
 
     #[test]

@@ -243,14 +243,8 @@ fn sentences(text: &str) -> Vec<String> {
 /// 넣을 곳 기본값: 고른 구간마다 같은 자료에서 쪽이 가장 가까운 "카드가 있는 구간"의 카드 덱을 모아 가장 많은 덱
 fn default_deck(con: &Connection, sent: &[Sent]) -> Res<i64> {
     let mut votes: HashMap<i64, usize> = HashMap::new();
-    let mut st = con
-        .prepare(
-            "SELECT c.deck_id FROM source_segment s JOIN source_link l ON l.segment_id = s.id AND l.method != 'rejected'
-             JOIN card c ON c.id = l.card_id WHERE s.material_id = ?1 ORDER BY abs(s.page - ?2), s.page, s.ord LIMIT 1",
-        )
-        .map_err(err)?;
     for s in sent {
-        if let Ok(d) = st.query_row(params![s.material_id, s.page], |r| r.get::<_, i64>(0)) {
+        if let Some(d) = source::nearest_deck(con, s.material_id, s.page)? {
             *votes.entry(d).or_default() += 1;
         }
     }

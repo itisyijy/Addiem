@@ -55,6 +55,8 @@
 /* 질문 화면: 짧으면 가운데. margin auto 는 넘칠 때 위쪽을 자르지 않는다 (justify-content: center 와 다르다) */
 .study .study__col:not(.is-answer) .study__card-content { margin: auto 0; }
 .study .study__q { flex: none; display: block; }
+/* 표가 있는 질문(8.4 표 카드)은 표와 함께 왼쪽에 (답 면과 같아 면을 넘길 때 덜 움직인다) */
+.study .study__q:has(table) { text-align: left; }
 /* 줄 높이는 비율로. px 로 두면 노트타입 CSS 의 작은 글자(배지 등)까지 46px 줄 높이를 물려받아 부푼다 */
 .study .study__q { line-height: calc(46 / 30); }
 .study .study__a-q { line-height: calc(28 / 20); }
