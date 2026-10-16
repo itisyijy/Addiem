@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AppInfo } from "./api";
-import { NavContext, isNavLocked, setCutoff, useKey, type Route } from "./nav";
+import { NavContext, isNavLocked, leaveBlocked, setCutoff, useKey, type Route } from "./nav";
 import { Backdrop, TopNav } from "./ui";
 import { ToastProvider } from "./toast";
 import { SyncButton, SyncHost } from "./sync";
@@ -37,8 +37,8 @@ export default function App() {
     ).finally(() => setReady(true));
   }, []);
   useEffect(load, [load]);
-  const nav = useCallback((r: Route) => {
-    if (isNavLocked()) return;
+  const nav = useCallback((r: Route, force = false) => {
+    if (isNavLocked() || (!force && leaveBlocked(r))) return;
     setRoute(r);
     window.scrollTo(0, 0);
   }, []);
