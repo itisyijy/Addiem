@@ -1390,10 +1390,10 @@ fn field_renamed_while_note_edited_elsewhere() {
     assert_eq!(a.dump(), b.dump());
     for d in [&a, &b] {
         let t = type_of(d, &note);
-        assert_eq!((t.slots[1].as_str(), t.templates[0].afmt.as_str()), ("뜻", "{{FrontSide}}<hr id=answer>{{뜻}}"));
+        assert_eq!((t.slots[1].as_str(), t.templates[0].afmt.as_str()), ("뜻", r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{뜻}}</div>"#));
         let values: Vec<String> = serde_json::from_str(&d.fields(&note)).unwrap();
         let r = crate::render::render_card(&t.templates[0].qfmt, &t.templates[0].afmt, &t.field_map(&values), 0);
-        assert_eq!(r.back, "질문<hr id=answer>B 의 답", "이름이 바뀌어도 값은 같은 자리");
+        assert_eq!(r.back, r#"<div class="nt-l nt-center">질문</div><hr id=answer><div class="nt-m nt-left">B 의 답</div>"#, "이름이 바뀌어도 값은 같은 자리");
     }
 }
 

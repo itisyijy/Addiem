@@ -1394,7 +1394,7 @@ mod tests {
             let bid: i64 = bc.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [model_id], |r| r.get(0)).unwrap();
             let t = nt::load(&bc, bid).unwrap();
             assert_eq!((t.name.as_str(), t.slots.clone(), t.css.as_str()), ("내 단어", vec!["예문".to_string(), "Front".into(), "Back".into()], ".card { color: red; }"));
-            assert_eq!(t.templates.iter().map(|t| (t.ord, t.qfmt.as_str())).collect::<Vec<_>>(), [(0, "{{Front}}"), (1, "{{예문}}")]);
+            assert_eq!(t.templates.iter().map(|t| (t.ord, t.qfmt.as_str())).collect::<Vec<_>>(), [(0, r#"<div class="nt-l nt-center">{{Front}}</div>"#), (1, "{{예문}}")]);
             assert_eq!(strings(&bc, "SELECT fields FROM note"), [r#"["He ate an apple.","apple","사과"]"#]);
             let names = crate::commands::note_field_names(&bc).unwrap();
             let q: String = bc.query_row(&format!("SELECT t.qfmt FROM card c JOIN card_template t ON t.note_type_id = {bid} AND {} WHERE c.template_ord = 1", nt::TEMPLATE_OF_CARD), [], |r| r.get(0)).unwrap();
