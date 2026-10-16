@@ -1319,3 +1319,142 @@ fn bench_merge_copy() {
     env.sync(&a);
     println!("A sync              {:>8.2?}", t.elapsed());
 }
+
+// ---------------------------------------------------------------- 8.1 노트 유형 · 템플릿 (notetype.rs)
+
+/// A 에서 앱 Basic 을 복제한 "내 유형" + 그 유형 노트 하나를 만들고 두 기기를 맞춘다. (A 의 유형 id, 노트 uid)
+fn user_type(env: &Env, a: &Dev, b: &Dev) -> (i64, String) {
+    use crate::notetype as nt;
+    let (id, note) = {
+        let con = a.con();
+        let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '2과목'", [], |r| r.get(0)).unwrap();
+        let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("내 유형")).unwrap();
+        let values = vec!["질문".to_string(), "답".to_string()];
+        nt::add_note(&con, &nt::TypedNote { deck_id: deck, note_type_id: id, values, importance: None }).unwrap();
+        (id, con.last_insert_rowid())
+    };
+    let note = a.con().query_row("SELECT n.uid FROM note n JOIN card c ON c.note_id = n.id WHERE c.id = ?1", [note], |r| r.get(0)).unwrap();
+    env.sync(a);
+    env.sync(b);
+    assert_eq!(a.dump(), b.dump());
+    (id, note)
+}
+
+/// 이 기기에서 노트를 편집기처럼 고친다 (commands::save_note_fields, 자리 순서)
+fn edit_note(d: &Dev, note_uid: &str, values: &[&str]) {
+    let id = d.id("note", note_uid).unwrap();
+    crate::commands::save_note_fields(&d.con(), id, &values.iter().map(|v| v.to_string()).collect::<Vec<_>>()).unwrap();
+}
+
+fn type_of(d: &Dev, note_uid: &str) -> crate::notetype::Nt {
+    let id: i64 = d.con().query_row("SELECT note_type_id FROM note WHERE uid = ?1", [note_uid], |r| r.get(0)).unwrap();
+    crate::notetype::load(&d.con(), id).unwrap()
+}
+
+#[test]
+fn field_added_while_note_edited_elsewhere() {
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    crate::notetype::add_field(&a.con(), id, "예문").unwrap();
+    edit_note(&b, &note, &["질문", "B 의 답"]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        let t = type_of(d, &note);
+        assert_eq!(t.slots, ["Front", "Back", "예문"]);
+        // 짧은 배열(필드를 더하기 전 기기가 쓴 값)은 없는 칸이 빈 값이다. 자리가 밀리지 않는다
+        assert_eq!(d.fields(&note), json!(["질문", "B 의 답"]).to_string());
+        let map = t.field_map(&serde_json::from_str::<Vec<String>>(&d.fields(&note)).unwrap());
+        assert_eq!((map["Back"].as_str(), map["예문"].as_str()), ("B 의 답", ""));
+    }
+    // 받은 뒤 새 칸을 채우면 그대로 따라간다
+    edit_note(&b, &note, &["질문", "B 의 답", "예문 b"]);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.fields(&note), json!(["질문", "B 의 답", "예문 b"]).to_string());
+}
+
+#[test]
+fn field_renamed_while_note_edited_elsewhere() {
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    crate::notetype::rename_field(&a.con(), id, 1, "뜻").unwrap();
+    edit_note(&b, &note, &["질문", "B 의 답"]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        let t = type_of(d, &note);
+        assert_eq!((t.slots[1].as_str(), t.templates[0].afmt.as_str()), ("뜻", "{{FrontSide}}<hr id=answer>{{뜻}}"));
+        let values: Vec<String> = serde_json::from_str(&d.fields(&note)).unwrap();
+        let r = crate::render::render_card(&t.templates[0].qfmt, &t.templates[0].afmt, &t.field_map(&values), 0);
+        assert_eq!(r.back, "질문<hr id=answer>B 의 답", "이름이 바뀌어도 값은 같은 자리");
+    }
+}
+
+#[test]
+fn template_added_while_note_edited_elsewhere() {
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    let added = crate::notetype::add_template(&a.con(), id, Some("거꾸로"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
+    assert_eq!((added.ord, added.cards), (1, 1));
+    edit_note(&b, &note, &["질문", "B 의 답"]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(d.fields(&note), json!(["질문", "B 의 답"]).to_string());
+        let ords: String = d
+            .con()
+            .query_row("SELECT group_concat(template_ord) FROM (SELECT template_ord FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 ORDER BY 1)", [&note], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ords, "0,1", "A 가 만든 카드가 B 에도");
+        assert_eq!(type_of(d, &note).templates.len(), 2);
+    }
+    // B 에서 두 번째 카드의 앞면 필드를 지워도 카드는 남고(Anki 처럼 만들기만), 다시 맞춰진다
+    edit_note(&b, &note, &["질문", "B 의 답 2"]);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn same_named_user_types_from_two_devices_stay_apart() {
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let make = |d: &Dev, front: &str| {
+        let con = d.con();
+        let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '2과목'", [], |r| r.get(0)).unwrap();
+        let id = nt::clone_type(&con, db::native_type_id(&con, "basic").unwrap(), Some("내 유형")).unwrap();
+        let values = vec![front.to_string(), "답".to_string()];
+        nt::add_note(&con, &nt::TypedNote { deck_id: deck, note_type_id: id, values, importance: None }).unwrap();
+    };
+    make(&a, "A 의 질문");
+    // 모델 id 는 ms 시각이다. 두 기기가 같은 ms 에 만드는 일은 없다고 본다 (note-types.md 2장)
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    make(&b, "B 의 질문");
+    let b_type = b.n("SELECT max(id) FROM note_type");
+    crate::notetype::add_field(&b.con(), b_type, "B 만의 필드").unwrap();
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE name = '내 유형'"), 2, "이름이 같아도 합치지 않는다");
+        assert_eq!(d.n("SELECT count(DISTINCT anki_model_id) FROM note_type WHERE name = '내 유형'"), 2);
+        // 각 노트는 제 유형에 남는다: A 의 유형은 필드 둘, B 의 유형은 셋
+        let fields_of = |front: &str| -> i64 {
+            d.n(&format!("SELECT json_array_length(nt.fields) FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.fields LIKE '%{front}%'"))
+        };
+        assert_eq!((fields_of("A 의 질문"), fields_of("B 의 질문")), (2, 3));
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE native_kind = 'basic'"), 1, "앱 유형은 한 벌");
+    }
+}
