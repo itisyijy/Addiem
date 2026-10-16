@@ -322,7 +322,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
             </span>
             {/* 앞면이 빈 카드는 큐 · 남은 수에서 빠진다 (NT49). "오늘 0장"의 이유를 밝힌다 */}
             {d.front_empty.length > 0 && (
-              <button type="button" className="deck__empty t-label-s" onClick={() => nav({ name: "cards", deckId: d.id, cardIds: d.front_empty })}>
+              <button type="button" className="deck__blank t-label-s" onClick={() => nav({ name: "cards", deckId: d.id, cardIds: d.front_empty })}>
                 <Icon name="alert" size={16} />
                 앞면이 빈 카드 {n(d.front_empty.length)}장은 학습에 나오지 않아요 · 카드 목록에서 보기
               </button>
