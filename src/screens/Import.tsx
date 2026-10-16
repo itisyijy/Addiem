@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api, errorText, type AnkiPreview, type ImportIssue, type ImportProgress, type ImportResult, type JsonPreview } from "../api";
 import { Badge, Button, Icon, Spinner, StatTile, Toggle, type IconName } from "../ui";
-import { lockNav, n, useKey, useNav } from "../nav";
+import { eul, lockNav, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
 import "../styles/import.css";
@@ -321,11 +321,11 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
           ? []
           : [{ icon: "info" as IconName, tone: "c-secondary", label: "읽어주기", value: `이 기기에 ${lang} 음성이 없어 ${n(s.cards)}장은 소리 없이 보여요` }];
       return s.cards === 0
-        ? [{ icon: "check" as IconName, tone: "c-success", label: `${d.feature}을 쓰는 템플릿`, value: "고른 덱에는 없어요" }]
+        ? [{ icon: "check" as IconName, tone: "c-success", label: `${d.feature}${eul(d.feature)} 쓰는 템플릿`, value: "고른 덱에는 없어요" }]
         : [{
             icon: "alert" as IconName,
             tone: "c-warn",
-            label: `${d.feature}을 쓰는 템플릿`,
+            label: `${d.feature}${eul(d.feature)} 쓰는 템플릿`,
             value: `${n(s.types)}종 · ${n(s.cards)}장은 ${d.feature === "빈칸 입력칸" ? "써 넣은 답을 본문 전체와 비교해요" : "일부가 다르게 보여요"}`,
           }];
     }),

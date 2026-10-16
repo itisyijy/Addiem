@@ -306,7 +306,9 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
         .map_err(err)?;
     let mut rows = st.query([]).map_err(err)?;
     let mut out = String::from("\u{feff}");
-    let line = |cells: Vec<String>| cells.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(",") + "\r\n";
+    // 스프레드시트가 수식으로 실행하지 않게 = + - @ 탭 CR 로 시작하는 칸은 앞에 ' 를 붙인다 (OWASP CSV Injection, T7-13). 가져오기(csv.ts)가 다시 뗀다
+    let guard = |c: &String| if c.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{c}") } else { c.clone() };
+    let line = |cells: Vec<String>| cells.iter().map(|c| format!("\"{}\"", guard(c).replace('"', "\"\""))).collect::<Vec<_>>().join(",") + "\r\n";
     out += &line(cols.iter().map(|(_, h)| h.to_string()).collect());
     let mut n = 0;
     while let Some(r) = rows.next().map_err(err)? {
@@ -1125,6 +1127,13 @@ mod tests {
         let (html, _) = csv_text(&con, sub, &["front".to_string()], false).unwrap();
         assert!(html.contains("{{c1::서울}}") && !html.contains("TCP"), "하위 덱만");
         assert!(csv_text(&con, root, &[], true).is_err());
+
+        // T7-13 수식 주입: = + - @ 로 시작하는 칸은 ' 를 붙여 글자로 (OWASP)
+        add(sub, "basic", "=HYPERLINK(\"http://x\",\"y\")", "+SUM(1,2)", None);
+        add(sub, "basic", "@cmd", "-2+3", None);
+        let (text, _) = csv_text(&con, sub, &["front".to_string(), "back".to_string()], true).unwrap();
+        assert!(text.contains(r#""'=HYPERLINK(""http://x"",""y"")","'+SUM(1,2)""#), "{text}");
+        assert!(text.contains(r#""'@cmd","'-2+3""#) && text.contains(r#""앞","뒤""#), "다른 칸은 그대로: {text}");
     }
 
     #[test]
