@@ -1020,7 +1020,9 @@ pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String])
     let mut values = values.to_vec();
     values.resize(nt.slots.len(), String::new());
     crate::recall::check_fields(&nt.name, &nt.slots, &values)?;
-    if nt.visible().first().is_none_or(|(s, _)| render::is_blank(&values[*s])) {
+    // 앱 기본 유형은 첫 칸이 질문이라 비울 수 없다. 사용자 · 가져온 유형의 기존 노트는 막지 않는다 (Anki 처럼, Q1-02):
+    // 새 필드를 맨 앞에 두거나 앞면에 쓰면 그 칸이 빈 노트를 다른 칸만 고쳐도 저장할 수 없었다. 앞면이 비면 그 카드는 학습에서 빠진다 (NT49)
+    if nt.native_kind.is_some() && nt.visible().first().is_none_or(|(s, _)| render::is_blank(&values[*s])) {
         return Err("첫 칸을 비울 수 없어요.".into());
     }
     let now = now_ms();

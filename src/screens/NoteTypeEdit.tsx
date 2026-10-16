@@ -104,7 +104,7 @@ function dropLine(lines: Part[][], i: number) {
 
 // ---------------------------------------------------------------- 화면
 
-export function NoteTypeEdit({ id, ord, back }: { id: number; ord?: number; back?: Route }) {
+export function NoteTypeEdit({ id, ord, note, back }: { id: number; ord?: number; note?: number; back?: Route }) {
   const [d, setD] = useState<Detail | null>(null);
   const [error, setError] = useState<string>();
   const load = useCallback(() => api.noteTypeDetail(id).then(setD, (e) => setError(errorText(e))), [id]);
@@ -113,7 +113,7 @@ export function NoteTypeEdit({ id, ord, back }: { id: number; ord?: number; back
   }, [load]);
   if (!d) return error ? <p className="load-error t-body-m c-danger">{error}</p> : null;
   // 다시 불러오면 초안을 새 정의로 처음부터 (key)
-  return <Editor key={d.version} d={d} ord={ord} back={back ?? { name: "noteTypes" }} reload={load} />;
+  return <Editor key={d.version} d={d} ord={ord} note={note} back={back ?? { name: "noteTypes" }} reload={load} />;
 }
 
 /** 저장 거부 문구 (notetype.rs STALE) */
@@ -127,7 +127,7 @@ const initDraft = (d: Detail): Draft => ({
 const draftKey = (x: Draft) =>
   JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt]), x.css]);
 
-function Editor({ d, ord, back, reload }: { d: Detail; ord?: number; back: Route; reload: () => void }) {
+function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?: number; back: Route; reload: () => void }) {
   const nav = useNav();
   const toast = useToast();
   const readOnly = !d.editable;
@@ -455,6 +455,8 @@ function Editor({ d, ord, back, reload }: { d: Detail; ord?: number; back: Route
       save();
     }
   };
+  // 초점이 입력칸 밖(빈 곳 · 버튼 · 이름 입력을 마친 뒤의 body)이어도 저장 (Q1-05). 입력칸 안은 위 onKeyDown 이 먼저 받고 막는다
+  useKey({ action: "save" }, () => void save(), !overlay && !readOnly);
 
   // ---------------------------------------------------------------- 그리기
 
@@ -574,7 +576,7 @@ function Editor({ d, ord, back, reload }: { d: Detail; ord?: number; back: Route
             <div className="nte__cols">
               {fields()}
               <div className="nte__mid">{effMode === "easy" ? easy() : htmlPanes()}</div>
-              <Preview d={d} draft={draft} tpl={cur} />
+              <Preview d={d} draft={draft} tpl={cur} note={note} />
             </div>
           </>
         )}
@@ -1097,7 +1099,7 @@ function CodeArea({ label, value, readOnly, invalid, onChange, onFocus }: {
 
 // ---------------------------------------------------------------- 미리보기 (학습 화면과 같은 렌더: 살균 · 소리 칩 · 수식 · CSS 가두기)
 
-function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undefined }) {
+function Preview({ d, draft, tpl, note }: { d: Detail; draft: Draft; tpl: DTpl | undefined; note?: number }) {
   const [side, setSide] = useState<Side>("back");
   const [theme, setTheme] = useState<"light" | "dark">(() => (document.documentElement.dataset.theme === "dark" ? "dark" : "light"));
   const [samples, setSamples] = useState<Sample[] | null>(null);
@@ -1108,8 +1110,8 @@ function Preview({ d, draft, tpl }: { d: Detail; draft: Draft; tpl: DTpl | undef
   useOverlayScope(open);
   useKey("Escape", () => setOpen(false), open, { modal: true });
   useEffect(() => {
-    api.noteTypeSamples(d.id).then(setSamples, () => setSamples([]));
-  }, [d.id]);
+    api.noteTypeSamples(d.id, note).then(setSamples, () => setSamples([]));
+  }, [d.id, note]);
   const sample = samples && pick !== "names" ? samples[pick] : undefined;
   const names = draft.fields.filter((f) => f.name).map((f) => f.name);
   const values = sample ? draft.fields.filter((f) => f.name).map((f) => (f.slot !== null ? (sample.slots[f.slot] ?? "") : `(${f.name})`)) : null;

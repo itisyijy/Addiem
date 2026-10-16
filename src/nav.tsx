@@ -27,7 +27,7 @@ export type Route =
   | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats; minutes: number; completed: boolean } // P3 혼합 회독 끝난 뒤
   | { name: "settings"; focus?: "archived" } // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
   | { name: "noteTypes"; back?: Route } // NT1 설정 · 노트 유형 목록. back: 카드 추가 · 편집에서 왔으면 그리로
-  | { name: "noteTypeEdit"; id: number; ord?: number; back?: Route }; // NT2 · NT3 편집기 (앱 기본 유형이면 NT4 보기). ord: 처음 열 카드 종류
+  | { name: "noteTypeEdit"; id: number; ord?: number; note?: number; back?: Route }; // NT2 · NT3 편집기 (앱 기본 유형이면 NT4 보기). ord: 처음 열 카드 종류, note: 미리보기에 먼저 보일 노트
 
 /** force: 화면이 이미 물어본 뒤(버리기 · 저장한 뒤)라 떠나기 확인(useLeaveGuard)을 건너뛴다 */
 export type Nav = (r: Route, force?: boolean) => void;

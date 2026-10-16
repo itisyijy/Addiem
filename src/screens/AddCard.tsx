@@ -368,7 +368,9 @@ export function AddCard({ deckId }: { deckId: number }) {
     return () => clearTimeout(t);
   }, [hintText, answerText, hintOff, ready]);
   // 이미 그 유형이면 띄우지 않는다 (빈칸으로 쓰는 사용자 유형은 빈칸이다)
-  const shownHint = !hintOff && hint && hint !== kind && !(hint === "cloze" && isCloze(kind, typed)) ? hint : null;
+  // 그림 가리기는 편집기가 열 수 있는 그림(앱에 저장된 그림, data-media)이 있을 때만. 웹에서 붙인 그림이면 바꿔도 그림이 따라가지 않는다 (Q1-10)
+  const shownHint =
+    !hintOff && hint && hint !== kind && !(hint === "cloze" && isCloze(kind, typed)) && !(hint === "occlusion" && !lastImage(hintSource)) ? hint : null;
   const takeHint = (k: CardKindHint) => {
     const before = { kind, typed, values: fieldsNow().map((f) => f.html), list, choice, extraOpen, pic, shapes };
     const html = hintSource;
@@ -384,7 +386,6 @@ export function AddCard({ deckId }: { deckId: number }) {
     } else if (k === "occlusion") {
       const img = lastImage(html);
       if (img) toOcclusion(img, 0, true);
-      else switchTo("occlusion", null, { force: true, fix: (from) => void (from[0].html = stripImages(from[0].html)) });
     } else if (/\{\{c\d+::/.test(html)) switchTo("cloze", null, { force: true });
     else {
       // 괄호 빈칸 · ___ 에 답 칸의 글을 넣는다 ({{c1::답}}). 답 칸은 비운다 (추가 설명으로 옮기지 않는다)
@@ -1027,6 +1028,10 @@ function TypeMenu({ open, setOpen, types, deckTypes, current, onPick, onEdit, on
     </button>
   );
   const shape = (r: NoteTypeRow) => (r.cloze ? "빈칸" : `필드 ${n(r.fields)}개`);
+  // 앱이 직접 그리는 유형은 필드 수 · 템플릿이 아니라 모양으로 (Q1-09: 그림 가리기가 "빈칸마다", 선택형이 "필드 10개"로 보였다)
+  const DRAWN: Record<string, string> = { io: "가린 칸마다 카드 1장", list: "항목을 차례로 떠올리는 카드 1장", choice: "보기에서 고르는 카드 1장" };
+  const mineCaption = (r: NoteTypeRow) =>
+    (r.native_kind && DRAWN[r.native_kind]) || [shape(r), r.cloze ? "빈칸마다 카드 1장" : `카드 ${n(r.templates)}장씩`, twin(r, types)].filter(Boolean).join(" · ");
   return (
     <span className="menu addcard__more">
       <button
@@ -1046,7 +1051,7 @@ function TypeMenu({ open, setOpen, types, deckTypes, current, onPick, onEdit, on
       {open && (
         <div className="menu__list menu--panel addcard__types" role="menu" aria-label="노트 유형" onKeyDown={menuKeys} onClick={(e) => e.stopPropagation()}>
           {mine.length > 0 && <p className="menu__cap t-label-s c-tertiary">이 덱이 쓰는 노트 유형</p>}
-          {mine.map((r, i) => item(r, [shape(r), r.cloze ? "빈칸마다 카드 1장" : `카드 ${n(r.templates)}장씩`, twin(r, types)].filter(Boolean).join(" · "), i === 0))}
+          {mine.map((r, i) => item(r, mineCaption(r), i === 0))}
           {others.length > 0 && <p className="menu__cap t-label-s c-tertiary">다른 노트 유형</p>}
           {others.map((r, i) =>
             item(
@@ -1088,7 +1093,12 @@ function TypedPreview({ type, values }: { type: NoteTypeDetail; values: string[]
       // 빈칸 유형은 빈칸 번호마다 (템플릿 하나), 일반 유형은 카드 종류마다
       const shown = type.cloze
         ? clozeNumbers(values).map((c, i) => ({ tpl: type.templates[0], ord: c - 1, label: `카드 ${i + 1} · 빈칸 ${c}` }))
-        : type.templates.map((tpl, i) => ({ tpl, ord: tpl.ord, label: /^(card|카드)\s*\d/i.test(tpl.name) ? tpl.name : `카드 ${i + 1} · ${tpl.name}` }));
+        : type.templates.map((tpl, i) => ({
+            tpl,
+            ord: tpl.ord,
+            // Anki 기본 이름(Card 1)은 "카드 1" 로 (copy-guide 카드 종류)
+            label: /^card\s*\d+$/i.test(tpl.name) ? `카드 ${i + 1}` : /^카드\s*\d/.test(tpl.name) ? tpl.name : `카드 ${i + 1} · ${tpl.name}`,
+          }));
       try {
         const out = await Promise.all(
           shown.slice(0, 4).map(async ({ tpl, ord, label }) => {

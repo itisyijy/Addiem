@@ -528,7 +528,8 @@ export const api = {
   cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
   renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),
   deleteNoteType: (id: number) => invoke<void>("delete_note_type", { id }),
-  noteTypeSamples: (id: number) => invoke<NoteTypeSample[]>("note_type_samples", { id }),
+  /** first: 먼저 보일 노트 (E 에서 연 카드의 노트) */
+  noteTypeSamples: (id: number, first?: number) => invoke<NoteTypeSample[]>("note_type_samples", { id, first }),
   /** HTML 전용이면 이유 문자열로 거부한다 ("뒷면에 조건문 {{#예문}}") */
   templateLayout: (qfmt: string, afmt: string) => invoke<Layout>("template_layout", { qfmt, afmt }),
   buildTemplateLayout: (layout: Layout) => invoke<{ qfmt: string; afmt: string }>("build_template_layout", { layout }),

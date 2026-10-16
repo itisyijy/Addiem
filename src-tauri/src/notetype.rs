@@ -430,10 +430,16 @@ fn name_taken(con: &Connection, name: &str, except: Option<i64>) -> Res<bool> {
     con.query_row("SELECT EXISTS (SELECT 1 FROM note_type WHERE name = ?1 AND id IS NOT ?2)", params![name, except], |r| r.get(0)).map_err(err)
 }
 
+/// 앱 기본 유형의 화면 이름 (카드 추가 세그먼트 · 목록 · E 머리). 사용자 유형이 이 이름이면 둘을 가릴 수 없다 (Q1-04)
+const APP_NAMES: [&str; 7] = ["질문과 답변", "양방향", "빈칸", "서술형", "그림 가리기", "목록", "선택형"];
+
 fn type_name(con: &Connection, name: &str, except: Option<i64>) -> Res<String> {
     let n = name.trim();
     if n.is_empty() {
         return Err("유형 이름을 입력해 주세요.".into());
+    }
+    if APP_NAMES.contains(&n) {
+        return Err(format!("'{n}'은 앱 기본 유형 이름이에요. 다른 이름을 써 주세요."));
     }
     if name_taken(con, n, except)? {
         return Err(format!("'{n}' 유형이 이미 있어요."));
@@ -854,15 +860,16 @@ pub struct Sample {
 }
 
 /// 미리보기 카드 고르기 (디자인 NT5 "지금 덱의 카드"): 이 유형의 최근 노트
-pub(crate) fn samples(con: &Connection, id: i64, limit: i64) -> Res<Vec<Sample>> {
+/// first: 먼저 보일 노트 (카드 편집 E 의 [편집]으로 열면 그 카드의 노트, Q1-12)
+pub(crate) fn samples(con: &Connection, id: i64, limit: i64, first: Option<i64>) -> Res<Vec<Sample>> {
     let mut st = con
         .prepare(
             "SELECT n.id, n.fields, coalesce((SELECT d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = n.id ORDER BY c.id LIMIT 1), '')
-             FROM note n WHERE n.note_type_id = ?1 ORDER BY n.id DESC LIMIT ?2",
+             FROM note n WHERE n.note_type_id = ?1 ORDER BY n.id IS ?3 DESC, n.id DESC LIMIT ?2",
         )
         .map_err(err)?;
     let rows = st
-        .query_map(params![id, limit], |r| {
+        .query_map(params![id, limit, first], |r| {
             Ok(Sample { note_id: r.get(0)?, slots: serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default(), deck: r.get(2)? })
         })
         .map_err(err)?;
@@ -1706,8 +1713,8 @@ pub fn preview_template(state: State<AppState>, id: i64, qfmt: String, afmt: Str
 }
 
 #[tauri::command]
-pub fn note_type_samples(state: State<AppState>, id: i64) -> Res<Vec<Sample>> {
-    samples(&*state.db.lock().map_err(err)?, id, 20)
+pub fn note_type_samples(state: State<AppState>, id: i64, first: Option<i64>) -> Res<Vec<Sample>> {
+    samples(&*state.db.lock().map_err(err)?, id, 20, first)
 }
 
 /// 편집기 [저장]. dry_run 이면 확인 창의 수만 세고 되돌린다 (같은 트랜잭션을 버린다).
@@ -2029,8 +2036,11 @@ mod tests {
         assert!(preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값"])), Some(&names)).is_err());
         note(&con, deck, nt, &["q1", "a1"]);
         note(&con, deck, nt, &["q2", "a2"]);
-        let got = samples(&con, nt, 1).unwrap();
+        let got = samples(&con, nt, 1, None).unwrap();
         assert_eq!((got.len(), got[0].deck.as_str(), got[0].slots.clone()), (1, "덱", s(&["q2", "a2"])));
+        // E 의 [편집]으로 열면 그 카드의 노트를 먼저 (Q1-12)
+        let first: i64 = con.query_row("SELECT min(id) FROM note WHERE note_type_id = ?1", [nt], |r| r.get(0)).unwrap();
+        assert_eq!(samples(&con, nt, 20, Some(first)).unwrap()[0].slots, s(&["q1", "a1"]));
         assert!(LAYOUT_CSS.starts_with(LAYOUT_MARK));
         assert_eq!(with_layout_css("", false), "");
         assert_eq!(with_layout_css(LAYOUT_CSS, true), LAYOUT_CSS, "두 번 붙이지 않는다");
@@ -2316,6 +2326,25 @@ mod tests {
     }
 
     #[test]
+    fn editing_an_existing_note_does_not_need_the_first_field() {
+        // Q1-02: 새 필드를 맨 앞에 두면 그 칸이 빈 기존 노트도 다른 칸만 고쳐 저장한다 (앱 기본 유형은 그대로 첫 칸 필수)
+        let (con, deck) = setup();
+        let nt = anki_clone(&con, "basic", None);
+        note(&con, deck, nt, &["a", "b"]);
+        let slot = add_field(&con, nt, "메모").unwrap();
+        reorder_fields(&con, nt, &[slot, 0, 1]).unwrap();
+        let id: i64 = con.query_row("SELECT id FROM note", [], |r| r.get(0)).unwrap();
+        crate::commands::save_note_fields(&con, id, &s(&["a", "b 고침", ""])).unwrap();
+        assert_eq!(q(&con, "SELECT fields FROM note"), [r#"["a","b 고침",""]"#]);
+        // 사용자 유형은 앞면 필드를 비워도 저장한다 (그 카드는 앞면 빔)
+        crate::commands::save_note_fields(&con, id, &s(&["", "b", ""])).unwrap();
+        let basic = crate::db::native_type_id(&con, "basic").unwrap();
+        con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, '[\"q\",\"a\"]', 0, 0)", [basic]).unwrap();
+        let app = con.last_insert_rowid();
+        assert!(crate::commands::save_note_fields(&con, app, &s(&["", "a"])).is_err(), "앱 기본 유형은 첫 칸 필수");
+    }
+
+    #[test]
     fn new_left_skips_empty_front_cards() {
         // Q1-01: 덱 상세 · 목표 안내 · 계획의 남은 신규는 큐와 같이 앞면이 빈 카드를 빼고 센다
         let (con, deck) = setup();
@@ -2343,6 +2372,7 @@ mod tests {
         con.execute("INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id, user_made) VALUES ('내 단어', '[\"Front\"]', '', 5, 5, 99, 1)", []).unwrap();
         rename_type(&con, a, " 내 단어 ").unwrap();
         assert!(rename_type(&con, a, "Basic").is_err(), "다른 유형 이름과는 여전히 겹칠 수 없다");
+        assert!(rename_type(&con, a, "질문과 답변").unwrap_err().contains("앱 기본 유형 이름"), "앱 기본 유형의 화면 이름과도 (Q1-04)");
         let rows = list(&con).unwrap();
         assert!(rows.iter().any(|r| r.created_at == 5 && r.made_here), "만든 시각 · 이 기기에서 만듦 (동기화 전)");
     }
