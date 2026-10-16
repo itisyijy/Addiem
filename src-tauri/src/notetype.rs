@@ -1009,28 +1009,43 @@ pub(crate) fn add_note(con: &Connection, input: &TypedNote) -> Res<usize> {
 
 // ------------------------------------------------------------------ 다시 가져오기 (같은 모델 id 의 유형은 덮지 않는다)
 
-/// 이미 있는 유형에 들어오는 Anki 노트의 필드 i -> 우리 자리. 이름이 같은 보이는 필드, 없으면 같은 위치의 보이는 필드 (이름으로 이미 잡힌 자리는 빼고).
-/// 내보낼 때 보이는 순서로 썼으므로, Anki 에서 고치지 않았으면 그대로 돌아온다
+/// 이미 있는 유형에 들어오는 Anki 노트의 필드 i -> 우리 자리. 이름이 같은 보이는 필드, 없으면 이 앱에서 지운(숨긴) 같은 자리
+/// (가져온 유형의 자리 = 처음 가져온 Anki 순서. 지운 필드의 값도 숨긴 자리에 남긴다, NT10 · Q2-13), 없으면 같은 위치의 보이는 필드
+/// (이름으로 이미 잡힌 자리는 빼고). 내보낼 때 보이는 순서로 썼으므로, Anki 에서 고치지 않았으면 그대로 돌아온다
 /// ponytail: 이름이 하나도 안 맞고 위치도 겹치면 뒤 값이 진다. 필드 이름을 양쪽에서 다르게 바꾼 드문 경우
 pub fn incoming_slots(nt: &Nt, names: &[String]) -> Vec<Option<usize>> {
     let vis = nt.visible();
     let by_name: Vec<Option<usize>> = names.iter().map(|n| vis.iter().find(|(_, v)| v == n).map(|(s, _)| *s)).collect();
-    by_name.iter().enumerate().map(|(i, m)| m.or_else(|| vis.get(i).map(|(s, _)| *s).filter(|s| !by_name.contains(&Some(*s))))).collect()
+    let free = |s: usize| !by_name.contains(&Some(s));
+    by_name
+        .iter()
+        .enumerate()
+        .map(|(i, m)| m.or_else(|| (nt.slots.get(i).is_some_and(String::is_empty) && free(i)).then_some(i)).or_else(|| vis.get(i).map(|(s, _)| *s).filter(|s| free(*s))))
+        .collect()
 }
 
-/// 들어오는 Anki 템플릿 ord -> 우리 ord. 이름이 같은 템플릿, 없으면 같은 순번 (Anki 는 빈틈없이 센다). 빈칸 유형은 비어 있다 (ord = 빈칸 번호)
-pub fn incoming_ords(nt: &Nt, tmpls: &[(u32, String)]) -> HashMap<u32, u32> {
+/// 들어오는 Anki 템플릿 (ord, 이름, 앞면) -> 우리 ord. 이름이 같은 카드 종류, 없으면 앞면이 같은 것, 없으면 같은 ord
+/// (가져온 유형의 ord = 처음 가져온 Anki ord, 이름만 이 앱에서 바꿨다). 어느 것도 아니면 빠진다: 이 앱에서 지운 카드 종류라 그 카드는 넣지 않는다
+/// (같은 순번으로 대신하면 다른 카드 종류에 붙어 앞면이 빈 카드가 된다, Q2-08). 빈칸 유형은 비어 있다 (ord = 빈칸 번호)
+pub fn incoming_ords(nt: &Nt, tmpls: &[(u32, String, String)]) -> HashMap<u32, u32> {
     if nt.cloze() {
         return HashMap::new();
     }
-    tmpls
-        .iter()
-        .enumerate()
-        .filter_map(|(i, (ord, name))| {
-            let ours = nt.templates.iter().find(|t| t.name == *name).or_else(|| nt.templates.get(i))?;
-            Some((*ord, ours.ord))
-        })
-        .collect()
+    let mut out: HashMap<u32, u32> = HashMap::new();
+    let ways: [&dyn Fn(&Tpl, u32, &str, &str) -> bool; 3] =
+        [&|t, _, name, _| t.name == name, &|t, _, _, qfmt| t.qfmt == qfmt, &|t, ord, _, _| t.ord == ord];
+    for way in ways {
+        for (ord, name, qfmt) in tmpls {
+            if out.contains_key(ord) {
+                continue;
+            }
+            let taken: Vec<u32> = out.values().copied().collect();
+            if let Some(t) = nt.templates.iter().find(|t| !taken.contains(&t.ord) && way(t, *ord, name, qfmt)) {
+                out.insert(*ord, t.ord);
+            }
+        }
+    }
+    out
 }
 
 // ------------------------------------------------------------------ 쉬운 편집기 (필드를 앞 · 뒷면에 놓기)
@@ -2220,9 +2235,46 @@ mod tests {
         // 내보낸 순서(보이는 순서) 그대로 돌아오면 자리로, Anki 에서 이름을 바꾼 필드는 같은 위치로
         assert_eq!(incoming_slots(&t, &s(&["Extra", "Front", "Back"])), [Some(2), Some(0), Some(1)]);
         assert_eq!(incoming_slots(&t, &s(&["덧", "Front", "Back", "새 필드"])), [Some(2), Some(0), Some(1), None]);
-        // Anki 는 템플릿을 0 부터 빈틈없이 센다: 0 Card 1 · 1 덧붙임 (우리 ord 2)
-        let m = incoming_ords(&t, &[(0, "Card 1".into()), (1, "덧붙임".into())]);
+        // Anki 는 템플릿을 0 부터 빈틈없이 센다: 0 Card 1 · 1 덧붙임 (우리 ord 2). Anki 에서 이름만 바꾼 것은 앞면으로
+        let q = |o: u32, n: &str, q: &str| (o, n.to_string(), q.to_string());
+        let m = incoming_ords(&t, &[q(0, "Card 1", "x"), q(1, "덧붙임", "x")]);
         assert_eq!((m[&0], m[&1]), (0, 2));
+        assert_eq!(incoming_ords(&t, &[q(0, "앞", &t.templates[0].qfmt), q(1, "뒤", "{{Extra}}")]), HashMap::from([(0, 0), (1, 2)]));
         let _ = deck;
+    }
+
+    #[test]
+    fn reimport_skips_deleted_card_types_and_keeps_hidden_fields() {
+        // 원래 Anki 컬렉션을 다시 가져온다 (가져온 유형: 우리 자리 · ord = 처음 가져온 Anki 순서)
+        let (con, _) = setup();
+        con.execute(
+            "INSERT INTO note_type (name, fields, css, created_at, updated_at, anki_model_id) VALUES ('단어장', '[\"단어\",\"뜻\",\"메모\"]', '', 0, 0, 77)",
+            [],
+        )
+        .unwrap();
+        let nt = con.last_insert_rowid();
+        for (ord, name, q) in [(0, "단어 → 뜻", "{{단어}}"), (1, "뜻 → 단어", "{{뜻}}")] {
+            con.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, '')", params![nt, ord, name, q]).unwrap();
+        }
+        add_template(&con, nt, Some("예문 → 단어"), "{{뜻}}!", "").unwrap();
+        delete_template(&con, nt, 1, false).unwrap();
+        delete_field(&con, nt, 2).unwrap();
+        let t = load(&con, nt).unwrap();
+        // Q2-08: 이 앱에서 지운 "뜻 → 단어"(Anki ord 1)는 같은 순번의 "예문 → 단어"에 붙지 않고 빠진다
+        let q = |o: u32, n: &str, q: &str| (o, n.to_string(), q.to_string());
+        let m = incoming_ords(&t, &[q(0, "단어 → 뜻", "{{단어}}"), q(1, "뜻 → 단어", "{{뜻}}")]);
+        assert_eq!(m, HashMap::from([(0, 0)]));
+        // 이 앱에서 이름만 바꾼 카드 종류는 같은 ord 로
+        rename_template_for_test(&con, nt, 0, "앞 → 뒤");
+        let t = load(&con, nt).unwrap();
+        assert_eq!(incoming_ords(&t, &[q(0, "Card 1", "{{단어}}!?")]), HashMap::from([(0, 0)]));
+        // Q2-13: 이 앱에서 지운(숨긴) 필드 "메모"(자리 2)의 값은 숨긴 자리로
+        assert_eq!(incoming_slots(&t, &s(&["단어", "뜻", "메모"])), [Some(0), Some(1), Some(2)]);
+    }
+
+    fn rename_template_for_test(con: &Connection, id: i64, ord: u32, name: &str) {
+        let t = load(con, id).unwrap();
+        let tpl = t.template(ord).unwrap();
+        save_template(con, id, ord, Some(name), &tpl.qfmt, &tpl.afmt).unwrap();
     }
 }

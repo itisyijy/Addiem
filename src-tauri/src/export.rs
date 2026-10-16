@@ -1522,6 +1522,46 @@ mod tests {
         assert_eq!((rows, empty), (2, 1));
     }
 
+    #[test]
+    fn reimport_after_deleting_a_card_type_and_a_field() {
+        // Q2-08: 같은 모델 id 로 다시 가져올 때 이 앱에서 지운 카드 종류의 카드는 같은 순번의 다른 카드 종류에 붙지 않고 빠진다.
+        // 그 카드의 복습 기록은 카드 없이 통계에만 남고, 결과에 한 줄로 알린다.
+        // Q2-13: 이 앱에서 지운(숨긴) 필드의 값은 숨긴 자리에 넣고 알린다 (NT10)
+        use crate::notetype as nt;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-redel-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let id = nt::anki_clone(&con, "basic", Some("단어장"));
+        nt::add_field(&con, id, "메모").unwrap();
+        let rev = nt::add_template(&con, id, Some("뜻 → 단어"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap().ord;
+        nt::add_template(&con, id, Some("메모 → 단어"), "{{Back}} {{메모}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
+        let typed = nt::TypedNote { deck_id: root, note_type_id: id, values: ["yak", "야크", "털이 긴 소"].map(String::from).to_vec(), importance: None };
+        assert_eq!(nt::add_note(&con, &typed).unwrap(), 3);
+        let card: i64 = con.query_row("SELECT id FROM card WHERE template_ord = ?1", [rev], |r| r.get(0)).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating, fed_to_scheduler) VALUES (?1, 1700000000000, 3, 1)", [card]).unwrap();
+        let out = tmp.0.join("w.apkg");
+        export(&con, &a.data_dir, root, &out, true, &QUIET).unwrap();
+        // 이 앱에서 "뜻 → 단어"와 "메모" 필드를 지우고 (메모를 쓰는 카드 종류도), 노트를 지운 뒤 다시 가져온다
+        nt::delete_template(&con, id, rev, false).unwrap();
+        let memo = nt::load(&con, id).unwrap().templates.iter().find(|t| t.name == "메모 → 단어").unwrap().ord;
+        nt::delete_template(&con, id, memo, false).unwrap();
+        nt::delete_field(&con, id, 2).unwrap();
+        con.execute("DELETE FROM note", []).unwrap();
+        con.execute("DELETE FROM review_log", []).unwrap();
+        drop(con);
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &a, out.to_str().unwrap(), true, &mut vec![]).unwrap()).unwrap();
+        assert_eq!((res["notes"].as_u64(), res["cards"].as_u64()), (Some(1), Some(1)), "{res}");
+        let issues: Vec<&str> = res["issues"].as_array().unwrap().iter().map(|i| i["detail"].as_str().unwrap()).collect();
+        assert!(issues.iter().any(|d| d.contains("이 앱에서 지운 카드 종류 '뜻 → 단어'(단어장)의 카드 1장은 넣지 않았어요. 그 카드의 복습 기록 1건은 통계에만 남겼어요")), "{issues:?}");
+        assert!(issues.iter().any(|d| d.contains("이 앱에서 지운 필드 '메모'의 값이 있는 노트 1개")), "{issues:?}");
+        let con = a.db.lock().unwrap();
+        assert_eq!(strings(&con, "SELECT group_concat(template_ord) FROM card"), ["0"], "다른 카드 종류에 붙지 않는다");
+        assert_eq!(strings(&con, "SELECT fields FROM note"), [r#"["yak","야크","털이 긴 소"]"#], "숨긴 자리에 값을 남긴다");
+        assert_eq!(strings(&con, "SELECT count(*) || '' FROM review_log WHERE card_id IS NULL"), ["1"], "기록은 통계에만");
+    }
+
     /// M8: 그림 가리기 노트를 내보내고 다시 가져오면 칸 · 이름 · 카드 번호가 그대로고, Anki 가 IO 유형으로 알아볼 표시가 붙는다
     #[test]
     fn image_occlusion_round_trip() {
