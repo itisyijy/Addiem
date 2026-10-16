@@ -330,6 +330,13 @@ fn run_once(sh: &Arc<Shared>, pull: bool, push: bool) -> Result<Outcome, SyncErr
                 Pulled::Choice(c) => return Ok(Outcome::Choice(json!({ "gen": c.generation, "header": c.header, "locked": cx.store.list("crypto.json")?.len() == 1 }))),
                 Pulled::Gone => return Ok(Outcome::Gone),
             }
+            // 이 기능 전에 잠근 기기: 다시 시작할 때 쓸 crypto.json 을 한 번 받아 둔다 (T3-11)
+            if cx.key.is_some()
+                && sh.with_db(|c| engine::local(c, "crypto"))?.is_none()
+                && let Ok(raw) = cx.store.get("crypto.json")
+            {
+                keep_crypto(sh, &raw)?;
+            }
         }
         let mut quota = false;
         if push {
@@ -410,7 +417,6 @@ fn backup(sh: &Arc<Shared>, cx: &Ctx) -> Result<(), SyncError> {
 /// DB 에서 다시 읽어 상태를 맞춘다 (설정 · 대기 묶음 · 기기 목록 · K7)
 fn refresh(sh: &Arc<Shared>) {
     let read = sh.with_db(|c| {
-        let n = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
         let (conn, enabled) = connected(c)?;
         let me = engine::device_uid(c)?;
         let my_name = engine::meta(c, "device_name")?.unwrap_or_else(|| "이 기기".into());
@@ -439,11 +445,6 @@ fn refresh(sh: &Arc<Shared>) {
                 reviews_at: d["last_push"]["at"].as_i64(),
             });
         }
-        let reviews = n("SELECT count(*) FROM sync_outbox WHERE table_name = 'review_log' AND op = 'insert'");
-        let sessions = n("SELECT count(DISTINCT coalesce(r.session_id, 0)) FROM sync_outbox o JOIN review_log r ON r.uid = o.uid
-                          WHERE o.table_name = 'review_log' AND o.op = 'insert'");
-        let notes = n("SELECT count(DISTINCT uid) FROM sync_outbox WHERE table_name = 'note'");
-        let others = n("SELECT count(*) FROM (SELECT DISTINCT table_name, uid FROM sync_outbox WHERE table_name NOT IN ('review_log', 'card', 'note', 'study_session', 'daily_plan'))");
         let since = now - 30 * crate::db::DAY_MS;
         let conflicts = c.query_row("SELECT count(*), coalesce(max(id), 0) FROM sync_conflict WHERE seen = 0 AND at > ?1", [since], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0, 0));
         Ok((
@@ -453,7 +454,7 @@ fn refresh(sh: &Arc<Shared>) {
             engine::local(c, "backup")?.unwrap_or_else(|| "daily".into()),
             engine::local(c, "lock")?.as_deref() == Some("1"),
             last_sync,
-            (sessions + notes + others, reviews, notes),
+            pending_counts(c),
             devices,
             my_name,
             conflicts,
@@ -492,6 +493,21 @@ fn refresh(sh: &Arc<Shared>) {
             }
         }
     });
+}
+
+/// 아직 올리지 않은 변경 (전송 대기 묶음, 복습 기록, 카드 변경). 복습은 세션 하나를 한 묶음으로 센다 (K5).
+/// 카드 표만 바뀐 변경(중요도 · 접기 · 덱 이동)도 카드 변경이다. 복습으로 바뀐 카드는 그 복습 묶음에 든다 (T3-13)
+fn pending_counts(c: &Connection) -> (i64, i64, i64) {
+    let n = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+    let reviews = n("SELECT count(*) FROM sync_outbox WHERE table_name = 'review_log' AND op = 'insert'");
+    let sessions = n("SELECT count(DISTINCT coalesce(r.session_id, 0)) FROM sync_outbox o JOIN review_log r ON r.uid = o.uid
+                      WHERE o.table_name = 'review_log' AND o.op = 'insert'");
+    let notes = n("SELECT count(DISTINCT uid) FROM sync_outbox WHERE table_name = 'note'");
+    let cards = n("SELECT count(DISTINCT o.uid) FROM sync_outbox o WHERE o.table_name = 'card' AND NOT EXISTS (
+                     SELECT 1 FROM sync_outbox x JOIN review_log l ON l.uid = x.uid JOIN card c ON c.id = l.card_id
+                     WHERE x.table_name = 'review_log' AND x.op = 'insert' AND c.uid = o.uid)");
+    let others = n("SELECT count(*) FROM (SELECT DISTINCT table_name, uid FROM sync_outbox WHERE table_name NOT IN ('review_log', 'card', 'note', 'study_session', 'daily_plan'))");
+    (sessions + notes + cards + others, reviews, notes + cards)
 }
 
 // ---------------------------------------------------------------- 창 닫기 (K8)
@@ -655,6 +671,13 @@ fn probe(sh: &Arc<Shared>) -> Result<Probe, SyncError> {
         None
     } else {
         let devices = engine::read_devices(&*store, &r);
+        let me = sh.with_db(engine::device_uid)?;
+        // K6-m [Drive 새로 시작] 이 말하는 다른 기기들. 연결을 끊었다 다시 연결하면 기기 목록 기억이 없다 (T3-18)
+        let names: Vec<&str> = devices
+            .iter()
+            .filter(|d| d["uid"].as_str() != Some(me.as_str()) && crate::db::now_ms() - d["at"].as_i64().unwrap_or(0) < engine::STALE_MS)
+            .filter_map(|d| d["name"].as_str())
+            .collect();
         let last = devices.iter().filter(|d| d["gen"].as_i64() == Some(r.generation())).max_by_key(|d| d["at"].as_i64().unwrap_or(0));
         let counts = match last {
             Some(d) => d["counts"].clone(),
@@ -664,7 +687,7 @@ fn probe(sh: &Arc<Shared>) -> Result<Probe, SyncError> {
             },
         };
         Some(json!({
-            "gen": r.generation(), "locked": r.locked, "devices": devices.len(), "bytes": r.bytes,
+            "gen": r.generation(), "locked": r.locked, "devices": devices.len(), "names": names, "bytes": r.bytes,
             "device": last.and_then(|d| d["name"].as_str()), "at": last.and_then(|d| d["at"].as_i64()), "counts": counts,
         }))
     };
@@ -709,9 +732,94 @@ fn save_key(sh: &Shared, key: [u8; 32]) -> Result<(), SyncError> {
 
 /// 잠긴 Drive 의 비밀번호를 확인하고 키를 이 기기 키체인에 둔다
 fn unlock(sh: &Arc<Shared>, store: &dyn Store, password: &str) -> Result<(), SyncError> {
-    let kdf: crypto::KdfParams = serde_json::from_slice(&store.get("crypto.json")?).map_err(store::other)?;
+    let raw = store.get("crypto.json")?;
+    let kdf: crypto::KdfParams = serde_json::from_slice(&raw).map_err(store::other)?;
     let key = crypto::open_key(password, &kdf).map_err(store::other)?.ok_or_else(|| store::other("암호가 맞지 않아요"))?;
-    save_key(sh, key)
+    save_key(sh, key)?;
+    keep_crypto(sh, &raw)
+}
+
+/// crypto.json 을 이 기기에도 둔다: Drive 가 지워진 뒤 이 기기 데이터로 다시 시작할 때 같은 잠금(같은 salt · 키)으로 다시 올린다 (T3-11)
+fn keep_crypto(sh: &Shared, raw: &[u8]) -> Result<(), SyncError> {
+    sh.with_db(|c| engine::set_local(c, "crypto", &String::from_utf8_lossy(raw)))
+}
+
+/// 새로 시작(New · Fresh)할 때 Drive 잠금 (T3-11)
+#[derive(Debug, PartialEq)]
+enum LockPlan {
+    /// 잠그지 않는다: Drive 의 crypto.json 과 이 기기 잠금 키를 지운다
+    Off,
+    /// 새 비밀번호로 새로 잠근다 (새 salt)
+    New(String),
+    /// 지금 잠금 그대로 (같은 salt · 키): 비밀번호가 있으면 그것으로, 없으면 이 기기 키체인 키로 연다
+    Keep { crypto: Vec<u8>, password: Option<String> },
+}
+
+/// kind: fresh(사용자가 고른 시작 · 새로 시작) · lock · unlock (K4 잠그기 바꾸기).
+/// 잠근 기기나 잠근 Drive 를 새로 시작해도 잠금을 말없이 풀지 않는다: 이 기기 키로 잠근 채 다시 올리고,
+/// 그럴 수 없으면(키나 crypto.json 이 없다, 다른 기기가 잠갔다) 비밀번호를 묻는다 (Locked)
+fn lock_plan(kind: &str, password: Option<&str>, local_lock: bool, has_key: bool, remote: Option<Vec<u8>>, cached: Option<Vec<u8>>) -> Result<LockPlan, SyncError> {
+    let password = password.filter(|p| !p.is_empty()).map(String::from);
+    Ok(match (kind, password) {
+        ("unlock", _) => LockPlan::Off,
+        ("lock", Some(p)) => LockPlan::New(p),
+        // 비밀번호를 넣었다: 잠근 Drive 면 그 잠금을 연다. 이 기기에 남긴 잠금이 있으면 그것으로 (맞지 않으면 새로 잠근다)
+        (_, Some(p)) => match remote.or(cached) {
+            Some(crypto) => LockPlan::Keep { crypto, password: Some(p) },
+            None => LockPlan::New(p),
+        },
+        (_, None) if local_lock && has_key => LockPlan::Keep { crypto: remote.or(cached).ok_or(SyncError::Locked)?, password: None },
+        (_, None) if local_lock || remote.is_some() => return Err(SyncError::Locked),
+        (_, None) => LockPlan::Off,
+    })
+}
+
+fn set_lock(sh: &Arc<Shared>, store: &dyn Store, plan: LockPlan, remote_locked: bool) -> Result<(), SyncError> {
+    match plan {
+        LockPlan::Off => {
+            if remote_locked {
+                store.delete("crypto.json")?;
+                // 잠근 동안의 그림 이름(HMAC)은 평문 Drive 에서 쓸 수 없다. 스냅샷이 다시 올린다
+                for e in store.list("media/")? {
+                    store.delete(&e.path)?;
+                }
+            }
+            auth::delete_secret(auth::KEY);
+            if let Ok(mut k) = sh.key.lock() {
+                *k = None;
+            }
+            sh.with_db(|c| engine::set_local(c, "lock", "0"))
+        }
+        LockPlan::New(pw) => {
+            let (key, kdf) = crypto::new_key(&pw).map_err(store::other)?;
+            for e in store.list("media/")? {
+                store.delete(&e.path)?;
+            }
+            let raw = serde_json::to_string(&kdf).map_err(store::other)?;
+            store.put("crypto.json", raw.as_bytes())?;
+            save_key(sh, key)?;
+            keep_crypto(sh, raw.as_bytes())?;
+            sh.with_db(|c| engine::set_local(c, "lock", "1"))
+        }
+        LockPlan::Keep { crypto: raw, password } => {
+            let kdf: crypto::KdfParams = serde_json::from_slice(&raw).map_err(store::other)?;
+            let key = match password {
+                Some(p) => match crypto::open_key(&p, &kdf).map_err(store::other)? {
+                    Some(k) => k,
+                    // 이 기기에 남긴 잠금과 다른 비밀번호: 그 비밀번호로 새로 잠근다 (Drive 는 비어 있다)
+                    None if !remote_locked => return set_lock(sh, store, LockPlan::New(p), remote_locked),
+                    None => return Err(store::other("암호가 맞지 않아요")),
+                },
+                None => key_of(sh).filter(|k| crypto::key_fits(k, &kdf)).ok_or(SyncError::Locked)?,
+            };
+            if !remote_locked {
+                store.put("crypto.json", &raw)?;
+            }
+            save_key(sh, key)?;
+            keep_crypto(sh, &raw)?;
+            sh.with_db(|c| engine::set_local(c, "lock", "1"))
+        }
+    }
 }
 
 /// 바꾸거나 합치기 전의 이 기기 백업 (K6-m "어느 쪽이든 바꾸기 전에 이 기기 백업을 먼저 만들어요")
@@ -746,7 +854,12 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
             c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [n]).map_err(store::other)?;
         }
         engine::set_local(c, "account", &account)?;
-        engine::set_local(c, "backup", o.backup.as_deref().unwrap_or("daily"))?;
+        // 고르는 창 · 다시 시작은 백업 설정을 보내지 않는다: 사용자가 끈 백업을 "매일"로 되돌리지 않는다. 처음 연결이면 매일
+        match o.backup.as_deref() {
+            Some(b) => engine::set_local(c, "backup", b)?,
+            None if engine::local(c, "backup")?.is_none() => engine::set_local(c, "backup", "daily")?,
+            None => {}
+        }
         engine::set_local(c, "enabled", if o.later { "0" } else { "1" })
     })?;
     if o.later {
@@ -754,28 +867,12 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
     }
     let remote_locked = store.list("crypto.json")?.len() == 1;
     match (o.mode, o.password.as_deref()) {
-        // 새로 시작하면서 잠근다: 새 salt · 키를 만들고 Drive 에는 확인값만 둔다
-        (Join::New | Join::Fresh, Some(pw)) if !pw.is_empty() => {
-            let (key, kdf) = crypto::new_key(pw).map_err(store::other)?;
-            for e in store.list("media/")? {
-                store.delete(&e.path)?;
-            }
-            store.put("crypto.json", serde_json::to_string(&kdf).map_err(store::other)?.as_bytes())?;
-            save_key(sh, key)?;
-            sh.with_db(|c| engine::set_local(c, "lock", "1"))?;
-        }
-        (Join::New | Join::Fresh, _) => {
-            if remote_locked {
-                store.delete("crypto.json")?;
-                for e in store.list("media/")? {
-                    store.delete(&e.path)?;
-                }
-            }
-            auth::delete_secret(auth::KEY);
-            if let Ok(mut k) = sh.key.lock() {
-                *k = None;
-            }
-            sh.with_db(|c| engine::set_local(c, "lock", "0"))?;
+        // 새로 시작: 잠근 기기 · 잠근 Drive 의 잠금은 말없이 풀지 않는다 (T3-11)
+        (Join::New | Join::Fresh, password) => {
+            let remote = if remote_locked { Some(store.get("crypto.json")?) } else { None };
+            let (local_lock, cached) = sh.with_db(|c| Ok((engine::local(c, "lock")?.as_deref() == Some("1"), engine::local(c, "crypto")?)))?;
+            let plan = lock_plan(fresh_kind, password, local_lock, key_of(sh).is_some(), remote, cached.map(String::into_bytes))?;
+            set_lock(sh, &*store, plan, remote_locked)?;
         }
         (_, pw) if remote_locked => {
             if let Some(pw) = pw {
@@ -831,13 +928,14 @@ pub async fn sync_join(state: State<'_, SyncState>, opts: JoinOpts) -> Res<()> {
     Ok(())
 }
 
-/// 이 기기의 동기화 기록을 지운다 (연결 끊기 · 모든 데이터 삭제). 이 기기 데이터는 그대로다
+/// 이 기기의 동기화 기록을 지운다 (연결 끊기 · 모든 데이터 삭제). 이 기기 데이터는 그대로다.
+/// K7 두 기기에서 고친 카드(sync_conflict)는 이 기기 데이터라 남긴다: 30일 동안 진 쪽 내용으로 되돌릴 수 있다 (K31). 모든 데이터 삭제는 따로 지운다
 pub fn forget_local(con: &Connection) -> rusqlite::Result<()> {
     con.execute_batch(
         "UPDATE sync_flags SET enabled = 0, applying = 0;
          DELETE FROM sync_outbox; DELETE FROM sync_tombstone;
          DROP TABLE IF EXISTS sync_local; DROP TABLE IF EXISTS sync_row; DROP TABLE IF EXISTS sync_alias;
-         DROP TABLE IF EXISTS sync_anchor; DROP TABLE IF EXISTS sync_conflict;",
+         DROP TABLE IF EXISTS sync_anchor;",
     )
 }
 
@@ -932,24 +1030,20 @@ pub async fn sync_set_lock(state: State<'_, SyncState>, password: Option<String>
         move || -> Result<(), SyncError> {
             // 끝까지 run 잠금을 쥔다: 새 세대로 옮긴 뒤 이 기기가 올린 변경을 아래에서 지우지 않게
             let _g = sh.run.lock().map_err(store::other)?;
+            // 먼저 받는다: 다른 기기가 올리고 이 기기가 아직 받지 않은 변경 · 그림도 새 세대에 들어간다 (T3-09).
+            // 고르는 창이 떠 있거나 Drive 가 없어졌으면 바꾸지 않는다
+            match with_ctx(&sh, |cx| engine::pull(sh.db(), cx))? {
+                Pulled::Done(_) => {}
+                _ => return Err(store::other("먼저 Drive 데이터와 맞춰 주세요. 상단의 동기화 표시에서 고를 수 있어요.")),
+            }
             let old_gen = sh.with_db(engine::gen_of)?;
             let kind = if password.as_deref().is_some_and(|p| !p.is_empty()) { "lock" } else { "unlock" };
             let opts = JoinOpts { mode: Join::Fresh, device_name: None, backup: sh.with_db(|c| engine::local(c, "backup"))?, password, later: false };
-            // 지울 변경 파일은 새 세대를 올리기 전에 정한다. 번호만으로는 세대를 모르고 옛 키로 잠근 파일은 머리도 못 읽는다
+            // 지울 변경 파일은 새 세대를 올리기 전에 정한다
             let store = store_of(&sh)?;
             let before = engine::remote(&*store)?;
             join_locked(&sh, opts, kind)?;
-            // 지난 세대의 파일(평문이거나 옛 키)은 지운다
-            let r = engine::remote(&*store)?;
-            for s in r.snapshots.iter().filter(|s| s.generation <= old_gen) {
-                store.delete(&s.path)?;
-            }
-            for files in before.changes.values() {
-                for (_, p) in files {
-                    store.delete(p)?;
-                }
-            }
-            Ok(())
+            engine::drop_old_generation(&*store, old_gen, &before)
         }
     })
     .await
@@ -1268,6 +1362,8 @@ pub struct Version {
     /// 필드 값 (HTML 을 뺀 글자)
     pub fields: Vec<String>,
     pub current: bool,
+    /// 자동으로 맞출 때 이긴 버전 (나중에 고친 쪽)
+    pub winner: bool,
 }
 
 #[derive(Serialize)]
@@ -1276,6 +1372,8 @@ pub struct ConflictView {
     pub question: String,
     pub deck_path: Vec<String>,
     pub versions: [Version; 2],
+    /// [이 버전으로 바꾸기]로 사용자가 고른 적이 있다. 지금 내용 꼬리표: 고른 적 없으면 "나중에 고친 쪽", 있으면 "직접 고른 내용" (T3-02)
+    pub picked: bool,
 }
 
 /// HTML -> 줄 단위 글자 (줄바꿈 태그는 줄로)
@@ -1322,20 +1420,20 @@ pub fn sync_conflicts(state: State<SyncState>) -> Res<Vec<ConflictView>> {
             let mut st = c
                 .prepare(
                     "SELECT x.id, x.winner_device, x.winner_at, x.winner_fields, x.loser_device, x.loser_at, x.loser_fields, n.fields,
-                            (SELECT deck_id FROM card WHERE note_id = n.id ORDER BY template_ord LIMIT 1), x.note_uid
+                            (SELECT deck_id FROM card WHERE note_id = n.id ORDER BY template_ord LIMIT 1), x.note_uid, x.resolved
                      FROM sync_conflict x JOIN note n ON n.uid = x.note_uid WHERE x.at > ?1 ORDER BY x.id DESC",
                 )
                 .map_err(store::other)?;
-            type Row = (i64, String, i64, String, String, i64, String, String, Option<i64>, String);
+            type Row = (i64, String, i64, String, String, i64, String, String, Option<i64>, String, i64);
             let rows: Vec<Row> = st
-                .query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)))
+                .query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)))
                 .map_err(store::other)?
                 .filter_map(Result::ok)
                 .collect();
             let mut out = vec![];
-            for (id, wd, wa, wf, ld, la, lf, now, deck, uid) in rows {
-                let mut a = Version { device: name(&wd), at: wa, fields: render_note(c, &uid, &wf), current: wf == now };
-                let mut b = Version { device: name(&ld), at: la, fields: render_note(c, &uid, &lf), current: lf == now && wf != now };
+            for (id, wd, wa, wf, ld, la, lf, now, deck, uid, picked) in rows {
+                let mut a = Version { device: name(&wd), at: wa, fields: render_note(c, &uid, &wf), current: wf == now, winner: true };
+                let mut b = Version { device: name(&ld), at: la, fields: render_note(c, &uid, &lf), current: lf == now && wf != now, winner: false };
                 if b.current {
                     std::mem::swap(&mut a, &mut b);
                 }
@@ -1349,7 +1447,7 @@ pub fn sync_conflicts(state: State<SyncState>) -> Res<Vec<ConflictView>> {
                     d = p;
                 }
                 let question = render_note(c, &uid, &now).into_iter().next().unwrap_or_default();
-                out.push(ConflictView { id, question, deck_path: path, versions: [a, b] });
+                out.push(ConflictView { id, question, deck_path: path, versions: [a, b], picked: picked != 0 });
             }
             Ok(out)
         })
@@ -1367,6 +1465,7 @@ pub fn sync_conflict_use(state: State<SyncState>, id: i64) -> Res<()> {
             let now: String = c.query_row("SELECT fields FROM note WHERE uid = ?1", [&note], |r| r.get(0)).map_err(store::other)?;
             let other = if now == wf { lf } else { wf };
             c.execute("UPDATE note SET fields = ?2, updated_at = ?3 WHERE uid = ?1", rusqlite::params![note, other, crate::db::now_ms()]).map_err(store::other)?;
+            c.execute("UPDATE sync_conflict SET resolved = 1 WHERE id = ?1", [id]).map_err(store::other)?;
             Ok(())
         })
         .map_err(err)?;
@@ -1425,5 +1524,25 @@ mod revoke_tests {
         assert!(others_in(&s, "me", now), "다른 기기가 쓰고 있으면 폐기하지 않는다 (그 기기도 로그아웃된다)");
         assert!(others_in(&Down, "me", now), "모르면 있다고 본다");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restarting_never_turns_the_lock_off_silently() {
+        // T3-11: "이 기기 데이터로 다시 시작"(fresh, 비밀번호 없음)이 잠금을 말없이 끄지 않는다
+        let c = || Some(b"{}".to_vec());
+        let keep = |password: Option<&str>| LockPlan::Keep { crypto: b"{}".to_vec(), password: password.map(String::from) };
+        assert_eq!(lock_plan("unlock", None, true, true, c(), c()), Ok(LockPlan::Off), "K4 잠금 풀기만 끈다");
+        assert_eq!(lock_plan("lock", Some("pw"), false, false, None, None), Ok(LockPlan::New("pw".into())));
+        assert_eq!(lock_plan("fresh", None, false, false, None, None), Ok(LockPlan::Off), "잠그지 않은 기기 · Drive");
+        // 잠근 기기가 지운 Drive 를 다시 시작: 이 기기에 남긴 crypto.json 과 키체인 키로 그대로 잠근다
+        assert_eq!(lock_plan("fresh", None, true, true, None, c()), Ok(keep(None)));
+        assert_eq!(lock_plan("fresh", None, true, true, c(), None), Ok(keep(None)), "잠긴 Drive 그대로");
+        // 남긴 것이나 키가 없으면 비밀번호를 묻는다
+        assert_eq!(lock_plan("fresh", None, true, true, None, None), Err(SyncError::Locked));
+        assert_eq!(lock_plan("fresh", None, true, false, None, c()), Err(SyncError::Locked));
+        // 다른 기기가 잠근 Drive 를 잠그지 않은 기기가 새로 시작: 비밀번호를 묻고, 넣으면 그 잠금을 잇는다
+        assert_eq!(lock_plan("fresh", None, false, false, c(), None), Err(SyncError::Locked));
+        assert_eq!(lock_plan("fresh", Some("pw"), false, false, c(), None), Ok(keep(Some("pw"))));
+        assert_eq!(lock_plan("fresh", Some("pw"), true, false, None, None), Ok(LockPlan::New("pw".into())), "남긴 잠금이 없으면 새로 잠근다");
     }
 }

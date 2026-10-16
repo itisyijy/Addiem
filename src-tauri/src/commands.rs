@@ -537,17 +537,24 @@ pub fn unarchive_deck(state: State<AppState>, deck_id: i64) -> Res<i64> {
 pub fn delete_deck(state: State<AppState>, deck_id: i64) -> Res<()> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
-    // 보관한 하위 덱도 포함한다 (load_decks 는 보관한 덱을 빼므로 SQL 로 직접 훑는다)
-    tx.execute(
-        "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM deck d JOIN sub ON d.parent_id = sub.id)
-         DELETE FROM card WHERE deck_id IN (SELECT id FROM sub)",
-        [deck_id],
-    )
-    .map_err(err)?;
-    // 카드가 하나도 남지 않은 노트만 지운다. 빈칸 노트의 카드가 다른 덱에 있을 수 있다
-    tx.execute("DELETE FROM note WHERE NOT EXISTS (SELECT 1 FROM card WHERE card.note_id = note.id)", []).map_err(err)?;
-    tx.execute("DELETE FROM deck WHERE id = ?1", [deck_id]).map_err(err)?;
+    delete_deck_rows(&tx, deck_id)?;
     tx.commit().map_err(err)
+}
+
+fn delete_deck_rows(tx: &Connection, deck_id: i64) -> Res<()> {
+    // 보관한 하위 덱도 포함한다 (load_decks 는 보관한 덱을 빼므로 SQL 로 직접 훑는다)
+    let sub = "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM deck d JOIN sub ON d.parent_id = sub.id)";
+    let notes: Vec<i64> = {
+        let mut st = tx.prepare(&format!("{sub} SELECT DISTINCT note_id FROM card WHERE deck_id IN (SELECT id FROM sub)")).map_err(err)?;
+        st.query_map([deck_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
+    };
+    tx.execute(&format!("{sub} DELETE FROM card WHERE deck_id IN (SELECT id FROM sub)"), [deck_id]).map_err(err)?;
+    // 이 덱에 카드가 있던 노트 중 카드가 하나도 남지 않은 것만 지운다. 빈칸 노트의 카드가 다른 덱에 있을 수 있고,
+    // 다른 곳의 카드 없는 노트(동기화가 되살리는 중인 노트 등)는 이 덱과 상관없다 (T3-07: 그 노트의 나중 수정을 모든 기기에서 지웠다)
+    tx.execute(&format!("DELETE FROM note WHERE id IN ({}) AND NOT EXISTS (SELECT 1 FROM card WHERE card.note_id = note.id)", id_list(&notes)), [])
+        .map_err(err)?;
+    tx.execute("DELETE FROM deck WHERE id = ?1", [deck_id]).map_err(err)?;
+    Ok(())
 }
 
 // ------------------------------------------------------------------ C1. 덱 상세
@@ -2347,7 +2354,8 @@ pub fn app_info(state: State<AppState>) -> Res<AppInfo> {
         backup_dir: backup_dir(&state.data_dir).display().to_string(),
         last_backup: last_backup(&backup_dir(&state.data_dir)),
         cutoff_hour: db::cutoff_hour(),
-        db_bytes: std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0),
+        // 아직 본 파일에 옮기지 않은 쓰기(-wal)까지: 연결 직후 K4 가 보여 주는 크기와 같게 (T3-15)
+        db_bytes: [&db_path, &db_path.with_extension("sqlite-wal")].iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum(),
         media_bytes: n("SELECT coalesce(sum(byte_size), 0) FROM media")?,
         cards: n("SELECT count(*) FROM card")?,
         decks: n("SELECT count(*) FROM deck WHERE archived_at IS NULL")?,
@@ -2635,6 +2643,8 @@ pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<St
     let tx = con.transaction().map_err(err)?;
     // Drive 동기화 중이면 "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 먼저 끊는다 (Drive 데이터는 그대로, K10)
     crate::sync::forget_local(&tx).map_err(err)?;
+    // K7 두 기기에서 고친 카드의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
+    tx.execute_batch("DROP TABLE IF EXISTS sync_conflict;").map_err(err)?;
     tx.execute_batch(
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
@@ -2741,6 +2751,33 @@ mod tests {
         assert!((super::median(vec![0.4, 0.8]).unwrap() - 0.6).abs() < 1e-9);
         assert_eq!(super::plan_rate(10, 15), 1.0, "계획보다 많이 해도 100%");
         assert_eq!(super::plan_rate(10, 7), 0.7);
+    }
+
+    #[test]
+    fn deleting_a_deck_removes_only_its_own_orphaned_notes() {
+        // T3-07: 덱을 지울 때 카드 없는 노트를 모두 지우면, 다른 기기에서 되살아나는 중인 노트(나중에 고친 내용)까지 지워 모든 기기로 퍼진다
+        let con = crate::db::open_in_memory().unwrap();
+        let note = |deck: Option<i64>| {
+            con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES ((SELECT min(id) FROM note_type), '[\"q\",\"a\"]', 0, 0)", []).unwrap();
+            let n = con.last_insert_rowid();
+            if let Some(d) = deck {
+                con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, 0, 0, 0)", [n, d]).unwrap();
+            }
+            n
+        };
+        let deck = |name: &str, parent: Option<i64>| {
+            con.execute("INSERT INTO deck (name, parent_id, created_at, updated_at) VALUES (?1, ?2, 0, 0)", rusqlite::params![name, parent]).unwrap();
+            con.last_insert_rowid()
+        };
+        let gone = deck("지울 덱", None);
+        let sub = deck("하위", Some(gone));
+        let kept = deck("남을 덱", None);
+        let (in_deck, in_sub, elsewhere, orphan) = (note(Some(gone)), note(Some(sub)), note(Some(kept)), note(None));
+        super::delete_deck_rows(&con, gone).unwrap();
+        let alive = |id: i64| con.query_row("SELECT count(*) FROM note WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).unwrap() == 1;
+        assert!(!alive(in_deck) && !alive(in_sub), "지운 덱과 하위 덱의 노트");
+        assert!(alive(elsewhere), "다른 덱의 노트");
+        assert!(alive(orphan), "이 덱과 상관없는 카드 없는 노트는 그대로");
     }
 
     #[test]

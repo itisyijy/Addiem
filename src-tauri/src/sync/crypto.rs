@@ -88,8 +88,14 @@ pub fn open_key(password: &str, kdf: &KdfParams) -> Result<Option<[u8; 32]>, Str
     }
     let salt = b64.decode(&kdf.salt).map_err(|e| e.to_string())?;
     let key = derive_key(password, &salt, kdf.m, kdf.t, kdf.p)?;
-    let check = b64.decode(&kdf.check).map_err(|e| e.to_string())?;
-    Ok((unseal(&key, &check).ok().as_deref() == Some(CHECK)).then_some(key))
+    Ok(key_fits(&key, kdf).then_some(key))
+}
+
+/// 이 키가 이 crypto.json 의 키인가 (확인값이 풀린다). 이 기기 키체인의 키로 잠금을 이어 갈 때 (T3-11)
+pub fn key_fits(key: &[u8; 32], kdf: &KdfParams) -> bool {
+    use base64::Engine;
+    let check = base64::engine::general_purpose::STANDARD.decode(&kdf.check).unwrap_or_default();
+    unseal(key, &check).ok().as_deref() == Some(CHECK)
 }
 
 /// 파일 하나 암호화: MAGIC + 24바이트 nonce + 암호문(태그 포함). nonce 는 파일마다 새 난수
