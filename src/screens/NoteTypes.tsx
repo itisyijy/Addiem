@@ -6,7 +6,7 @@ import { n, eul, useKey, useNav, useOverlayScope, type Route } from "../nav";
 import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
 import { menuKeys } from "./Deck";
-import { TYPE_LABEL, rememberType } from "./AddCard";
+import { TYPE_LABEL, rememberType, twin } from "./AddCard";
 import "../styles/notetypes.css";
 
 /** 앱 기본 유형 행 순서. 목록 · 선택형 · 그림 가리기는 한 행으로 묶는다 (앱이 직접 그리는 유형) */
@@ -16,12 +16,15 @@ const DRAWN = ["io", "list", "choice"];
 /** 화면에 쓰는 이름. 앱 기본 유형은 카드 추가 세그먼트 이름 (DB 이름은 Anki 의 "Basic" 등) */
 export const typeLabel = (t: { name: string; native_kind: string | null }) => (t.native_kind ? (TYPE_LABEL[t.native_kind] ?? t.name) : t.name);
 
-/** "필드 2개 · 카드 종류 1개 · 토익 영단어에서 씀" */
-export function typeSub(r: TypeRow) {
+/** "필드 2개 · 카드 종류 1개 · 토익 영단어에서 씀". rows 에 이름이 같은 유형이 있으면 만든 때 · 기기를 붙인다 (twin) */
+export function typeSub(r: TypeRow, rows: TypeRow[] = []) {
   const parts = [`필드 ${n(r.fields)}개`, r.cloze ? "빈칸 수만큼 카드" : `카드 종류 ${n(r.templates)}개`];
   if (!r.native_kind && r.decks.length) parts.push(`${r.decks[0]}${r.decks.length > 1 ? ` 외 ${n(r.decks.length - 1)}곳` : ""}에서 씀`);
+  const t = twin(r, rows);
+  if (t) parts.push(t);
   return parts.join(" · ");
 }
+
 
 /** 겹치지 않는 이름: "질문과 답변 복사본", 있으면 " 2", " 3" … (엔진 clone_type 과 같은 규칙) */
 function uniqueName(base: string, rows: TypeRow[]) {
@@ -189,7 +192,7 @@ export function NoteTypes({ back }: { back?: Route }) {
 
         <p className="t-label-s c-tertiary">앱 기본 · 고칠 때는 복제해요</p>
         <div className="ntl__group">
-          {g.app.map((r) => row(String(r.id), r, "lock", typeLabel(r), typeSub(r), r, items(r)))}
+          {g.app.map((r) => row(String(r.id), r, "lock", typeLabel(r), typeSub(r, rows), r, items(r)))}
           {g.drawn.length > 0 &&
             row(
               "drawn",
@@ -204,12 +207,12 @@ export function NoteTypes({ back }: { back?: Route }) {
         {g.imported.length > 0 && (
           <>
             <p className="t-label-s c-tertiary">Anki에서 가져옴</p>
-            <div className="ntl__group">{g.imported.map((r) => row(String(r.id), r, "download", r.name, typeSub(r), r, items(r)))}</div>
+            <div className="ntl__group">{g.imported.map((r) => row(String(r.id), r, "download", r.name, typeSub(r, rows), r, items(r)))}</div>
           </>
         )}
         <p className="t-label-s c-tertiary">내가 만든 것</p>
         <div className="ntl__group">
-          {g.mine.map((r) => row(String(r.id), r, "pencil", r.name, typeSub(r), r, items(r)))}
+          {g.mine.map((r) => row(String(r.id), r, "pencil", r.name, typeSub(r, rows), r, items(r)))}
           {g.mine.length === 0 && <p className="ntl__empty t-body-s c-tertiary">아직 없어요. [새 노트 유형]으로 앱 기본이나 가져온 유형을 복제해 만들어요.</p>}
         </div>
       </section>
@@ -334,7 +337,7 @@ export function CloneDialog({ rows: given, from, back, onClose }: {
                 <Icon name={r.native_kind ? "lock" : r.user_made ? "pencil" : "download"} size={16} className="c-secondary" />
                 <span className="ntl__text">
                   <span className="t-label-m">{typeLabel(r)}</span>
-                  <span className="t-caption c-tertiary">{typeSub(r)}</span>
+                  <span className="t-caption c-tertiary">{typeSub(r, choices)}</span>
                 </span>
                 {pick?.id === r.id && <Icon name="check" size={16} className="c-accent" />}
               </button>

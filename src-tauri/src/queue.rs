@@ -63,6 +63,13 @@ pub struct Card {
     pub front_empty: bool,
 }
 
+impl Card {
+    /// 학습에 나오는 카드: 일시 정지도 앞면 빔도 아니다. 큐 · 계획 예측이 같은 규칙을 쓴다 (Q1-01, SQL 쪽은 notetype::new_left)
+    pub fn plays(&self) -> bool {
+        self.state != "suspended" && !self.front_empty
+    }
+}
+
 /// 오늘 이미 한 학습. 계획을 다시 만들 때 오늘 분량이 또 생기지 않게 뺀다
 #[derive(Debug, Default)]
 pub struct Today {
@@ -237,7 +244,7 @@ pub fn build_queue_with_progress(
     let paused = with_descendants(&paused_ids, decks);
     let skipped = with_descendants(&paused_ids.iter().copied().filter(|id| !chosen.contains(id)).collect::<Vec<_>>(), decks);
     let weak = with_descendants(&decks.iter().filter(|d| d.weak).map(|d| d.id).collect::<Vec<_>>(), decks);
-    let active = cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && !skipped.contains(&c.deck_id) && c.state != "suspended" && !c.front_empty);
+    let active = cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && !skipped.contains(&c.deck_id) && c.plays());
 
     // 1단계. 후보 수집. 밀린 복습만은 범위 밖 덱까지 모은다: 하루 상한은 전체 계획에서 고르고
     // 범위로 거른다. 그래야 덱 하나만 학습해도 홈의 그 덱 분량과 같다

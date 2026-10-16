@@ -212,7 +212,8 @@
 .deck__today-num { font: 300 132px/140px var(--font-sans); letter-spacing: -0.06em; }
 .deck__today-mix { display: flex; gap: 16px; padding-top: 4px; white-space: nowrap; }
 .deck__today-mix b { font-weight: 600; }
-.deck__reason-wrap { padding: 20px 0 28px; }
+.deck__reason-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 20px 0 28px; }
+.deck__blank { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border: 0; background: none; color: var(--accent-on-inverse); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; text-align: left; }
 .deck__reason {
   display: inline-flex;
   align-items: center;

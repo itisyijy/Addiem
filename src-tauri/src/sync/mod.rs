@@ -1474,6 +1474,59 @@ pub fn sync_conflict_use(state: State<SyncState>, id: i64) -> Res<()> {
 }
 
 /// K7 토스트를 보여줬다 (다시 띄우지 않는다)
+/// K39 그 노트 유형을 두 기기에서 고쳐 진 쪽 정의 (지난 30일, 최근 것 먼저). 노트 유형 편집기가 보인다
+#[derive(Serialize)]
+pub struct TypeConflictView {
+    what: String,
+    at: i64,
+    winner: String,
+    winner_device: String,
+    loser: String,
+    loser_device: String,
+    seen: bool,
+}
+
+#[tauri::command]
+pub fn note_type_conflicts(state: State<SyncState>, id: i64) -> Res<Vec<TypeConflictView>> {
+    let names: std::collections::HashMap<String, String> =
+        state.0.status.lock().map(|s| s.devices.iter().map(|d| (d.uid.clone(), if d.me { "이 기기".into() } else { d.name.clone() })).collect()).unwrap_or_default();
+    let name = |uid: &str| names.get(uid).cloned().unwrap_or_else(|| "다른 기기".into());
+    state
+        .0
+        .with_db(|c| {
+            let since = crate::db::now_ms() - 30 * crate::db::DAY_MS;
+            // 동기화를 켠 적이 없으면 표가 없다
+            let Ok(mut st) = c.prepare(
+                "SELECT x.what, x.at, x.winner, x.winner_device, x.loser, x.loser_device, x.seen FROM sync_type_conflict x JOIN note_type nt ON nt.uid = x.type_uid
+                 WHERE nt.id = ?1 AND x.at > ?2 ORDER BY x.id DESC",
+            ) else {
+                return Ok(vec![]);
+            };
+            type Row = (String, i64, String, String, String, String, bool);
+            let rows: Vec<Row> = st
+                .query_map(rusqlite::params![id, since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+                .map_err(store::other)?
+                .filter_map(Result::ok)
+                .collect();
+            Ok(rows
+                .into_iter()
+                .map(|(what, at, winner, wd, loser, ld, seen)| TypeConflictView { what, at, winner, winner_device: name(&wd), loser, loser_device: name(&ld), seen })
+                .collect())
+        })
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn note_type_conflicts_seen(state: State<SyncState>, id: i64) -> Res<()> {
+    state
+        .0
+        .with_db(|c| {
+            let _ = c.execute("UPDATE sync_type_conflict SET seen = 1 WHERE type_uid = (SELECT uid FROM note_type WHERE id = ?1)", [id]);
+            Ok(())
+        })
+        .map_err(err)
+}
+
 #[tauri::command]
 pub fn sync_conflicts_seen(state: State<SyncState>) -> Res<()> {
     state.0.with_db(|c| c.execute("UPDATE sync_conflict SET seen = 1", []).map(|_| ()).map_err(store::other)).map_err(err)?;
