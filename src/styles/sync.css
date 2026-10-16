@@ -173,6 +173,9 @@
 .sync-facts { display: flex; gap: 10px; padding: 14px 0 20px; }
 .sync-facts > span { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 10px 12px; border-radius: 14px; background: var(--bg-canvas); }
 .sync-error { padding: 8px 0 0; }
+/* 오류 원문 접기 (T3-14) */
+.sync-detail { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
+.sync-detail__text { overflow-wrap: anywhere; }
 .sync-block { display: flex; flex-direction: column; padding: 12px 0 4px; border-bottom: 1px solid var(--border-default); }
 .sync-block--last { border-bottom: 0; }
 .sync-device { display: flex; align-items: center; gap: 12px; padding: 10px 0; }

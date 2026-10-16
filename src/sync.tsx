@@ -69,9 +69,23 @@ export function when(ms: number, secs = false) {
   const days = Math.round((dayStart(Date.now()) - dayStart(ms)) / DAY);
   return days === 0 ? `오늘 ${t}` : days === 1 ? `어제 ${t}` : `${md(d)} ${t}`;
 }
-/** 맞추지 못했을 때: 변경은 이 기기에 남아 있다는 것을 먼저 (OS 오류 원문은 자세히로, T3-14) */
+/** 맞추지 못했을 때: 변경은 이 기기에 남아 있다는 것을 먼저 (T3-14) */
 const failText = (s: SyncStatus) =>
-  `${s.pending > 0 ? `전송 대기 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요. ` : "이 기기 데이터는 그대로예요. "}다음 동기화 때 다시 맞춰요.`;
+  s.pending > 0 ? `아직 올리지 못한 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요. 다음 동기화 때 올려요.` : "이 기기 데이터는 그대로예요. 다음 동기화 때 다시 맞춰요.";
+
+/** 오류 원문(OS 오류 등)은 접어 두고 [자세히]를 눌렀을 때만 보인다 */
+function Detail({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {" "}
+      <button type="button" className="sync-detail t-caption" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? "접기" : "자세히"}
+      </button>
+      {open && <span className="sync-detail__text"> {text}</span>}
+    </>
+  );
+}
 /** 방금 · 2분 전 · 3시간 전 · 어제 22:10 */
 export function ago(ms: number) {
   const diff = Date.now() - ms;
@@ -104,7 +118,7 @@ function line(s: SyncStatus): { title: string; icon: IconName; tone: "ok" | "pla
       return { title: s.total > 1 ? `${verb} · ${n(s.done)} / ${n(s.total)}` : verb, icon: "cloud", tone: "plain" };
     }
     case "offline":
-      return { title: s.pending > 0 ? `오프라인 · 전송 대기 변경 ${n(s.pending)}건 · 이 기기에 저장됨` : "오프라인 · 연결되면 저절로 맞춰요", icon: "cloud-off", tone: "plain" };
+      return { title: s.pending > 0 ? `오프라인 · 아직 올리지 못한 변경 ${n(s.pending)}건 · 이 기기에 저장됨` : "오프라인 · 연결되면 저절로 맞춰요", icon: "cloud-off", tone: "plain" };
     case "login":
       return { title: "다시 로그인이 필요해요", icon: "alert", tone: "warn" };
     case "quota":
@@ -242,7 +256,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     </>
   );
   if (s.state === "login") {
-    text = `Google 로그인이 만료됐어요. 전송 대기 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요.`;
+    text = `Google 로그인이 만료됐어요. 아직 올리지 못한 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요.`;
     actions = (
       <>
         <Button variant="ghost" size="M" label="나중에" onClick={close} />
@@ -294,7 +308,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     text = (
       <>
         {failText(s)}
-        {s.error && <span className="sync-error c-tertiary"> 자세히: {s.error}</span>}
+        {s.error && <Detail text={s.error} />}
       </>
     );
   } else if (s.state === "update") {
@@ -1209,7 +1223,7 @@ function LockModal({ on, onClose, onConfirm }: { on: boolean; onClose: () => voi
       <p className="t-body-s c-secondary">
         {on
           ? "Drive의 동기화 데이터를 이 기기에서 암호 없이 다시 올려요. 다른 기기는 다음에 맞출 때 고르는 창을 봐요."
-          : "이 기기에서 암호화한 뒤 다시 올려요. Google도 내용을 볼 수 없어요. 암호는 Drive에 올리지 않고 이 기기 키체인에만 둬요."}
+          : "이 기기에서 암호화한 뒤 다시 올려요. Google도 내용을 볼 수 없어요. 암호는 Drive에 올리지 않고 이 기기에만 저장해요."}
       </p>
       {!on && pw.fields}
       {error && <p className="t-body-s c-danger">{error}</p>}
@@ -1240,14 +1254,16 @@ function UnlockModal({ restart, onClose }: { restart?: boolean; onClose: () => v
   };
   return (
     <Sheet label="Drive 데이터 암호" onClose={onClose} className="sync-k10">
-      <h2 className="t-title-m">암호를 입력하세요</h2>
+      <h2 className="t-title-m">암호를 넣어 주세요</h2>
       <p className="t-body-s c-secondary">
         {restart
           ? "이 기기는 Drive 데이터를 암호로 잠가 두었어요. 암호를 넣으면 잠근 채 이 기기 데이터로 다시 시작해요. 잊었다면 연결을 끊고 다시 연결해 잠그지 않고 시작할 수 있어요."
           : s?.lock
-            ? "이 기기 키체인에 둔 암호 키를 찾지 못했어요. 암호를 다시 넣으면 이어서 맞춰요."
-            : "다른 기기에서 Drive 데이터를 암호로 잠갔어요. 맞는 암호를 넣으면 이 기기 키체인에 두고 이어서 맞춰요."}
+            ? "이 기기에 저장해 둔 암호를 찾지 못했어요. 암호를 다시 넣으면 이어서 맞춰요."
+            : "다른 기기에서 Drive 데이터를 암호로 잠갔어요. 맞는 암호를 넣으면 이 기기에 저장하고 이어서 맞춰요."}
       </p>
+      {/* 다시 시작 모드는 위 문장이 같은 말을 한다 */}
+      {!restart && <p className="t-caption c-tertiary">암호를 모르면 설정에서 연결을 끊고 이 기기만 쓸 수 있어요</p>}
       <Input type="password" label="암호" value={password} autoFocus error={error} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && password && run()} />
       <div className="sync-foot sync-foot--end">
         <Button variant="ghost" size="M" label="취소" onClick={onClose} />
@@ -1431,7 +1447,7 @@ function Connected({ s }: { s: SyncStatus }) {
       {s.state === "error" ? (
         <p className="sync-error t-caption c-tertiary">
           {failText(s)}
-          {s.error && ` 자세히: ${s.error}`}
+          {s.error && <Detail text={s.error} />}
         </p>
       ) : (
         s.error && s.state !== "idle" && s.state !== "offline" && <p className="sync-error t-caption c-tertiary">{s.error}</p>
