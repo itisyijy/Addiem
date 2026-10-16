@@ -56,6 +56,7 @@ class Deck:
     target_date: date | None = None
     include_target_day: bool = False
     daily_new_limit: int | None = None
+    paused: bool = False            # 잠시 쉬는 덱. 하위 덱까지 오늘 큐에서 뺀다
 
     @property
     def has_config(self):
@@ -92,6 +93,7 @@ class Card:
     due_day: date | None = None     # 복습 예정일. 신규는 None
     position: int = 0               # 같은 그룹 안의 원래 순서 (Anki의 due 필드)
     buried_until: date | None = None
+    sibling: int | None = None      # 형제 묶음 (빈칸이 아닌 노트의 id). 같은 묶음은 하루에 한 장
 
 
 @dataclass
@@ -163,17 +165,40 @@ def new_target_for_deck(deck: Deck, today: date, remaining_new: int) -> tuple[in
 
 # ------------------------------------------------------------------ 큐 구성
 
-def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0) -> QueuePlan:
+def _with_descendants(roots, decks):
+    out = set(roots)
+    while True:
+        more = {d.id for d in decks if d.parent_id in out} - out
+        if not more:
+            return out
+        out |= more
+
+
+def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0,
+                siblings_seen=()) -> QueuePlan:
     """오늘의 큐를 만든다. 순수 함수다.
 
-    deck_ids  : 학습할 덱을 제한한다. None 이면 전부
-    new_scale : 사용자가 분량을 조정한 배수 (6.6 사용자 통제)
+    deck_ids      : 학습할 덱을 제한한다 (하위 덱 포함). None 이면 전부
+    new_scale     : 사용자가 분량을 조정한 배수 (6.6 사용자 통제)
+    siblings_seen : 오늘 이미 평가한 카드의 형제 묶음
     """
     plan = QueuePlan()
     by_id = {d.id: d for d in decks}
-    wanted = set(deck_ids) if deck_ids is not None else set(by_id)
+    wanted = _with_descendants(deck_ids, decks) if deck_ids is not None else set(by_id)
 
-    pool = [c for c in cards if c.deck_id in wanted and c.state != "suspended"]
+    # 쉬는 덱은 하위 덱까지 뺀다. 쉬는 덱(또는 그 안의 덱)을 직접 골라 학습하면
+    # 그 범위의 복습은 보여주고 신규만 넣지 않는다 ("쉬는 중에도 학습하기", DECISIONS I84)
+    chosen = set()
+    for i in deck_ids or ():
+        while i is not None and i not in chosen:      # 고른 덱과 그 조상
+            chosen.add(i)
+            i = by_id[i].parent_id if i in by_id else None
+    paused_ids = [d.id for d in decks if d.paused]
+    paused = _with_descendants(paused_ids, decks)
+    skipped = _with_descendants([i for i in paused_ids if i not in chosen], decks)
+
+    pool = [c for c in cards
+            if c.deck_id in wanted and c.deck_id not in skipped and c.state != "suspended"]
 
     # --- 1단계. 후보 수집
     for c in pool:
@@ -189,11 +214,38 @@ def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0
                 continue
             (plan.backlog if c.due_day < today else plan.review).append(c)
 
+    # --- 3단계(복습 먼저). 오래 밀린 것부터, 같으면 중요도 높은 순
+    key = lambda c: (c.due_day or today, -c.importance, c.position, c.id)
+    plan.review.sort(key=key)
+    plan.backlog.sort(key=key)
+    plan.learning.sort(key=key)
+    plan.returning.sort(key=lambda c: (-c.importance, c.position, c.id))
+
+    # 형제 카드는 하루에 한 장 (DECISIONS I49). 앞선 것(복귀 > 오늘 복습 > 밀린 복습 > 신규)이 남는다.
+    # 학습 단계를 밟는 카드(학습 중 · 재학습)는 빼지 않는다. 오늘 Again 을 받은 복습 카드는
+    # 자기 노트를 오늘 봤으므로, 재학습을 빼면 오늘 안에 다시 나오지 않는다 (I80)
+    stepping = lambda c: c.state in ("learning", "relearning")
+    seen = set(siblings_seen)
+    seen.update(c.sibling for c in plan.learning + plan.returning + plan.review + plan.backlog
+                if stepping(c) and c.sibling is not None)
+
+    def first(c):
+        if stepping(c) or c.sibling is None:
+            return True
+        if c.sibling in seen:
+            return False
+        seen.add(c.sibling)
+        return True
+
+    plan.returning = [c for c in plan.returning if first(c)]
+    plan.review = [c for c in plan.review if first(c)]
+    plan.backlog = [c for c in plan.backlog if first(c)]
+
     # --- 2단계. 신규 목표량.
-    # 하위 덱별로 세지 않고 예산을 가진 조상 덱 단위로 묶는다
+    # 하위 덱별로 세지 않고 예산을 가진 조상 덱 단위로 묶는다. 쉬는 덱의 신규는 넣지 않는다
     new_by_owner = {}
     for c in pool:
-        if c.state == "new":
+        if c.state == "new" and c.buried_until is None and c.deck_id not in paused:
             new_by_owner.setdefault(budget_owner(c.deck_id, by_id), []).append(c)
 
     for owner, group in new_by_owner.items():
@@ -204,16 +256,15 @@ def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0
         plan.per_deck_new_target[owner] = target
         plan.notes.append(f"{by_id[owner].name or owner}: {why}")
 
-        # --- 3단계. 정렬. 중요도 높은 순, 같으면 원래 순서
+        # --- 3단계. 정렬. 중요도 높은 순, 같으면 원래 순서. 형제 규칙에 걸린 카드는 건너뛴다
         group.sort(key=lambda c: (-c.importance, c.position, c.id))
-        plan.new.extend(group[:target])
-
-    # --- 3단계(이어서). 복습은 오래 밀린 것부터, 같으면 중요도 높은 순
-    key = lambda c: (c.due_day or today, -c.importance, c.position, c.id)
-    plan.review.sort(key=key)
-    plan.backlog.sort(key=key)
-    plan.learning.sort(key=key)
-    plan.returning.sort(key=lambda c: (-c.importance, c.position, c.id))
+        picked = []
+        for c in group:
+            if len(picked) >= target:
+                break
+            if first(c):
+                picked.append(c)
+        plan.new.extend(picked)
 
     # --- 4단계. 상한. 밀린 복습이 수백 장 쌓여도 오늘을 마비시키지 않는다
     if len(plan.backlog) > BACKLOG_DAILY_CAP:
@@ -380,6 +431,37 @@ def test():
                     [c_r] + _cards([("new", NORMAL, None)] * 10, start=100))
     assert len(p.new) == 3 and len(p.returning) == 1
     ok += 1
+
+    # 신규 상태로 돌아온 카드도 신규 묶음에 또 들어가지 않는다 (T1-05)
+    c_rn = Card(9, 1, "new", buried_until=T)
+    p = build_queue(T, [Deck(1, "d", daily_new_limit=3)],
+                    [c_rn] + _cards([("new", NORMAL, None)] * 10, start=100))
+    assert len(p.new) == 3 and [c.id for c in p.returning] == [9] and c_rn not in p.new
+    ok += 1
+
+    # ---- 형제 카드는 하루 한 장. 재학습 카드는 자기 노트를 오늘 봤어도 남는다 (T1-01, I80)
+    rl = Card(1, 1, "relearning", due_day=T, sibling=7)              # 오늘 Again 을 받은 복습 카드
+    rv = Card(2, 1, "review", due_day=T, sibling=7)                  # 같은 노트의 다른 카드
+    old = Card(3, 1, "relearning", due_day=T - timedelta(days=1), sibling=8)
+    nw = Card(4, 1, "new", sibling=9)
+    p = build_queue(T, [Deck(1, "d")], [rl, rv, old, nw], siblings_seen={7, 8, 9})
+    assert [c.id for c in p.ordered] == [1, 3], "재학습은 남고, 같은 노트의 다른 카드와 오늘 본 노트의 신규는 다음 날로"
+    p = build_queue(T, [Deck(1, "d")], [rv, Card(5, 1, "new", sibling=7), Card(6, 1, "new", sibling=10)])
+    assert [c.id for c in p.ordered] == [2, 6], "복습이 남고 형제 신규는 빠진다. 빠진 자리는 다음 신규가 채운다"
+    ok += 2
+
+    # ---- 쉬는 덱 (T1-04, I84)
+    parent, child = Deck(1, "쉼", paused=True), Deck(2, "하위", parent_id=1)
+    cards = ([Card(1, 2, "review", due_day=T), Card(2, 2, "learning", due_day=T),
+              Card(3, 2, "review", due_day=T - timedelta(days=2))]
+             + _cards([("new", NORMAL, None)] * 5, deck_id=1, start=100))
+    assert build_queue(T, [parent, child], cards).total == 0, "전체 학습에서는 하위 덱까지 빠진다"
+    p = build_queue(T, [parent, child], cards, deck_ids=[1])
+    assert (len(p.learning), len(p.review), len(p.backlog), len(p.new)) == (1, 1, 1, 0), "직접 고르면 복습만"
+    assert build_queue(T, [parent, child], cards, deck_ids=[2]).total == 3, "쉬는 덱 안의 덱을 골라도 같다"
+    p = build_queue(T, [Deck(1, "위"), Deck(2, "쉼", parent_id=1, paused=True)], cards, deck_ids=[1])
+    assert len(p.new) == 5 and p.total == 5, "쉬지 않는 위 덱을 고르면 쉬는 하위 덱은 그대로 빠진다"
+    ok += 4
 
     # ---- 시나리오 3. 목표일 있는 덱과 없는 덱을 함께 (명세 9장)
     d_goal = Deck(1, "목표", target_date=T + timedelta(days=5))

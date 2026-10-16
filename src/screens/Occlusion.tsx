@@ -103,7 +103,7 @@ const clamp = (v: number) => Math.min(1, Math.max(0, v));
 /** 카드 편집(E)에서 고치는 질문(머리말) · 추가 설명. 글자만 고친다 (고치지 않으면 원래 HTML 그대로) */
 export type IoTexts = { header: string; backExtra: string };
 
-export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHideAll, knownMax = 0, reviewed = [], focus, texts, onDone, onCancel, onReplaceImage }: {
+export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHideAll, knownMax = 0, reviewed = [], focus, texts, direct = false, onDone, onCancel, onReplaceImage }: {
   /** 비었으면(url "") 가져온 노트에 그림이 없는 것 (M5) */
   picture: Picture;
   shapes: Shape[];
@@ -116,6 +116,8 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   focus?: number;
   /** 있으면 패널에 질문 · 추가 설명 칸 (이미 있는 노트를 E 로 열 때) */
   texts?: IoTexts;
+  /** 8.4 자료의 그림에서 열었다: [카드 만들기]가 바로 카드를 만든다 (카드 추가 화면을 거치지 않는다) */
+  direct?: boolean;
   onDone: (shapes: Shape[], hideAll: boolean, texts?: IoTexts) => void;
   onCancel: () => void;
   onReplaceImage?: () => void;
@@ -123,7 +125,7 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   useOverlayScope();
   // 이미 있는 노트(texts 가 있다)는 [변경 저장]이 바로 저장한다. 새 카드는 [가리기 적용] 뒤 카드 추가 화면에서 저장한다 (X4-05)
   const existing = !!texts;
-  const doneLabel = existing ? "변경 저장" : "가리기 적용";
+  const doneLabel = existing ? "변경 저장" : direct ? "카드 만들기" : "가리기 적용";
   const seq = useRef(0);
   const [shapes, setShapes] = useState<EShape[]>(() => initial.map((s) => ({ ...s, key: ++seq.current })));
   const [hideAll, setHideAll] = useState(initialHideAll);
@@ -489,7 +491,7 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
         </p>
         {groups.length > 0 && (
           <p className="t-caption c-secondary">
-            {existing ? "같은 그림에서 만든 카드에 함께 반영돼요." : "카드 추가 화면으로 돌아가 저장해야 카드가 생겨요."}
+            {existing ? "같은 그림에서 만든 카드에 함께 반영돼요." : direct ? "카드 만들기를 누르면 바로 카드가 생기고 자료의 그림과 이어져요." : "카드 추가 화면으로 돌아가 저장해야 카드가 생겨요."}
           </p>
         )}
         {small && <p className="t-caption c-secondary ioe__warn">그림이 작아요 (짧은 변 {Math.min(picture.width, picture.height)}px). 글자가 흐릴 수 있어요.</p>}
@@ -557,7 +559,7 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
           </ul>
         ) : (
           <p className="t-body-s c-tertiary ioe__empty">
-            그림 위를 끌어서 가릴 곳을 하나 이상 그려야 {existing ? "저장" : "적용"}할 수 있어요. 칸마다 카드가 한 장, 묶은 칸은 한 장으로 생겨요.
+            그림 위를 끌어서 가릴 곳을 하나 이상 그려야 {existing ? "저장할" : direct ? "카드를 만들" : "적용할"} 수 있어요. 칸마다 카드가 한 장, 묶은 칸은 한 장으로 생겨요.
           </p>
         )}
         <div className="ioe__group">
@@ -600,7 +602,11 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
         <Modal title="편집을 마칠까요?" onClose={() => setAsk(null)}>
           <div className="modal__body">
             <p className="t-body-m c-secondary">
-              {existing ? "변경 저장을 누르면 같은 그림의 카드에 바로 반영돼요." : "가리기 적용을 누르면 카드 추가 화면으로 돌아가요. 저장해야 카드가 생겨요."}
+              {existing
+                ? "변경 저장을 누르면 같은 그림의 카드에 바로 반영돼요."
+                : direct
+                  ? "카드 만들기를 누르면 바로 카드가 생겨요."
+                  : "가리기 적용을 누르면 카드 추가 화면으로 돌아가요. 저장해야 카드가 생겨요."}
             </p>
             <div className="modal__actions">
               <Button variant="ghost" size="M" label="계속 편집" shortcut="Esc" onClick={() => setAsk(null)} />

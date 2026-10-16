@@ -498,7 +498,7 @@ fn pace_line(con: &Connection, deck_id: i64, today: i64, decks: &[Deck], now_new
     let done = done_by_day(con, &scope, today - 7)?;
     // 날별로 넣은 신규
     let mut st = con
-        .prepare("SELECT r.reviewed_at, c.id, c.deck_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.prev_state = 'new' AND r.reviewed_at >= ?1 AND r.kind IS NULL")
+        .prepare("SELECT r.reviewed_at, c.id, c.deck_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 AND r.reviewed_at >= ?1 AND r.kind IS NULL")
         .map_err(err)?;
     let mut new_done: HashMap<i64, HashSet<i64>> = HashMap::new();
     for (at, card, deck) in st

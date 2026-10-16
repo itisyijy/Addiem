@@ -3,6 +3,7 @@
  * 스타일은 styles/components.css.
  */
 import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // ---------------------------------------------------------------- Icon
 
@@ -22,7 +23,7 @@ export type IconName =
   // G2 성격별로 묶기 · ChatGPT (Figma Row L)
   | "sparkles" | "gauge" | "wifi-off" | "send"
   // AU 소리 재생 (Figma Row AU)
-  | "volume-2" | "volume-x" | "play" | "pause";
+  | "volume-2" | "volume-x" | "play" | "pause" | "speech";
 
 /**
  * Figma 는 작은 크기에서도 선 두께를 2px 로 유지한다. 그래서 크기별 원본(plus-16.svg)이
@@ -329,13 +330,20 @@ export function TopNav({ onImport, onNewDeck, onSettings, onHome, sync }: {
 export function Backdrop() {
   // 창이 가려지면(최소화 등) 배경 움직임을 멈춘다
   const [hidden, setHidden] = useState(document.hidden);
+  // WebView2 는 최소화해도 visibilityState 가 'visible' 그대로라 창 크기 이벤트로 최소화를 따로 본다 (QA T6-02)
+  const [minimized, setMinimized] = useState(false);
   useEffect(() => {
     const onChange = () => setHidden(document.hidden);
     document.addEventListener("visibilitychange", onChange);
-    return () => document.removeEventListener("visibilitychange", onChange);
+    const win = getCurrentWindow();
+    const unlisten = win.onResized(() => { win.isMinimized().then(setMinimized, () => {}); });
+    return () => {
+      document.removeEventListener("visibilitychange", onChange);
+      unlisten.then((f) => f(), () => {});
+    };
   }, []);
   return (
-    <div className={hidden ? "backdrop is-paused" : "backdrop"} aria-hidden>
+    <div className={hidden || minimized ? "backdrop is-paused" : "backdrop"} aria-hidden>
       <i /><i /><i /><i /><i />
     </div>
   );
