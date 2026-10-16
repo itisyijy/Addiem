@@ -729,6 +729,8 @@
   font: 400 12px/20px var(--font-mono);
 }
 .import__text::placeholder { color: var(--text-tertiary); }
+/* 붙여넣기 칸은 상자 안에 꽉 차 있어 상자에 초점 링을 둔다 (CSV 알약과 같은 링, QA T6-14) */
+.import__json:has(.import__text:focus-visible) { outline: 2px solid var(--accent-default); outline-offset: 2px; }
 .import__result { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px; border: 1px solid var(--border-default); border-radius: 20px; background: var(--bg-surface); }
 .import__counts { display: flex; align-items: baseline; gap: 28px; white-space: nowrap; }
 .import__counts > span { display: inline-flex; align-items: baseline; gap: 6px; }

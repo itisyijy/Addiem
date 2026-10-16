@@ -51,6 +51,23 @@ export const FIXED_ROWS: { label: string; caption: string; scope: Scope; key: st
 /** 바꿀 수 없는 키 (E4): Esc 그만하기 · 닫기, Enter 확인, Tab 초점 이동. 조합 없이 누른 경우만 */
 export const FIXED = new Set(["Escape", "Enter", "Tab"]);
 
+/**
+ * 화면이 글자로 받는 키 (고정 행 B · F2 와 화면 안 키). 같은 범위의 바꿀 수 있는 동작에 주면 둘 중 하나가 묻히므로 받지 않는다 (QA T6-16).
+ * except: 그 동작은 써도 된다 (평가는 답 면, 선택형 고르기는 문제 면이라 숫자를 같이 쓴다)
+ */
+const RESERVED: { scope: Scope; chords: string[]; label: string; except?: ActionId }[] = [
+  { scope: "study", chords: ["KeyB"], label: "접어둔 카드 목록" },
+  { scope: "study", chords: ["KeyX"], label: "목록 회상 · 기억 여부 바꾸기" },
+  { scope: "study", chords: ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"], label: "선택형 보기 고르기", except: "rate" },
+  { scope: "study", chords: ["ArrowUp", "ArrowDown", "PageUp", "PageDown"], label: "카드 안 스크롤" },
+  { scope: "app", chords: ["F2"], label: "이름 바꾸기" },
+  { scope: "app", chords: ["Delete", "Digit1", "Digit2", "Digit3"], label: "카드 목록 · 지우기 · 중요도" },
+  { scope: "app", chords: ["ArrowLeft", "ArrowRight"], label: "학습 자료 · 쪽 넘기기" },
+];
+/** 이 키가 그 동작의 범위에서 화면 고정 키면 그 이름 */
+export const reservedLabel = (id: ActionId, chord: string) =>
+  RESERVED.find((r) => r.scope === actionOf(id).scope && r.except !== id && r.chords.includes(chord))?.label;
+
 // ---------------------------------------------------------------- 저장 (이 기기의 localStorage)
 
 const STORE = "neoanki.keys";
