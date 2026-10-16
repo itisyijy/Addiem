@@ -163,6 +163,35 @@ impl Dev {
     fn outbox(&self) -> i64 {
         self.n("SELECT count(*) FROM sync_outbox")
     }
+
+    /// 고친 순간(sync_outbox.at)을 정해서 고친다. 누가 나중에 고쳤는지가 결과를 정하는 시험을 벽시계에 맡기지 않는다
+    fn at<R>(&self, at: i64, f: impl FnOnce() -> R) -> R {
+        let before = self.n("SELECT coalesce(max(seq), 0) FROM sync_outbox");
+        let r = f();
+        self.con().execute("UPDATE sync_outbox SET at = ?1 WHERE seq > ?2", params![at, before]).unwrap();
+        r
+    }
+
+    fn edit_at(&self, at: i64, sql: &str, p: impl rusqlite::Params) {
+        self.at(at, || self.con().execute(sql, p).unwrap());
+    }
+
+    fn me(&self) -> String {
+        self.con().query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).unwrap()
+    }
+
+    fn fields(&self, note_uid: &str) -> String {
+        self.con().query_row("SELECT fields FROM note WHERE uid = ?1", [note_uid], |r| r.get(0)).unwrap()
+    }
+
+    /// K7 기록 (이긴 기기, 이긴 시각, 이긴 내용, 진 기기, 진 시각, 진 내용)
+    fn conflicts(&self) -> Vec<(String, i64, String, String, i64, String)> {
+        let con = self.con();
+        let mut st = con
+            .prepare("SELECT winner_device, winner_at, winner_fields, loser_device, loser_at, loser_fields FROM sync_conflict ORDER BY id")
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap().map(Result::unwrap).collect()
+    }
 }
 
 impl Drop for Dev {
@@ -853,6 +882,296 @@ fn exam_marks_round_trip_and_tag_fill_converges() {
     assert_eq!(a.dump(), b.dump());
     assert_eq!(b.n("SELECT count(*) FROM note WHERE exam_hits = 1 AND exam_names = '[\"2024 기말\"]'"), 1);
     assert_eq!(b.n("SELECT count(*) FROM note WHERE exam_hits = 0"), 1);
+}
+
+// ---------------------------------------------------------------- QA 2026-10-16 T3 (K28–K33)
+
+#[test]
+fn later_edit_wins_even_when_it_syncs_first() {
+    // T3-01: A 가 먼저, B 가 나중에 같은 노트를 고쳤다. B 가 먼저 맞추고 A 가 뒤에 맞춰도 "나중에 고친 쪽"(B)이 이긴다 (K28)
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let note = a.uid("note", a.n("SELECT id FROM note"));
+    let t = db::now_ms();
+    let set = "UPDATE note SET fields = ?2, updated_at = ?3 WHERE uid = ?1";
+    let a1 = json!(["결측값 처리 방법?", "A 가 먼저 고침"]).to_string();
+    let b1 = json!(["결측값 처리 방법?", "B 가 나중에 고침"]).to_string();
+    a.edit_at(t + 1000, set, params![note, a1, t + 1000]);
+    b.edit_at(t + 2000, set, params![note, b1, t + 2000]);
+    env.sync(&b);
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(a.fields(&note), b1, "나중에 고친 쪽");
+    assert_eq!(a.dump(), b.dump());
+    // 내용이 바뀐 A 에 K7 기록. 시각은 맞춘 시각이 아니라 고친 순간 (T3-02 ③)
+    assert_eq!(a.conflicts(), vec![(b.me(), t + 2000, b1.clone(), a.me(), t + 1000, a1.clone())]);
+    // 먼저 고친 쪽이 먼저 맞춰도 같다. 이때는 두 기기 모두 진 쪽 내용을 본다
+    let a2 = json!(["결측값 처리 방법?", "A 가 다시 먼저"]).to_string();
+    let b2 = json!(["결측값 처리 방법?", "B 가 다시 나중에"]).to_string();
+    a.edit_at(t + 3000, set, params![note, a2, t + 3000]);
+    b.edit_at(t + 4000, set, params![note, b2, t + 4000]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.fields(&note), b2);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(a.conflicts().last().unwrap(), &(b.me(), t + 4000, b2.clone(), a.me(), t + 3000, a2.clone()));
+    assert_eq!(b.conflicts().last().unwrap(), &(b.me(), t + 4000, b2.clone(), a.me(), t + 3000, a2.clone()));
+}
+
+#[test]
+fn edit_after_receiving_wins_even_with_a_slow_clock() {
+    // 시계가 5초 늦은 B 가 A 의 내용을 받은 뒤 고쳤다: 받은 HLC 보다 크게 매기므로 B 가 이긴다 (K28 시계 차이)
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let note = a.uid("note", a.n("SELECT id FROM note"));
+    let t = db::now_ms();
+    let x = json!(["Q", "A 가 고침"]).to_string();
+    let y = json!(["Q", "B 가 받은 뒤 고침"]).to_string();
+    a.edit_at(t + 5000, "UPDATE note SET fields = ?2 WHERE uid = ?1", params![note, x]);
+    env.sync(&a);
+    env.sync(&b);
+    b.edit_at(t, "UPDATE note SET fields = ?2 WHERE uid = ?1", params![note, y]);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.fields(&note), y);
+    assert_eq!(a.dump(), b.dump());
+    assert!(a.conflicts().is_empty() && b.conflicts().is_empty(), "이어서 고친 것은 두 기기에서 고친 것이 아니다");
+}
+
+#[test]
+fn first_merge_keeps_losing_versions_on_both_devices() {
+    // T3-03: 처음 합칠 때 Drive 쪽이 이겨도 진 이 기기 버전을 K7 에 남긴다 (바탕 기록이 없으니 내용이 다르면 남긴다)
+    // T3-04: 이 기기 쪽이 이겨 Drive 를 가진 기기의 내용이 바뀌면 그 기기에도 남는다. 연결을 끊어도 남는다
+    // T3-05: 기기 이름은 "다른 기기 ↔ 다른 기기"가 아니라 실제 기기
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let da = a.deck("공통", None);
+    a.note(da, "질문 3 (A 가 먼저 고침)", Some("G3"), 3000);
+    a.note(da, "질문 4 (A 가 나중에 고침)", Some("G4"), 4500);
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    let b = Dev::new("데스크톱");
+    let dbk = b.deck("공통", None);
+    b.note(dbk, "질문 3 (B 가 나중에 고침)", Some("G3"), 3500);
+    b.note(dbk, "질문 4 (B 가 먼저 고침)", Some("G4"), 4000);
+    let report = engine::join(&b.db, &env.cx(&b), Join::Merge, json!({})).unwrap();
+    assert_eq!(report.conflicts, 2);
+    let on_b = b.conflicts();
+    let has = |list: &[(String, i64, String, String, i64, String)], win: &str, win_dev: &str, lose: &str, lose_dev: &str| {
+        list.iter().any(|c| c.2.contains(win) && c.0 == win_dev && c.5.contains(lose) && c.3 == lose_dev)
+    };
+    assert!(has(&on_b, "질문 4 (A", &a.me(), "질문 4 (B", &b.me()), "Drive 쪽이 이겨도: {on_b:?}");
+    assert!(has(&on_b, "질문 3 (B", &b.me(), "질문 3 (A", &a.me()), "{on_b:?}");
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    let on_a = a.conflicts();
+    assert_eq!(on_a.len(), 1, "{on_a:?}");
+    assert!(has(&on_a, "질문 3 (B", &b.me(), "질문 3 (A", &a.me()), "내용이 바뀐 A 에도: {on_a:?}");
+    super::forget_local(&a.con()).unwrap();
+    engine::ensure_tables(&a.con()).unwrap();
+    assert_eq!(a.conflicts().len(), 1, "연결을 끊어도 30일 기록은 이 기기에 남는다");
+}
+
+#[test]
+fn reviews_on_both_devices_before_first_merge_are_replayed() {
+    // T3-06: 같은 .apkg 카드를 연결 전에 A 에서 Good, 나중에 B 에서 Again. 합치면 두 기록을 시간 순으로 돌린 상태가 된다
+    let env = Env::new();
+    let (t1, t2) = (1_800_000_000_000, 1_800_000_004_000);
+    let a = Dev::new("노트북");
+    let da = a.deck("공통", None);
+    let (_, ca) = a.note(da, "공유 질문 1", Some("G1"), 1000);
+    let s0 = a.srs(ca);
+    a.review(&env.fsrs, ca, 3, t1);
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    let b = Dev::new("데스크톱");
+    let dbk = b.deck("공통", None);
+    let (_, cb) = b.note(dbk, "공유 질문 1", Some("G1"), 1000);
+    b.review(&env.fsrs, cb, 1, t2);
+    let report = engine::join(&b.db, &env.cx(&b), Join::Merge, json!({})).unwrap();
+    let expected = srs::review(&env.fsrs, &srs::review(&env.fsrs, &s0, 3, t1), 1, t2);
+    assert_eq!(report.recomputed, 1);
+    assert_eq!(b.srs(b.n("SELECT id FROM card")), expected, "A 의 Good 다음에 B 의 Again");
+    assert_eq!(b.n("SELECT count(*) FROM sync_anchor"), 0, "다시 계산하기 전 상태를 공통 시점으로 남기지 않는다");
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.srs(a.n("SELECT id FROM card")), expected);
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn deleting_a_card_loses_to_a_later_edit_of_its_note() {
+    // T3-07: A 가 카드를 지웠고(노트의 마지막 카드라 노트도), B 가 그 뒤에 노트를 고쳤다.
+    // 노트만 되살아나 카드 없는 노트가 되지 않고 카드도 남는다. 지운 기기에서 비었던 복습 기록의 카드 참조도 돌아온다 (K29)
+    let env = Env::new();
+    let (a, b, card_a) = pair(&env);
+    let card = a.uid("card", card_a);
+    let note = a.uid("note", a.n("SELECT id FROM note"));
+    a.review(&env.fsrs, card_a, 3, 1_800_000_000_000);
+    env.sync(&a);
+    env.sync(&b);
+    let t = db::now_ms();
+    a.edit_at(t + 1000, "DELETE FROM card WHERE uid = ?1", [&card]);
+    a.edit_at(t + 1000, "DELETE FROM note WHERE uid = ?1", [&note]);
+    let edited = json!(["결측값 처리 방법?", "지운 뒤 B 가 고침"]).to_string();
+    b.edit_at(t + 2000, "UPDATE note SET fields = ?2, updated_at = ?3 WHERE uid = ?1", params![note, edited, t + 2000]);
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        assert!(d.id("card", &card).is_some(), "카드도 남는다");
+        assert_eq!(d.fields(&note), edited);
+        assert_eq!(d.n("SELECT count(*) FROM review_log WHERE card_id IS NULL"), 0, "복습 기록이 다시 카드를 가리킨다");
+    }
+    assert_eq!(a.dump(), b.dump());
+    // 지운 쪽이 나중이면 둘 다 지운다
+    a.edit_at(t + 5000, "DELETE FROM card WHERE uid = ?1", [&card]);
+    a.edit_at(t + 5000, "DELETE FROM note WHERE uid = ?1", [&note]);
+    env.sync(&a);
+    env.sync(&b);
+    assert!(b.id("note", &note).is_none() && b.id("card", &card).is_none());
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn deleting_one_card_loses_to_a_later_edit_of_its_note() {
+    // K29: 카드 한 장만 지웠어도(노트는 남음) 그 뒤에 다른 기기가 노트를 고쳤으면 카드를 남긴다. 노트를 고친 것은 그 카드를 고친 것이다.
+    // 고친 것이 지운 것보다 먼저면(지운 기기가 이미 받았으면) 지운다
+    let env = Env::new();
+    let (a, b, card_a) = pair(&env);
+    let card = a.uid("card", card_a);
+    let note = a.uid("note", a.n("SELECT id FROM note"));
+    let t = db::now_ms();
+    a.edit_at(t + 1000, "DELETE FROM card WHERE uid = ?1", [&card]);
+    b.edit_at(t + 2000, "UPDATE note SET tags = 'b' WHERE uid = ?1", [&note]);
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert!(a.id("card", &card).is_some() && b.id("card", &card).is_some());
+    assert_eq!(a.dump(), b.dump());
+    a.edit_at(t + 3000, "DELETE FROM card WHERE uid = ?1", [&card]);
+    env.sync(&a);
+    env.sync(&b);
+    assert!(b.id("card", &card).is_none(), "노트를 고친 것을 받은 뒤에 지웠다");
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn deleting_a_deck_loses_to_a_card_added_later_on_another_device() {
+    // T3-08: A 가 덱을 지웠고(카드 · 카드 없는 노트 · 덱 설정까지), B 가 그 뒤에 그 덱에 카드를 넣었다.
+    // 덱 · 덱 설정 · 새 카드는 남고 A 가 지운 옛 카드는 지워진 상태로, 세 기기가 모두 같아진다 (K29).
+    // B 가 A 의 지우기를 받기 전에 새 카드를 먼저 올렸어도 (A 는 덱이 없어 그 카드를 건너뛴다) 같다
+    for b_first in [false, true] {
+        let env = Env::new();
+        let (a, b, card_a) = pair(&env);
+        let c = Dev::new("태블릿");
+        engine::join(&c.db, &env.cx(&c), Join::Take, json!({})).unwrap();
+        let sub = a.uid("deck", a.n("SELECT id FROM deck WHERE name = '2과목'"));
+        a.con().execute("INSERT INTO deck_config (deck_id, daily_new_limit, updated_at) SELECT id, 7, 1000 FROM deck WHERE uid = ?1", [&sub]).unwrap();
+        for d in [&a, &b, &c] {
+            env.sync(d);
+        }
+        let old_card = a.uid("card", card_a);
+        let t = db::now_ms();
+        a.at(t + 1000, || {
+            let con = a.con();
+            con.execute("DELETE FROM card WHERE deck_id = (SELECT id FROM deck WHERE uid = ?1)", [&sub]).unwrap();
+            con.execute("DELETE FROM note WHERE NOT EXISTS (SELECT 1 FROM card WHERE card.note_id = note.id)", []).unwrap();
+            con.execute("DELETE FROM deck WHERE uid = ?1", [&sub]).unwrap();
+        });
+        let sub_b = b.id("deck", &sub).unwrap();
+        let (_, new_card) = b.at(t + 2000, || b.note(sub_b, "덱을 지운 뒤 B 가 넣은 카드", None, t + 2000));
+        let new_card = b.uid("card", new_card);
+        if b_first {
+            env.sync(&b);
+        }
+        for d in [&a, &b, &c, &a, &b, &c] {
+            env.sync(d);
+        }
+        for d in [&a, &b, &c] {
+            let who = d.n("SELECT count(*) FROM deck");
+            assert!(d.id("deck", &sub).is_some(), "덱이 남는다 (b_first={b_first}, 덱 {who}개)");
+            assert!(d.id("card", &new_card).is_some(), "새 카드가 남는다 (b_first={b_first})");
+            assert!(d.id("card", &old_card).is_none(), "지운 카드는 지운다");
+            assert_eq!(d.n(&format!("SELECT count(*) FROM deck_config WHERE deck_id = (SELECT id FROM deck WHERE uid = '{sub}')")), 1, "덱 설정도 따라 남는다");
+        }
+        assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
+        assert_eq!(a.dump(), c.dump(), "b_first={b_first}");
+    }
+}
+
+#[test]
+fn lock_change_after_pulling_keeps_unpulled_changes_and_media() {
+    // T3-09: 잠금을 바꾸는 기기(B)는 먼저 받는다 (sync_set_lock). C 가 올리고 B 가 아직 받지 않은 그림 카드도 새 세대에 들어가,
+    // 지난 세대 파일과 Drive 그림을 지운 뒤에도 남는다
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let c = Dev::new("태블릿");
+    engine::join(&c.db, &env.cx(&c), Join::Take, json!({})).unwrap();
+    let pic = b"L3 picture".to_vec();
+    std::fs::write(c.dir.join("media/l3.png"), &pic).unwrap();
+    c.con().execute("INSERT INTO media (filename, rel_path, sha256, byte_size, created_at) VALUES ('l3.png', 'media/l3.png', '', 10, 1)", []).unwrap();
+    let deck = c.n("SELECT id FROM deck WHERE name = '2과목'");
+    c.note(deck, "L3 잠금 중 그림 <img src=\"l3.png\">", None, 2000);
+    env.sync(&c);
+    env.sync(&a);
+    // B: 받기 -> (잠그기: Drive 그림을 지우고) 새 세대 스냅샷 -> 지난 세대 파일 지우기. mod.rs sync_set_lock 순서
+    let key = [9u8; 32];
+    assert!(matches!(engine::pull(&b.db, &env.cx(&b)).unwrap(), Pulled::Done(_)));
+    let before = engine::remote(&env.store).unwrap();
+    for p in env.files("media/") {
+        env.store.delete(&p).unwrap();
+    }
+    engine::join(&b.db, &env.cx_key(&b, Some(key)), Join::Fresh, json!({ "kind": "lock" })).unwrap();
+    engine::drop_old_generation(&env.store, 1, &before).unwrap();
+    // A 는 고르는 창에서 [Drive 데이터로 바꾸기]를 골라도 C 의 카드와 그림을 잃지 않는다
+    std::fs::remove_dir_all(a.dir.join("media")).unwrap();
+    engine::join(&a.db, &env.cx_key(&a, Some(key)), Join::Take, json!({})).unwrap();
+    assert_eq!(a.n("SELECT count(*) FROM note WHERE fields LIKE '%L3 잠금 중 그림%'"), 1);
+    assert_eq!(std::fs::read(a.dir.join("media/l3.png")).unwrap(), pic);
+    assert!(env.files("changes/").is_empty(), "지난 세대 변경 파일은 지웠다");
+}
+
+#[test]
+fn restarting_a_wiped_drive_uses_a_newer_generation() {
+    // T3-10: 다른 기기가 Drive 에서 지운 뒤 "이 기기 데이터로 다시 시작"은 본 적 있는 어떤 세대보다 큰 세대로 시작한다.
+    // 다른 기기는 지난 세대로 보고 버리지 않고 고르는 창을 본다. 잠근 기기가 늦게 올린 암호 파일에 갇히지도 않는다
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    engine::join(&b.db, &env.cx(&b), Join::Fresh, json!({ "kind": "fresh" })).unwrap();
+    assert!(matches!(engine::pull(&a.db, &env.cx(&a)).unwrap(), Pulled::Choice(_)));
+    engine::join(&a.db, &env.cx(&a), Join::Take, json!({})).unwrap();
+    for e in env.store.list("").unwrap() {
+        env.store.delete(&e.path).unwrap();
+    }
+    assert!(matches!(engine::pull(&a.db, &env.cx(&a)).unwrap(), Pulled::Gone));
+    engine::join(&a.db, &env.cx(&a), Join::Fresh, json!({ "kind": "fresh" })).unwrap();
+    assert!(env.files("snapshot/")[0].starts_with("snapshot/g0003-"), "본 세대(2)보다 크게: {:?}", env.files("snapshot/"));
+    match engine::pull(&b.db, &env.cx(&b)).unwrap() {
+        Pulled::Choice(ch) => assert_eq!(ch.generation, 3),
+        _ => panic!("다시 시작한 Drive 를 지난 세대로 보고 버렸다"),
+    }
+    // 잠근 기기가 지우기 전 세대로 늦게 올린 암호문: 잠기지 않은 Drive 에서는 건너뛴다
+    plant(&env, 1, json!([{ "t": "deck", "u": "dz", "op": "up", "h": H, "r": { "name": "잠근 덱", "created_at": 1, "updated_at": 1 } }]), Some([7u8; 32]));
+    assert!(matches!(engine::pull(&a.db, &env.cx(&a)).unwrap(), Pulled::Done(_)), "암호로 잠겨 있어요에 갇히지 않는다");
+    // 이 기기 세대보다 낮은 세대만 남은 Drive (옛 앱이 다시 시작했다)도 고르는 창
+    let c = Dev::new("태블릿");
+    engine::join(&c.db, &env.cx(&c), Join::Take, json!({})).unwrap();
+    c.con().execute("UPDATE sync_local SET value = '9' WHERE key = 'gen'", []).unwrap();
+    assert!(matches!(engine::pull(&c.db, &env.cx(&c)).unwrap(), Pulled::Choice(ch) if ch.generation == 3));
+}
+
+#[test]
+fn pending_count_includes_card_only_changes() {
+    // T3-13: 카드 표만 바뀐 변경(중요도 · 접기 · 덱 이동)도 전송 대기로 센다. 복습으로 바뀐 카드는 복습 묶음으로 센다
+    let env = Env::new();
+    let (a, _b, card) = pair(&env);
+    a.con().execute("UPDATE card SET importance = 2 WHERE id = ?1", [card]).unwrap();
+    a.con().execute("UPDATE card SET buried_until = 9999999999999, buried_reason = 'user' WHERE id = ?1", [card]).unwrap();
+    assert_eq!(super::pending_counts(&a.con()), (1, 0, 1), "카드 한 장의 변경 1건");
+    a.review(&env.fsrs, card, 3, 1_800_000_000_000);
+    let (pending, reviews, _) = super::pending_counts(&a.con());
+    assert_eq!((pending, reviews), (1, 1), "복습한 카드의 변경은 복습 묶음으로 센다");
 }
 
 /// 다른 기기(zz)가 올린 것처럼 변경 파일 하나를 써 넣는다 (변조된 Drive 흉내)
