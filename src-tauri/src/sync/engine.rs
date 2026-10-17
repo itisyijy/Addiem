@@ -169,6 +169,23 @@ pub fn gen_of(con: &Connection) -> SRes<i64> {
     local_i64(con, "gen")
 }
 
+/// 이 기기 백업으로 되돌렸다 (S1-6). 받은 위치 · 올린 번호도 백업 때로 돌아가서, 백업 뒤에 이 기기가 올린 변경 파일을
+/// 다음 받기가 다른 기기 것처럼 다시 받는다. 그 전에는 올리지 않는다 (Drive 에 있는 번호를 다시 쓰지 않게, Q2-09)
+pub fn mark_restored(con: &Connection) -> SRes<()> {
+    ensure_tables(con)?;
+    if gen_of(con)? > 0 {
+        set_local(con, "restored", "1")?;
+    }
+    Ok(())
+}
+
+/// Drive 가 아는 이 기기 id 의 마지막 번호: 변경 파일과 기기 파일(devices/<나>.json) 중 큰 것.
+/// 정리(5.5)는 기기 파일의 번호 뒤 파일을 지우지 않는다. 변경 파일이 모두 지워졌어도 기기 파일에 남는다
+fn pushed_top(r: &Remote, devices: &[J], me: &str) -> i64 {
+    let file = devices.iter().filter(|d| d["uid"].as_str() == Some(me)).filter_map(|d| d["seq"].as_i64()).max().unwrap_or(0);
+    r.changes.get(me).and_then(|v| v.last()).map_or(0, |(s, _)| *s).max(file)
+}
+
 /// 기기마다 어디까지 받았는가 (변경 파일 번호). 이 기기 것은 올린 번호
 pub fn positions(con: &Connection) -> SRes<BTreeMap<String, i64>> {
     Ok(local(con, "pos")?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
@@ -804,16 +821,29 @@ fn remote_media(store: &dyn Store) -> SRes<HashSet<String>> {
 
 /// 올리기 한 번. 올린 변경이 없으면 false
 pub fn push(db: &Mutex<Connection>, cx: &Ctx) -> SRes<bool> {
+    let (me, my_seq) = {
+        let con = lock(db)?;
+        ensure_tables(&con)?;
+        // 올릴 것이 없다. 또는 이 기기 백업으로 되돌렸다: 받기가 Drive 와 다시 맞춘 뒤에 올린다 (mark_restored)
+        let empty: bool = con.query_row("SELECT NOT EXISTS (SELECT 1 FROM sync_outbox)", [], |r| r.get(0)).map_err(dbe)?;
+        if empty || local(&con, "restored")?.is_some() {
+            return Ok(false);
+        }
+        (device_uid(&con)?, local_i64(&con, "my_seq")?)
+    };
+    // 이 기기가 올린 번호보다 큰 이 기기 파일이 있으면 같은 기기 id 를 쓰는 다른 데이터가 올렸다
+    // (연결된 데이터 폴더를 복사했거나, 앱 밖에서 옛 파일로 되돌렸다). 덮지 않는다.
+    // 번호를 차지하기 전에 멈춘다: 차지한 뒤에 멈추면 다음 번에는 말없이 다음 번호로 올리고 그 파일들은 끝내 받지 않는다 (Q2-09)
+    let mine: Vec<J> = cx.store.get(&format!("devices/{me}.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).into_iter().collect();
+    if pushed_top(&remote(cx.store)?, &mine, &me) > my_seq {
+        return Err(other("이 기기 데이터를 다른 컴퓨터로 복사했거나 앱 밖에서 예전 파일로 되돌린 것 같아요. 설정 › Google Drive에서 연결을 끊고(Drive 데이터 남기기) 다시 연결해 주세요."));
+    }
     let batch = { prepare_push(&mut *lock(db)?, cx)? };
     let Some(batch) = batch else { return Ok(false) };
     (cx.progress)("push", 0, 1);
     if !batch.media.is_empty() {
         let mut have = remote_media(cx.store)?;
         upload_media(cx, &batch.media, &mut have)?;
-    }
-    // 이 번호의 파일이 이미 있으면 같은 기기 id 를 쓰는 다른 컴퓨터가 있다 (연결된 데이터 폴더를 복사했다). 덮지 않는다
-    if !cx.store.list(&batch.path)?.is_empty() {
-        return Err(other("이 기기 데이터가 다른 컴퓨터에서 복사된 것 같아요. Google Drive 연결을 끊고 다시 연결해 주세요."));
     }
     cx.store.put(&batch.path, &batch.data)?;
     finish_push(&mut *lock(db)?, &batch)?;
@@ -904,11 +934,13 @@ pub enum Pulled {
 
 /// 받기 한 번: 다른 기기의 새 변경 파일을 모두 받아 한 트랜잭션에서 합친다
 pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
-    let (me, generation, pos) = {
+    let (me, generation, pos, restored) = {
         let con = lock(db)?;
         init(&con)?;
-        (device_uid(&con)?, gen_of(&con)?, positions(&con)?)
+        (device_uid(&con)?, gen_of(&con)?, positions(&con)?, local(&con, "restored")?.is_some())
     };
+    // 받을 기기. 이 기기 백업으로 되돌렸으면 백업 뒤에 이 기기가 올린 파일도 받는다 (mark_restored)
+    let theirs = |d: &str| d != me || restored;
     (cx.progress)("pull", 0, 1);
     let r = remote(cx.store)?;
     if r.is_empty() {
@@ -928,16 +960,17 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         };
         return Ok(Pulled::Choice(Choice { generation: r.generation(), header }));
     }
-    // 뒤처진 기기: 필요한 변경 파일이 이미 정리됐으면 스냅샷부터 (5.5)
+    // 뒤처진 기기: 필요한 변경 파일이 이미 정리됐으면 스냅샷부터 (5.5).
+    // 되돌린 기기도: 백업 뒤에 이 기기가 올린 파일은 정리돼 스냅샷에만 있을 수 있다 (남은 파일로는 알 수 없다)
     let mut from = pos.clone();
     let mut recs: Vec<Rec> = vec![];
     let mut aliases = vec![];
-    let gap = r.changes.iter().any(|(d, files)| d != &me && files.first().is_some_and(|(s, _)| *s > from.get(d).copied().unwrap_or(0) + 1));
+    let gap = restored || r.changes.iter().any(|(d, files)| theirs(d) && files.first().is_some_and(|(s, _)| *s > from.get(d).copied().unwrap_or(0) + 1));
     if gap && let Some(snap) = r.newest(generation) {
         let (header, snap_recs) = decode(cx.store.get(&snap.path)?, cx.key())?;
         for (d, s) in header["covers"].as_object().into_iter().flatten() {
             let s = s.as_i64().unwrap_or(0);
-            if d != &me && s > from.get(d).copied().unwrap_or(0) {
+            if theirs(d) && s > from.get(d).copied().unwrap_or(0) {
                 from.insert(d.clone(), s);
             }
         }
@@ -948,7 +981,7 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
     let todo: Vec<(String, i64, String)> = r
         .changes
         .iter()
-        .filter(|(d, _)| *d != &me)
+        .filter(|(d, _)| theirs(d))
         .flat_map(|(d, files)| files.iter().filter(|(s, _)| *s > from.get(d).copied().unwrap_or(0)).map(move |(s, p)| (d.clone(), *s, p.clone())))
         .collect();
     for (i, (dev, seq, path)) in todo.iter().enumerate() {
@@ -979,6 +1012,13 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         for (d, s) in new_pos {
             let e = pos.entry(d).or_insert(0);
             *e = (*e).max(s);
+        }
+        if restored {
+            // 다음 올리기는 Drive 에 있는 이 기기 번호 뒤부터
+            let seq = local_i64(&tx, "my_seq")?.max(pushed_top(&r, &devices, &me));
+            set_local(&tx, "my_seq", &seq.to_string())?;
+            pos.insert(me.clone(), seq);
+            tx.execute("DELETE FROM sync_local WHERE key = 'restored'", []).map_err(dbe)?;
         }
         set_local(&tx, "pos", &serde_json::to_string(&pos).map_err(other)?)?;
         set_local(&tx, "devices", &serde_json::to_string(&devices).map_err(other)?)?;
@@ -1981,10 +2021,11 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
         let con = lock(db)?;
         init(&con)?;
         con.execute("UPDATE sync_flags SET enabled = 1, applying = 0", []).map_err(dbe)?;
-        // 데이터 폴더를 다른 컴퓨터로 복사하면 기기 id 도 따라온다. 아직 합류하지 않았는데 Drive 에 같은 id 의 기기가 있으면
-        // 이 기기는 복사본이다: 새 id 를 쓴다 (같은 id 둘이 서로의 변경 파일을 덮지 않게)
+        // 데이터 폴더를 다른 컴퓨터로 복사하면 기기 id 도 따라온다. 아직 합류하지 않았는데 Drive 에 같은 id 의 기기나 변경 파일이 있으면
+        // 이 기기는 복사본이거나 연결을 끊었던 기기다: 새 id 를 쓴다 (같은 id 둘이 서로의 변경 파일을 덮지 않게.
+        // [연결 끊기]는 Drive 의 기기 파일을 지우므로 변경 파일도 본다, Q2-09)
         let me = device_uid(&con)?;
-        if gen_of(&con)? == 0 && r.devices.contains(&format!("devices/{me}.json")) {
+        if gen_of(&con)? == 0 && (r.devices.contains(&format!("devices/{me}.json")) || r.changes.contains_key(&me)) {
             let fresh = format!("{:012x}{}", db::now_ms(), crypto::random_hex(10));
             con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [&fresh]).map_err(dbe)?;
             set_local(&con, "my_seq", "0")?;
