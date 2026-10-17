@@ -304,9 +304,14 @@ export function ListEditor({ value, onChange }: { value: ListDraft; onChange: (v
 
 /**
  * 선택형: 보기 2–6개 (체크한 것이 정답, 여러 개 가능) + 학습할 때 보기 섞기 (기본 켬, Q5). correct 는 보기의 0부터 번호.
- * question: 있으면 보기 아래에 Q8 오답 보기 제안 줄 (편집 중인 질문 HTML 을 보낼 때 읽는다)
+ * question: 있으면 보기 아래에 Q8 오답 보기 제안 줄 (편집 중인 질문 HTML 을 보낼 때 읽는다). onUnplaced: 넣지 않은 제안 수 (저장 토스트, Q42)
  */
-export function ChoiceEditor({ value, onChange, question }: { value: ChoiceDraft; onChange: (v: ChoiceDraft) => void; question?: () => string }) {
+export function ChoiceEditor({ value, onChange, question, onUnplaced }: {
+  value: ChoiceDraft;
+  onChange: (v: ChoiceDraft) => void;
+  question?: () => string;
+  onUnplaced?: (count: number) => void;
+}) {
   const { box, focus, next } = useFocusRow();
   const add = (at: number) => {
     if (next(at, value.options) || value.options.length >= 6) return;
@@ -359,7 +364,7 @@ export function ChoiceEditor({ value, onChange, question }: { value: ChoiceDraft
           보기 추가
         </button>
       )}
-      {question && <DistractorLine question={question} value={value} onChange={onChange} />}
+      {question && <DistractorLine question={question} value={value} onChange={onChange} onUnplaced={onUnplaced} />}
       <p className="t-caption c-secondary">정답이 둘 이상이면 학습할 때 "모두 고르기"로 묻어요. "모두 맞음" 같은 보기가 있으면 섞기를 끄세요. 해설은 추가 설명 칸에 써요.</p>
     </>
   );
@@ -402,7 +407,12 @@ function DqRow({ icon, tone, text, action }: { icon: IconName; tone: string; tex
  * 제안은 점선 보기로만 있고 [넣기] 전에는 편집기 값에 없다 (저장되지 않는다). 기다리는 동안에도 보기를 쓰고 저장할 수 있다:
  * 부모가 저장 뒤 key 를 바꾸거나 창을 닫으면 여기서 요청을 멈춘다
  */
-function DistractorLine({ question, value, onChange }: { question: () => string; value: ChoiceDraft; onChange: (v: ChoiceDraft) => void }) {
+function DistractorLine({ question, value, onChange, onUnplaced }: {
+  question: () => string;
+  value: ChoiceDraft;
+  onChange: (v: ChoiceDraft) => void;
+  onUnplaced?: (count: number) => void;
+}) {
   const ai = useAiStatus();
   const [phase, setPhase] = useState<DqPhase>("idle");
   const [offered, setOffered] = useState<string[]>([]);
@@ -414,12 +424,19 @@ function DistractorLine({ question, value, onChange }: { question: () => string;
   const seq = useRef(0);
   const inFlight = useRef(false);
   const latest = useRef(value);
+  const report = useRef(onUnplaced);
   useEffect(() => {
     latest.current = value;
+    report.current = onUnplaced;
   });
+  // 저장할 때 버려질 제안 수 (부모의 저장 토스트, Q42)
+  useEffect(() => {
+    report.current?.(phase === "done" ? offered.length : 0);
+  }, [phase, offered]);
   useEffect(
     () => () => {
       if (inFlight.current) aiApi.cancel().catch(() => {});
+      report.current?.(0);
     },
     [],
   );

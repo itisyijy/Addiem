@@ -224,6 +224,7 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [list, setList] = useState(EMPTY_LIST);
   const [choice, setChoice] = useState(EMPTY_CHOICE);
   const [extraOpen, setExtraOpen] = useState(false);
+  const unplaced = useRef(0); // Q8 넣지 않은 오답 보기 제안 (저장하면 버려진다, Q42)
   // NT6 노트 유형: 목록 · 이 덱이 쓰는 유형(많이 쓰는 것 먼저) · 고른 사용자 · 가져온 유형. origin: 유형 정보 줄 아래 안내
   const [types, setTypes] = useState<NoteTypeRow[]>([]);
   const [deckTypes, setDeckTypes] = useState<number[]>([]);
@@ -470,6 +471,7 @@ export function AddCard({ deckId }: { deckId: number }) {
       } else if (kind === "choice") {
         await recall.addChoice({ deck_id: target, question: front, extra: toStoredHtml(aHtml), importance, ...choice });
         setChoice((c) => ({ ...EMPTY_CHOICE, shuffle: c.shuffle }));
+        if (unplaced.current) toast({ title: "카드를 저장했어요", text: `넣지 않은 제안 ${n(unplaced.current)}개는 버렸어요`, icon: "check-circle" });
       } else made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
       if (kind !== "typed")
         text = kind === "occlusion" ? plainText(qHtml) || "그림 가리기 · " + (pic?.fileName ?? "") : plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml);
@@ -747,7 +749,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               <span className="t-label-m">질문</span>
               <RichField key={`q-${kind}-${gen}`} ref={q} initial={init[0]} minHeight={44} toolbar={false} onInput={refresh} />
               {chip}
-              {kind === "list" ? <ListEditor value={list} onChange={setList} /> : <ChoiceEditor key={addedCount} value={choice} onChange={setChoice} question={() => q.current?.html() ?? ""} />}
+              {kind === "list" ? <ListEditor value={list} onChange={setList} /> : <ChoiceEditor key={addedCount} value={choice} onChange={setChoice} question={() => q.current?.html() ?? ""} onUnplaced={(c) => (unplaced.current = c)} />}
               {extraOpen ? (
                 <>
                   <span className="addcard__label">

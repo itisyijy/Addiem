@@ -1399,6 +1399,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   const [rootId, setRootId] = useState<number>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const toast = useToast();
+  const unplaced = useRef(0); // Q8 넣지 않은 오답 보기 제안 (저장하면 버려진다, Q42)
   const fields = useRef<(FieldHandle | null)[]>([]);
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
   const root = card?.deck_path[0];
@@ -1499,7 +1501,10 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
     setSaving(true);
     try {
       if (list) await recall.updateList(note.note_id, { ...edit(), ...list });
-      else if (choice) await recall.updateChoice(note.note_id, { ...edit(), ...choice });
+      else if (choice) {
+        await recall.updateChoice(note.note_id, { ...edit(), ...choice });
+        if (unplaced.current) toast({ title: "카드를 저장했어요", text: `넣지 않은 제안 ${n(unplaced.current)}개는 버렸어요`, icon: "check-circle" });
+      }
       else await api.updateNote(note.note_id, values, note.slots); // 보이는 순서의 값을 제 자리로 (순서를 바꾼 유형)
       if (wn) await writtenApi.saveNote(note.note_id, write, kws, dismissed);
       if (exam && JSON.stringify(exam) !== JSON.stringify(note.exam)) await examApi.set("note", [exam]);
@@ -1617,7 +1622,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
               <>
                 {recallField(0, "질문")}
                 <div className="edit__item edit__item--wide">
-                  {list ? <ListEditor value={list} onChange={setList} /> : choice && <ChoiceEditor value={choice} onChange={setChoice} question={() => fields.current[0]?.html() ?? ""} />}
+                  {list ? <ListEditor value={list} onChange={setList} /> : choice && <ChoiceEditor value={choice} onChange={setChoice} question={() => fields.current[0]?.html() ?? ""} onUnplaced={(c) => (unplaced.current = c)} />}
                 </div>
                 {recallField(note.names.length - 1, "추가 설명")}
               </>
