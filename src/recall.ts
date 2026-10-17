@@ -29,7 +29,7 @@ export const recall = {
   distractors: (question: string, correct: string[], options: string[], count: number) => invoke<string[]>("ai_distractors", { question, correct, options, count }),
 };
 
-/** Q36 (초안 · 사용자 결정 대기): 받을 오답 수. 4지선다까지 채우고, 이미 4–5개면 1개 (보기는 6개까지) */
+/** Q37 (사용자 결정 2026-10-18): 받을 오답 수. 4지선다까지 채우고, 이미 4–5개면 1개 (보기는 6개까지) */
 export const wantedDistractors = (filled: number) => (filled < 4 ? 4 - filled : filled < 6 ? 1 : 0);
 /** 같은 보기인가 (recall.rs option_key 와 같다: 공백을 모두 빼고 대소문자 무시) */
 export const optionKey = (t: string) => t.replace(/\s+/g, "").toLowerCase();

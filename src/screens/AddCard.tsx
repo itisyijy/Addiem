@@ -201,7 +201,7 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [kind, setKind] = useState<Kind>("basic");
   const [importance, setImportance] = useState<Level | null>(null);
   const [keepGoing, setKeepGoing] = useState(true);
-  const [added, setAdded] = useState<{ text: string; dropped: number }[]>([]); // dropped: 넣지 않고 버린 Q8 제안 수 (Q42)
+  const [added, setAdded] = useState<{ text: string; dropped: number }[]>([]); // dropped: 넣지 않고 버린 Q8 제안 수 (Q43)
   const [addedCount, setAddedCount] = useState(0);
   const [error, setError] = useState<string>();
   const [leaving, setLeaving] = useState<Route | null>(null); // 작성 중인 내용을 버릴지 묻는 중
@@ -225,7 +225,7 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [list, setList] = useState(EMPTY_LIST);
   const [choice, setChoice] = useState(EMPTY_CHOICE);
   const [extraOpen, setExtraOpen] = useState(false);
-  const unplaced = useRef(0); // Q8 넣지 않은 오답 보기 제안 (저장하면 버려진다, Q42)
+  const unplaced = useRef(0); // Q8 넣지 않은 오답 보기 제안 (저장하면 버려진다, Q43)
   // NT6 노트 유형: 목록 · 이 덱이 쓰는 유형(많이 쓰는 것 먼저) · 고른 사용자 · 가져온 유형. origin: 유형 정보 줄 아래 안내
   const [types, setTypes] = useState<NoteTypeRow[]>([]);
   const [deckTypes, setDeckTypes] = useState<number[]>([]);
@@ -473,7 +473,7 @@ export function AddCard({ deckId }: { deckId: number }) {
       } else if (kind === "choice") {
         await recall.addChoice({ deck_id: target, question: front, extra: toStoredHtml(aHtml), importance, ...choice });
         setChoice((c) => ({ ...EMPTY_CHOICE, shuffle: c.shuffle }));
-        dropped = unplaced.current; // 토스트는 [저장]을 가려 "방금 추가한 카드" 줄에 붙인다 (Q42)
+        dropped = unplaced.current; // 토스트는 [저장]을 가려 "방금 추가한 카드" 줄에 붙인다 (Q43)
       } else made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
       if (kind !== "typed")
         text = kind === "occlusion" ? plainText(qHtml) || "그림 가리기 · " + (pic?.fileName ?? "") : plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml);

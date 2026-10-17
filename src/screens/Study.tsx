@@ -1424,7 +1424,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const toast = useToast();
-  const unplaced = useRef(0); // Q8 넣지 않은 오답 보기 제안 (저장하면 버려진다, Q42)
+  const unplaced = useRef(0); // Q8 넣지 않은 오답 보기 제안 (저장하면 버려진다, Q43)
   const fields = useRef<(FieldHandle | null)[]>([]);
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
   const root = card?.deck_path[0];

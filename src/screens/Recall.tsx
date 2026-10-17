@@ -304,7 +304,7 @@ export function ListEditor({ value, onChange }: { value: ListDraft; onChange: (v
 
 /**
  * 선택형: 보기 2–6개 (체크한 것이 정답, 여러 개 가능) + 학습할 때 보기 섞기 (기본 켬, Q5). correct 는 보기의 0부터 번호.
- * question: 있으면 보기 아래에 Q8 오답 보기 제안 줄 (편집 중인 질문 HTML 을 보낼 때 읽는다). onUnplaced: 넣지 않은 제안 수 (저장 토스트, Q42)
+ * question: 있으면 보기 아래에 Q8 오답 보기 제안 줄 (편집 중인 질문 HTML 을 보낼 때 읽는다). onUnplaced: 넣지 않은 제안 수 (저장 토스트, Q43)
  */
 export function ChoiceEditor({ value, onChange, question, onUnplaced }: {
   value: ChoiceDraft;
@@ -370,7 +370,7 @@ export function ChoiceEditor({ value, onChange, question, onUnplaced }: {
   );
 }
 
-// ---------------------------------------------------------------- Q8 오답 보기 제안 (Figma 237:16413 · 다크 237:16796, 초안 Q36–Q41)
+// ---------------------------------------------------------------- Q8 오답 보기 제안 (Figma 237:16413 · 다크 237:16796, Q37–Q43)
 
 type DqPhase = "idle" | "confirm" | "busy" | "done" | "error";
 
@@ -403,7 +403,7 @@ function DqRow({ icon, tone, text, action }: { icon: IconName; tone: string; tex
 }
 
 /**
- * 보기 목록 아래 한 줄. ChatGPT 가 연결돼 있을 때만 보인다 (Q39, 이 창에서 난 오류는 남긴다).
+ * 보기 목록 아래 한 줄. ChatGPT 가 연결돼 있을 때만 보인다 (Q40, 이 창에서 난 오류는 남긴다).
  * 제안은 점선 보기로만 있고 [넣기] 전에는 편집기 값에 없다 (저장되지 않는다). 기다리는 동안에도 보기를 쓰고 저장할 수 있다:
  * 부모가 저장 뒤 key 를 바꾸거나 창을 닫으면 여기서 요청을 멈춘다
  */
@@ -429,7 +429,7 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
     latest.current = value;
     report.current = onUnplaced;
   });
-  // 저장할 때 버려질 제안 수 (부모의 저장 토스트, Q42)
+  // 저장할 때 버려질 제안 수 (부모의 저장 토스트, Q43)
   useEffect(() => {
     report.current?.(phase === "done" ? offered.length : 0);
   }, [phase, offered]);
@@ -489,7 +489,7 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
       },
     );
   };
-  /** 처음 보낼 때 한 번 묻는다 (L4 와 같은 이 기기 확인, Q38). ponytail: 편집 창마다 묻게 하려면 sendConfirmed() 대신 이 창의 ref */
+  /** 처음 보낼 때 한 번 묻는다 (L4 와 같은 이 기기 확인, Q39). ponytail: 편집 창마다 묻게 하려면 sendConfirmed() 대신 이 창의 ref */
   const start = () => (sendConfirmed() ? send() : setPhase("confirm"));
   const cancel = () => {
     if (inFlight.current) aiApi.cancel().catch(() => {});

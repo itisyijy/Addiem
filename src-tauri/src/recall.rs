@@ -399,7 +399,7 @@ pub fn update_choice_note(
     crate::commands::update_note(state, note_id, fields, Some(slots))
 }
 
-// ------------------------------------------------------------------ Q8 오답 보기 제안 (ChatGPT, 초안 Q36–Q41)
+// ------------------------------------------------------------------ Q8 오답 보기 제안 (ChatGPT, Q37–Q43)
 
 /// 제안 하나의 글자 상한. 넘는 제안은 버린다 (보기는 짧은 글이다)
 const MAX_DISTRACTOR_CHARS: usize = 80;
@@ -494,7 +494,7 @@ pub async fn ai_distractors(app: AppHandle, question: String, correct: Vec<Strin
         if correct.is_empty() {
             return Err(AiError::Other("정답에 체크한 뒤 받을 수 있어요.".into()));
         }
-        // 화면이 남은 자리를 센다 (4지선다까지, Q36). 여기서는 보기 6개를 넘지 않게만
+        // 화면이 남은 자리를 센다 (4지선다까지, Q37). 여기서는 보기 6개를 넘지 않게만
         let count = count.min(MAX_OPTIONS - 1);
         if count == 0 {
             return Err(AiError::Other("보기가 6개라 더 받을 수 없어요.".into()));
