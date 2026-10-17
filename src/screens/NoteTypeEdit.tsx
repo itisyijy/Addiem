@@ -118,6 +118,9 @@ export function NoteTypeEdit({ id, ord, note, back }: { id: number; ord?: number
 
 /** 저장 거부 문구 (notetype.rs STALE) */
 const STALE = "다른 기기에서 이 노트 유형이 바뀌었어요";
+/** 같은 자리에 두 기기가 따로 더한 필드 (sync engine KEPT_BOTH). 잃은 것이 없어 진 쪽으로 부르지 않는다. 앞부분으로 옛 기록도 알아본다 */
+const KEPT_BOTH = "같은 자리에 두 기기가 필드를 더해 둘 다 남겼어요";
+const keptBoth = (c: NoteTypeConflict) => c.what.startsWith("같은 자리에");
 
 const initDraft = (d: Detail): Draft => ({
   fields: d.fields.map((f) => ({ key: f.slot, slot: f.slot, name: f.name })),
@@ -147,7 +150,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   useEffect(() => {
     if (!readOnly) api.noteTypeConflicts(d.id).then(setConflicts, () => {});
   }, [d.id, readOnly]);
-  const unseen = conflicts.filter((c) => !c.seen).length;
+  const unseen = conflicts.filter((c) => !c.seen);
+  const lost = unseen.filter((c) => !keptBoth(c)).length;
   const drawn = !d.cloneable && !!d.native_kind; // 목록 · 선택형 · 그림 가리기
   const initial = useMemo(() => initDraft(d), [d]);
   const [draft, setDraft] = useState<Draft>(initial);
@@ -546,15 +550,26 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               <p className="nte__notice nte__notice--warn t-label-m" role="alert">
                 <Icon name="cloud" size={16} />
                 다른 기기에서 이 노트 유형이 바뀌었어요. 지금 화면으로는 저장할 수 없어요 · 다시 불러오면 고친 내용은 사라져요
-                <Button variant="ghost" size="M" label="다시 불러오기" onClick={reload} />
+                {/* 저장이 막힌 동안 나갈 길이라 글자 링크가 아니라 버튼 (디자인 검토 b) */}
+                <Button variant="secondary" size="M" label="다시 불러오기" onClick={reload} />
               </p>
             )}
-            {unseen > 0 && (
+            {unseen.length > 0 ? (
               <p className="nte__notice t-label-m">
                 <Icon name="info" size={16} />
-                다른 기기와 동시에 고친 내용 {n(unseen)}건은 나중에 고친 쪽으로 맞췄어요
-                <Button variant="ghost" size="M" label="진 쪽 보기" onClick={() => setShowConflicts(true)} />
+                {lost > 0 ? `다른 기기와 동시에 고친 내용 ${n(lost)}건은 나중에 고친 쪽으로 맞췄어요` : KEPT_BOTH}
+                <Button variant="ghost" size="M" label={lost > 0 ? "진 쪽 보기" : "자세히"} onClick={() => setShowConflicts(true)} />
               </p>
+            ) : (
+              conflicts.length > 0 && (
+                // 본 뒤에도 30일 동안 다시 열 수 있게 (진 쪽 내용을 복사해 되돌린다)
+                <p className="nte__seen t-caption c-tertiary">
+                  다른 기기와 동시에 고친 기록 {n(conflicts.length)}건 · 30일 동안 남아요
+                  <button type="button" className="nte__seen-btn t-caption" onClick={() => setShowConflicts(true)}>
+                    보기
+                  </button>
+                </p>
+              )
             )}
             {saveError && (
               <p className="nte__notice nte__notice--danger t-label-m" role="alert">
@@ -1139,11 +1154,14 @@ function Preview({ d, draft, tpl, note }: { d: Detail; draft: Draft; tpl: DTpl |
   const face = theme === "dark" && css.trim() ? deckFace(css) : null;
   // 학습 화면과 같은 가두기 · 같은 구조 (.study › .study__card-content › 질문 면 .study__q / 답 면 .study__a). 그래서 면마다 학습 화면의 정렬 · 줄 높이 · 그림 크기가 그대로다
   const scoped = useMemo(() => scopeCss(css, face === "other"), [css, face]);
-  // 카드 고르기 이름: 첫 필드 글자 (빈칸 표시는 답만) · 덱
+  // 카드 고르기 이름: 보이는 순서로 처음 비지 않은 필드 글자 (빈칸 표시는 답만) · 덱. 맨 앞 필드가 빈 노트도 알아볼 수 있게
   const label = (s: Sample) => {
-    const first = plainText(s.slots[draft.fields.find((f) => f.slot !== null)?.slot ?? 0] ?? "").replace(/\{\{c\d+::(.*?)(::.*?)?\}\}/g, "$1");
+    const text = (slot: number | null) => (slot === null ? "" : plainText(s.slots[slot] ?? "").replace(/\{\{c\d+::(.*?)(::.*?)?\}\}/g, "$1").trim());
+    const first = draft.fields.map((f) => text(f.slot)).find(Boolean) ?? "";
     return `${first.slice(0, 30) || "(빈 칸)"}${s.deck ? ` · ${s.deck}` : ""}`;
   };
+  // 고른 노트로 그린 앞면이 비었다: 그 카드는 학습에 나오지 않는다 (NT49). 앞 · 뒷면 보기 모두 카드 칸 위에 한 줄
+  const blankFront = !!sample && !!html && !plainText(html.front).trim() && !/<img|class="snd/.test(html.front);
 
   return (
     <section className="nte__panel nte__preview" aria-label="미리보기">
@@ -1180,6 +1198,7 @@ function Preview({ d, draft, tpl, note }: { d: Detail; draft: Draft; tpl: DTpl |
       </div>
       <div className="nte-card study" data-theme={face === "light" ? "light" : theme}>
         {scoped && <style>{scoped}</style>}
+        {blankFront && <p className="nte-card__blank t-body-s c-tertiary">앞면이 비어 학습에 나오지 않아요</p>}
         <div className="study__card-content">
           <div className={face === "night" ? "nightMode night_mode" : undefined}>
             {error ? (
@@ -1300,19 +1319,33 @@ function SaveConfirm({ impact, labels, busy, onBack, onSave }: {
 function ConflictList({ list, onClose }: { list: NoteTypeConflict[]; onClose: () => void }) {
   useKey("Escape", onClose, true, { modal: true });
   return (
-    <Modal title="동시에 고친 내용" sub="두 기기에서 같은 곳을 고쳐 나중에 고친 쪽으로 맞췄어요. 진 쪽 내용은 30일 동안 여기 남아요" wide onClose={onClose}>
+    <Modal title="동시에 고친 내용" sub="두 기기에서 같은 곳을 고친 기록이에요. 30일 동안 여기 남아요" wide onClose={onClose}>
       <ul className="nte-conflicts">
-        {list.map((c, i) => (
-          <li key={i} className="nte-conflicts__item">
-            <span className="t-label-m">{c.what}</span>
-            <span className="t-caption c-tertiary">
-              지금 내용 · {c.winner_device} · {when(c.at)}
-            </span>
-            <pre className="nte-conflicts__text t-body-s">{c.winner || "(비어 있음)"}</pre>
-            <span className="t-caption c-tertiary">진 쪽 · {c.loser_device}</span>
-            <pre className="nte-conflicts__text t-body-s">{c.loser || "(비어 있음)"}</pre>
-          </li>
-        ))}
+        {list.map((c, i) =>
+          keptBoth(c) ? (
+            // 잃은 것이 없다: 진 쪽 · 이긴 쪽이 아니라 두 필드가 놓인 자리 (디자인 검토 a)
+            <li key={i} className="nte-conflicts__item">
+              <span className="t-label-m">{KEPT_BOTH}</span>
+              <span className="t-caption c-tertiary">{when(c.at)}</span>
+              <span className="t-body-s">
+                이 자리 · {c.winner} ({c.winner_device})
+              </span>
+              <span className="t-body-s">
+                다음 자리로 옮김 · {c.loser} ({c.loser_device})
+              </span>
+            </li>
+          ) : (
+            <li key={i} className="nte-conflicts__item">
+              <span className="t-label-m">{c.what}</span>
+              <span className="t-caption c-tertiary">
+                지금 내용 · {c.winner_device} · {when(c.at)}
+              </span>
+              <pre className="nte-conflicts__text t-body-s">{c.winner || "(비어 있음)"}</pre>
+              <span className="t-caption c-tertiary">진 쪽 · {c.loser_device}</span>
+              <pre className="nte-conflicts__text t-body-s">{c.loser || "(비어 있음)"}</pre>
+            </li>
+          ),
+        )}
       </ul>
       <div className="modal__actions">
         <Button size="M" label="닫기" onClick={onClose} />

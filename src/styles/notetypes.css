@@ -166,3 +166,8 @@
 .nte-conflicts { display: flex; flex-direction: column; gap: 16px; max-height: 60vh; overflow: auto; margin: 0; padding: 0; list-style: none; }
 .nte-conflicts__item { display: flex; flex-direction: column; gap: 4px; }
 .nte-conflicts__text { margin: 0 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); white-space: pre-wrap; word-break: break-all; font-family: var(--font-mono, monospace); }
+/* 고른 노트로 그린 앞면이 비었다 (학습에 나오지 않는다) */
+.nte-card__blank { margin: 0 0 12px; text-align: center; }
+/* 본 뒤에도 진 쪽 기록을 다시 여는 줄 */
+.nte__seen { display: flex; align-items: center; gap: 6px; }
+.nte__seen-btn { color: var(--text-secondary); text-decoration: underline; text-underline-offset: 3px; }
