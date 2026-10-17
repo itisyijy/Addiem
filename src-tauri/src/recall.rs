@@ -87,6 +87,22 @@ impl Special {
             Special::List { question, .. } | Special::Choice { question, .. } => question,
         }
     }
+
+    /// C2 카드 목록 답 칸. 선택형 "정답 · SYN-ACK" (번호는 섞이면 뜻이 없다), 목록 "7개 · 순서대로 · 응용 계층, 표현 계층…"
+    pub(crate) fn answer_line(&self) -> String {
+        match self {
+            Special::Choice { options, correct, .. } => {
+                format!("정답 · {}", options.iter().filter(|o| correct.contains(&o.0)).map(|o| o.1.as_str()).collect::<Vec<_>>().join(", "))
+            }
+            Special::List { items, ordered, .. } => format!(
+                "{}개 · {} · {}{}",
+                items.len(),
+                if *ordered { ORDERED } else { UNORDERED },
+                items[..items.len().min(2)].join(", "),
+                if items.len() > 2 { "…" } else { "" }
+            ),
+        }
+    }
 }
 
 fn plain(html: &str) -> String {
@@ -715,9 +731,16 @@ mod tests {
         let f = ["TCP 두 번째는?", "SYN-ACK", "SYN", "", "", "", "", "1", "섞기", ""].map(String::from);
         let map = names.iter().cloned().zip(f.iter().cloned()).collect();
         assert_eq!(render::strip_tags(&render::render_card(CHOICE_QFMT, CHOICE_AFMT, &map, 0).front), "TCP 두 번째는? SYN-ACK SYN");
-        assert_eq!(special(CHOICE, &names, &serde_json::to_string(&f).unwrap()).unwrap().question(), "TCP 두 번째는?");
-        let list = serde_json::to_string(&["OSI 하위?", "물리<br>링크", "순서대로", ""]).unwrap();
-        assert_eq!(special(LIST, &LIST_FIELDS.map(String::from), &list).unwrap().question(), "OSI 하위?");
+        let s = special(CHOICE, &names, &serde_json::to_string(&f).unwrap()).unwrap();
+        assert_eq!((s.question(), s.answer_line().as_str()), ("TCP 두 번째는?", "정답 · SYN-ACK"));
+        let mut multi = f.clone();
+        multi[7] = "1, 2".into();
+        assert_eq!(special(CHOICE, &names, &serde_json::to_string(&multi).unwrap()).unwrap().answer_line(), "정답 · SYN-ACK, SYN", "C2 답 칸: 번호 대신 글자");
+        // 목록: 앞 2개 + …, 2개 이하면 말줄임 없음
+        let list = |items: &str, order: &str| special(LIST, &LIST_FIELDS.map(String::from), &serde_json::to_string(&["OSI 하위?", items, order, ""]).unwrap()).unwrap();
+        let s = list("물리<br>링크<br>네트워크", "순서대로");
+        assert_eq!((s.question(), s.answer_line().as_str()), ("OSI 하위?", "3개 · 순서대로 · 물리, 링크…"));
+        assert_eq!(list("FIN<br>ACK", "순서 없이").answer_line(), "2개 · 순서 없이 · FIN, ACK");
     }
 
     #[test]

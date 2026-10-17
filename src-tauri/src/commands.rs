@@ -1225,7 +1225,12 @@ pub fn list_cards(
                 Some(_) => serde_json::from_str::<Vec<String>>(&fields).ok().and_then(|v| v.get(3).map(|x| render::strip_tags(x))).unwrap_or_default(),
                 None => render::strip_tags(answer_part(&rendered.back)),
             };
-            let (question, answer) = table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer));
+            // 목록 · 선택형은 질문 필드만 + 정답 · 항목 한 줄 (D5 와 같은 질문, Q48). 검색은 위 필드 원문이라 보기 · 항목 글자로도 찾는다
+            let special = field_names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
+            let (question, answer) = match &special {
+                Some(s) => (render::strip_tags(s.question()), s.answer_line()),
+                None => table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer)),
+            };
             let buried_until: Option<i64> = r.get(9)?;
             Ok(CardRow {
                 id: r.get(0)?,
