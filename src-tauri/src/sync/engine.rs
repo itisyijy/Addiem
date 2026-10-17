@@ -1246,6 +1246,9 @@ struct Applier<'a> {
     moves: Vec<(i64, usize, usize, String)>,
 }
 
+/// 같은 자리에 두 기기가 따로 더한 필드: 잃은 것이 없다 (둘 다 남기고 나중 쪽이 그 자리, 다른 쪽은 끝 자리). 화면이 이 제목으로 따로 그린다
+pub const KEPT_BOTH: &str = "같은 자리에 두 기기가 필드를 더해 둘 다 남겼어요";
+
 /// 두 기기에서 고친 노트 유형 정의를 남기는 열 (K39): (표, 열, 화면 이름)
 const TYPE_COLS: [(&str, &str, &str); 5] =
     [("card_template", "qfmt", "앞면"), ("card_template", "afmt", "뒷면"), ("card_template", "name", "이름"), ("note_type", "css", "CSS"), ("note_type", "name", "유형 이름")];
@@ -1699,7 +1702,7 @@ impl Applier<'_> {
         for (from, to, id) in m.moved {
             let at_from = m.names.get(from).cloned().unwrap_or_default();
             let moved = m.names.get(to).cloned().unwrap_or_default();
-            self.type_conflict("note_type", uid, local, "같은 자리에 따로 더한 필드 (진 쪽을 새 자리로 옮겼어요)", (&at_from, wh), (&moved, loh))?;
+            self.type_conflict("note_type", uid, local, KEPT_BOTH, (&at_from, wh), (&moved, loh))?;
             self.moves.push((rowid, from, to, id));
         }
         Ok(())
