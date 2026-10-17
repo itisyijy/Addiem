@@ -50,10 +50,11 @@ const nativeKey = (k: Kind) => (k === "occlusion" ? "io" : k);
 const kindOf = (nativeKind: string) => (nativeKind === "io" ? "occlusion" : nativeKind) as Native;
 /** 앱 기본 유형의 화면 이름 (native_kind -> 세그먼트 이름). 카드 편집 머리(NT13)도 쓴다 */
 export const TYPE_LABEL: Record<string, string> = Object.fromEntries(KINDS.map(([k, label]) => [nativeKey(k), label]));
-/** 두 기기에서 따로 만든 같은 이름 유형은 합치지 않는다 (NT18). 그 둘을 가리는 "10월 16일 14:05 만듦 · 이 기기" (Q2-11) */
+/** 두 기기에서 따로 만든 같은 이름 유형은 합치지 않는다 (NT18). 그 둘을 가리는 "10월 16일 14:05 만듦 · 이 기기 / DESKTOP" (Q2-11).
+ * 다른 기기는 Drive 기기 이름으로 (다른 기기 둘이 같은 이름을 만들어도 가린다), 모르면 "다른 기기" */
 export function twin(r: NoteTypeRow, rows: NoteTypeRow[]) {
   if (r.native_kind || !rows.some((x) => x.id !== r.id && !x.native_kind && x.name === r.name)) return null;
-  return `${when(r.created_at)} 만듦 · ${r.made_here ? "이 기기" : "다른 기기"}`;
+  return `${when(r.created_at)} 만듦 · ${r.made_here ? "이 기기" : (r.made_by ?? "다른 기기")}`;
 }
 /** Q 목록 · 선택형 */
 const isRecall = (k: Kind) => k === "list" || k === "choice";

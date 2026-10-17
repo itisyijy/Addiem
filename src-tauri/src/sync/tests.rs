@@ -1610,6 +1610,11 @@ fn same_named_user_types_from_two_devices_stay_apart() {
         assert_eq!((fields_of("A 의 질문"), fields_of("B 의 질문")), (2, 3));
         assert_eq!(d.n("SELECT count(*) FROM note_type WHERE native_kind = 'basic'"), 1, "앱 유형은 한 벌");
     }
+    // 목록이 둘을 가린다: 이 기기에서 만든 것과, 다른 기기 것은 그 Drive 기기 이름 (Q2-11)
+    let rows = serde_json::to_value(crate::notetype::list(&a.con()).unwrap()).unwrap();
+    let mine: Vec<(bool, J)> = rows.as_array().unwrap().iter().filter(|r| r["name"] == "내 유형").map(|r| (r["made_here"].as_bool().unwrap(), r["made_by"].clone())).collect();
+    assert_eq!(mine.len(), 2);
+    assert!(mine.contains(&(true, J::Null)) && mine.contains(&(false, json!("데스크톱"))), "{mine:?}");
 }
 
 // ---------------------------------------------------------------- QA Q2 (8.1 노트 유형 ∥ 동기화)
