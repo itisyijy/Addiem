@@ -7,7 +7,7 @@
 //! 템플릿은 스크립트 없이 필드만 쓴다 (db.rs NATIVE_TYPES). Anki 에서는 한 번에 다 보이는 기본 카드처럼 읽히고,
 //! 정답 보기 굵게는 뒷면의 data-answer 속성 선택자(CSS)로 한다. 앱 학습 화면은 템플릿 대신 필드를 읽어 직접 그린다.
 //! 다시 가져오면 유형 이름 + 필드로 알아본다 (M10 과 같은 방식). 이름만 같고 필드가 다르면 일반 노트로 (가져오기 결과에 한 줄).
-//! 평가는 FSRS 4단계 그대로이고 앱은 추천만 한다 (Q3 · Q7). 항목별 빠뜨림 · 고른 보기는 이 기기에만 남기고 답 면에 "지난번"으로 보인다 (recall_mark, Q9 · Q30)
+//! 평가는 FSRS 4단계 그대로이고 앱은 추천만 한다 (Q3 · Q7). 항목별 빠뜨림 · 고른 보기는 이 기기에만 남기고 답 면에 "지난번"으로 보인다 (recall_mark, Q9 · Q31)
 
 use crate::ai::{self, AiError};
 use crate::commands::AppState;
@@ -164,7 +164,7 @@ pub fn recall_suggest(state: State<AppState>, card_id: i64, marks: Vec<u32>) -> 
     suggest_for(&con, card_id, &marks)
 }
 
-// ------------------------------------------------------------------ 지난번 빠뜨림 · 고른 답 (Q9 · Q20, 초안 Q30–Q33)
+// ------------------------------------------------------------------ 지난번 빠뜨림 · 고른 답 (Q9 · Q20, Q31–Q36)
 
 /// marks 가 가리키는 것 (목록: 항목 글자, 선택형: 보기 필드 번호 · 글자 + 정답). 노트를 고쳐 이것이 바뀌면 지난번 기록은 엉뚱한 칸을 가리킨다
 fn shown(s: &Special) -> String {
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn last_marks_dropped_when_items_or_options_change() {
-        // Q30: 노트를 고쳐 항목 · 보기 · 정답이 바뀌면 지난번 기록은 엉뚱한 칸을 가리킨다 → 읽지 않는다 (어느 길로 고쳐도 읽을 때 본다)
+        // Q31: 노트를 고쳐 항목 · 보기 · 정답이 바뀌면 지난번 기록은 엉뚱한 칸을 가리킨다 → 읽지 않는다 (어느 길로 고쳐도 읽을 때 본다)
         let con = crate::db::open_in_memory().unwrap();
         let list = one_card(&con, LIST, &["OSI?", "응용<br>표현<br>세션", "순서대로", ""]);
         save_marks(&con, list, 1, &[2], 0).unwrap();
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn last_pick_follows_the_option_not_the_position() {
-        // Q30: 선택형 marks 는 보기 필드 번호다. 볼 때마다 섞여도(optionOrder, 화면) 지난번 고른 보기 글자는 같다
+        // Q31: 선택형 marks 는 보기 필드 번호다. 볼 때마다 섞여도(optionOrder, 화면) 지난번 고른 보기 글자는 같다
         let con = crate::db::open_in_memory().unwrap();
         let card = one_card(&con, CHOICE, &["Q", "SYN", "SYN-ACK", "ACK", "FIN", "", "", "2", "섞기", ""]);
         let Some(Special::Choice { options, .. }) = card_special(&con, card).unwrap() else { panic!() };

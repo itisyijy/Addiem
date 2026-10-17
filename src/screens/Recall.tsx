@@ -89,20 +89,20 @@ function LastLine({ text }: { text: string }) {
   );
 }
 
-/** Q30 · Q32: "지난번" 표시를 붙일 번호. 목록은 지난번 빠뜨린 항목 모두, 선택형은 지난번에 고른 오답 (오답이 없었으면 없다) */
+/** Q31 · Q33: "지난번" 표시를 붙일 번호. 목록은 지난번 빠뜨린 항목 모두, 선택형은 지난번에 고른 오답 (오답이 없었으면 없다) */
 export function lastOn(s: Special, last: number[] | null): number[] {
   if (!last) return [];
   return s.kind === "list" ? last : last.filter((m) => !s.correct.includes(m));
 }
 
-/** Q35: 한 줄에 넣는 항목 · 보기 글자는 20자까지 (넘으면 "…"). 조사는 원래 글자로 고른다 */
+/** Q36: 한 줄에 넣는 항목 · 보기 글자는 20자까지 (넘으면 "…"). 조사는 원래 글자로 고른다 */
 const CLIP = 20;
 const named = (t: string, josa: (w: string) => string) => {
   const c = [...t];
   return `${c.length > CLIP ? `${c.slice(0, CLIP).join("").trimEnd()}…` : t}${josa(t)}`;
 };
 
-/** Q35 요약 아래 · 보기 아래 한 줄. 사실만 쓴다 (추천은 이번 결과로만). last 는 lastOn 의 번호, 보일 것이 없으면 null */
+/** Q36 요약 아래 · 보기 아래 한 줄. 사실만 쓴다 (추천은 이번 결과로만). last 는 lastOn 의 번호, 보일 것이 없으면 null */
 function lastTip(s: Special, last: number[], marks: number[], order: number[]): string | null {
   if (!last.length) return null;
   if (s.kind === "list") {

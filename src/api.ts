@@ -202,7 +202,7 @@ export type CardView = {
   occlusion: IoPos | null;
   /** Q 목록 회상 · 선택형. 있으면 템플릿 대신 이것으로 그린다 */
   special: Special | null;
-  /** Q30 지난번 빠뜨린 항목 · 고른 보기 (special 의 번호). 노트를 고쳐 항목 · 보기가 바뀌었으면 null */
+  /** Q31 지난번 빠뜨린 항목 · 고른 보기 (special 의 번호). 노트를 고쳐 항목 · 보기가 바뀌었으면 null */
   last_marks: number[] | null;
 };
 export type NoteEdit = {
@@ -241,9 +241,10 @@ export type NoteTypeRow = {
   cards: number;
   /** 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저) */
   decks: string[];
-  /** 만든 시각 · 이 기기에서 만들었나 (이름이 같은 유형을 가린다) */
+  /** 만든 시각 · 이 기기에서 만들었나 (이름이 같은 유형을 가린다). made_by: 다른 기기면 그 Drive 기기 이름 (모르면 null) */
   created_at: number;
   made_here: boolean;
+  made_by: string | null;
 };
 /** K39 두 기기에서 고쳐 진 쪽 정의 (편집기 안내) */
 export type NoteTypeConflict = { what: string; at: number; winner: string; winner_device: string; loser: string; loser_device: string; seen: boolean };
