@@ -2679,7 +2679,7 @@ pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::S
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
          DELETE FROM media; DELETE FROM import_issue; DELETE FROM import_batch;
-         DELETE FROM card_change; DELETE FROM plan_setting; DELETE FROM embedding_cache;",
+         DELETE FROM card_change; DELETE FROM plan_setting; DELETE FROM embedding_cache; DELETE FROM origin_gone;",
     )
     .map_err(err)?;
     db::seed_note_types(&tx).map_err(err)?;

@@ -121,6 +121,8 @@ pub fn run() {
             import::inspect_anki,
             import::import_anki,
             import::cancel_import,
+            import::deck_update::inspect_update,
+            import::deck_update::apply_update,
             import::save_text,
             import::read_json_file,
             import::read_table_file,

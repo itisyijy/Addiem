@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
 
+pub(crate) mod deck_update;
+
 type Res<T> = Result<T, String>;
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -1048,6 +1050,8 @@ pub struct AnkiPreview {
     degraded_types: Vec<i64>,
     /// 지운 카드의 기록. 덱에 속하지 않아 덱을 전부 골랐을 때만 함께 옮긴다
     orphan_reviews: usize,
+    /// B2-u0 이미 가져온 덱의 새 버전 같으면 그 근거 (이미 있는 노트가 하나도 없으면 없다). 기본 모드는 suggested (DU15)
+    update: Option<deck_update::UpdateHint>,
 }
 
 #[derive(Serialize, Default)]
@@ -1207,6 +1211,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
         rows.collect::<Result<_, _>>().map_err(err)?
     };
     let deck_tree = deck_stats(&pkg, &existing, overdue_before)?;
+    let update = deck_update::file_hint(&*state.db.lock().map_err(err)?, &pkg)?;
     Ok(AnkiPreview {
         file_name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         bytes: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
@@ -1234,6 +1239,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
         deck_tree,
         degraded_types: pkg.types.iter().filter(|(_, t)| !t.degraded.is_empty()).map(|(id, _)| *id).collect(),
         orphan_reviews: count(&pkg.col, "SELECT count(*) FROM revlog WHERE cid NOT IN (SELECT id FROM cards)")?,
+        update,
     })
 }
 
@@ -1395,32 +1401,7 @@ fn run_import_selected(
                 remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.clone(), crate::notetype::incoming_ords(&ours, &tmpls)));
                 id
             }
-            None => {
-                tx.execute(
-                    "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id, anki_stock_kind)
-                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        t.name,
-                        serde_json::to_string(&t.fields).map_err(err)?,
-                        t.css,
-                        now,
-                        t.degraded.is_empty() as i64,
-                        (!t.degraded.is_empty()).then(|| t.degraded.join(", ")),
-                        aid,
-                        (t.stock > 0).then_some(t.stock)
-                    ],
-                )
-                .map_err(err)?;
-                let id = tx.last_insert_rowid();
-                for (ord, name, q, a) in &t.templates {
-                    tx.execute(
-                        "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![id, ord, name, q, a],
-                    )
-                    .map_err(err)?;
-                }
-                id
-            }
+            None => insert_type(&tx, *aid, t, now)?,
         };
         nt_map.insert(*aid, id);
         // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
@@ -1715,18 +1696,21 @@ fn run_import_selected(
         .map_err(err)?;
     }
     emit("media", names.len(), names.len());
-    if !renamed.is_empty() {
-        let notes: Vec<(i64, String)> = {
-            let mut st = tx.prepare("SELECT id, fields FROM note WHERE import_batch_id = ?1").map_err(err)?;
-            let rows = st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+    // 넣은 노트의 미디어 참조를 바꾼 이름으로 고치고, 넣은 값(자리 맞추기 · 미디어 이름 바꾸기 뒤)을 원본(B)으로 남긴다 (DU1)
+    {
+        let notes: Vec<(i64, String, String)> = {
+            let mut st = tx.prepare("SELECT id, fields, tags FROM note WHERE import_batch_id = ?1").map_err(err)?;
+            let rows = st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
             rows.collect::<Result<_, _>>().map_err(err)?
         };
-        for (id, fields) in notes {
+        for (id, fields, tags) in notes {
             let old: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
             let new: Vec<String> = old.iter().map(|f| rename_refs(f, &renamed)).collect();
-            if new != old {
-                tx.execute("UPDATE note SET fields = ?2 WHERE id = ?1", params![id, serde_json::to_string(&new).map_err(err)?]).map_err(err)?;
-            }
+            tx.execute(
+                "UPDATE note SET fields = ?2, origin = ?3 WHERE id = ?1",
+                params![id, serde_json::to_string(&new).map_err(err)?, deck_update::note_origin(&new, &tags)],
+            )
+            .map_err(err)?;
         }
     }
     if clashes > 0 {
@@ -1792,6 +1776,32 @@ fn run_import_selected(
     tx.commit().map_err(err)?;
     emit("done", 1, 1);
     Ok(result)
+}
+
+/// 처음 보는 Anki 노트타입을 그대로 넣는다. 원본(B)도 함께 남긴다 (DU1, 덱 업데이트가 다음 버전과 비교한다)
+fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64) -> Res<i64> {
+    tx.execute(
+        "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id, anki_stock_kind, origin)
+         VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            t.name,
+            serde_json::to_string(&t.fields).map_err(err)?,
+            t.css,
+            now,
+            t.degraded.is_empty() as i64,
+            (!t.degraded.is_empty()).then(|| t.degraded.join(", ")),
+            aid,
+            (t.stock > 0).then_some(t.stock),
+            deck_update::new_type_origin(t)
+        ],
+    )
+    .map_err(err)?;
+    let id = tx.last_insert_rowid();
+    for (ord, name, q, a) in &t.templates {
+        tx.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, ord, name, q, a])
+            .map_err(err)?;
+    }
+    Ok(id)
 }
 
 // ------------------------------------------------------------------ 복습 기록 이전 (mvp-scope 7장)

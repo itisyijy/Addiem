@@ -77,6 +77,10 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("recall_mark", "prev", "TEXT"),
         // 자리별 필드 id (앱에서 더한 필드, NULL = 없음). 두 기기가 같은 자리에 따로 더한 필드를 동기화가 가린다 (Q2-06)
         ("note_type", "field_ids", "TEXT"),
+        // 8.7 덱 업데이트 (import/deck_update.rs): 마지막으로 받은 원본(B). 노트는 자리별 해시 + 태그, 유형은 Anki 필드 · 카드 종류 · CSS (DU1).
+        // 동기화 대상 표의 NULL 허용 열이라 다른 기기도 같은 기준으로 판정한다 (DU2, 옛 앱은 모르는 열을 건너뛴다)
+        ("note", "origin", "TEXT"),
+        ("note_type", "origin", "TEXT"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
@@ -101,6 +105,12 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
              COMMIT;"
         ))?;
     }
+    // DU3 내가 지운 노트 (기기 안 표): 덱 업데이트가 다시 넣지 않는다. 지우는 길(카드 · 덱 · 카드 종류 · 빈칸 · 받은 삭제)이 여럿이라 트리거 하나로 모은다
+    con.execute_batch(
+        "CREATE TABLE IF NOT EXISTS origin_gone (guid TEXT PRIMARY KEY, at INTEGER NOT NULL);
+         CREATE TRIGGER IF NOT EXISTS note_origin_gone AFTER DELETE ON note WHEN OLD.origin IS NOT NULL AND OLD.anki_guid IS NOT NULL
+         BEGIN INSERT OR REPLACE INTO origin_gone (guid, at) VALUES (OLD.anki_guid, CAST(unixepoch('subsec') * 1000 AS INTEGER)); END;",
+    )?;
     sync_schema(con)
 }
 
