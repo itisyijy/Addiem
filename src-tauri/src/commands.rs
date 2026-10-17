@@ -1794,6 +1794,8 @@ pub struct CardView {
     occlusion: Option<IoPos>,
     /// Q 목록 회상 · 선택형. 있으면 학습 화면이 템플릿 대신 이것으로 그린다
     special: Option<crate::recall::Special>,
+    /// Q31 지난번 표시 (special 의 marks 와 같은 번호). 노트를 고쳐 항목 · 보기 · 정답이 바뀌었으면 없다
+    last_marks: Option<Vec<u32>>,
 }
 
 #[tauri::command]
@@ -1802,7 +1804,7 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
     let names = note_field_names(&con)?;
     let decks = load_decks(&con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
-    con.query_row(
+    let mut view = con.query_row(
         &format!(
             "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS}
          FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
@@ -1828,10 +1830,15 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
                 state: r.get(8)?,
                 occlusion: io_pos(q.as_deref(), r.get(5)?, r.get(11)?, r.get(12)?),
                 special,
+                last_marks: None,
             })
         },
     )
-    .map_err(err)
+    .map_err(err)?;
+    if let Some(s) = &view.special {
+        view.last_marks = crate::recall::last_marks(&con, card_id, s)?;
+    }
+    Ok(view)
 }
 
 #[derive(Serialize)]
@@ -1863,9 +1870,10 @@ pub(crate) fn load_srs(con: &Connection, card_id: i64) -> Res<SrsState> {
 }
 
 #[tauri::command]
-pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8, elapsed_ms: i64) -> Res<AnswerResult> {
+/// marks: Q 목록 · 선택형의 빠뜨린 항목 · 고른 보기 (Q9). 평가가 남을 때만 같은 트랜잭션에서 쓴다 (day_rollover 면 남지 않는다)
+pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8, elapsed_ms: i64, marks: Option<Vec<u32>>) -> Res<AnswerResult> {
     let mut con = state.db.lock().map_err(err)?;
-    let (result, undo) = answer_at(&mut con, &state.fsrs, session_id, card_id, rating, elapsed_ms, now_ms())?;
+    let (result, undo) = answer_at(&mut con, &state.fsrs, session_id, card_id, rating, elapsed_ms, marks.as_deref(), now_ms())?;
     drop(con);
     if let Some(u) = undo {
         push_undo(&state, u)?;
@@ -1874,7 +1882,17 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
 }
 
 /// answer 의 본체 (테스트가 시각을 정해 부른다). 되돌리기 기록이 없으면 평가를 남기지 않은 것이다
-fn answer_at(con: &mut Connection, fsrs: &fsrs::FSRS, session_id: i64, card_id: i64, rating: u8, elapsed_ms: i64, now: i64) -> Res<(AnswerResult, Option<Undo>)> {
+#[allow(clippy::too_many_arguments)]
+fn answer_at(
+    con: &mut Connection,
+    fsrs: &fsrs::FSRS,
+    session_id: i64,
+    card_id: i64,
+    rating: u8,
+    elapsed_ms: i64,
+    marks: Option<&[u32]>,
+    now: i64,
+) -> Res<(AnswerResult, Option<Undo>)> {
     if !(1..=4).contains(&rating) {
         return Err("평가 값이 올바르지 않아요.".into());
     }
@@ -1929,7 +1947,11 @@ fn answer_at(con: &mut Connection, fsrs: &fsrs::FSRS, session_id: i64, card_id: 
         ],
     )
     .map_err(err)?;
-    undo.log_id = Some(tx.last_insert_rowid());
+    let log_id = tx.last_insert_rowid();
+    undo.log_id = Some(log_id);
+    if let Some(m) = marks {
+        crate::recall::save_marks(&tx, card_id, log_id, m, now)?;
+    }
 
     let result = match (action, next) {
         (RatingAction::Bury, _) => {
@@ -2014,6 +2036,7 @@ pub fn undo_last(state: State<AppState>, session_id: i64) -> Res<Option<i64>> {
     }
     .map_err(err)?;
     if let Some(id) = u.log_id {
+        crate::recall::undo_marks(&tx, id)?;
         tx.execute("DELETE FROM review_log WHERE id = ?1", [id]).map_err(err)?;
     }
     tx.commit().map_err(err)?;
@@ -2713,7 +2736,7 @@ mod tests {
         )
         .unwrap();
         let s = session(&con, today);
-        assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 1, 1000, now).unwrap().0.action, "again_later");
+        assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 1, 1000, None, now).unwrap().0.action, "again_later");
         assert_eq!(plan_ids(&con, today).0, [ids[0]], "재학습 카드는 오늘 큐에 남는다 (이어서 학습 · 홈 · D5 남은 수)");
     }
 
@@ -2728,7 +2751,7 @@ mod tests {
         assert_eq!((plan.returning.len(), plan.new.len()), (1, 3));
         let s = session(&con, today);
         for id in [ids[0], ids[1]] {
-            super::answer_at(&mut con, &fsrs::FSRS::default(), s, id, 3, 1000, now).unwrap();
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, id, 3, 1000, None, now).unwrap();
         }
         assert_eq!(plan_ids(&con, today).1, 2, "복귀 카드는 신규 상한을 쓰지 않는다 (명세 4.6)");
         assert_eq!(super::introduced_today(&con, today).unwrap().values().sum::<i64>(), 1);
@@ -2741,14 +2764,50 @@ mod tests {
         let ids = deck_with_cards(&con, 1, None);
         let (today, now) = mid_today();
         let s = session(&con, today - 1);
-        let (r, undo) = super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 3, 1000, now).unwrap();
+        let (r, undo) = super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 3, 1000, None, now).unwrap();
         assert_eq!((r.action.as_str(), undo.is_none()), ("day_rollover", true));
         let (reason, logs): (String, i64) = con
             .query_row("SELECT end_reason, (SELECT count(*) FROM review_log) FROM study_session WHERE id = ?1", [s], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!((reason.as_str(), logs), ("day_rollover", 0));
         let s2 = session(&con, today);
-        assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s2, ids[0], 3, 1000, now).unwrap().0.action, "again_later");
+        assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s2, ids[0], 3, 1000, None, now).unwrap().0.action, "again_later");
+    }
+
+    #[test]
+    fn recall_marks_only_with_a_kept_rating() {
+        // Q31: 빠뜨림은 평가가 남을 때만 (학습일 경계로 버린 평가의 빠뜨림이 "지난번"이 되면 안 된다). 되돌리면 그 전 값으로
+        let mut con = crate::db::open_in_memory().unwrap();
+        assert!(deck_with_cards(&con, 0, None).is_empty());
+        let deck_id: i64 = con.query_row("SELECT id FROM deck", [], |r| r.get(0)).unwrap();
+        let fields = ["OSI?", "응용<br>표현<br>세션", "순서대로", ""].map(String::from);
+        let nid = crate::recall::insert(&con, crate::recall::LIST, deck_id, &fields, None, "", None).unwrap();
+        let card: i64 = con.query_row("SELECT id FROM card WHERE note_id = ?1", [nid], |r| r.get(0)).unwrap();
+        let last = |con: &Connection| {
+            let s = crate::recall::card_special(con, card).unwrap().unwrap();
+            crate::recall::last_marks(con, card, &s).unwrap()
+        };
+        let (today, now) = mid_today();
+        let fsrs = fsrs::FSRS::default();
+
+        let old = session(&con, today - 1);
+        assert_eq!(super::answer_at(&mut con, &fsrs, old, card, 1, 1000, Some(&[2]), now).unwrap().0.action, "day_rollover");
+        assert_eq!(last(&con), None, "남지 않은 평가의 빠뜨림은 쓰지 않는다");
+
+        let s = session(&con, today);
+        let first = super::answer_at(&mut con, &fsrs, s, card, 2, 1000, Some(&[2]), now).unwrap().1.unwrap();
+        assert_eq!(last(&con), Some(vec![2]));
+        let second = super::answer_at(&mut con, &fsrs, s, card, 3, 1000, Some(&[]), now + 1).unwrap().1.unwrap();
+        assert_eq!(last(&con), Some(vec![]), "마지막 한 번만 (이번엔 다 기억)");
+        crate::recall::undo_marks(&con, second.log_id.unwrap()).unwrap();
+        assert_eq!(last(&con), Some(vec![2]), "되돌리면 그 전 값");
+        crate::recall::undo_marks(&con, first.log_id.unwrap()).unwrap();
+        assert_eq!(con.query_row("SELECT count(*) FROM recall_mark", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "처음 평가를 되돌리면 지난번이 없다");
+        // marks 없이 남긴 평가(일반 카드 길)를 되돌려도 지난번은 그대로
+        super::answer_at(&mut con, &fsrs, s, card, 2, 1000, Some(&[1]), now + 2).unwrap();
+        let other = super::answer_at(&mut con, &fsrs, s, card, 3, 1000, None, now + 3).unwrap().1.unwrap();
+        crate::recall::undo_marks(&con, other.log_id.unwrap()).unwrap();
+        assert_eq!(last(&con), Some(vec![1]));
     }
 
     #[test]

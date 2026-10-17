@@ -98,7 +98,8 @@ export const exam = {
 export const cram = {
   plan: (deckIds: number[] | null) => invoke<CramPlan | null>("cram_plan", { deckIds }),
   cards: (deckId: number, scope: number) => invoke<number[]>("cram_cards", { deckId, scope }),
-  answer: (cardId: number, rating: number, elapsedMs: number) => invoke<number>("cram_answer", { cardId, rating, elapsedMs }),
+  /** marks: Q 목록 · 선택형 (압축 회독 결과도 "지난번"이 된다) */
+  answer: (cardId: number, rating: number, elapsedMs: number, marks: number[] | null) => invoke<number>("cram_answer", { cardId, rating, elapsedMs, marks }),
   undo: (logId: number) => invoke<void>("cram_undo", { logId }),
   /** 8.5 혼합: every = 전체 몇 장마다 취약 1장, size = 한 번에 할 양 */
   mixCards: (deckId: number, every: number, size: number) => invoke<MixCard[]>("mix_cards", { deckId, every, size }),

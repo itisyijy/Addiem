@@ -20,7 +20,7 @@ import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
 import { ExamField, examHint } from "./Exam";
 import { cardSource } from "../sourceApi";
-import { ChoiceEditor, ListEditor, RecallFace, recallTip } from "./Recall";
+import { ChoiceEditor, lastOn, ListEditor, RecallFace, recallTip } from "./Recall";
 import { choiceDraft, choiceLabel, listLabel, optionOrder, recall, type ChoiceDraft, type ListDraft } from "../recall";
 import { deckFace, scopeCss } from "../cardCss";
 import "../styles/study.css";
@@ -567,8 +567,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     () =>
       cram
         ? {
-            answer: async (id: number, r: Rating, ms: number): Promise<AnswerAction> => {
-              const log = await cramApi.answer(id, r, ms);
+            answer: async (id: number, r: Rating, ms: number, marks: number[] | null): Promise<AnswerAction> => {
+              const log = await cramApi.answer(id, r, ms, marks);
               const again = (cramAgain.current.get(id) ?? 0) + (r === 1 ? 1 : 0);
               cramAgain.current.set(id, again);
               cramDone.current.add(id);
@@ -583,7 +583,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             },
           }
         : {
-            answer: (id: number, r: Rating, ms: number): Promise<AnswerAction> => api.answer(session.current!, id, r, ms),
+            answer: (id: number, r: Rating, ms: number, marks: number[] | null): Promise<AnswerAction> => api.answer(session.current!, id, r, ms, marks),
             bury: (id: number) => api.buryCard(session.current!, id),
             unbury: (id: number) => api.unburyCard(session.current!, id),
             undo: (_: Last) => api.undoLast(session.current!),
@@ -629,8 +629,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const rate2 = (r: Rating) =>
     guard(async () => {
       const c = card!;
-      if (c.view.special) recall.saveMarks(c.view.id, marks).catch(() => {}); // Q9 이 기기에만
-      const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current);
+      // Q9 빠뜨림 · 고른 보기는 평가가 남을 때 같이 저장된다 (이 기기에만. 되돌리면 그 전 값으로)
+      const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current, c.view.special ? marks : null);
       if (res.action === "day_rollover") {
         // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 세션은 닫혔고 방금 평가는 남지 않았다. 새 날의 학습을 다시 짠다
         notify({ title: "새 학습일이 시작됐어요", text: "오늘의 학습을 새로 만들었어요. 방금 평가는 남기지 않았어요." });
@@ -839,13 +839,14 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     const box = answerBox.current;
     if (phase !== "a" || !box) return;
     box.focus({ preventScroll: true });
-    // Q2: 낮은 창(640)에서는 보기가 두어 개만 보여 고른 오답이 아래에 숨는다. 정답, 그다음 고른 보기(여럿이면 첫째)를 카드 안에서 보이게 내린다.
-    // 둘 다 안 들어가면 고른 보기가 보인다. 넘침 표시(is-overflow)로 스크롤 칸 높이가 바뀐 뒤에 잰다
+    // Q2: 낮은 창(640)에서는 보기가 두어 개만 보여 고른 오답이 아래에 숨는다. 정답, 지난번 고른 오답(Q36), 이번에 고른 보기(여럿이면 첫째) 차례로
+    // 카드 안에서 보이게 내린다. 다 안 들어가면 뒤의 것(이번에 고른 보기)이 보인다. 넘침 표시(is-overflow)로 스크롤 칸 높이가 바뀐 뒤에 잰다
     if (special?.kind !== "choice") return;
     const opts = box.querySelectorAll(".opt");
     const at = (nums: number[]) => opts[order.findIndex((x) => nums.includes(x))];
     const f = requestAnimationFrame(() => {
       at(special.correct)?.scrollIntoView({ block: "nearest" });
+      at(lastOn(special, card?.view.last_marks ?? null))?.scrollIntoView({ block: "nearest" });
       at(marks)?.scrollIntoView({ block: "nearest" });
     });
     return () => cancelAnimationFrame(f);
@@ -1041,6 +1042,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                       extra={card.answer}
                       opened={opened}
                       marks={marks}
+                      last={card.view.last_marks}
                       order={order}
                       openKey={actionKey("reveal")}
                       onSlot={onSlot}

@@ -1,7 +1,7 @@
 // Q 목록 회상 · 선택형 (Figma Row Q): 부품 RecallSlot · ChoiceOption, C3 편집 칸 · 미리보기 (Q0), 학습 면 (Q1-a · Q1-b · Q2)
 import { useEffect, useRef } from "react";
 import { Checkbox, Icon, Kbd, Segment, type Rating } from "../ui";
-import { eul, gwa, iga, n, ro } from "../nav";
+import { eul, eun, gwa, iga, n, ro } from "../nav";
 import { plainText } from "../cardHtml";
 import { CIRCLED, choiceLabel, listLabel, type ChoiceDraft, type ListDraft, type Special } from "../recall";
 import "../styles/recall.css";
@@ -11,11 +11,22 @@ import "../styles/recall.css";
 /** 목록 한 칸. 기억 = 연 항목(기본), 빠뜨림 = X 로 표시한 항목, 지금 = 다음에 열 칸("?", M3 묻는 칸과 같은 파랑), 가림 = 아직 안 연 칸 */
 export type SlotState = "recalled" | "missed" | "now" | "hidden";
 
-export function RecallSlot({ num, state, text, openKey, onClick }: { num: number; state: SlotState; text: string; openKey: string; onClick?: () => void }) {
+/** Figma 속성 "지난번" (RecallSlot · ChoiceOption). 답 면에만 */
+function LastPill({ label }: { label: string }) {
+  return (
+    <span className="last-pill t-label-s">
+      <Icon name="rotate" size={12} />
+      {label}
+    </span>
+  );
+}
+
+export function RecallSlot({ num, state, text, openKey, last, onClick }: { num: number; state: SlotState; text: string; openKey: string; last?: boolean; onClick?: () => void }) {
   return (
     <button type="button" className={`slot slot--${state}`} disabled={!onClick} onClick={onClick} aria-label={state === "hidden" || state === "now" ? `${num}번 항목 (가림)` : undefined}>
       <span className="slot__num t-label-s">{num}</span>
       <span className="slot__text t-body-l">{state === "now" ? "?" : state === "hidden" ? "" : text}</span>
+      {last && <LastPill label="지난번 빠뜨림" />}
       {state === "recalled" && <Icon name="check" size={16} className="c-success" />}
       {state === "missed" && (
         <span className="slot__mark t-label-s">
@@ -31,12 +42,13 @@ export function RecallSlot({ num, state, text, openKey, onClick }: { num: number
 /** 선택형 보기 한 줄. 질문 면: 고르기 전(숫자 키캡) · 고름, 답 면: 정답 · 고른 오답 · 놓친 정답(여러 정답 중 안 고른 것) · 그 밖 */
 export type OptionState = "idle" | "picked" | "correct" | "wrong" | "missed" | "other";
 
-export function ChoiceOption({ index, state, text, onClick }: { index: number; state: OptionState; text: string; onClick?: () => void }) {
+export function ChoiceOption({ index, state, text, last, onClick }: { index: number; state: OptionState; text: string; last?: boolean; onClick?: () => void }) {
   const front = state === "idle" || state === "picked";
   return (
     <button type="button" className={`opt opt--${state}`} disabled={!onClick} onClick={onClick} aria-pressed={front ? state === "picked" : undefined}>
       {front ? <Kbd k={String(index + 1)} /> : <span className="opt__num">{CIRCLED[index]}</span>}
       <span className="opt__text t-body-l">{text}</span>
+      {last && <LastPill label="지난번 고름" />}
       {(state === "correct" || state === "missed") && (
         <span className="opt__mark t-label-s">
           <Icon name="check" size={16} />
@@ -65,22 +77,74 @@ function Explain({ label, html }: { label: string; html: string }) {
 
 // ---------------------------------------------------------------- 학습 면 (D2 · D3)
 
+function LastLine({ text }: { text: string }) {
+  return (
+    <p className="recall__last t-label-s c-secondary">
+      <Icon name="rotate" size={14} />
+      {text}
+    </p>
+  );
+}
+
+/** Q31 · Q33: "지난번" 표시를 붙일 번호. 목록은 지난번 빠뜨린 항목 모두, 선택형은 지난번에 고른 오답 (오답이 없었으면 없다) */
+export function lastOn(s: Special, last: number[] | null): number[] {
+  if (!last) return [];
+  return s.kind === "list" ? last : last.filter((m) => !s.correct.includes(m));
+}
+
+/** Q36: 한 줄에 넣는 항목 · 보기 글자는 20자까지 (넘으면 "…"). 조사는 원래 글자로 고른다 */
+const CLIP = 20;
+const named = (t: string, josa: (w: string) => string) => {
+  const c = [...t];
+  return `${c.length > CLIP ? `${c.slice(0, CLIP).join("").trimEnd()}…` : t}${josa(t)}`;
+};
+
+/** Q36 요약 아래 · 보기 아래 한 줄. 사실만 쓴다 (추천은 이번 결과로만). last 는 lastOn 의 번호, 보일 것이 없으면 null */
+function lastTip(s: Special, last: number[], marks: number[], order: number[]): string | null {
+  if (!last.length) return null;
+  if (s.kind === "list") {
+    const now = s.items.filter((_, i) => last.includes(i + 1) && !marks.includes(i + 1));
+    const tail =
+      now.length === 0
+        ? ""
+        : now.length === 1
+          ? ` · 그중 ${named(now[0], eun)} 이번에 기억했어요`
+          : now.length === last.length
+            ? " · 이번엔 모두 기억했어요"
+            : ` · 그중 ${n(now.length)}개는 이번에 기억했어요`;
+    return `지난번엔 ${n(last.length)}개를 빠뜨렸어요${tail}`;
+  }
+  // 번호는 이번 화면의 번호 (보기를 섞어도 보기를 따라간다). 지난번 오답이 하나면 보기 글자도 쓴다
+  const nums = order.flatMap((x, i) => (last.includes(x) ? [CIRCLED[i]] : [])).join(", ");
+  const text = last.length === 1 ? new Map(s.options).get(last[0]) : undefined;
+  const was = text === undefined ? `${nums}${eul(nums)}` : `${nums} ${named(text, eul)}`;
+  const wrong = marks.filter((m) => !s.correct.includes(m));
+  if (wrong.length) return wrong.length === last.length && wrong.every((m) => last.includes(m)) ? `이번에도 ${was} 골랐어요` : `지난번엔 ${was} 골랐어요`;
+  if (marks.length === s.correct.length) return `지난번엔 ${was} 골랐어요 · 이번엔 맞혔어요`;
+  // 정답 일부만 (Hard): 줄이 길어 번호만
+  if (marks.length) return `지난번엔 ${nums}${eul(nums)} 골랐어요 · 이번엔 정답 ${n(s.correct.length)}개 중 ${n(marks.length)}개를 골랐어요`;
+  return `지난번엔 ${was} 골랐어요`;
+}
+
 /**
  * 상태(연 칸 수 · 표시 · 보기 순서)는 Study 가 가진다. marks: 목록은 빠뜨린 항목 번호, 선택형은 고른 보기 번호 (1부터).
- * question · extra 는 살균한 HTML
+ * last: 지난번 marks (card_view.last_marks, 답 면에만 보인다. 질문 면에 보이면 힌트가 된다). question · extra 는 살균한 HTML
  */
-export function RecallFace({ s, phase, question, extra, opened, marks, order, openKey, onSlot, onPick }: {
+export function RecallFace({ s, phase, question, extra, opened, marks, last, order, openKey, onSlot, onPick }: {
   s: Special;
   phase: "q" | "a";
   question: string;
   extra: string;
   opened: number;
   marks: number[];
+  last: number[] | null;
   order: number[];
   openKey: string;
   onSlot: (num: number) => void;
   onPick: (num: number) => void;
 }) {
+  const was = phase === "a" ? lastOn(s, last) : [];
+  const tip = lastTip(s, was, marks, order);
   if (s.kind === "list") {
     const total = s.items.length;
     const shown = phase === "a" ? total : opened;
@@ -98,10 +162,13 @@ export function RecallFace({ s, phase, question, extra, opened, marks, order, op
           <span className="t-label-m">{head}</span>
           <span className="t-caption c-tertiary">{phase === "a" ? "항목을 누르거나 X로 기억 여부를 바꿀 수 있어요" : "항목을 연 뒤 못 떠올렸던 것은 X로 \"기억 못함\" 표시해 주세요"}</span>
         </p>
+        {tip && <LastLine text={tip} />}
         <div className="recall__list">
           {s.items.map((t, i) => {
             const state: SlotState = i < shown ? (marks.includes(i + 1) ? "missed" : "recalled") : i === shown ? "now" : "hidden";
-            return <RecallSlot key={i} num={i + 1} state={state} text={t} openKey={openKey} onClick={state === "hidden" ? undefined : () => onSlot(i + 1)} />;
+            return (
+              <RecallSlot key={i} num={i + 1} state={state} text={t} openKey={openKey} last={was.includes(i + 1)} onClick={state === "hidden" ? undefined : () => onSlot(i + 1)} />
+            );
           })}
         </div>
         {phase === "a" && has(extra) && <Explain label="추가 설명" html={extra} />}
@@ -121,9 +188,10 @@ export function RecallFace({ s, phase, question, extra, opened, marks, order, op
       <div className={`recall__q t-title-m card-html ${phase === "a" ? "c-tertiary" : ""}`} dangerouslySetInnerHTML={{ __html: question }} />
       <div className="recall__list">
         {order.map((num, i) => (
-          <ChoiceOption key={num} index={i} state={stateOf(num)} text={text.get(num) ?? ""} onClick={phase === "q" ? () => onPick(num) : undefined} />
+          <ChoiceOption key={num} index={i} state={stateOf(num)} text={text.get(num) ?? ""} last={was.includes(num)} onClick={phase === "q" ? () => onPick(num) : undefined} />
         ))}
       </div>
+      {tip && <LastLine text={tip} />}
       {phase === "a" && has(extra) && <Explain label="해설" html={extra} />}
     </>
   );

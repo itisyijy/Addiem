@@ -71,6 +71,10 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("note_type", "user_made", "INTEGER NOT NULL DEFAULT 0"),
         ("note_type", "field_order", "TEXT"),
         ("note_type", "next_ord", "INTEGER"),
+        // Q31 "지난번" (recall.rs save_marks): 그때의 항목 · 보기 (노트를 고치면 읽지 않는다), 만든 평가 기록 id 와 바로 전 값 (되돌리기)
+        ("recall_mark", "shown", "TEXT"),
+        ("recall_mark", "log_id", "INTEGER"),
+        ("recall_mark", "prev", "TEXT"),
         // 자리별 필드 id (앱에서 더한 필드, NULL = 없음). 두 기기가 같은 자리에 따로 더한 필드를 동기화가 가린다 (Q2-06)
         ("note_type", "field_ids", "TEXT"),
     ] {

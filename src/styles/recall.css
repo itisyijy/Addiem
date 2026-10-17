@@ -74,6 +74,20 @@
 .opt--wrong .opt__num, .opt--wrong .opt__mark { color: var(--status-danger-fg); }
 .opt--other .opt__num { color: var(--text-tertiary); }
 .opt--other .opt__text { color: var(--text-secondary); }
+/* Q31 "지난번" (Figma RecallSlot · ChoiceOption 속성, 236:16172). 번호처럼 첫 줄 가운데 (28 줄 안의 24) */
+.last-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-top: 2px;
+  padding: 3px 8px 3px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
 /* 답 면을 열 때 고른 보기로 내리면 (Study.tsx) 위 페이드 12 · 아래 페이드 72 에 걸리지 않게 */
 .study__a.recall .opt { scroll-margin: 12px 0 72px; }
 
@@ -83,6 +97,14 @@
 .recall__q { word-break: keep-all; overflow-wrap: anywhere; }
 .recall__sum { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
 .recall__list { display: flex; flex-direction: column; gap: 8px; }
+/* Q31 요약 · 보기 아래 한 줄 (Figma 236:16371 · 236:16499). 보기 글자가 길면 줄을 바꾼다 */
+.recall__last { display: flex; align-items: flex-start; gap: 6px; }
+.recall__last > .icon { flex: none; margin-top: 1px; }
+/* 목록 답 면은 칸 7개가 800 에 들어가야 한다 (Q27). 한 줄(16 + 간격 12)만큼 넘쳐서 요약에 붙이고(간격 4) 칸과는 칸 간격(6)으로 */
+.recall__sum + .recall__last { margin-top: -8px; }
+.recall__last + .recall__list { margin-top: -6px; }
+/* 선택형은 보기에 붙인다 (간격 4). 아래 보기 36 · 간격 6 과 함께 800 에 해설까지 들어간다 */
+.recall__list + .recall__last { margin-top: -8px; }
 .recall__extra { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 16px; background: var(--bg-subtle); }
 /* Q1 목록은 칸 7개가 들어가게 카드가 길다 (800 기준 카드 96–620, 평가 줄 678. 칸 7개 + 머리 · 질문 · 요약이 스크롤 없이 들어간다) */
 .study .study__col.is-list { padding-top: 96px; }
@@ -93,6 +115,10 @@
 .study .study__col.is-list.is-answer.has-tip .study__card { height: calc(100vh - 302px); }
 /* Q2 답 면: 보기 4개 + 해설이 스크롤 없이 (800 기준 카드 96–530, 평가 줄 588) */
 .study .study__col.is-choice.is-answer.has-tip .study__card { height: calc(100vh - 366px); }
+/* Q31 지난번 한 줄(16 + 간격 4)이 있으면 보기를 목록 답 면처럼 36 · 간격 6 으로 (Q27). 카드는 늘리지 않는다:
+   Figma Q2-c 처럼 카드를 늘리면(평가 줄 612) 되돌리기 토스트가 단축키 줄을 내릴 때(is-pushed) 800 에서 페이지가 스크롤된다 */
+.study .study__col.is-choice.is-answer:has(.recall__last) .opt { min-height: 36px; padding-block: 3px; }
+.study .study__col.is-choice.is-answer:has(.recall__last) .recall__list { gap: 6px; }
 .study .study__col.is-recall.has-tip .study__tipwrap { height: 58px; }
 /* 선택형 추천 줄은 카드 폭(880)까지, 넘치면 줄을 바꾼다 */
 .study .study__col.is-choice .study__tip { max-width: 100%; white-space: normal; }

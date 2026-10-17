@@ -179,6 +179,8 @@ function jong(word: string) {
 }
 /** 을/를 */
 export const eul = (word: string) => (jong(word) ? "을" : "를");
+/** 은/는 */
+export const eun = (word: string) => (jong(word) ? "은" : "는");
 /** 이/가 */
 export const iga = (word: string) => (jong(word) ? "이" : "가");
 /** 과/와 */
