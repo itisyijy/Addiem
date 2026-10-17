@@ -4,7 +4,7 @@
 //!
 //! - 처음 연결: client_id=dynamic_agent_client + 이 설치의 ext_agent_host_id(urn:uuid). 돌아온 client_id(oaiapp_…)를 저장해 다음부터 쓴다
 //! - 새로 고칠 토큰만 OS 키체인에. 접근 토큰은 메모리에만. client_id · host id · 이메일 · 모델 · 이번 달 보낸 카드 수는 schema_meta (동기화하지 않는다)
-//! - 보내는 것: 사용자가 누른 카드 한 장의 질문 글자와 답 항목 글자뿐. 덱 이름 · 복습 기록 · 자료 · 그림은 보내지 않는다
+//! - 보내는 것: 사용자가 누른 카드 한 장의 질문 글자와 답 항목 글자뿐 (Q8 오답 보기 제안은 편집 중인 질문 · 정답 · 보기 글자, recall.rs). 덱 이름 · 복습 기록 · 자료 · 그림은 보내지 않는다
 //! - 결과는 quality::SplitProposal 과 같은 모양의 제안이다. 카드를 바꾸는 것은 여전히 사용자가 승인한 split_apply 뿐
 //!
 //! Claude · Gemini 구독 로그인은 넣지 않는다: 제3자 앱이 소비자 구독으로 로그인하는 것을 허용하지 않는다 (DECISIONS I73)
@@ -585,7 +585,7 @@ fn fake_off() -> bool {
 
 /// 가짜 응답: 기다린 뒤 오류 모드면 그 오류, malformed 면 깨진 JSON, 아니면 ok() 의 글자.
 /// 실제 응답과 같은 검증을 거친다. slow 는 30초 넘김 안내를 보려고 35초 기다린다
-fn fake_text(st: &AiState, run: u64, mode: &str, ok: impl FnOnce() -> String) -> Result<String, AiError> {
+pub(crate) fn fake_text(st: &AiState, run: u64, mode: &str, ok: impl FnOnce() -> String) -> Result<String, AiError> {
     let wait_ms = if cfg!(test) { 0 } else if mode == "slow" { 35_000 } else { 1_500 };
     for _ in 0..wait_ms / 100 {
         if st.run.load(Ordering::Relaxed) != run {

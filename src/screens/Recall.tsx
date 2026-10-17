@@ -1,9 +1,12 @@
-// Q 목록 회상 · 선택형 (Figma Row Q): 부품 RecallSlot · ChoiceOption, C3 편집 칸 · 미리보기 (Q0), 학습 면 (Q1-a · Q1-b · Q2)
-import { useEffect, useRef } from "react";
-import { Checkbox, Icon, Kbd, Segment, type Rating } from "../ui";
+// Q 목록 회상 · 선택형 (Figma Row Q): 부품 RecallSlot · ChoiceOption, C3 편집 칸 · 미리보기 (Q0), 학습 면 (Q1-a · Q1-b · Q2), Q8 오답 보기 제안
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Button, Checkbox, Icon, Kbd, Segment, type IconName, type Rating } from "../ui";
 import { eul, eun, gwa, iga, n, ro } from "../nav";
 import { plainText } from "../cardHtml";
-import { CIRCLED, choiceLabel, listLabel, type ChoiceDraft, type ListDraft, type Special } from "../recall";
+import { aiApi, aiError, type AiError } from "../api";
+import { AiConnect, ScopeLine, SendList, UsingPlan, openUsage, refreshAi, sendConfirmed, setSendConfirmed, useAiStatus, type SendRow } from "../ai";
+import { CIRCLED, choiceLabel, listLabel, optionKey, recall, wantedDistractors, type ChoiceDraft, type ListDraft, type Special } from "../recall";
 import "../styles/recall.css";
 
 // ---------------------------------------------------------------- 부품
@@ -299,8 +302,16 @@ export function ListEditor({ value, onChange }: { value: ListDraft; onChange: (v
   );
 }
 
-/** 선택형: 보기 2–6개 (체크한 것이 정답, 여러 개 가능) + 학습할 때 보기 섞기 (기본 켬, Q5). correct 는 보기의 0부터 번호 */
-export function ChoiceEditor({ value, onChange }: { value: ChoiceDraft; onChange: (v: ChoiceDraft) => void }) {
+/**
+ * 선택형: 보기 2–6개 (체크한 것이 정답, 여러 개 가능) + 학습할 때 보기 섞기 (기본 켬, Q5). correct 는 보기의 0부터 번호.
+ * question: 있으면 보기 아래에 Q8 오답 보기 제안 줄 (편집 중인 질문 HTML 을 보낼 때 읽는다). onUnplaced: 넣지 않은 제안 수 (저장 토스트, Q43)
+ */
+export function ChoiceEditor({ value, onChange, question, onUnplaced }: {
+  value: ChoiceDraft;
+  onChange: (v: ChoiceDraft) => void;
+  question?: () => string;
+  onUnplaced?: (count: number) => void;
+}) {
   const { box, focus, next } = useFocusRow();
   const add = (at: number) => {
     if (next(at, value.options) || value.options.length >= 6) return;
@@ -353,8 +364,271 @@ export function ChoiceEditor({ value, onChange }: { value: ChoiceDraft; onChange
           보기 추가
         </button>
       )}
+      {question && <DistractorLine question={question} value={value} onChange={onChange} onUnplaced={onUnplaced} />}
       <p className="t-caption c-secondary">정답이 둘 이상이면 학습할 때 "모두 고르기"로 묻어요. "모두 맞음" 같은 보기가 있으면 섞기를 끄세요. 해설은 추가 설명 칸에 써요.</p>
     </>
+  );
+}
+
+// ---------------------------------------------------------------- Q8 오답 보기 제안 (Figma 237:16413 · 다크 237:16796, Q37–Q43)
+
+type DqPhase = "idle" | "confirm" | "busy" | "done" | "error";
+
+/** 한 줄 오류 (L4-e 와 같은 문구 결, 버튼은 글자 링크 하나) */
+function dqError(f: AiError): [IconName, string, string] {
+  if (f.kind === "expired") return ["link-off", "c-danger", "ChatGPT 연결이 끊겼어요"];
+  if (f.kind === "scope") return ["link-off", "c-danger", "사용량 권한이 필요해요"];
+  if (f.kind === "limit") return ["gauge", "c-warn", "요금제 사용 한도에 닿았어요 · 잠시 뒤 다시 해 주세요"];
+  if (f.kind === "bad_output") return ["alert", "c-warn", "알맞은 오답을 만들지 못했어요 · 질문이 짧으면 그럴 수 있어요"];
+  if (f.kind === "offline") return ["wifi-off", "c-secondary", "인터넷에 연결되어 있지 않아요"];
+  if (f.kind === "unavailable") return ["alert", "c-warn", "지금은 ChatGPT 요금제를 쓸 수 없어요 · 잠시 뒤 다시 해 보세요"];
+  if (f.kind === "not_eligible") return ["alert", "c-warn", "이 요금제에서는 쓸 수 없어요"];
+  return ["alert", "c-warn", f.message];
+}
+
+function DqRow({ icon, tone, text, action }: { icon: IconName; tone: string; text: string; action?: [string, () => void] }) {
+  return (
+    <div className="dq__err" role="status">
+      <span className="dq__lead">
+        <Icon name={icon} size={16} className={tone} />
+        <span className="t-label-m">{text}</span>
+      </span>
+      {action && (
+        <button type="button" className="ai-link t-label-m" onClick={action[1]}>
+          {action[0]}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 보기 목록 아래 한 줄. ChatGPT 가 연결돼 있을 때만 보인다 (Q40, 이 창에서 난 오류는 남긴다).
+ * 제안은 점선 보기로만 있고 [넣기] 전에는 편집기 값에 없다 (저장되지 않는다). 기다리는 동안에도 보기를 쓰고 저장할 수 있다:
+ * 부모가 저장 뒤 key 를 바꾸거나 창을 닫으면 여기서 요청을 멈춘다
+ */
+function DistractorLine({ question, value, onChange, onUnplaced }: {
+  question: () => string;
+  value: ChoiceDraft;
+  onChange: (v: ChoiceDraft) => void;
+  onUnplaced?: (count: number) => void;
+}) {
+  const ai = useAiStatus();
+  const [phase, setPhase] = useState<DqPhase>("idle");
+  const [offered, setOffered] = useState<string[]>([]);
+  const [sentWhat, setSentWhat] = useState("");
+  const [skip, setSkip] = useState<string[]>([]); // 보낼 목록에서 ✕ 로 뺀 이미 쓴 보기 (이 창 동안)
+  const [fail, setFail] = useState<AiError | null>(null);
+  const [slow, setSlow] = useState(false);
+  const [reconnect, setReconnect] = useState<boolean | null>(null); // [다시 연결] (사용량 권한을 다시 묻는가)
+  const seq = useRef(0);
+  const inFlight = useRef(false);
+  const latest = useRef(value);
+  const report = useRef(onUnplaced);
+  useEffect(() => {
+    latest.current = value;
+    report.current = onUnplaced;
+  });
+  // 저장할 때 버려질 제안 수 (부모의 저장 토스트, Q43)
+  useEffect(() => {
+    report.current?.(phase === "done" ? offered.length : 0);
+  }, [phase, offered]);
+  useEffect(
+    () => () => {
+      if (inFlight.current) aiApi.cancel().catch(() => {});
+      report.current?.(0);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (phase !== "busy") return setSlow(false);
+    const t = setTimeout(() => setSlow(true), 30_000);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  if (!ai?.connected && phase !== "error" && reconnect === null) return null;
+
+  const filled = value.options.flatMap((t, i) => (t.trim() ? [{ t: t.trim(), on: value.correct.includes(i) }] : []));
+  const correct = filled.filter((o) => o.on).map((o) => o.t);
+  const sending = filled.filter((o) => !o.on && !skip.includes(o.t)).map((o) => o.t);
+  const want = wantedDistractors(filled.length);
+  const room = value.options.some((o) => !o.trim()) || value.options.length < 6;
+  const what = `질문 · 정답${correct.length > 1 ? ` ${n(correct.length)}개` : ""}${sending.length ? ` · 이미 쓴 보기 ${n(sending.length)}개` : ""}`;
+
+  const send = () => {
+    setSendConfirmed(true);
+    const my = ++seq.current;
+    inFlight.current = true;
+    setFail(null);
+    setPhase("busy");
+    const sent = `보낸 것 · ${what}`;
+    recall.distractors(question(), correct, sending, want).then(
+      (got) => {
+        if (seq.current !== my) return;
+        inFlight.current = false;
+        refreshAi();
+        // 기다리는 동안 직접 쓴 보기와 겹치는 제안은 뺀다
+        const have = latest.current.options.map(optionKey);
+        const fresh = got.filter((t) => !have.includes(optionKey(t)));
+        if (!fresh.length) {
+          setFail({ kind: "bad_output", message: "" });
+          return setPhase("error");
+        }
+        setOffered(fresh);
+        setSentWhat(sent);
+        setPhase("done");
+      },
+      (e) => {
+        if (seq.current !== my) return;
+        inFlight.current = false;
+        refreshAi();
+        const f = aiError(e);
+        if (f.kind === "cancelled" || f.kind === "not_connected") return setPhase("idle");
+        setFail(f);
+        setPhase("error");
+      },
+    );
+  };
+  /** 처음 보낼 때 한 번 묻는다 (L4 와 같은 이 기기 확인, Q39). ponytail: 편집 창마다 묻게 하려면 sendConfirmed() 대신 이 창의 ref */
+  const start = () => (sendConfirmed() ? send() : setPhase("confirm"));
+  const cancel = () => {
+    if (inFlight.current) aiApi.cancel().catch(() => {});
+    inFlight.current = false;
+    seq.current++;
+    setPhase("idle");
+  };
+  const keep = (left: string[]) => {
+    setOffered(left);
+    if (!left.length) setPhase("idle");
+  };
+  /** [넣기]: 첫 빈 보기 칸에, 없으면 끝에 오답(체크 없음)으로. 그사이 같은 보기를 썼으면 넣지 않고 지운다. 보기 6개에서 멈춘다 */
+  const insert = (list: string[]) => {
+    const options = [...value.options];
+    let correctNow = value.correct;
+    let left = offered;
+    for (const t of list) {
+      if (!options.some((o) => optionKey(o) === optionKey(t))) {
+        const at = options.findIndex((o) => !o.trim());
+        if (at < 0 && options.length >= 6) break;
+        if (at < 0) options.push(t);
+        else {
+          options[at] = t;
+          correctNow = correctNow.filter((c) => c !== at); // 빈 칸에 남은 정답 체크는 따라오지 않는다
+        }
+      }
+      left = left.filter((x) => x !== t);
+    }
+    onChange({ ...value, options, correct: correctNow });
+    keep(left);
+  };
+
+  let body;
+  if (phase === "busy")
+    body = (
+      <div className="dq__wait" role="status">
+        <span className="dq__lead">
+          <Icon name="rotate" size={16} />
+          <span className="t-label-m">{slow ? "오래 걸려요… 보기를 직접 써도 돼요" : "ChatGPT가 오답 보기를 만드는 중… 보기를 직접 써도 돼요"}</span>
+        </span>
+        <button type="button" className="ai-link t-label-m" onClick={cancel}>
+          취소
+        </button>
+      </div>
+    );
+  else if (phase === "error" && fail) {
+    const [icon, tone, text] = dqError(fail);
+    const action: [string, () => void] | undefined =
+      fail.kind === "expired" || fail.kind === "scope" ? ["다시 연결", () => setReconnect(fail.kind === "scope")]
+      : fail.kind === "limit" ? ["사용량 관리", openUsage]
+      : fail.kind === "not_eligible" ? undefined
+      : ["다시 시도", send];
+    body = <DqRow icon={icon} tone={tone} text={text} action={action} />;
+  } else if (phase === "done")
+    body = (
+      <>
+        <p className="dq__warn t-label-m">
+          <Icon name="alert" size={16} />
+          AI가 지은 보기예요. 사실은 정답이 아닌지 확인한 뒤 넣어 주세요.
+        </p>
+        {offered.map((t) => (
+          <div key={t} className="dq__opt">
+            <Icon name="sparkles" size={14} className="c-accent" />
+            <span className="dq__text t-body-m">{t}</span>
+            <span className="t-label-s c-accent">제안</span>
+            <Button variant="secondary" size="M" label="넣기" disabled={!room} onClick={() => insert([t])} />
+            <Button variant="ghost" size="M" label="빼기" onClick={() => keep(offered.filter((x) => x !== t))} />
+          </div>
+        ))}
+        <span className="dq__more">
+          <button type="button" className="ai-link t-label-m" disabled={!room} onClick={() => insert(offered)}>
+            모두 넣기
+          </button>
+          <button type="button" className="ai-link t-label-m" disabled={!want || !correct.length} onClick={send}>
+            다시 제안
+          </button>
+          <span className="t-caption c-tertiary">{sentWhat}</span>
+        </span>
+      </>
+    );
+  else if (!want) body = <DqRow icon="info" tone="c-secondary" text="보기가 6개라 더 받을 수 없어요" />;
+  else {
+    const rows: SendRow[] = [
+      { key: "q", icon: "layers", meta: <span className="t-label-s c-secondary">질문</span>, text: plainText(question()) },
+      { key: "a", icon: "check", meta: <span className="t-label-s c-secondary">정답</span>, text: correct.join(" · ") },
+      ...sending.map((t) => ({
+        key: `w-${t}`,
+        icon: "list" as const,
+        meta: <span className="t-label-s c-secondary">이미 쓴 보기</span>,
+        text: t,
+        remove: () => setSkip([...skip, t]),
+        removeLabel: "이 보기 빼기",
+      })),
+    ];
+    body = (
+      <>
+        <button type="button" className="dq__line" disabled={!correct.length} onClick={start}>
+          <Icon name="sparkles" size={16} />
+          <span className="t-label-m">{`오답 보기 ${n(want)}개 제안 받기`}</span>
+          <span className="t-caption c-tertiary">{!correct.length ? "정답에 체크하면 받을 수 있어요" : filled.length < 4 ? "4지선다까지 채워요" : "보기는 6개까지예요"}</span>
+        </button>
+        <ScopeLine text={`${what}${eul(what)} 보내요`} open={phase === "confirm"} onToggle={() => setPhase((p) => (p === "confirm" ? "idle" : "confirm"))} />
+        {phase === "confirm" && (
+          // L4-s · R2-s 와 같은 확인. Esc 는 이 확인만 닫는다 (편집 창은 그대로)
+          <div className="dq__confirm" role="dialog" aria-label="OpenAI로 보낼 내용" onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setPhase("idle"))}>
+            <SendList
+              compact
+              rows={rows}
+              foot={
+                <div className="grade__confirm-foot">
+                  <UsingPlan />
+                  <span className="grade__actions">
+                    <Button variant="ghost" size="M" label="취소" onClick={() => setPhase("idle")} />
+                    <Button size="M" icon="send" label="보내기" autoFocus disabled={!correct.length} onClick={send} />
+                  </span>
+                </div>
+              }
+            />
+          </div>
+        )}
+      </>
+    );
+  }
+  return (
+    <div className="dq">
+      {body}
+      {reconnect !== null &&
+        createPortal(
+          <AiConnect
+            start="wait"
+            reconsent={reconnect}
+            onDone={(ok) => {
+              setReconnect(null);
+              if (ok) setPhase("idle");
+            }}
+          />,
+          document.body,
+        )}
+    </div>
   );
 }
 

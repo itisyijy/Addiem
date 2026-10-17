@@ -346,7 +346,8 @@
 .addcard__side { display: flex; flex-direction: column; gap: 12px; flex: 1; min-width: 0; }
 .addcard__recent { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
 .addcard__recent-item { display: flex; align-items: center; gap: 8px; }
-.addcard__recent-item span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.addcard__recent-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.addcard__recent-note { flex: none; margin-left: -4px; white-space: nowrap; } /* Q43 버린 제안 수. 질문 글자가 먼저 줄어든다. 질문과 4px 로 붙여 한 문장으로 읽히게 */
 
 .rich { border: 1px solid var(--border-strong); border-radius: 16px; background: var(--bg-surface); overflow: hidden; }
 .rich:focus-within { border-color: var(--accent-default); }

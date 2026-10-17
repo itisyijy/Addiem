@@ -63,7 +63,7 @@ export const setSendConfirmed = (on: boolean, segs = 0) => {
   }
 };
 
-const openUsage = () => aiApi.openUsage().catch(() => {});
+export const openUsage = () => aiApi.openUsage().catch(() => {});
 
 // ---------------------------------------------------------------- 로그인 버튼 (OpenAI 지침: "Continue with ChatGPT")
 
@@ -126,7 +126,7 @@ export function AiConnect({ start = "intro", reconsent = false, onDone }: { star
 function Intro({ onClose, onGo }: { onClose: () => void; onGo: () => void }) {
   return (
     <Sheet label="ChatGPT를 연결할까요?" onClose={onClose} className="ai-l2">
-      <Head title="ChatGPT를 연결할까요?" sub="카드 초안 만들기 · 채점 보조 · 비슷한 내용끼리 나누기를 직접 누를 때만 써요. 내 ChatGPT 요금제로 요청하고, Neo-Anki에는 추가 요금이 없어요." onClose={onClose} />
+      <Head title="ChatGPT를 연결할까요?" sub="카드 초안 만들기 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안을 직접 누를 때만 써요. 내 ChatGPT 요금제로 요청하고, Neo-Anki에는 추가 요금이 없어요." onClose={onClose} />
       <div className="ai-two">
         <div className="ai-two__col">
           <span className="ai-two__head">
@@ -135,6 +135,7 @@ function Intro({ onClose, onGo }: { onClose: () => void; onGo: () => void }) {
           </span>
           <span className="t-body-s c-secondary">실행할 때 보여 주는 카드 글자와 자료 구간 발췌</span>
           <span className="t-caption c-tertiary">직접 고른 구간 · 카드에 연결된 구간 · 비슷한 구간 · 보내기 전에 범위를 보여줘요</span>
+          <span className="t-caption c-tertiary">선택형 오답 보기 제안 · 질문 · 정답 · 이미 쓴 보기 · 누를 때만 보내요</span>
         </div>
         <div className="ai-two__col">
           <span className="ai-two__head">
@@ -346,7 +347,7 @@ export function AiSection() {
             <Button variant="secondary" size="M" icon="external" label="사용량 관리" onClick={openUsage} />
           </div>
           <div className="ai-rows">
-            <Row label="쓰는 곳" value="자료에서 카드 초안 · 서술형 채점 보조 · 비슷한 내용끼리 나누기" />
+            <Row label="쓰는 곳" value="자료에서 카드 초안 · 서술형 채점 보조 · 비슷한 내용끼리 나누기 · 선택형 오답 보기 제안" />
             <Row label="보내는 것" value="실행할 때 보여 주는 카드 글자와 자료 구간 발췌" />
             <Row label="보내지 않는 것" value="원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름" />
             <Row label="보낸 횟수" value={`이번 달 ${n(s.sent_month)}번${s.sent_at ? ` · 마지막 ${when(s.sent_at)}` : ""}`} />
@@ -364,7 +365,7 @@ export function AiSection() {
             </span>
             <span className="prefs__text">
               <span className="t-body-m-strong">ChatGPT로 카드 만들기 · 고치기 돕기</span>
-              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 비슷한 내용끼리 나누기를 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
+              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안을 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
             </span>
             <ChatGptButton onClick={() => setConnecting(true)} />
           </div>
@@ -484,7 +485,7 @@ export function ScopeLine({ text, open, onToggle }: { text: string; open?: boole
 }
 
 /** 보낼 내용 한 행. remove 가 있으면 ✕ 로 뺄 수 있고, 없으면 "필수" (이미 보낸 기록 sent 에서는 둘 다 없다) */
-export type SendRow = { key: string | number; icon: IconName; meta: ReactNode; text: string; remove?: () => void };
+export type SendRow = { key: string | number; icon: IconName; meta: ReactNode; text: string; remove?: () => void; /** ✕ 의 이름 (기본 "이 구간 빼기") */ removeLabel?: string };
 
 /** 자료 구간 행 (자료 이름 · 쪽 · 연결 방식 · 신호 칩). 구간 글은 보내는 글자 그대로 */
 export const sentRows = (sent: Sent[], remove: (id: number) => void, how = false): SendRow[] =>
@@ -545,7 +546,7 @@ export function SendList({ title = "OpenAI로 보낼 내용", rows, compact, foo
             <span className="ai-send__body t-body-s">{r.text}</span>
           </span>
           {sent ? null : r.remove ? (
-            <button type="button" className="src-icon-btn" aria-label="이 구간 빼기" disabled={locked} onClick={r.remove}>
+            <button type="button" className="src-icon-btn" aria-label={r.removeLabel ?? "이 구간 빼기"} disabled={locked} onClick={r.remove}>
               <Icon name="x" size={compact ? 14 : 16} />
             </button>
           ) : (

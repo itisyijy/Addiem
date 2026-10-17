@@ -60,7 +60,7 @@ pub struct Sent {
     pub how: String,
 }
 
-fn clip(text: &str, max: usize) -> String {
+pub(crate) fn clip(text: &str, max: usize) -> String {
     let t = text.trim();
     if t.chars().count() <= max {
         return t.to_string();

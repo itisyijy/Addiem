@@ -137,7 +137,7 @@ pub fn run() {
             occlusion::occlusion_note, occlusion::save_occlusion,
             // Q 목록 회상 · 선택형
             recall::add_list_card, recall::add_choice_card, recall::recall_suggest,
-            recall::update_list_note, recall::update_choice_note,
+            recall::update_list_note, recall::update_choice_note, recall::ai_distractors,
             // 8.1 노트 유형 · 카드 템플릿 (1단계 엔진, 화면은 2단계)
             notetype::note_types, notetype::note_type_detail, notetype::deck_note_types, notetype::clone_note_type, notetype::rename_note_type,
             notetype::delete_note_type, notetype::add_note_field, notetype::rename_note_field, notetype::reorder_note_fields,

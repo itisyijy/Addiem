@@ -143,3 +143,19 @@
 .lc-preview .recall__list { gap: 6px; }
 /* 미리보기는 질문 면 모양만 보이면 되므로 한 줄로 자른다 */
 .lc-preview .slot__text, .lc-preview .opt__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Q8 오답 보기 제안 (Figma 237:16413 · 다크 237:16796). 보기 목록 아래 한 줄, ChatGPT 가 연결돼 있을 때만 */
+.dq { display: flex; flex-direction: column; gap: 8px; }
+.dq__lead { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.dq__line { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border: 1px dashed var(--accent-text); border-radius: 12px; color: var(--accent-text); text-align: left; }
+.dq__line:hover:not(:disabled) { background: var(--accent-subtle); }
+.dq__line:disabled { border-color: var(--border-strong); color: var(--text-tertiary); }
+.dq__wait { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border: 1.5px solid var(--accent-subtle); border-radius: 12px; }
+.dq__wait .dq__lead { gap: 10px; }
+.dq__warn { display: flex; align-items: center; gap: 8px; padding: 8px 14px 8px 12px; border-radius: 10px; background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.dq__opt { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 14px; border: 1px dashed var(--accent-text); border-radius: 12px; background: var(--accent-subtle); }
+.dq__text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dq__more { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.dq__more .ai-link:disabled { color: var(--text-tertiary); text-decoration: none; }
+.dq__err { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--bg-subtle); }
+.dq__confirm { width: min(520px, 100%); overflow: hidden; border-radius: 18px; box-shadow: 0 12px 32px rgb(23 23 28 / 0.14); }

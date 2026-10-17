@@ -25,7 +25,14 @@ export const recall = {
   /** Q24 전용 편집기. 추가와 같은 검사 · 같은 값으로 저장한다 (고치지 않은 항목 · 보기 · 칸은 원래 HTML 그대로) */
   updateList: (noteId: number, card: Edit & ListDraft) => invoke<void>("update_list_note", { noteId, ...card }),
   updateChoice: (noteId: number, card: Edit & ChoiceDraft) => invoke<void>("update_choice_note", { noteId, ...card }),
+  /** Q8 오답 보기 제안 (ChatGPT). 질문 HTML · 정답 · 보낼 오답 글자만 보낸다. 아무것도 저장하지 않는다. 오류는 AiError */
+  distractors: (question: string, correct: string[], options: string[], count: number) => invoke<string[]>("ai_distractors", { question, correct, options, count }),
 };
+
+/** Q37 (사용자 결정 2026-10-18): 받을 오답 수. 4지선다까지 채우고, 이미 4–5개면 1개 (보기는 6개까지) */
+export const wantedDistractors = (filled: number) => (filled < 4 ? 4 - filled : filled < 6 ? 1 : 0);
+/** 같은 보기인가 (recall.rs option_key 와 같다: 공백을 모두 빼고 대소문자 무시) */
+export const optionKey = (t: string) => t.replace(/\s+/g, "").toLowerCase();
 
 /** Q24 편집기를 채울 값. 보기 필드 번호(빈 보기는 빠져 있다)를 편집기의 0부터 번호로 */
 export function choiceDraft(s: ChoiceSpecial): ChoiceDraft {
