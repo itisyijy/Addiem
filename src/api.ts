@@ -373,7 +373,97 @@ export type AnkiPreview = {
   degraded_types: number[];
   /** 지운 카드의 기록. 덱을 전부 골랐을 때만 함께 옮긴다 */
   orphan_reviews: number;
+  /** B2-u0 이미 가져온 덱의 새 버전 같으면 그 근거 (이미 있는 노트가 없으면 null) */
+  update: UpdateHint | null;
 };
+
+// ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
+
+export type UpdateHint = {
+  notes: number;
+  existing_notes: number;
+  /** 같은 Anki 덱 id 로 가져온 우리 덱의 최상위 덱 이름 */
+  known_decks: string[];
+  /** 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15) */
+  suggested: boolean;
+};
+/** B2-k · B2-kt 고른 것. take_new: 충돌 필드를 새 버전으로 할 노트 id, new_looks: [노트 유형 id, ord | null(CSS)] */
+export type UpdateChoices = { take_new: number[]; new_looks: [number, number | null][] };
+export type UpdateConflict = {
+  note_id: number;
+  title: string;
+  /** 첫 카드의 덱 경로 ("A › B") */
+  deck: string;
+  fields: { slot: number; name: string; mine: string; new: string }[];
+  auto_new: number;
+  auto_mine: number;
+  auto_new_fields: string[];
+  edited_at: number;
+  take_new: boolean;
+  no_base: boolean;
+};
+export type LookConflict = {
+  /** null 이면 CSS (front 에 CSS) */
+  ord: number | null;
+  name: string;
+  mine_front: string;
+  mine_back: string;
+  new_front: string;
+  new_back: string;
+  take_new: boolean;
+  mine_changed: string[];
+  new_changed: string[];
+  edited_at: number | null;
+};
+export type UpdateTypeChange = {
+  note_type_id: number;
+  name: string;
+  notes: number;
+  css_mine: string;
+  css_new: string;
+  created: boolean;
+  no_base: boolean;
+  new_fields: string[];
+  renamed_fields: [string, string][];
+  removed_fields: string[];
+  new_templates: string[];
+  new_template_cards: number;
+  removed_templates: string[];
+  updated_looks: string[];
+  looks: LookConflict[];
+};
+export type UpdateSummary = {
+  file_name: string;
+  hint: UpdateHint;
+  changed: number;
+  merged: number;
+  conflicts: UpdateConflict[];
+  mine_kept: number;
+  same: number;
+  no_base: number;
+  other_type: number;
+  new_notes: number;
+  new_note_cards: number;
+  missing_notes: number;
+  missing_card_ids: number[];
+  gone: number;
+  new_cards: number;
+  emptied_cards: number;
+  cloze: { renumbered_notes: number; new_cards: number; emptied_cards: number };
+  types: UpdateTypeChange[];
+  kept_looks: number;
+  media_new: number;
+  media_renamed: number;
+  media_compared: number;
+  /** 사전 검사만: 충돌 필드의 새 버전이 쓰는데 아직 저장하지 않은 그림 (이름 -> data URL) */
+  media_preview: Record<string, string>;
+  reviews_skipped: number;
+  issues: ImportIssue[];
+  backup: string | null;
+  roots: number[];
+};
+/** apply_update 가 보내는 "update-progress" (B2-p) */
+export type UpdateProgress = { step: "backup" | "types" | "notes" | "cards" | "media" | "done"; done: number; total: number };
 /** import_anki 가 보내는 "import-progress" 이벤트 (B2-p) */
 export type ImportProgress = { step: "unzip" | "decks" | "cards" | "media" | "done"; done: number; total: number };
 /** export_apkg 결과. missing_media: 노트가 쓰지만 미디어 폴더에 없어 빠진 파일 수 */
@@ -501,6 +591,12 @@ export const api = {
     invoke<ImportResult>("import_anki", { path, withHistory, deckIds, voices: await voiceLangs() }),
   /** B2-p 취소. 진행 중인 가져오기를 멈추고 되돌린다 */
   cancelImport: () => invoke<void>("cancel_import"),
+  /** B2-u 사전 검사 (쓰지 않는다). choices 를 주면 반영한 요약 */
+  inspectUpdate: async (path: string, choices: UpdateChoices | null = null) =>
+    invoke<UpdateSummary>("inspect_update", { path, deckIds: null, choices, voices: await voiceLangs() }),
+  /** [업데이트 적용]: 백업 → 한 트랜잭션. 진행은 "update-progress", 멈추기는 cancelImport */
+  applyUpdate: async (path: string, choices: UpdateChoices) =>
+    invoke<UpdateSummary>("apply_update", { path, deckIds: null, choices, voices: await voiceLangs() }),
   /** B2-j 끌어놓은 .json 파일을 읽는다 */
   readJsonFile: (path: string) => invoke<string>("read_json_file", { path }),
   /** B2-c 끌어놓은 CSV 의 바이트 (인코딩은 화면이 고른다) */

@@ -1,6 +1,6 @@
 // 화면 전환과 단축키. 데스크톱 앱이라 URL 라우팅을 쓰지 않는다
 import { createContext, useContext, useEffect, useRef } from "react";
-import type { ImportResult, SessionSummary } from "./api";
+import type { AnkiPreview, ImportResult, SessionSummary, UpdateSummary } from "./api";
 import type { Draft, DraftAmount } from "./sourceApi";
 import type { MixRun, MixStats } from "./written";
 import { matchAction, type ActionId } from "./keys";
@@ -8,7 +8,9 @@ import { matchAction, type ActionId } from "./keys";
 export type Route =
   | { name: "home" }
   | { name: "newDeck" } // B1. 홈 위 모달
-  | { name: "import"; pick?: boolean } // B2. pick: 단축키 I 로 들어오면 파일 선택 창을 바로 연다
+  | { name: "import"; pick?: boolean; path?: string } // B2. pick: 단축키 I 로 들어오면 파일 선택 창을 바로 연다. path: 그 파일을 다시 살펴본다 (B2-u [방식 바꾸기])
+  | { name: "deckUpdate"; path: string; info: AnkiPreview; summary: UpdateSummary; pulled: boolean } // B2-u 요약 · B2-k · B2-kt · B2-p (pulled: 다른 기기 변경을 받고 판정했다)
+  | { name: "updateResult"; summary: UpdateSummary; info: AnkiPreview } // B3-u
   | { name: "importJson"; deckId?: number } // B2-j
   | { name: "importResult"; result: ImportResult } // B3
   | { name: "importance"; deckId: number; next?: number[] } // B4. next: 가져오기 뒤 이어서 볼 최상위 덱
