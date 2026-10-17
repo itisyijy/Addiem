@@ -23,7 +23,8 @@ const EXAMPLE = String.raw`{ "deck": "정보처리기사",
   ]
 }`;
 
-const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+/** 파일 크기. 0.1MB 미만은 KB (0.0MB 로 보이지 않게) */
+const mb = (bytes: number) => (bytes < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`);
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const JSON_FILE = /\.json$/i;
 
@@ -388,7 +389,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
           />
         ) : (
           <div className="b2s">
-            <DeckTree tree={tree} sel={sel} onChange={setSel} total={info.deck_tree} />
+            <DeckTree tree={tree} sel={sel} onChange={setSel} total={info.deck_tree} newOnly={!!info.update} />
             <div className="b2s__side">
             <div className="import__checks">
               {rows.map((r) => (
@@ -507,15 +508,17 @@ const pickOf = (node: DeckNode, sel: Set<number>): Pick => {
   const k = node.units.filter((u) => sel.has(u.id)).length;
   return k === 0 ? "off" : k === node.units.length ? "on" : "mixed";
 };
-const sumOf = (units: DeckStat[], key: "cards" | "notes" | "existing_notes") => units.reduce((a, u) => a + u[key], 0);
+const sumOf = (units: DeckStat[], key: "cards" | "notes" | "existing_notes" | "new_cards") => units.reduce((a, u) => a + u[key], 0);
 const descendants = (n: DeckNode): DeckNode[] => n.children.flatMap((c) => [c, ...descendants(c)]);
 
 /** B2-s 왼쪽 "가져올 덱". 3상태 체크박스, 최상위만 펼친 채 시작, 고르는 단위는 하위 덱 전체 */
-function DeckTree({ tree, sel, onChange, total }: {
+function DeckTree({ tree, sel, onChange, total, newOnly = false }: {
   tree: DeckNode[];
   sel: Set<number>;
   onChange: (update: (s: Set<number>) => Set<number>) => void;
   total: DeckStat[];
+  /** 업데이트로 알아본 파일을 [새 노트만 더하기]로: 머리를 들어갈 새 카드 기준으로 ([n장 가져오기]와 같은 수) */
+  newOnly?: boolean;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const rows: DeckNode[] = [];
@@ -536,7 +539,9 @@ function DeckTree({ tree, sel, onChange, total }: {
         <span className="b2s__tree-title">
           <span className="t-title-s">가져올 덱</span>
           <span className="t-caption c-tertiary">
-            {n(sumOf(total, "cards"))}장 중 {n(sumOf(picked, "cards"))}장 · 덱 {n(tree.length)}개 중 {n(tree.filter((t) => pickOf(t, sel) !== "off").length)}개
+            {newOnly
+              ? `새 카드 ${n(sumOf(picked, "new_cards"))}장 · 이미 있는 ${n(sumOf(picked, "cards") - sumOf(picked, "new_cards"))}장 제외`
+              : `${n(sumOf(total, "cards"))}장 중 ${n(sumOf(picked, "cards"))}장 · 덱 ${n(tree.length)}개 중 ${n(tree.filter((t) => pickOf(t, sel) !== "off").length)}개`}
           </span>
         </span>
         <span>

@@ -284,6 +284,8 @@ type Row = { key: string; icon: IconName; title: string; desc: string; right?: s
 /** 노트 유형 줄의 설명 한 문장: 새 필드 · 이름 바뀐 필드 · 새 카드 종류 · 새 모양 · 없어진 것 ([이어 쓰는 꼴, 끝내는 꼴]) */
 function typeDesc(t: UpdateTypeChange) {
   const q = (xs: string[]) => xs.map((x) => `"${x}"`).join(", ");
+  // 카드 종류 이름은 따옴표, CSS 는 그대로
+  const looks = (xs: string[]) => xs.map((x) => (x === "CSS" ? x : `"${x}"`)).join(", ");
   const gone = [...t.removed_fields, ...t.removed_templates];
   const clauses = [
     t.created && ["새 노트 유형으로 넣고", "새 노트 유형으로 넣어요"],
@@ -293,7 +295,7 @@ function typeDesc(t: UpdateTypeChange) {
       `새 카드 종류 ${q(t.new_templates)}${ro(t.new_templates.slice(-1)[0])} 신규 카드를 만들고`,
       `새 카드 종류 ${q(t.new_templates)}${ro(t.new_templates.slice(-1)[0])} 신규 카드를 만들어요`,
     ],
-    t.updated_looks.length > 0 && [`${q(t.updated_looks)}${eun(t.updated_looks.slice(-1)[0])} 새 모양으로 바꾸고`, `${q(t.updated_looks)}${eun(t.updated_looks.slice(-1)[0])} 새 모양으로 바꿔요`],
+    t.updated_looks.length > 0 && [`${looks(t.updated_looks)}${eun(t.updated_looks.slice(-1)[0])} 새 모양으로 바꾸고`, `${looks(t.updated_looks)}${eun(t.updated_looks.slice(-1)[0])} 새 모양으로 바꿔요`],
     gone.length > 0 && [`새 버전에서 없어진 ${q(gone)}${eun(gone.slice(-1)[0])} 그대로 두고`, `새 버전에서 없어진 ${q(gone)}${eun(gone.slice(-1)[0])} 그대로 둬요`],
   ].filter(Boolean) as [string, string][];
   const sentence = clauses.map((c, i) => c[i === clauses.length - 1 ? 1 : 0]).join(", ");
@@ -835,6 +837,26 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
   const [error, setError] = useState(false);
   const [raw, setRaw] = useState(false);
   const [tpl, setTpl] = useState<{ q: string; a: string; ord: number } | null>(null);
+  // 새 모양은 적용 전이라 새 필드 · 바뀐 필드 이름이 아직 없다 (빈 칸이 점처럼 그려진다). 미리보기에서만 그 자리에 새 필드는 이름, 바뀐 이름은 옛 이름의 값
+  const needFill = who === "new" && t.new_fields.length + t.renamed_fields.length > 0;
+  const [fill, setFill] = useState<{ names: string[]; values: string[] } | null>(null);
+  useEffect(() => {
+    if (!needFill) return;
+    Promise.all([api.noteTypeDetail(t.note_type_id), api.noteTypeSamples(t.note_type_id)]).then(
+      ([d, samples]) => {
+        const slots = samples[0]?.slots;
+        const names = d.fields.map((f) => f.name);
+        const values = d.fields.map((f) => slots?.[f.slot] ?? `(${f.name})`);
+        for (const [a, b] of t.renamed_fields) {
+          const i = names.indexOf(a);
+          if (i >= 0 && !names.includes(b)) (names.push(b), values.push(values[i]));
+        }
+        for (const f of t.new_fields) if (!names.includes(f)) (names.push(f), values.push(f));
+        setFill({ names, values });
+      },
+      () => setError(true),
+    );
+  }, [needFill, t]);
   // CSS 충돌이면 카드 종류는 바뀌지 않으니 첫 카드 종류로 그린다
   useEffect(() => {
     if (l.ord !== null) return setTpl(who === "mine" ? { q: l.mine_front, a: l.mine_back, ord: l.ord } : { q: l.new_front, a: l.new_back, ord: l.ord });
@@ -847,11 +869,11 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
     );
   }, [t.note_type_id, l, who]);
   useEffect(() => {
-    if (!tpl) return;
+    if (!tpl || (needFill && !fill)) return;
     let live = true;
     setError(false);
     api
-      .previewTemplate(t.note_type_id, tpl.q, tpl.a, tpl.ord, null)
+      .previewTemplate(t.note_type_id, tpl.q, tpl.a, tpl.ord, fill?.values ?? null, fill?.names)
       .then(async (p) => {
         const [front, back] = await Promise.all([renderCardHtml(p.front), renderCardHtml(p.back)]);
         if (live) setHtml({ front, back });
@@ -860,7 +882,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
     return () => {
       live = false;
     };
-  }, [t.note_type_id, tpl]);
+  }, [t.note_type_id, tpl, needFill, fill]);
   const css = who === "mine" ? t.css_mine : t.css_new;
   const scope = `.du-look__content--${who}`;
   const scoped = useMemo(() => scopeCss(css, false, scope), [css, scope]);
@@ -1010,7 +1032,14 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
         <span className="import__file-text">
           <span className="t-body-m-strong">{s.file_name}</span>
           <span className="t-body-s c-secondary">
-            {deckOf(s) ? `덱 "${deckOf(s)}" · ` : ""}고치는 노트 {n(touched)}개 · 새 카드 {n(cards)}장
+            {[
+              deckOf(s) && `덱 "${deckOf(s)}"`,
+              touched > 0 && `바뀌는 노트 ${n(touched)}개`,
+              s.new_notes > 0 && `새 노트 ${n(s.new_notes)}개`,
+              cards > 0 && `새 카드 ${n(cards)}장`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
         </span>
       </div>

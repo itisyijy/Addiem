@@ -95,7 +95,8 @@
   --blob-apricot: #ffcba6;
 
   --font-sans: "Pretendard", system-ui, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  /* JetBrains Mono 는 앱에 넣지 않았다. 없으면 한국어 Windows 의 monospace 가 GulimChe 로 떨어져 '.' 이 ',' 처럼 보인다 (DU39) */
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
 }
 
 /* Dark (Figma 35:4975). 구조는 그대로, 값만 바뀐다. bg/inverse 는 흰색으로 뒤집지 않고 남색 면으로 둔다 */
