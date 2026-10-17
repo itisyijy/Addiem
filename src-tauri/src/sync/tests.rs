@@ -1100,6 +1100,158 @@ fn deleting_a_deck_loses_to_a_card_added_later_on_another_device() {
     }
 }
 
+/// 빈칸 노트 하나와 카드 두 장 (c1, c2). (노트 id, c2 카드 id)
+fn cloze_note(d: &Dev, deck: i64) -> (i64, i64) {
+    let con = d.con();
+    let nt: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Cloze' AND anki_model_id IS NULL", [], |r| r.get(0)).unwrap();
+    con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 1000, 1000)", params![nt, json!([CLOZE_BOTH, ""]).to_string()]).unwrap();
+    let note = con.last_insert_rowid();
+    for ord in 0..2 {
+        con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, ?3, 1000, 1000)", params![note, deck, ord]).unwrap();
+    }
+    (note, con.last_insert_rowid())
+}
+
+const CLOZE_BOTH: &str = "{{c1::결측값}} 과 {{c2::이상값}}";
+
+/// 앱이 노트를 저장하는 길 (빈칸 번호에 맞춰 카드를 만들고 지운다)
+fn save_note(d: &Dev, at: i64, note: i64, text: &str) {
+    d.at(at, || crate::commands::save_note_fields(&d.con(), note, &[text.to_string(), String::new()]).unwrap());
+}
+
+#[test]
+fn removing_a_cloze_deletes_its_card_on_every_device() {
+    // 빈칸 c2 를 지우면 노트 저장과 카드 지우기가 한 동작(같은 ms, 같은 HLC)이다. 같은 HLC 의 노트 수정은 지운 기기가 안 수정이라 카드를 붙잡지 않는다
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (note, c2) = cloze_note(&a, a.n("SELECT id FROM deck WHERE name = '2과목'"));
+    env.sync(&a);
+    env.sync(&b);
+    let c2 = a.uid("card", c2);
+    save_note(&a, db::now_ms() + 1000, note, "{{c1::결측값}} 과 이상값");
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    assert!(a.id("card", &c2).is_none() && b.id("card", &c2).is_none(), "지운 빈칸의 카드가 되살아나지 않는다");
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn recreated_card_replaces_the_deleted_one() {
+    // 같은 노트 · 같은 ord 의 카드를 동기화하기 전에 지웠다 다시 만들었다: 빈칸 c2 를 지웠다 다시 넣기 / 카드를 지운 뒤 노트를 고쳐 다시 생기기 /
+    // 지우기를 받은 다른 기기(C)가 다시 넣기 (B 는 둘을 한 번에 받는다).
+    // 옛 카드의 지우기보다 나중에 만든 새 카드가 남고, 받는 기기도 옛 카드를 지운다. 새 카드를 만든 노트 저장은 옛 카드를 고친 것이 아니다.
+    // 옛 카드의 복습 기록은 지운 기기에서처럼 카드 참조가 빈 채 남고(A4), 새 카드는 새 카드의 일정(새 카드)으로 시작한다
+    for path in ["cloze", "delete_cards", "other_device"] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let c = Dev::new("태블릿");
+        engine::join(&c.db, &env.cx(&c), Join::Take, json!({})).unwrap();
+        let (note, old) = cloze_note(&a, a.n("SELECT id FROM deck WHERE name = '2과목'"));
+        a.review(&env.fsrs, old, 3, 1_800_000_000_000);
+        for d in [&a, &b, &c] {
+            env.sync(d);
+        }
+        let old = a.uid("card", old);
+        let t = db::now_ms();
+        let maker = match path {
+            "cloze" => {
+                save_note(&a, t + 1000, note, "{{c1::결측값}} 과 이상값");
+                &a
+            }
+            "delete_cards" => {
+                a.edit_at(t + 1000, "DELETE FROM card WHERE uid = ?1", [&old]);
+                &a
+            }
+            _ => {
+                save_note(&a, t + 1000, note, "{{c1::결측값}} 과 이상값");
+                env.sync(&a);
+                env.sync(&c);
+                &c
+            }
+        };
+        let note = maker.id("note", &a.uid("note", note)).unwrap();
+        save_note(maker, t + 2000, note, CLOZE_BOTH);
+        let new = maker.uid("card", maker.n(&format!("SELECT id FROM card WHERE note_id = {note} AND template_ord = 1")));
+        assert_ne!(new, old, "{path}: 새 uid");
+        for d in [&a, &c, &b, &a, &c, &b] {
+            env.sync(d);
+        }
+        for d in [&a, &b, &c] {
+            assert!(d.id("card", &old).is_none(), "{path}: 옛 카드는 지워진다");
+            let id = d.id("card", &new).unwrap_or_else(|| panic!("{path}: 새 카드가 남는다"));
+            assert_eq!(d.srs(id).state, "new", "{path}: 새 카드는 새 카드의 일정");
+            assert_eq!(d.n("SELECT count(*) FROM review_log WHERE card_id IS NULL"), 1, "{path}: 옛 카드의 복습 기록은 카드 참조 없이 남는다");
+        }
+        assert_eq!(a.dump(), b.dump(), "{path}");
+        assert_eq!(a.dump(), c.dump(), "{path}");
+    }
+}
+
+#[test]
+fn recreated_deck_with_the_same_name_replaces_the_deleted_one() {
+    // 덱을 지우고 같은 이름으로 다시 만들었다 (지운 뒤 같은 .apkg 를 다시 가져오기 등) / 다른 덱 이름을 지운 덱 이름으로 바꿨다.
+    // 받는 기기가 새 덱을 옛 덱으로 합친 뒤 함께 지우거나, 이름이 겹쳐 바꾸기를 버리면 안 된다
+    for path in ["create", "rename"] {
+        let env = Env::new();
+        let (a, b, old_card) = pair(&env);
+        let parent = a.n("SELECT id FROM deck WHERE name = '빅데이터분석기사'");
+        let other = a.deck("임시", Some(parent));
+        env.sync(&a);
+        env.sync(&b);
+        let old_card = a.uid("card", old_card);
+        let old = a.uid("deck", a.n("SELECT id FROM deck WHERE name = '2과목'"));
+        let t = db::now_ms();
+        a.at(t + 1000, || {
+            let con = a.con();
+            con.execute("DELETE FROM card WHERE deck_id = (SELECT id FROM deck WHERE uid = ?1)", [&old]).unwrap();
+            con.execute("DELETE FROM note WHERE NOT EXISTS (SELECT 1 FROM card WHERE card.note_id = note.id)", []).unwrap();
+            con.execute("DELETE FROM deck WHERE uid = ?1", [&old]).unwrap();
+        });
+        let deck = if path == "create" {
+            a.at(t + 2000, || a.deck("2과목", Some(parent)))
+        } else {
+            a.edit_at(t + 2000, "UPDATE deck SET name = '2과목' WHERE id = ?1", [other]);
+            other
+        };
+        let (_, new_card) = a.at(t + 2000, || a.note(deck, "다시 가져온 카드", None, t + 2000));
+        let new = a.uid("deck", deck);
+        let new_card = a.uid("card", new_card);
+        for d in [&a, &b, &a, &b] {
+            env.sync(d);
+        }
+        for d in [&a, &b] {
+            assert!(d.id("deck", &old).is_none() && d.id("card", &old_card).is_none(), "{path}: 옛 덱 · 카드는 지워진다");
+            assert!(d.id("card", &new_card).is_some(), "{path}: 새 카드가 남는다");
+            assert_eq!(d.n(&format!("SELECT count(*) FROM deck WHERE uid = '{new}' AND name = '2과목'")), 1, "{path}: 새 덱이 그 이름으로 남는다");
+        }
+        assert_eq!(a.dump(), b.dump(), "{path}");
+    }
+}
+
+#[test]
+fn recreated_card_merges_into_the_old_one_edited_later_elsewhere() {
+    // 옛 카드를 다른 기기가 지우기보다 나중에 고쳤으면 옛 카드도 남는다 (K29). 같은 자리의 새 카드와는 한 장으로 합쳐진다 (작은 uid)
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (note, old) = cloze_note(&a, a.n("SELECT id FROM deck WHERE name = '2과목'"));
+    env.sync(&a);
+    env.sync(&b);
+    let old = a.uid("card", old);
+    let t = db::now_ms();
+    save_note(&a, t + 1000, note, "{{c1::결측값}} 과 이상값");
+    save_note(&a, t + 2000, note, CLOZE_BOTH);
+    b.edit_at(t + 3000, "UPDATE card SET importance = 2, importance_source = 'user' WHERE uid = ?1", [&old]);
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        assert_eq!(d.n(&format!("SELECT count(*) FROM card WHERE template_ord = 1 AND note_id = (SELECT note_id FROM card WHERE uid = '{old}')")), 1, "한 장");
+        assert_eq!(d.n(&format!("SELECT importance FROM card WHERE uid = '{old}'")), 2, "나중에 고친 것이 남는다");
+    }
+    assert_eq!(a.dump(), b.dump());
+}
+
 #[test]
 fn lock_change_after_pulling_keeps_unpulled_changes_and_media() {
     // T3-09: 잠금을 바꾸는 기기(B)는 먼저 받는다 (sync_set_lock). C 가 올리고 B 가 아직 받지 않은 그림 카드도 새 세대에 들어가,
@@ -1732,3 +1884,4 @@ fn same_template_edited_on_both_devices_keeps_the_losing_version() {
     let kept = |d: &Dev| d.n("SELECT count(*) FROM sync_type_conflict WHERE loser = 'A 앞면 {{Front}}' AND winner = 'B 앞면 {{Front}}'");
     assert!(kept(&a) + kept(&b) >= 1, "진 쪽 앞면을 기록에 남긴다");
 }
+

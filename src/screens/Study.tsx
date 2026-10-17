@@ -243,8 +243,10 @@ const SEP = "   ·   ";
 /** written: J 서술형 정보 (써서 답하기 · 정답 글자 · 필수 키워드). source: I2 연결된 자료가 있다 */
 type Shown = { view: CardView; front: string; question: string; answer: string; written: WrittenCard | null; source: boolean };
 type Folded = { id: number; question: string; importance: Level; deck_path: string[]; auto: boolean; at: number };
+/** 평가 · 접기 직전의 카드 면: Q 연 칸 · 표시(빠뜨림 · 고른 보기) · 보기 순서, J1 쓴 답 · J2 비교. 되돌리면 그대로 돌아온다 (섞기는 볼 때마다 새로 해서 다시 만들 수 없다) */
+type Face = { opened: number; marks: number[]; order: number[]; typed: string; compare: Compare | null };
 /** 되돌릴 수 있는 일. D2-u: 이 세션의 마지막 평가나 접기 하나뿐 (백엔드는 더 쌓지만 화면에서 막는다). log: H3 압축 회독 기록 id */
-type Last = { id: number; rating: Rating | null; phase: "q" | "a"; counted: boolean; folded: boolean; log?: number };
+type Last = { id: number; rating: Rating | null; phase: "q" | "a"; counted: boolean; folded: boolean; log?: number; face: Face };
 /** 접기 토스트. reason: G3 카드 모양 신호 ("답이 10항목이라"). source: I2 [원자료 보기] */
 type FoldToast = { id: number; auto: boolean; reason?: string; source?: boolean };
 type AnswerAction = { action: string; due_in_ms: number | null; log?: number };
@@ -393,7 +395,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     [nav, deckIds, scale, cram, notify, mix],
   );
 
-  const show = useCallback(async (id: number, at: "q" | "a" = "q") => {
+  const show = useCallback(async (id: number, at: "q" | "a" = "q", face?: Face) => {
     // J 서술형 정보 · I2 자료 연결은 없어도 카드는 보인다
     const [view, written, source] = await Promise.all([api.cardView(id), writtenApi.card(id).catch(() => null), hasSource(id)]);
     // Q 목록 · 선택형은 템플릿 대신 필드로 그린다 (질문 · 추가 설명만 HTML)
@@ -414,13 +416,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       setPref(SOUND_TIP_SEEN, true);
       setSoundTip({ id, tts: false });
     }
-    setOpened(0);
-    setMarks([]);
-    setOrder(sp?.kind === "choice" ? optionOrder(sp) : []);
+    setOpened(face?.opened ?? 0);
+    setMarks(face?.marks ?? []);
+    setOrder(face?.order ?? (sp?.kind === "choice" ? optionOrder(sp) : []));
     setPhase(at);
     setUndone(null);
-    setTyped("");
-    setCompare(null);
+    setTyped(face?.typed ?? "");
+    setCompare(face?.compare ?? null);
     setSrcSeg(null);
     shownAt.current = Date.now();
   }, []);
@@ -502,11 +504,31 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   // D3-l 넘칠 때만 페이드 · "아래에 더 있어요" · 스크롤 안내
   const measure = useCallback(() => {
     const el = scroller.current;
-    if (!el) return;
+    const box = el?.parentElement;
+    if (!el || !box) return;
+    // 넘침은 넘침 모양(is-overflow: 아래 48px 비움) 없이 잰다. 앞 카드의 모양이 남은 채로 재면 들어가는 카드도 넘친다고 본다.
+    // 모양은 바로 되돌리고, 모양을 빼는 동안 줄어든 스크롤 위치도 되돌린다
+    const had = box.classList.contains("is-overflow");
+    const top = el.scrollTop;
+    box.classList.remove("is-overflow");
     const overflow = el.scrollHeight > el.clientHeight + 1;
-    const more = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+    if (had) {
+      box.classList.add("is-overflow");
+      el.scrollTop = top;
+    }
+    const more = overflow && el.scrollHeight - el.scrollTop - el.clientHeight > 1;
     setFit((f) => (f.overflow === overflow && f.more === more ? f : { overflow, more }));
   }, []);
+  // 스크롤로는 넘침이 바뀌지 않는다. "아래에 더 있어요"만 다시 잰다
+  const onScroll = () => {
+    const el = scroller.current;
+    if (!el) return;
+    const left = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+    setFit((f) => {
+      const more = f.overflow && left;
+      return f.more === more ? f : { ...f, more };
+    });
+  };
   // 새 카드나 답을 열면 맨 위부터. 그림이 늦게 그려지거나 창 크기가 바뀌면 다시 잰다
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -569,6 +591,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     [cram],
   );
 
+  const faceNow: Face = { opened, marks, order, typed, compare }; // 되돌리기가 돌려놓을 지금 면
+
   const guard = async (work: () => Promise<void>) => {
     if (busy.current || !card || (session.current === null && !cram)) return;
     busy.current = true;
@@ -625,7 +649,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       const counted = res.action !== "again_later";
       if (counted) setDone((d) => d + 1);
       else later.current.push({ id: c.view.id, due: Date.now() + (res.due_in_ms ?? 60_000) });
-      setLast({ id: c.view.id, rating: r, phase: "a", counted, folded: res.action === "buried", log: res.log });
+      setLast({ id: c.view.id, rating: r, phase: "a", counted, folded: res.action === "buried", log: res.log, face: faceNow });
       if (res.action === "buried") fold(c, true);
       else {
         setToast(null); // 토스트 자리는 하나. 연달아 평가하면 내용만 바뀐다
@@ -639,7 +663,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       const c = card!;
       await backend.bury(c.view.id);
       setDone((d) => d + 1);
-      setLast({ id: c.view.id, rating: null, phase, counted: true, folded: true });
+      setLast({ id: c.view.id, rating: null, phase, counted: true, folded: true, face: faceNow });
       fold(c, false);
       await advance();
     });
@@ -680,7 +704,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       next.current = next.current.filter((x) => x !== id);
       if (card!.view.id !== id) next.current.unshift(card!.view.id);
       try {
-        await show(id, u.phase);
+        await show(id, u.phase, id === u.id ? u.face : undefined);
         setUndone(u.rating);
       } catch {
         await advance(); // 그 사이 지워진 카드
@@ -1005,7 +1029,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                 </button>
               </span>
             </header>
-            <div ref={scroller} className="study__scroll" onScroll={measure}>
+            <div ref={scroller} className="study__scroll" onScroll={onScroll}>
               <div className="study__card-content" onClick={zoomImage}>
                 <div className={face === "night" ? "nightMode night_mode" : undefined}>
                 {special ? (
