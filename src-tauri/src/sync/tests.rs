@@ -2056,4 +2056,24 @@ fn deck_update_origin_follows_and_the_other_device_judges_with_it() {
     let r = b.at(t + 6000, || up(&b, &v4));
     assert_eq!((r.mine_kept, r.changed, r.conflicts.len()), (1, 0, 0));
     assert_eq!(fields(&b, "g1"), g1a);
+
+    // DU-05 · DU42: 내가 지운 노트(origin_gone)는 동기화로 따라간다. 나중에 스냅샷으로 합류한 기기의 업데이트도 다시 넣지 않아, 지운 기기에 되살아나지 않는다
+    a.edit_at(t + 7000, "DELETE FROM card WHERE note_id = (SELECT id FROM note WHERE anki_guid = 'g3')", params![]);
+    a.edit_at(t + 7000, "DELETE FROM note WHERE anki_guid = 'g3'", params![]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(b.n("SELECT count(*) FROM origin_gone WHERE guid = 'g3'"), 1);
+    let c = Dev::new("태블릿");
+    engine::join(&c.db, &env.cx(&c), Join::Take, json!({})).unwrap();
+    env.sync(&c);
+    assert_eq!(c.n("SELECT count(*) FROM origin_gone WHERE guid = 'g3'"), 1, "합류한 기기도 안다");
+    let r = c.at(t + 8000, || up(&c, &v4));
+    assert_eq!((r.gone, r.new_notes), (1, 0));
+    env.sync(&c);
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(a.n("SELECT count(*) FROM note WHERE anki_guid = 'g3'"), 0, "지운 기기에 되살아나지 않는다");
+    assert_eq!(a.dump(), c.dump());
 }

@@ -105,11 +105,14 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
              COMMIT;"
         ))?;
     }
-    // DU3 내가 지운 노트 (기기 안 표): 덱 업데이트가 다시 넣지 않는다. 지우는 길(카드 · 덱 · 카드 종류 · 빈칸 · 받은 삭제)이 여럿이라 트리거 하나로 모은다
+    // DU3 내가 지운 노트: 덱 업데이트가 다시 넣지 않는다. 지우는 길(카드 · 덱 · 카드 종류 · 빈칸 · 받은 삭제)이 여럿이라 트리거 하나로 모은다.
+    // 동기화 대상 표다 (DU42): 스냅샷으로 합류한 기기도 알아야 그 기기의 업데이트가 지운 노트를 되살려 다른 기기에 퍼뜨리지 않는다.
+    // 이미 있으면 그대로 둔다 (IGNORE): REPLACE 는 행을 새로 만들어 동기화 uid 가 바뀐다
     con.execute_batch(
         "CREATE TABLE IF NOT EXISTS origin_gone (guid TEXT PRIMARY KEY, at INTEGER NOT NULL);
-         CREATE TRIGGER IF NOT EXISTS note_origin_gone AFTER DELETE ON note WHEN OLD.origin IS NOT NULL AND OLD.anki_guid IS NOT NULL
-         BEGIN INSERT OR REPLACE INTO origin_gone (guid, at) VALUES (OLD.anki_guid, CAST(unixepoch('subsec') * 1000 AS INTEGER)); END;",
+         DROP TRIGGER IF EXISTS note_origin_gone;
+         CREATE TRIGGER note_origin_gone AFTER DELETE ON note WHEN OLD.origin IS NOT NULL AND OLD.anki_guid IS NOT NULL
+         BEGIN INSERT OR IGNORE INTO origin_gone (guid, at) VALUES (OLD.anki_guid, CAST(unixepoch('subsec') * 1000 AS INTEGER)); END;",
     )?;
     sync_schema(con)
 }
@@ -140,7 +143,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 }
 
 /// Drive 동기화 대상 (drive-sync.md 6장). session_card_state · import_* · schema_meta 는 기기 안에서만 쓴다
-pub const SYNC_TABLES: [&str; 18] = [
+pub const SYNC_TABLES: [&str; 19] = [
     "deck", "deck_config", "note_type", "card_template", "note", "card", "review_log", "media", "study_session", "daily_plan",
     // H 시험 계획: 쓸 수 있는 시간 · 당겨 맞추기 · 충돌 조정은 사용자의 결정이라 기기 사이에 따라간다
     "plan_setting", "plan_shift", "plan_conflict",
@@ -148,6 +151,8 @@ pub const SYNC_TABLES: [&str; 18] = [
     "source_material", "source_segment", "source_link",
     // J 서술형: 노트별 필수 키워드 · 써서 답하기, 카드별 지난번에 쓴 답
     "note_written", "written_answer",
+    // 8.7 덱 업데이트: 내가 지운 노트 (guid). 다시 넣지 않는다 (DU3 · DU42)
+    "origin_gone",
 ];
 
 /// ULID 처럼 시간 순으로 정렬되는 uid: 48비트 ms 시각 + 80비트 난수, 16진수 32자

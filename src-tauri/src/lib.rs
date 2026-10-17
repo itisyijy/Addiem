@@ -113,6 +113,7 @@ pub fn run() {
             commands::create_backup,
             commands::retry_open,
             commands::restore_backup,
+            commands::local_backups,
             commands::open_backup_dir,
             commands::set_cutoff_hour,
             commands::wipe_all,

@@ -217,6 +217,9 @@ pub struct TypeChange {
     new_template_cards: usize,
     /// 새 버전에서 없어진 카드 종류 (카드 · 기록 그대로)
     removed_templates: Vec<String>,
+    /// 원본이 없는 예전 유형: 새 버전의 필드 · 카드 종류 중 내가 지운 것과 구별하지 못해 넣지 않는 것 (DU22 알림)
+    skipped_fields: Vec<String>,
+    skipped_templates: Vec<String>,
     /// 만든 사람만 바꿔 새 모양으로 바뀌는 카드 종류 이름 (CSS 는 "CSS")
     updated_looks: Vec<String>,
     /// 둘 다 바꾼 모양 (기본 내 모양, DU9)
@@ -231,6 +234,8 @@ impl TypeChange {
             && self.removed_fields.is_empty()
             && self.new_templates.is_empty()
             && self.removed_templates.is_empty()
+            && self.skipped_fields.is_empty()
+            && self.skipped_templates.is_empty()
             && self.updated_looks.is_empty()
             && self.looks.is_empty()
     }
@@ -285,6 +290,11 @@ pub struct UpdateSummary {
     pub(crate) media_renamed: usize,
     /// 이미 같은 이름의 파일이 있어 내용을 비교한 미디어 (B2-u0 "이름이 같은 n개는 내용을 비교해요")
     pub(crate) media_compared: usize,
+    /// 같은 guid 의 노트가 두 벌 이상 있는 노트 (두 기기가 받지 않은 채 같은 파일을 적용했다, DU17). 첫 번째 것만 고친다. [카드 목록에서 보기]
+    pub(crate) duplicate_notes: usize,
+    pub(crate) duplicate_card_ids: Vec<i64>,
+    /// 새 노트를 넣으려고 새로 만드는 덱 (이 기기에 없는 Anki 덱)
+    pub(crate) new_decks: usize,
     /// 사전 검사만: 충돌 필드의 새 버전이 쓰는데 아직 저장하지 않은 그림 (이름 -> data URL, 합쳐 8MB 까지). B2-k 가 나란히 보인다
     pub(crate) media_preview: HashMap<String, String>,
     /// 옮기지 않는 새 .apkg 의 복습 기록 (DU12)
@@ -454,7 +464,7 @@ fn plan_media(pkg: &mut Package, dir: &Path, wanted: impl Fn(&str) -> bool, s: &
     let mut new: HashSet<String> = HashSet::new();
     for (key, name) in &names {
         if safe_media_name(name).is_err() {
-            s.issues.push(issue("skipped", "media_name", format!("미디어 '{name}' 는 이름이 올바르지 않아 건너뛰었어요")));
+            s.issues.push(issue("skipped", "media_name", format!("미디어 '{name}' 는 이름이 올바르지 않아 건너뛰어요")));
             continue;
         }
         let storable = storable_name(name).into_owned();
@@ -474,7 +484,7 @@ fn plan_media(pkg: &mut Package, dir: &Path, wanted: impl Fn(&str) -> bool, s: &
                 use sha2::{Digest, Sha256};
                 target = fit_name(&storable, &format!("-{}", &format!("{:x}", Sha256::digest(&b))[..8]));
                 if !same_or_absent(&dir.join(&target), &b) {
-                    s.issues.push(issue("warning", "media", format!("미디어 '{name}' 를 저장할 이름을 찾지 못해 건너뛰었어요")));
+                    s.issues.push(issue("warning", "media", format!("미디어 '{name}' 를 저장할 이름을 찾지 못해 건너뛰어요")));
                     continue;
                 }
             }
@@ -577,6 +587,10 @@ fn fields_3way(tx: &Connection, before: &Nt, b: &TypeOrigin, t: &AType, c: &mut 
         };
     }
     for (k, (_, s)) in b.f.iter().enumerate() {
+        // 이름을 바꾸고 순서를 바꿔 내보낸 내 덱처럼, 그 자리가 다른 이름으로 이미 맞춰졌으면 없어진 것이 아니다
+        if slots.contains(s) {
+            continue;
+        }
         if let (false, Some(name)) = (used[k], s.and_then(|s| before.slots.get(s)).filter(|x| !x.is_empty())) {
             c.removed_fields.push(name.clone());
         }
@@ -607,7 +621,11 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
         tx.query_row("SELECT origin FROM note_type WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0)).map_err(err)?.and_then(|j| serde_json::from_str(&j).ok());
     let mut c = TypeChange { note_type_id: id, name: before.name.clone(), no_base: base.is_none(), ..Default::default() };
     let slots = match &base {
-        None => notetype::incoming_slots(&before, &t.fields),
+        None => {
+            let slots = notetype::incoming_slots(&before, &t.fields);
+            c.skipped_fields = t.fields.iter().zip(&slots).filter(|(_, s)| s.is_none()).map(|(f, _)| f.clone()).collect();
+            slots
+        }
         Some(b) => fields_3way(tx, &before, b, t, &mut c, issues)?,
     };
     let now_nt = notetype::load(tx, id)?;
@@ -631,6 +649,9 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
             let map: HashMap<u32, u32> = if cloze { t.templates.iter().filter(|x| has(x.0)).map(|x| (x.0, x.0)).collect() } else { notetype::incoming_ords(&before, &tmpls) };
             for (i, x) in t.templates.iter().enumerate() {
                 ours_of[i] = map.get(&x.0).copied();
+                if ours_of[i].is_none() && !cloze {
+                    c.skipped_templates.push(x.1.clone());
+                }
             }
         }
         Some(b) => {
@@ -874,6 +895,19 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     let nts: HashMap<i64, Nt> = maps.values().map(|m| Ok((m.ntid, notetype::load(&tx, m.ntid)?))).collect::<Res<_>>()?;
     let fronts = notetype::Fronts::load(&tx)?;
 
+    // 같은 guid 가 두 벌인 노트 (DU-06): 알린다. 고치는 것은 첫 번째 것 (ORDER BY id)
+    {
+        let dups: Vec<String> = tx
+            .prepare("SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL GROUP BY anki_guid HAVING count(*) > 1")
+            .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
+            .map_err(err)?;
+        let mut st = tx.prepare_cached("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = ?1 ORDER BY c.id").map_err(err)?;
+        for g in dups.iter().filter(|g| all_guids.contains(*g)) {
+            s.duplicate_notes += 1;
+            s.duplicate_card_ids.extend(st.query_map([g], |r| r.get::<_, i64>(0)).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?);
+        }
+    }
+
     // 노트
     let mut finder = DeckFinder::default();
     let mut used_decks: HashSet<i64> = HashSet::new();
@@ -889,6 +923,13 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
         }
         let (Some(tm), Some(t)) = (maps.get(&n.mid), pkg.types.get(&n.mid)) else { continue };
         let nt = &nts[&tm.ntid];
+        // 자리마다 보일 이름: 우리 이름, 이 앱에서 지운 자리는 "Anki 이름 (지운 필드)" (DU-12)
+        let names: Vec<String> = (0..nt.slots.len())
+            .map(|sl| match nt.slots[sl].as_str() {
+                "" => tm.slots.iter().position(|x| *x == Some(sl)).and_then(|j| t.fields.get(j)).map_or_else(|| "(지운 필드)".into(), |f| format!("{f} (지운 필드)")),
+                n => n.to_string(),
+            })
+            .collect();
         // N: 들어온 값을 우리 자리에 (미디어 이름 바꾸기 뒤). 넣을 자리가 없는 값은 알린다 (Q2-13)
         let mut inc: Vec<Option<String>> = vec![None; nt.slots.len()];
         let mut lost = vec![];
@@ -922,7 +963,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
             Some(o) if o.ntid != tm.ntid => s.other_type += 1,
             Some(o) => {
                 lost.into_iter().for_each(|f| *dropped.entry(f).or_default() += 1);
-                let made = update_note(&tx, nt, &fronts, &o, &inc, &tags, req.choices, now, &mut s)?;
+                let made = update_note(&tx, nt, &names, &fronts, &o, &inc, &tags, req.choices, now, &mut s)?;
                 if let Some(c) = type_at.get(&tm.ntid).map(|i| &mut s.types[*i]) {
                     c.new_template_cards += made.iter().filter(|o| tm.new_ords.contains(o)).count();
                 }
@@ -1013,17 +1054,18 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     // 새 노트의 기출 태그 · 덱 중요도 제안 (새로 넣은 카드만 센다, 사용자가 정한 덱은 건드리지 않는다, I1 · I24)
     crate::exam::fill_from_tags(&tx).map_err(err)?;
     suggest_from_tags(&tx, &card_tags)?;
+    s.new_decks = finder.decks.created.len();
     // 결과의 [덱 열기] · [학습 시작]: 업데이트한 덱과 새 노트가 들어간 덱의 최상위 덱
     used_decks.extend(known_decks(&tx, &deck_ids)?);
     s.roots = roots_of(&tx, &used_decks)?.into_iter().collect();
     for (f, c) in &dropped {
-        s.issues.push(issue("warning", "dropped_field", format!("이 노트 유형에 없는 필드 '{f}'의 값이 있는 노트 {}개는 그 값을 넣지 않았어요", n(*c))));
+        s.issues.push(issue("warning", "dropped_field", format!("이 노트 유형에 없는 필드 '{f}'의 값이 있는 노트 {}개는 그 값을 넣지 않아요", n(*c))));
     }
     if no_tpl > 0 {
-        s.issues.push(issue("skipped", "deleted_card_type", format!("이 앱에서 지운 카드 종류의 새 카드 {}장은 넣지 않았어요", n(no_tpl))));
+        s.issues.push(issue("skipped", "deleted_card_type", format!("이 앱에서 지운 카드 종류의 새 카드 {}장은 넣지 않아요", n(no_tpl))));
     }
     if no_deck > 0 {
-        s.issues.push(issue("skipped", "missing_deck", format!("덱을 찾지 못한 새 카드 {}장은 넣지 않았어요", n(no_deck))));
+        s.issues.push(issue("skipped", "missing_deck", format!("덱을 찾지 못한 새 카드 {}장은 넣지 않아요", n(no_deck))));
     }
     (req.emit)("cards", 1, 1);
     if !dry {
@@ -1068,7 +1110,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
 
 /// 이미 있는 노트 하나. 자리마다 판정해 값 · 태그 · 기출 · 원본을 쓰고, 생기는 카드를 만든다 (빈칸 번호 · 앞면). 만든 카드의 ord
 #[allow(clippy::too_many_arguments)]
-fn update_note(tx: &Connection, nt: &Nt, fronts: &notetype::Fronts, o: &Ours, inc: &[Option<String>], tags: &str, choices: &Choices, now: i64, s: &mut UpdateSummary) -> Res<Vec<u32>> {
+fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fronts, o: &Ours, inc: &[Option<String>], tags: &str, choices: &Choices, now: i64, s: &mut UpdateSummary) -> Res<Vec<u32>> {
     let base: Option<NoteOrigin> = o.origin.as_deref().and_then(|j| serde_json::from_str(j).ok());
     let len = nt.slots.len().max(o.fields.len());
     let mut m = o.fields.clone();
@@ -1091,11 +1133,11 @@ fn update_note(tx: &Connection, nt: &Nt, fronts: &notetype::Fronts, o: &Ours, in
             Pick::New => {
                 fin[sl] = v.clone();
                 new += 1;
-                new_names.push(nt.slots.get(sl).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| "(숨긴 필드)".into()));
+                new_names.push(names.get(sl).cloned().unwrap_or_default());
             }
             Pick::Mine => mine += 1,
             Pick::Conflict => {
-                let name = nt.slots.get(sl).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| "(숨긴 필드)".into());
+                let name = names.get(sl).cloned().unwrap_or_default();
                 conflicts.push(ConflictField { slot: sl, name, mine: m[sl].clone(), new: v.clone() });
                 if take {
                     fin[sl] = v.clone();
@@ -1265,7 +1307,7 @@ pub async fn apply_update(
 /// 자동 백업 → 적용. 실패하면 새로 쓴 미디어 파일을 지운다 (DB 는 트랜잭션이 되돌린다)
 pub(crate) fn apply(con: &mut Connection, data_dir: &Path, req: &Req) -> Res<UpdateSummary> {
     (req.emit)("backup", 0, 1);
-    let backup = crate::commands::write_backup(con, data_dir).map_err(|e| format!("{NO_BACKUP} {e}"))?;
+    let backup = crate::commands::write_backup_as(con, data_dir, "update").map_err(|e| format!("{NO_BACKUP} {e}"))?;
     (req.emit)("backup", 1, 1);
     if (req.cancel)() {
         return Err(STOPPED.into());
@@ -1727,6 +1769,7 @@ mod tests {
         assert_eq!(fields(&s, "gb")[1], "b2");
         let ty = &r.types[0];
         assert!(ty.no_base && ty.new_fields.is_empty() && ty.new_templates.is_empty(), "원본 없는 유형: 새 필드 · 카드 종류를 내가 지운 것과 구별하지 못한다 (NT29)");
+        assert_eq!((ty.skipped_fields.clone(), ty.skipped_templates.clone()), (vec!["Hint".to_string()], vec!["Card 2".to_string()]), "넣지 않는 것을 알린다 (DU22)");
         assert_eq!((ty.looks.len(), r.kept_looks, r.new_cards), (1, 1, 0), "다른 모양은 내 모양 (덮지 않는다)");
         assert!(r.issues.iter().any(|i| i.kind == "dropped_field" && i.detail.contains("'Hint'")));
         assert_eq!(
@@ -1767,6 +1810,23 @@ mod tests {
         assert_eq!(r.merged, 1, "g1: 내가 더한 태그 c 와 만든 사람의 태그 변경을 합친다");
         assert_eq!(q::<String>(&s, "SELECT tags || ' ' || exam_hits FROM note WHERE anki_guid = 'g1'"), "a 기출::2023 c d 기출::2024 2", "출처 태그는 들이지 않는다");
         assert_eq!(q::<String>(&s, "SELECT tags || ' ' || exam_hits FROM note WHERE anki_guid = 'g2'"), "기출::2023 기출::2024 0", "사용자가 고친 기출 표시는 지킨다");
+    }
+
+    #[test]
+    fn duplicate_guid_notes_are_reported() {
+        // DU-06: 두 기기가 받지 않은 채 같은 파일을 적용하면 같은 guid 노트가 두 벌. 다음 업데이트가 알린다
+        let t = tmp("dup");
+        let s = state(&t.0.join("data"));
+        let p = t.0.join("v1.apkg");
+        testpkg::write(&p, &[basic(false)], &[(1, "D")], &[note(1, "g1", 7, &["Q", "A"], &[(1, 0)]), note(2, "g2", 7, &["Q2", "A2"], &[(1, 0)])], &[]);
+        import(&s, &p);
+        {
+            let con = s.db.lock().unwrap();
+            con.execute("INSERT INTO note (note_type_id, fields, tags, created_at, updated_at, anki_guid, origin) SELECT note_type_id, fields, tags, created_at + 1, updated_at, anki_guid, origin FROM note WHERE anki_guid = 'g1'", []).unwrap();
+            con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) SELECT last_insert_rowid(), deck_id, 0, 0, 0 FROM card LIMIT 1", []).unwrap();
+        }
+        let r = update(&s, &p, &Choices::default(), true);
+        assert_eq!((r.duplicate_notes, r.duplicate_card_ids.len(), r.same), (1, 2, 2));
     }
 
     #[test]

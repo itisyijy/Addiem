@@ -1491,6 +1491,13 @@ fn run_import_selected(
     result.notes = note_map.len();
     if dup > 0 {
         result.issues.push(issue("info", "duplicate", format!("이미 가져온 노트 {}개는 다시 넣지 않았어요", n(dup))));
+        // 같은 guid 가 이 기기에 두 벌 (두 기기가 받지 않은 채 같은 파일을 업데이트했다, DU-06)
+        let twins: i64 = tx
+            .query_row("SELECT count(*) FROM (SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL GROUP BY anki_guid HAVING count(*) > 1)", [], |r| r.get(0))
+            .map_err(err)?;
+        if twins > 0 {
+            result.issues.push(issue("warning", "duplicate_notes", format!("같은 노트가 두 벌 있는 노트 {}개가 있어요. 카드 목록에서 하나를 지워 주세요", n(twins as usize))));
+        }
     }
     for (f, c) in &hidden {
         result.issues.push(issue("info", "hidden_field", format!("이 앱에서 지운 필드 '{f}'의 값이 있는 노트 {}개는 그 값을 숨긴 자리에 넣었어요. 카드에는 나오지 않아요", n(*c))));
