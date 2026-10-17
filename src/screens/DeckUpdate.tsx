@@ -999,6 +999,8 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
   const fields = s.types.reduce((a, t) => a + t.new_fields.length, 0);
   const tpls = s.types.reduce((a, t) => a + t.new_templates.length, 0);
   const touched = s.changed + s.merged + s.conflicts.length;
+  // 노트 단계의 수: 파일 줄과 같은 바뀌는 노트 + 새 노트. 엔진 이벤트는 파일의 노트를 모두 세므로(그대로 · 내가 지운 노트 포함) 비율만 쓴다
+  const writes = touched + s.new_notes;
   const cards = s.new_cards + s.new_note_cards;
   const value = (key: (typeof STEPS)[number]["key"], state: "done" | "active" | "wait") => {
     const wait = state === "wait" ? " · 대기" : "";
@@ -1008,11 +1010,11 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
       case "types":
         return `${fields + tpls > 0 ? `새 필드 ${n(fields)} · 새 카드 종류 ${n(tpls)}` : "바뀐 구조 없음"}${wait}`;
       case "notes":
-        return state === "active" && prog?.step === "notes" ? `${n(prog.done)} / ${n(prog.total)}` : `${n(touched + s.new_notes)}개${wait}`;
+        return state === "active" && prog?.step === "notes" ? `${n(Math.round((writes * prog.done) / Math.max(1, prog.total)))} / ${n(writes)}` : `${n(writes)}개${wait}`;
       case "cards":
         return `${n(cards)}장${wait}`;
       case "media":
-        return `${s.media_new > 0 ? `바뀐 것 ${n(s.media_renamed)}개 · 새 것 ${n(s.media_new - s.media_renamed)}개` : "새 파일 없음"}${wait}`;
+        return `${[s.media_renamed > 0 && `바뀐 것 ${n(s.media_renamed)}개`, s.media_new - s.media_renamed > 0 && `새 것 ${n(s.media_new - s.media_renamed)}개`].filter(Boolean).join(" · ") || "새 파일 없음"}${wait}`;
     }
   };
   const noBackup = failed?.startsWith(NO_BACKUP);
