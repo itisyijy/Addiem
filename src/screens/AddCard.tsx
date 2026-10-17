@@ -200,7 +200,7 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [kind, setKind] = useState<Kind>("basic");
   const [importance, setImportance] = useState<Level | null>(null);
   const [keepGoing, setKeepGoing] = useState(true);
-  const [added, setAdded] = useState<string[]>([]);
+  const [added, setAdded] = useState<{ text: string; dropped: number }[]>([]); // dropped: 넣지 않고 버린 Q8 제안 수 (Q42)
   const [addedCount, setAddedCount] = useState(0);
   const [error, setError] = useState<string>();
   const [leaving, setLeaving] = useState<Route | null>(null); // 작성 중인 내용을 버릴지 묻는 중
@@ -442,6 +442,7 @@ export function AddCard({ deckId }: { deckId: number }) {
     try {
       let made = 1;
       let text = "";
+      let dropped = 0;
       if (kind === "typed") {
         // NT6 사용자 · 가져온 유형: 필드 순서대로. 빈칸 유형은 칸마다 번호를 이어 매긴다 (두 칸이 같은 c1 이 되지 않게)
         if (!typed) return;
@@ -471,11 +472,11 @@ export function AddCard({ deckId }: { deckId: number }) {
       } else if (kind === "choice") {
         await recall.addChoice({ deck_id: target, question: front, extra: toStoredHtml(aHtml), importance, ...choice });
         setChoice((c) => ({ ...EMPTY_CHOICE, shuffle: c.shuffle }));
-        if (unplaced.current) toast({ title: "카드를 저장했어요", text: `넣지 않은 제안 ${n(unplaced.current)}개는 버렸어요`, icon: "check-circle" });
+        dropped = unplaced.current; // 토스트는 [저장]을 가려 "방금 추가한 카드" 줄에 붙인다 (Q42)
       } else made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
       if (kind !== "typed")
         text = kind === "occlusion" ? plainText(qHtml) || "그림 가리기 · " + (pic?.fileName ?? "") : plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml);
-      setAdded((list) => [...list, text].slice(-5));
+      setAdded((list) => [...list, { text, dropped }].slice(-5));
       setAddedCount((c) => c + made);
       setError(undefined);
       setKws([]);
@@ -929,7 +930,8 @@ export function AddCard({ deckId }: { deckId: number }) {
               {added.map((t, i) => (
                 <p key={i} className="addcard__recent-item t-body-s c-secondary">
                   <Icon name="check" size={14} className="c-success" />
-                  <span>{t || "(내용 없음)"}</span>
+                  <span className="addcard__recent-text">{t.text || "(내용 없음)"}</span>
+                  {t.dropped > 0 && <span className="addcard__recent-note c-tertiary">{`· 넣지 않은 제안 ${n(t.dropped)}개는 버렸어요`}</span>}
                 </p>
               ))}
             </div>
