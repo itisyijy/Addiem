@@ -2,6 +2,7 @@
 
 use crate::db::{self, now_ms, study_day, study_day_end_ms};
 use crate::queue::{self, RatingAction};
+use crate::notetype::{self, IS_CLOZE, TEMPLATE_OF_CARD};
 use crate::render;
 use crate::srs::{self, SrsState};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -104,11 +105,11 @@ pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
 }
 
 pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
+    let fronts = crate::notetype::Fronts::load(con)?;
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.deck_id, c.state, c.eff_importance, c.due_at, COALESCE(c.anki_card_id, c.id), c.buried_until,
-                    CASE WHEN nt.name = 'Cloze' OR EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = nt.id AND t.qfmt LIKE '%{{{{cloze:%')
-                         THEN NULL ELSE c.note_id END, c.note_id, {}
+                    CASE WHEN {IS_CLOZE} THEN NULL ELSE c.note_id END, c.note_id, {}, n.note_type_id, c.template_ord, n.fields
              FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id",
             crate::exam::IS_EXAM
         ))
@@ -127,6 +128,7 @@ pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
                 note_id: r.get(8)?,
                 weak: false,
                 exam: r.get(9)?,
+                front_empty: fronts.empty(r.get(10)?, r.get(11)?, &r.get::<_, String>(12)?),
             })
         })
         .map_err(err)?;
@@ -636,6 +638,9 @@ pub struct DeckDetail {
     /// 하루 신규 분량과 그 분량으로 끝내는 데 걸리는 날
     per_day: i64,
     finish_days: Option<i64>,
+    /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). 큰 카드의 이유 줄 · [카드 목록에서 보기]. 그중 신규 수 (unseen 에 들지 않는다)
+    front_empty: Vec<i64>,
+    unseen_empty: i64,
     learnable_days: Option<i64>,
     /// 목표일이 있을 때만. 이 분량으로 목표일 안에 끝나는가
     on_track: Option<bool>,
@@ -697,7 +702,10 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
     let path = path_of(deck_id, &by_id);
 
     let total = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?;
-    let unseen = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND state = 'new'")?;
+    // 앞면이 빈 카드(NT49)는 학습에 나오지 않는다: 남은 신규 · 하루 몫에서 빼고, 큰 카드가 "오늘 0장"인 이유로 보인다 (Q1-01)
+    let empties = crate::notetype::front_empty_cards(&con, &id_list)?;
+    let empty_new = empties.iter().filter(|(_, s)| s == "new").count() as i64;
+    let unseen = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND state = 'new'")? - empty_new;
     let hard = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND buried_until IS NOT NULL")?;
     let hard_auto = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND buried_until IS NOT NULL AND buried_reason = 'two_again'")?;
     let hard_next: Option<i64> =
@@ -714,7 +722,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         unseen
     } else {
         let ids = descendants(owner.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({ids}) AND state = 'new'"), [], |r| r.get(0)).map_err(err)?
+        crate::notetype::new_left(&con, &ids)?
     };
     let (per_day, _) = queue::new_target_for_deck(owner, today, owner_unseen);
     let finish_days = (per_day > 0 && owner_unseen > 0).then(|| (owner_unseen + per_day - 1) / per_day);
@@ -752,11 +760,8 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         let d = by_id[&id];
         let sub = descendants(id, &decks);
         let sub_ids = sub.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let (cards, unseen): (i64, i64) = con
-            .query_row(&format!("SELECT count(*), coalesce(sum(state = 'new'), 0) FROM card WHERE deck_id IN ({sub_ids})"), [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .map_err(err)?;
+        let cards: i64 = con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({sub_ids})"), [], |r| r.get(0)).map_err(err)?;
+        let unseen = crate::notetype::new_left(&con, &sub_ids)?;
         let (importance, importance_source, weak, dismissed, recovery_shown): (i64, String, bool, Option<String>, bool) = con
             .query_row(
                 "SELECT importance, importance_source, weak, weak_dismissed_until, weak_recovery_shown FROM deck WHERE id = ?1",
@@ -833,7 +838,10 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         include_target_day: include_target_day == 1,
         daily_new_limit,
         today_new_override: me.today_new,
-        seen_pct: if total > 0 { (total - unseen) * 100 / total } else { 0 },
+        // 학습을 시작한 카드 = 신규가 아닌 카드 (앞면이 빈 신규도 아직 시작하지 않았다)
+        seen_pct: if total > 0 { (total - unseen - empty_new) * 100 / total } else { 0 },
+        front_empty: empties.into_iter().map(|(id, _)| id).collect(),
+        unseen_empty: empty_new,
         core_total,
         core_seen,
         core_learned_pct: if core_total > 0 { core_seen * 100 / core_total } else { 0 },
@@ -878,27 +886,18 @@ pub struct NewCard {
     pub(crate) importance: Option<i64>,
 }
 
-fn note_type_id(con: &Connection, name: &str) -> Res<i64> {
-    con.query_row(
-        "SELECT id FROM note_type WHERE name = ?1 AND anki_model_id IS NULL ORDER BY id LIMIT 1",
-        [name],
-        |r| r.get(0),
-    )
-    .map_err(err)
-}
-
 /// 노트 하나를 만들고 카드를 필요한 만큼 만든다. 만든 카드 수를 돌려준다
 pub(crate) fn insert_note(con: &Connection, card: &NewCard, tags: &str, batch: Option<i64>) -> Res<usize> {
     let now = now_ms();
-    let (ords, type_name): (Vec<u32>, &str) = match card.kind.as_str() {
-        "cloze" => (render::cloze_numbers(&card.front).into_iter().map(|n| n - 1).collect(), "Cloze"),
-        "reversed" => (vec![0, 1], "Basic (and reversed card)"),
-        _ => (vec![0], "Basic"),
+    let (ords, kind): (Vec<u32>, &str) = match card.kind.as_str() {
+        "cloze" => (render::cloze_numbers(&card.front).into_iter().map(|n| n - 1).collect(), "cloze"),
+        "reversed" => (vec![0, 1], "reversed"),
+        _ => (vec![0], "basic"),
     };
     if ords.is_empty() {
         return Err("빈칸을 하나 이상 만들어 주세요.".into());
     }
-    let ntid = note_type_id(con, type_name)?;
+    let ntid = db::native_type_id(con, kind).map_err(err)?;
     let fields = serde_json::to_string(&[&card.front, &card.back]).map_err(err)?;
     con.execute(
         "INSERT INTO note (note_type_id, fields, tags, created_at, updated_at, import_batch_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
@@ -938,10 +937,14 @@ pub struct NoteEdit {
     /// basic | cloze | image_occlusion | list | choice | other. other 는 가져온 덱의 노트 유형이다. 필드 이름을 그대로 보여준다.
     /// image_occlusion 은 화면이 occlusion_note 로 가리기 편집기(M2)를 연다
     kind: String,
-    /// 노트 유형 이름 ("Anki 노트타입 '…'")
+    /// 노트 유형 이름 ("Anki 노트타입 '…'")과 id (디자인 NT13 머리의 [편집])
+    note_type_id: i64,
     type_name: String,
+    /// 보이는 순서 (8.1 노트 유형: 지운 필드는 빠지고 순서는 field_order)
     names: Vec<String>,
     values: Vec<String>,
+    /// names 의 자리 번호 (note.fields 의 위치). update_note 에 그대로 돌려준다
+    slots: Vec<usize>,
     /// 필드마다 앞면 템플릿에 쓰이는가 (툴바 있는 편집기로 보여준다)
     front: Vec<bool>,
     /// 8.4 N1 기출 줄
@@ -950,77 +953,76 @@ pub struct NoteEdit {
     special: Option<crate::recall::Special>,
 }
 
-fn note_is_cloze(con: &Connection, note_id: i64) -> Res<bool> {
-    con.query_row(
-        "SELECT nt.name = 'Cloze' OR EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = nt.id AND t.qfmt LIKE '%{{cloze:%')
-         FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1",
-        [note_id],
-        |r| r.get(0),
-    )
-    .map_err(err)
-}
-
 #[tauri::command]
 pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let con = state.db.lock().map_err(err)?;
-    let (fields, names, type_name, qfmt, exam): (String, String, String, String, crate::exam::ExamState) = con
-        .query_row(
-            "SELECT n.fields, nt.fields, nt.name, (SELECT group_concat(t.qfmt, ' ') FROM card_template t WHERE t.note_type_id = nt.id),
-                    n.exam_hits, n.exam_names
-             FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1",
-            [note_id],
-            |r| {
-                let exam = crate::exam::ExamState::of(note_id, r.get(4)?, r.get(5)?);
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?.unwrap_or_default(), exam))
-            },
-        )
+    let (fields, ntid, exam): (String, i64, crate::exam::ExamState) = con
+        .query_row("SELECT fields, note_type_id, exam_hits, exam_names FROM note WHERE id = ?1", [note_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, crate::exam::ExamState::of(note_id, r.get(2)?, r.get(3)?)))
+        })
         .map_err(err)?;
-    let names: Vec<String> = serde_json::from_str(&names).map_err(err)?;
-    let mut values: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
-    values.resize(names.len(), String::new());
-    let kind = if crate::occlusion::is_note(&con, note_id)? && names.len() >= 4 {
+    let nt = notetype::load(&con, ntid)?;
+    let stored: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
+    let visible = nt.visible();
+    let slots: Vec<usize> = visible.iter().map(|(s, _)| *s).collect();
+    let names: Vec<String> = visible.into_iter().map(|(_, n)| n).collect();
+    let values: Vec<String> = slots.iter().map(|s| stored.get(*s).cloned().unwrap_or_default()).collect();
+    // 그림 가리기 · 목록 · 선택형은 자리로 읽는다 (그 편집기들은 자리 순서 그대로 저장한다)
+    let kind = if crate::occlusion::is_note(&con, note_id)? && nt.slots.len() >= 4 {
         "image_occlusion"
-    } else if crate::recall::is_special(&type_name, &names) {
+    } else if crate::recall::is_special(&nt.name, &nt.slots) {
         // Q 목록 · 선택형. 화면은 전용 편집기(Q24)로 연다
-        if type_name.starts_with(crate::recall::LIST) { "list" } else { "choice" }
-    } else if note_is_cloze(&con, note_id)? {
+        if nt.name.starts_with(crate::recall::LIST) { "list" } else { "choice" }
+    } else if nt.cloze() {
         "cloze"
     } else if names.len() == 2 {
         "basic"
     } else {
         "other"
     };
-    // {{이름}} {{필터:이름}} {{#이름}} {{^이름}}
-    let front = names
-        .iter()
-        .map(|n| [format!("{{{{{n}}}}}"), format!(":{n}}}}}"), format!("{{{{#{n}}}}}"), format!("{{{{^{n}}}}}")].iter().any(|t| qfmt.contains(t)))
-        .collect();
-    let special = crate::recall::special(&type_name, &names, &fields);
-    Ok(NoteEdit { note_id, kind: kind.into(), type_name, names, values, front, exam, special })
+    // 앞면 템플릿이 쓰는 필드 (I44)
+    let used: Vec<String> = nt.templates.iter().flat_map(|t| notetype::refs(&t.qfmt)).collect();
+    let front = names.iter().map(|n| used.contains(n)).collect();
+    let special = crate::recall::special(&nt.name, &nt.slots, &fields);
+    Ok(NoteEdit { note_id, kind: kind.into(), note_type_id: nt.id, type_name: nt.name, names, values, slots, front, exam, special })
 }
 
-/// 필드를 고친다. 빈칸 노트면 빈칸 번호에 맞춰 카드를 만들거나 지운다 (지운 카드의 기록은 review_log 에 남는다)
+/// 필드를 고친다. values 는 note_edit 의 보이는 순서, slots 는 그 자리 번호 (없으면 지금 보이는 순서). 지운 자리 값은 그대로 둔다.
+/// 빈칸 노트면 빈칸 번호에 맞춰 카드를 만들거나 지운다 (지운 카드의 기록은 review_log 에 남는다)
 #[tauri::command]
-pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>) -> Res<()> {
+pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>, slots: Option<Vec<usize>>) -> Res<()> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
-    save_note_fields(&tx, note_id, &values)?;
+    let (ntid, stored): (i64, String) =
+        tx.query_row("SELECT note_type_id, fields FROM note WHERE id = ?1", [note_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+    let nt = notetype::load(&tx, ntid)?;
+    let slots = slots.unwrap_or_else(|| nt.visible().into_iter().map(|(s, _)| s).collect());
+    if slots.len() != values.len() || slots.iter().any(|s| *s >= nt.slots.len()) {
+        return Err("필드 수가 노트 유형과 달라요.".into());
+    }
+    let mut full: Vec<String> = serde_json::from_str(&stored).map_err(err)?;
+    full.resize(nt.slots.len(), String::new());
+    for (s, v) in slots.iter().zip(values) {
+        full[*s] = v;
+    }
+    save_note_fields(&tx, note_id, &full)?;
     tx.commit().map_err(err)
 }
 
-/// update_note 의 본문. 그림 가리기 저장(occlusion::save)도 같은 길로 카드를 맞춘다
+/// update_note 의 본문. values 는 자리 순서 (짧으면 빈 값으로 채운다). 그림 가리기 저장(occlusion::save) · 목록 · 선택형 편집도 같은 길로 카드를 맞춘다.
+/// 일반 유형은 앞면이 새로 비지 않게 된 템플릿의 카드를 만든다 (Anki 처럼 만들기만)
 pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String]) -> Res<()> {
-    let (names, nt): (String, String) = tx
-        .query_row("SELECT nt.fields, nt.name FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.id = ?1", [note_id], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .map_err(err)?;
-    let names: Vec<String> = serde_json::from_str(&names).map_err(err)?;
-    if values.len() != names.len() {
+    let ntid: i64 = tx.query_row("SELECT note_type_id FROM note WHERE id = ?1", [note_id], |r| r.get(0)).map_err(err)?;
+    let nt = notetype::load(tx, ntid)?;
+    if values.len() > nt.slots.len() {
         return Err("필드 수가 노트 유형과 달라요.".into());
     }
-    crate::recall::check_fields(&nt, &names, values)?;
-    if values.first().is_none_or(|v| render::is_blank(v)) {
+    let mut values = values.to_vec();
+    values.resize(nt.slots.len(), String::new());
+    crate::recall::check_fields(&nt.name, &nt.slots, &values)?;
+    // 앱 기본 유형은 첫 칸이 질문이라 비울 수 없다. 사용자 · 가져온 유형의 기존 노트는 막지 않는다 (Anki 처럼, Q1-02):
+    // 새 필드를 맨 앞에 두거나 앞면에 쓰면 그 칸이 빈 노트를 다른 칸만 고쳐도 저장할 수 없었다. 앞면이 비면 그 카드는 학습에서 빠진다 (NT49)
+    if nt.native_kind.is_some() && nt.visible().first().is_none_or(|(s, _)| render::is_blank(&values[*s])) {
         return Err("첫 칸을 비울 수 없어요.".into());
     }
     let now = now_ms();
@@ -1030,30 +1032,32 @@ pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String])
     )
     .map_err(err)?;
 
-    if note_is_cloze(tx, note_id)? {
-        let nums: std::collections::BTreeSet<u32> = values.iter().flat_map(|v| render::cloze_numbers(v)).collect();
-        if nums.is_empty() {
-            return Err("빈칸을 하나 이상 만들어 주세요.".into());
+    if !nt.cloze() {
+        notetype::add_missing_cards(tx, &nt, note_id, &values)?;
+        return Ok(());
+    }
+    let ords = notetype::card_ords(&nt, &values);
+    if ords.is_empty() {
+        return Err("빈칸을 하나 이상 만들어 주세요.".into());
+    }
+    let existing: Vec<(i64, u32, i64)> = {
+        let mut st = tx.prepare("SELECT id, template_ord, deck_id FROM card WHERE note_id = ?1").map_err(err)?;
+        let rows = st.query_map([note_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)?
+    };
+    let deck_id = existing.first().map(|e| e.2).ok_or("카드를 찾을 수 없어요.")?;
+    for ord in &ords {
+        if !existing.iter().any(|e| e.1 == *ord) {
+            tx.execute(
+                "INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+                params![note_id, deck_id, ord, now],
+            )
+            .map_err(err)?;
         }
-        let existing: Vec<(i64, u32, i64)> = {
-            let mut st = tx.prepare("SELECT id, template_ord, deck_id FROM card WHERE note_id = ?1").map_err(err)?;
-            let rows = st.query_map([note_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
-            rows.collect::<Result<_, _>>().map_err(err)?
-        };
-        let deck_id = existing.first().map(|e| e.2).ok_or("카드를 찾을 수 없어요.")?;
-        for n in &nums {
-            if !existing.iter().any(|e| e.1 == n - 1) {
-                tx.execute(
-                    "INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-                    params![note_id, deck_id, n - 1, now],
-                )
-                .map_err(err)?;
-            }
-        }
-        for (id, ord, _) in &existing {
-            if !nums.contains(&(ord + 1)) {
-                tx.execute("DELETE FROM card WHERE id = ?1", [id]).map_err(err)?;
-            }
+    }
+    for (id, ord, _) in &existing {
+        if !ords.contains(ord) {
+            tx.execute("DELETE FROM card WHERE id = ?1", [id]).map_err(err)?;
         }
     }
     Ok(())
@@ -1081,6 +1085,8 @@ pub struct CardRow {
     occlusion: Option<IoPos>,
     /// AU6 소리가 있는 칸 [질문, 답]. 목록은 칩 대신 스피커 아이콘만
     sounds: [bool; 2],
+    /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). C2 상태 배지 "앞면 빔"
+    front_empty: bool,
 }
 
 /// 그림 가리기 카드의 자리 (M3 배지 "그림 가리기 · n/N", M4 행)
@@ -1196,22 +1202,23 @@ pub fn list_cards(
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
-                    c.buried_until, c.template_ord, nt.name, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS}
+                    c.buried_until, c.template_ord, nt.id, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS}
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
-             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
+             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
              WHERE {filter}
              ORDER BY c.id LIMIT ?2"
         ))
         .map_err(err)?;
     let field_names = note_field_names(&con)?;
+    let fronts = crate::notetype::Fronts::load(&con)?;
     let rows = st
         .query_map(params![q, limit.unwrap_or(100)], |r| {
             let fields: String = r.get(3)?;
-            let nt_name: String = r.get(11)?;
+            let nt: i64 = r.get(11)?;
             let qfmt: Option<String> = r.get(12)?;
             let afmt: Option<String> = r.get(13)?;
-            let rendered = render_fields(&field_names, &nt_name, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?);
+            let rendered = render_fields(&field_names, nt, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?);
             let occlusion = io_pos(qfmt.as_deref(), r.get(10)?, r.get(16)?, r.get(17)?);
             // 그림 가리기 답은 칸 이름(질문 칸에 보인다)이라 답변 칸에는 덧붙임(Back Extra, 4번째 필드)만
             let answer = match occlusion {
@@ -1236,6 +1243,7 @@ pub fn list_cards(
                 exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
                 occlusion,
                 sounds: [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK)),
+                front_empty: fronts.empty(nt, r.get(10)?, &fields),
             })
         })
         .map_err(err)?
@@ -1261,8 +1269,7 @@ pub fn set_cards_importance(state: State<AppState>, card_ids: Vec<i64>, level: O
             "UPDATE card SET importance = ?1, importance_source = CASE WHEN ?1 IS NULL THEN NULL ELSE 'user' END, updated_at = ?2
              WHERE id IN ({ids}) OR note_id IN (
                SELECT c.note_id FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
-               WHERE c.id IN ({ids}) AND nt.name <> 'Cloze'
-                 AND NOT EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = nt.id AND t.qfmt LIKE '%{{{{cloze:%'))"
+               WHERE c.id IN ({ids}) AND NOT {IS_CLOZE})"
         ),
         params![level, now_ms()],
     )
@@ -1367,20 +1374,21 @@ pub fn delete_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     tx.commit().map_err(err)
 }
 
-pub(crate) fn note_field_names(con: &Connection) -> Res<HashMap<String, Vec<String>>> {
-    let mut st = con.prepare("SELECT name, fields FROM note_type").map_err(err)?;
+/// 노트 유형 id -> (이름, 자리별 필드 이름). 지운 자리는 "" (notetype.rs). 전에는 이름 키라 같은 이름의 가져온 유형과 앱 유형이 서로 덮였다
+pub(crate) fn note_field_names(con: &Connection) -> Res<HashMap<i64, (String, Vec<String>)>> {
+    let mut st = con.prepare("SELECT id, name, fields FROM note_type").map_err(err)?;
     let rows = st
         .query_map([], |r| {
-            let fields: String = r.get(1)?;
-            Ok((r.get::<_, String>(0)?, serde_json::from_str::<Vec<String>>(&fields).unwrap_or_default()))
+            let fields: String = r.get(2)?;
+            Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, serde_json::from_str::<Vec<String>>(&fields).unwrap_or_default())))
         })
         .map_err(err)?;
     rows.collect::<Result<_, _>>().map_err(err)
 }
 
 pub(crate) fn render_fields(
-    names: &HashMap<String, Vec<String>>,
-    note_type: &str,
+    names: &HashMap<i64, (String, Vec<String>)>,
+    note_type: i64,
     fields_json: &str,
     qfmt: Option<&str>,
     afmt: Option<&str>,
@@ -1388,8 +1396,8 @@ pub(crate) fn render_fields(
 ) -> render::Rendered {
     let values: Vec<String> = serde_json::from_str(fields_json).unwrap_or_default();
     let map: HashMap<String, String> = names
-        .get(note_type)
-        .map(|n| n.iter().cloned().zip(values.iter().cloned()).collect())
+        .get(&note_type)
+        .map(|(_, n)| n.iter().cloned().zip(values.iter().cloned()).filter(|(k, _)| !k.is_empty()).collect())
         .unwrap_or_default();
     match (qfmt, afmt) {
         (Some(q), Some(a)) => render::render_card(q, a, &map, ord),
@@ -1493,9 +1501,7 @@ pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> R
     let con = state.db.lock().map_err(err)?;
     let decks = load_decks(&con)?;
     let ids = descendants(config.deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let remaining_new: i64 = con
-        .query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({ids}) AND state = 'new'"), [], |r| r.get(0))
-        .map_err(err)?;
+    let remaining_new = crate::notetype::new_left(&con, &ids)?;
     let today = study_day(now_ms());
     let target = config.target_date.as_deref().and_then(db::day_from_date);
     let current = decks.iter().find(|d| d.id == config.deck_id);
@@ -1696,9 +1702,7 @@ pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     {
         Some((d, dday)) => {
             let ids = descendants(d.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-            let remaining_new: i64 = con
-                .query_row(&format!("SELECT count(*) FROM card WHERE state = 'new' AND deck_id IN ({ids})"), [], |r| r.get(0))
-                .map_err(err)?;
+            let remaining_new = crate::notetype::new_left(&con, &ids)?;
             let days = queue::learnable_days(today, d.target_day, d.include_target_day).unwrap_or(1).max(1);
             Some(TargetInfo { name: d.name.clone(), dday, remaining_new, days })
         }
@@ -1800,19 +1804,19 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     con.query_row(
         &format!(
-            "SELECT c.id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS}
+            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS}
          FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
-         LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
+         LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
          WHERE c.id = ?1"
         ),
         [card_id],
         |r| {
             let fields: String = r.get(1)?;
-            let nt: String = r.get(2)?;
+            let nt: i64 = r.get(2)?;
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
-            let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
-            let special = names.get(&nt).and_then(|n| crate::recall::special(&nt, n, &fields));
+            let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
             Ok(CardView {
                 id: r.get(0)?,
                 note_id: r.get(9)?,
@@ -2101,21 +2105,21 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
     let names = note_field_names(&con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let mut st = con
-        .prepare(
-            "SELECT c.id, n.fields, nt.name, t.qfmt, t.afmt, c.template_ord, s.buried_reason, c.eff_importance, c.deck_id
+        .prepare(&format!(
+            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, s.buried_reason, c.eff_importance, c.deck_id
              FROM session_card_state s JOIN card_effective c ON c.id = s.card_id JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
-             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{cloze:%' THEN 0 ELSE c.template_ord END)
-             WHERE s.session_id = ?1 AND s.is_buried = 1 ORDER BY s.buried_at",
-        )
+             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
+             WHERE s.session_id = ?1 AND s.is_buried = 1 ORDER BY s.buried_at"
+        ))
         .map_err(err)?;
     let buried = st
         .query_map([session_id], |r| {
             let fields: String = r.get(1)?;
-            let nt: String = r.get(2)?;
+            let nt: i64 = r.get(2)?;
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
-            let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
             Ok(BuriedCard {
                 id: r.get(0)?,
                 question: render::strip_tags(&rendered.front),
@@ -2646,8 +2650,8 @@ pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::S
     crate::sync::disconnect(&sync, false).await?;
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
-    // K7 두 기기에서 고친 카드의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
-    tx.execute_batch("DROP TABLE IF EXISTS sync_conflict;").map_err(err)?;
+    // K7 두 기기에서 고친 카드 · K39 노트 유형의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
+    tx.execute_batch("DROP TABLE IF EXISTS sync_conflict; DROP TABLE IF EXISTS sync_type_conflict;").map_err(err)?;
     tx.execute_batch(
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;

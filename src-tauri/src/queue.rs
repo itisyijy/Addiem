@@ -59,6 +59,15 @@ pub struct Card {
     pub weak: bool,
     /// 기출 카드 (8.4, exam::IS_EXAM). 신규를 넣을 때 같은 중요도 안에서 먼저
     pub exam: bool,
+    /// 앞면이 빈 카드 (notetype::Fronts). 큐에 내지 않는다. 상태 · 일정은 그대로라 필드를 채우면 다시 나온다 (NT49)
+    pub front_empty: bool,
+}
+
+impl Card {
+    /// 학습에 나오는 카드: 일시 정지도 앞면 빔도 아니다. 큐 · 계획 예측이 같은 규칙을 쓴다 (Q1-01, SQL 쪽은 notetype::new_left)
+    pub fn plays(&self) -> bool {
+        self.state != "suspended" && !self.front_empty
+    }
 }
 
 /// 오늘 이미 한 학습. 계획을 다시 만들 때 오늘 분량이 또 생기지 않게 뺀다
@@ -235,7 +244,7 @@ pub fn build_queue_with_progress(
     let paused = with_descendants(&paused_ids, decks);
     let skipped = with_descendants(&paused_ids.iter().copied().filter(|id| !chosen.contains(id)).collect::<Vec<_>>(), decks);
     let weak = with_descendants(&decks.iter().filter(|d| d.weak).map(|d| d.id).collect::<Vec<_>>(), decks);
-    let active = cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && !skipped.contains(&c.deck_id) && c.state != "suspended");
+    let active = cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && !skipped.contains(&c.deck_id) && c.plays());
 
     // 1단계. 후보 수집. 밀린 복습만은 범위 밖 덱까지 모은다: 하루 상한은 전체 계획에서 고르고
     // 범위로 거른다. 그래야 덱 하나만 학습해도 홈의 그 덱 분량과 같다
@@ -373,6 +382,7 @@ mod tests {
                 note_id: start + i as i64,
                 weak: false,
                 exam: false,
+                front_empty: false,
             })
             .collect()
     }
@@ -603,6 +613,28 @@ mod tests {
         assert_eq!(build_queue(T, &[d], &news(50, 1, 1), None, 2.0).new.len(), 20);
         let p = build_queue(T, &[deck(1)], &cards(&[("suspended", 1, Some(0))], 1, 1), None, 1.0);
         assert_eq!(p.ordered().len(), 0);
+    }
+
+    #[test]
+    fn empty_front_cards_stay_out() {
+        // 앞면이 빈 카드는 어느 상태든 큐에 없고, 신규 몫도 쓰지 않는다 (NT49). 형제 묶음 자리도 차지하지 않는다
+        let mut c = cards(&[("review", 1, Some(0)), ("learning", 1, Some(0)), ("review", 1, Some(-3)), ("new", 1, None), ("new", 1, None)], 1, 1);
+        for x in &mut c[..4] {
+            x.front_empty = true;
+        }
+        let d = Deck { daily_new_limit: Some(1), ..deck(1) };
+        let p = build_queue(T, std::slice::from_ref(&d), &c, None, 1.0);
+        assert_eq!(p.ordered().iter().map(|c| c.id).collect::<Vec<_>>(), [5]);
+        let mut buried = cards(&[("review", 1, Some(0))], 1, 9);
+        buried[0].buried_until = Some(T);
+        buried[0].front_empty = true;
+        assert!(build_queue(T, &[deck(1)], &buried, None, 1.0).returning.is_empty(), "접어둔 카드가 돌아와도 빈 앞면이면 빠진다");
+        let (mut a, mut b) = (cards(&[("review", 1, Some(0))], 1, 20), cards(&[("review", 1, Some(0))], 1, 21));
+        a[0].sibling = Some(7);
+        b[0].sibling = Some(7);
+        a[0].front_empty = true;
+        a.extend(b);
+        assert_eq!(build_queue(T, &[deck(1)], &a, None, 1.0).ordered().iter().map(|c| c.id).collect::<Vec<_>>(), [21]);
     }
 
     #[test]

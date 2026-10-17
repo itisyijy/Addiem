@@ -21,6 +21,8 @@ import { Quality } from "./screens/Quality";
 import { Sources } from "./screens/Sources";
 import { Drafts } from "./screens/Drafts";
 import { Plan, PlanConflictScreen } from "./screens/Plan";
+import { NoteTypes } from "./screens/NoteTypes";
+import { NoteTypeEdit } from "./screens/NoteTypeEdit";
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
@@ -45,9 +47,11 @@ export default function App() {
 
   // 학습 중에는 상단 내비게이션과 배경 장식을 끈다 (브리프 3.7)
   const focused = route.name === "study";
+  // NT2 노트 유형 편집기는 M2 처럼 제 상단 바를 쓰는 전체 화면
+  const bare = focused || route.name === "noteTypeEdit";
 
   // 전역 단축키 N · I (E1 기본 단축키). 학습 흐름과 작성 중인 카드 추가 화면에서는 끈다
-  const globalKeys = !["study", "summary", "addCard"].includes(route.name);
+  const globalKeys = !["study", "summary", "addCard", "noteTypeEdit"].includes(route.name);
   useKey({ action: "newDeck" }, useCallback(() => nav({ name: "newDeck" }), [nav]), globalKeys);
   useKey({ action: "import" }, useCallback(() => nav({ name: "import", pick: true }), [nav]), globalKeys);
 
@@ -55,8 +59,8 @@ export default function App() {
     <ToastProvider>
       <NavContext.Provider value={nav}>
         <div className="app">
-          {!focused && <Backdrop />}
-          {!focused && (
+          {!bare && <Backdrop />}
+          {!bare && (
             <div className="app__nav">
               <TopNav
                 onHome={() => nav({ name: "home" })}
@@ -99,6 +103,7 @@ function Screen({ route }: { route: Route }) {
           buriedOnly={route.buriedOnly}
           cardIds={route.cardIds}
           weakOnly={route.weakOnly}
+          edit={route.edit}
         />
       );
     case "import":
@@ -111,6 +116,10 @@ function Screen({ route }: { route: Route }) {
       return <Importance key={route.deckId} deckId={route.deckId} next={route.next} />;
     case "settings":
       return <Settings focus={route.focus} />;
+    case "noteTypes":
+      return <NoteTypes back={route.back} />;
+    case "noteTypeEdit":
+      return <NoteTypeEdit key={route.id} id={route.id} ord={route.ord} note={route.note} back={route.back} />;
     case "deckSettings":
       return <DeckSettings key={route.deckId} deckId={route.deckId} />;
     case "quality":

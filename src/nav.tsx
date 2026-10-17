@@ -13,7 +13,7 @@ export type Route =
   | { name: "importResult"; result: ImportResult } // B3
   | { name: "importance"; deckId: number; next?: number[] } // B4. next: 가져오기 뒤 이어서 볼 최상위 덱
   | { name: "deck"; deckId: number } // C1
-  | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean } // C2. deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w)
+  | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean; edit?: number } // C2. deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w). edit: 노트 유형 편집기에서 돌아왔다 (그 카드의 편집 창을 다시 연다, NT53)
   | { name: "addCard"; deckId: number } // C3
   | { name: "deckSettings"; deckId: number } // C4
   | { name: "sources"; deckId: number; materialId?: number; segmentId?: number; link?: boolean; gaps?: boolean } // I1 자료. I2 패널에서 오면 그 구간 (link: 카드 잇기 칸을 연 채로). gaps: R1-a 빠진 범위로
@@ -22,10 +22,12 @@ export type Route =
   | { name: "plan"; deckId: number | null } // H1 학습 계획. null 이면 모든 덱
   | { name: "planConflict"; back?: Route } // H2 목표일 충돌
   | { name: "summary"; deckIds: number[] | null; cram?: boolean } // D1. cram: P1 시험 전 회독 화면으로
-  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이), mix: P2 혼합 회독
+  | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun; edit?: number } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이), mix: P2 혼합 회독. edit: 노트 유형 편집기에서 돌아왔다 (그 카드가 먼저 나오면 카드 편집을 다시 연다, NT13)
   | { name: "done"; sessionId: number; summary: SessionSummary; completed: boolean; deckIds: number[] | null; scale: number } // D5
   | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats; minutes: number; completed: boolean } // P3 혼합 회독 끝난 뒤
-  | { name: "settings"; focus?: "archived" }; // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
+  | { name: "settings"; focus?: "archived" } // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
+  | { name: "noteTypes"; back?: Route } // NT1 설정 · 노트 유형 목록. back: 카드 추가 · 편집에서 왔으면 그리로
+  | { name: "noteTypeEdit"; id: number; ord?: number; note?: number; back?: Route }; // NT2 · NT3 편집기 (앱 기본 유형이면 NT4 보기). ord: 처음 열 카드 종류, note: 미리보기에 먼저 보일 노트
 
 /** force: 화면이 이미 물어본 뒤(버리기 · 저장한 뒤)라 떠나기 확인(useLeaveGuard)을 건너뛴다 */
 export type Nav = (r: Route, force?: boolean) => void;

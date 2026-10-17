@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { OcclusionEdit } from "./Occlusion";
 import { api, errorText, type CardView, type ExamState, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
-import { eul, n, ro, useKey, useNav, useOverlayScope } from "../nav";
+import { eul, n, ro, useKey, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, getKeys, matchAction, useKeymap } from "../keys";
 import { useToast } from "../toast";
 import { plainText, playSounds, renderCardHtml, stopSounds, toStoredHtml } from "../cardHtml";
@@ -14,7 +14,7 @@ import {
 } from "../written";
 import { Modal } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
-import { RichField, makeCloze, toCloze, fromCloze, type FieldHandle } from "./AddCard";
+import { RichField, makeCloze, toCloze, fromCloze, tagRefs, TYPE_LABEL, type FieldHandle } from "./AddCard";
 import { CramHint, KeywordEditor } from "./StudyParts";
 import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
@@ -22,6 +22,7 @@ import { ExamField, examHint } from "./Exam";
 import { cardSource } from "../sourceApi";
 import { ChoiceEditor, ListEditor, RecallFace, recallTip } from "./Recall";
 import { choiceDraft, choiceLabel, listLabel, optionOrder, recall, type ChoiceDraft, type ListDraft } from "../recall";
+import { deckFace, scopeCss } from "../cardCss";
 import "../styles/study.css";
 
 /*
@@ -281,7 +282,7 @@ const daysAgo = (at: number) => {
  * 뒷면을 질문 부분과 답 부분으로 나눈다. Basic 템플릿은 <hr id=answer> 로 나뉜다.
  * 구분선 없이 {{FrontSide}} 바로 뒤에 답을 붙인 템플릿은 앞면이 그대로 앞에 있으므로 거기서 나눈다
  */
-function splitBack(back: string, front: string) {
+export function splitBack(back: string, front: string) {
   const m = back.match(/<hr[^>]*\bid=["']?answer\b["']?[^>]*>/i);
   if (m && m.index !== undefined) return { question: back.slice(0, m.index), answer: back.slice(m.index + m[0].length) };
   const f = front.trim();
@@ -289,155 +290,6 @@ function splitBack(back: string, front: string) {
   return f && b.startsWith(f) ? { question: f, answer: b.slice(f.length) } : { question: "", answer: back };
 }
 
-/**
- * 다크 테마에서 덱 스타일 카드를 어떻게 그릴까 (Figma Dark · D3-s 40:4911). 카드 바깥(틀 · 상단 · 평가 버튼)은 언제나 앱 토큰이다.
- *  night: 덱 CSS 에 .nightMode / .night_mode 가 있다 → 본문에 두 클래스를 붙이고 덱에 맡긴다 (Anki 와 같게)
- *  light: 야간 처리 없이 밝은 바탕(명도 0.6 이상)을 칠한다 → 카드 면 전체를 밝은 토큰으로 (한 화면에 밝은 상자만 섞이지 않게)
- *  other: 그 밖 (직접 만든 카드, 글자색만 정한 덱) → 다크 토큰 그대로, 어두운 글자색 선언만 버린다 (scopeCss)
- * 그림은 거르거나 뒤집지 않는다. 노트타입 CSS 마다 한 번만 정한다
- */
-type DeckFace = "night" | "light" | "other";
-const faces = new Map<string, DeckFace>();
-
-type RGB = [number, number, number];
-
-let paint: CanvasRenderingContext2D | null = null;
-/** CSS 색 → RGB (0~255). 투명하거나 읽을 수 없으면 null */
-function rgbOf(color: string): RGB | null {
-  paint ??= document.createElement("canvas").getContext("2d");
-  if (!paint || !color) return null;
-  paint.fillStyle = "rgba(0, 0, 0, 0)";
-  paint.fillStyle = color; // 못 읽는 값이면 그대로 남는다. 결과는 "#rrggbb" 또는 "rgba(r, g, b, a)"
-  const v = String(paint.fillStyle);
-  const n = v.startsWith("#") ? [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16)) : (v.match(/[\d.]+/g) ?? []).map(Number);
-  if (n.length === 4 && n[3] === 0) return null;
-  return [n[0], n[1], n[2]];
-}
-
-/** RGB → HSL (h 0~360, s · l 0~1) */
-function toHsl([r, g, b]: RGB): RGB {
-  const [x, y, z] = [r / 255, g / 255, b / 255];
-  const max = Math.max(x, y, z);
-  const min = Math.min(x, y, z);
-  const l = (max + min) / 2;
-  if (max === min) return [0, 0, l];
-  const d = max - min;
-  const s = d / (1 - Math.abs(2 * l - 1));
-  const h = max === x ? ((y - z) / d + 6) % 6 : max === y ? (z - x) / d + 2 : (x - y) / d + 4;
-  return [h * 60, s, l];
-}
-function fromHsl([h, s, l]: RGB): RGB {
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = l - c / 2;
-  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
-  return [r, g, b].map((v) => Math.round((v + m) * 255)) as RGB;
-}
-const hsl = (color: string) => {
-  const c = rgbOf(color);
-  if (!c) return null;
-  const [, s, l] = toHsl(c);
-  return { l, s };
-};
-
-/** WCAG 대비 (1~21) */
-export function contrastRatio(a: RGB, b: RGB): number {
-  const lin = (v: number) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
-  const lum = ([r, g, b]: RGB) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-/** 색상(hue) · 채도는 두고 명도만 올려 바탕과 ratio 이상이 되게 (다크 테마의 덱 강조색. "붉은 글씨"는 붉은 채로 읽히게) */
-export function liftToContrast(fg: RGB, bg: RGB, ratio = 4.5): RGB {
-  if (contrastRatio(fg, bg) >= ratio) return fg;
-  const [h, s, l0] = toHsl(fg);
-  for (let l = l0; l <= 1; l += 0.01) {
-    const c = fromHsl([h, s, Math.min(1, l)]);
-    if (contrastRatio(c, bg) >= ratio) return c;
-  }
-  return [255, 255, 255];
-}
-
-/** cdpp 로 돌리는 검사: await (await import("/src/screens/Study.tsx")).contrastSelfCheck() */
-export function contrastSelfCheck() {
-  const bg: RGB = [0x1b, 0x1a, 0x21]; // 다크 bg/surface
-  const red: RGB = [204, 0, 0]; // 덱의 b { color: #c00 }
-  const lifted = liftToContrast(red, bg);
-  const hueOf = (c: RGB) => toHsl(c)[0];
-  return {
-    whiteOnBlack21: Math.abs(contrastRatio([255, 255, 255], [0, 0, 0]) - 21) < 0.01,
-    sameIs1: contrastRatio(bg, bg) === 1,
-    redBefore: Number(contrastRatio(red, bg).toFixed(2)),
-    redAfter: Number(contrastRatio(lifted, bg).toFixed(2)),
-    redLiftedTo45: contrastRatio(lifted, bg) >= 4.5,
-    redStaysRed: Math.abs(hueOf(lifted) - hueOf(red)) < 2,
-    lifted: `rgb(${lifted.join(", ")})`,
-    alreadyReadableUnchanged: liftToContrast([255, 200, 200], bg).join() === "255,200,200",
-    blueLifted: contrastRatio(liftToContrast([26, 95, 180], bg), bg) >= 4.5,
-  };
-}
-
-/** 스타일 규칙을 중첩 · @media 안까지 */
-function* styleRules(list: CSSRuleList): Generator<CSSStyleRule> {
-  for (const r of Array.from(list)) {
-    if (r instanceof CSSStyleRule) yield r;
-    if ("cssRules" in r) yield* styleRules((r as CSSGroupingRule).cssRules);
-  }
-}
-
-function deckFace(css: string): DeckFace {
-  let face = faces.get(css);
-  if (!face) {
-    const sheet = new CSSStyleSheet();
-    try {
-      sheet.replaceSync(css);
-    } catch {
-      /* 못 읽는 CSS 는 other */
-    }
-    const light = [...styleRules(sheet.cssRules)].some((r) => (hsl(r.style.backgroundColor)?.l ?? 0) >= 0.6);
-    face = /\.night_?mode\b/i.test(css) ? "night" : light ? "light" : "other";
-    faces.set(css, face);
-  }
-  return face;
-}
-
-/** 다크 테마의 other: 어두운 글자색(검정 · 회색 · 남색처럼 어둡거나 탁한 색)은 버리고 text/primary 를 쓴다. 빨강 강조는 남긴다 */
-const darkText = (color: string) => {
-  const c = hsl(color);
-  return !!c && (c.l < 0.35 || (c.l < 0.5 && c.s < 0.3));
-};
-
-/**
- * 노트타입 CSS 를 카드 본문 안으로 가둔다 (CSS 중첩). .card 규칙은 맞는 요소가 없어 앱 글꼴을 덮지 않는다.
- * 괄호를 닫고 밖으로 나오는 CSS 는 규칙이 둘 이상으로 갈라지므로 통째로 버린다 (가져온 덱은 신뢰하지 않는다).
- * Anki 는 .card 와 .nightMode 를 같은 body 에 붙인다. 여기서는 .card 를 붙이지 않으므로 ".card.nightMode" 를 ".nightMode" 로 읽는다
- */
-function scopeCss(css: string, stripDarkText: boolean): string {
-  if (!css.trim()) return "";
-  try {
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(`.study__card-content{${css.replace(/\.card\.(nightMode|night_mode)\b|\.(nightMode|night_mode)\.card\b/g, ".$1$2")}}`);
-    const rule = sheet.cssRules[0];
-    if (sheet.cssRules.length !== 1 || !(rule instanceof CSSStyleRule) || rule.selectorText !== ".study__card-content") return "";
-    rule.style.cssText = ""; // 선택자 없이 쓴 선언은 본문 글꼴을 덮으므로 버린다
-    if (stripDarkText) {
-      // ④ 어두운 글자색은 버리고, 남긴 강조색은 다크 카드 면과 4.5:1 이 되도록 명도만 올린다. 바탕을 직접 칠한 규칙은 그 바탕 기준이라 건드리지 않는다
-      const bg = rgbOf(getComputedStyle(document.documentElement).getPropertyValue("--bg-surface").trim());
-      for (const r of styleRules(rule.cssRules)) {
-        if (darkText(r.style.color)) r.style.removeProperty("color");
-        else if (bg && !r.style.backgroundColor) {
-          const c = rgbOf(r.style.color);
-          const lifted = c && liftToContrast(c, bg);
-          if (c && lifted && lifted.join() !== c.join()) r.style.color = `rgb(${lifted.join(", ")})`;
-        }
-      }
-    }
-    return rule.cssText;
-  } catch {
-    return "";
-  }
-}
 
 /** 토스트 · 목록에 쓰는 한 줄 질문. 붙어 있는 태그 사이에 띄어쓰기를 넣는다 ("OX높음" 이 되지 않게) */
 /** 수식은 구분자만 벗겨 TeX 원문으로 ("\(z\)" → "z"). 한 줄 글에서 그린 수식은 읽기 어렵다 */
@@ -463,7 +315,7 @@ function ago(at: number) {
   return m < 1 ? "방금" : m < 60 ? `${m}분 전` : `${Math.floor(m / 60)}시간 전`;
 }
 
-export function Study(props: { deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun }) {
+export function Study(props: { deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun; edit?: number }) {
   const { deckIds, scale, mix } = props;
   const cram = !!props.cram;
   const nav = useNav();
@@ -509,6 +361,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [zoom, setZoom] = useState<{ src: string } | { html: string } | null>(null);
   const [fit, setFit] = useState({ overflow: false, more: false });
   const [editing, setEditing] = useState(false);
+  // NT13 노트 유형 편집기에서 돌아왔다: 그 카드가 먼저 나오면 카드 편집을 다시 연다 (바뀐 배치가 바로 보이게)
+  const reopen = useRef(props.edit);
+  useEffect(() => {
+    if (!card || reopen.current === undefined) return;
+    if (card.view.id === reopen.current) setEditing(true);
+    reopen.current = undefined;
+  }, [card]);
   const [hints, setHints] = useState(() => !pref(HINTS_SEEN));
   const [soundTip, setSoundTip] = useState<{ id: number; tts: boolean } | null>(null); // AU1 · AU21 이 카드에서 한 번 안내
   const [error, setError] = useState<string>();
@@ -1493,6 +1352,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         <EditNote
           noteId={card.view.note_id}
           card={card.view}
+          // 편집기에서 돌아오면 같은 덱을 이어서 (새 세션, 평가한 카드는 다시 나오지 않는다). 회독 · 혼합 · 다시 보기 묶음은 처음 화면으로
+          back={cram || mix || props.cardIds ? { name: "summary", deckIds, cram: cram || !!mix } : { name: "study", deckIds, scale, edit: card.view.id }}
           onClose={() => setEditing(false)}
           onSaved={async () => {
             setEditing(false);
@@ -1540,8 +1401,10 @@ function fieldRoles(note: NoteEdit): FieldRole[] {
   );
 }
 
-export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
+export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   noteId: number;
+  /** NT13 [편집] 으로 노트 유형 편집기에 갔다가 돌아올 곳 */
+  back?: Route;
   /** 이 카드만의 중요도 · 하위 덱 이동 · 삭제 (아래 줄). 없으면 노트 내용만 고친다 */
   card?: Pick<CardView, "id" | "importance" | "deck_path" | "occlusion">;
   onClose: () => void;
@@ -1549,7 +1412,8 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   /** 카드를 지운 뒤. 없으면 onSaved 를 부른다 */
   onDeleted?: () => void;
 }) {
-  const [note, setNote] = useState<(NoteEdit & { roles: FieldRole[] }) | null>(null);
+  // own: 사용자 · 가져온 유형 (카드 추가 NT6 과 같은 칸). clozeAt: [빈칸 만들기]를 붙일 칸
+  const [note, setNote] = useState<(NoteEdit & { roles: FieldRole[]; own: boolean; clozeAt: boolean[] }) | null>(null);
   const [choices, setChoices] = useState<DeckChoice[] | null>(null);
   const [deckId, setDeckId] = useState<number>();
   const [level, setLevel] = useState<Level | null>(null);
@@ -1571,14 +1435,28 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   // Q24 목록 · 선택형은 카드 추가(Q0)와 같은 편집기. 질문 · 추가 설명은 첫 칸 · 마지막 칸
   const [list, setList] = useState<ListDraft | null>(null);
   const [choice, setChoice] = useState<ChoiceDraft | null>(null);
+  // NT13 머리 "노트 유형 · 이름 [편집]". touched: 무엇이든 고쳤다 ([편집]으로 떠나기 전에 묻는다)
+  const [typeLabel, setTypeLabel] = useState<string>();
+  const touched = useRef(false);
+  const [leaving, setLeaving] = useState<Route | null>(null);
+  const nav = useNav();
 
   useEffect(() => {
-    Promise.all([api.noteEdit(noteId), writtenApi.note(noteId).catch(() => null)]).then(([n, w]) => {
+    api
+      .noteEdit(noteId)
+      .then((n) => Promise.all([n, writtenApi.note(noteId).catch(() => null), api.noteTypeDetail(n.note_type_id).catch(() => null)] as const))
+      .then(([n, w, d]) => {
+      setTypeLabel(d ? (d.native_kind ? (TYPE_LABEL[d.native_kind] ?? d.name) : d.name) : n.type_name);
       setExam(n.exam);
-      const roles = fieldRoles(n);
+      // 사용자 · 가져온 유형은 카드 추가(NT6)와 같은 칸: 필드 순서대로 세로로, 앞면 템플릿이 쓰는 필드는 툴바 있는 편집기 (I44).
+      // 같은 노트를 추가할 때와 고칠 때 칸 자리가 같다. 앱 기본 유형은 C3-e 배치 그대로
+      const own = !!d && !d.native_kind && !n.special;
+      const roles: FieldRole[] = own ? n.front.map((f) => (f ? "front" : "rich")) : fieldRoles(n);
       if (w?.native) roles.splice(0, 3, "front", "rich", "rich"); // 질문 · 모범 답안 · 채점 메모
-      else if (w?.capable && w.answer_field !== null) roles[w.answer_field] = "rich"; // 제안 칩을 뽑는 칸
-      setNote({ ...n, roles });
+      else if (!own && w?.capable && w.answer_field !== null) roles[w.answer_field] = "rich"; // 제안 칩을 뽑는 칸
+      const clozeRefs = own && d ? d.templates.flatMap((t) => tagRefs(t.qfmt)).filter((r) => r.cloze).map((r) => r.name) : [];
+      const clozeAt = n.names.map((name, i) => (own ? clozeRefs.includes(name) : n.kind === "cloze" && i === 0));
+      setNote({ ...n, roles, own, clozeAt });
       if (n.special?.kind === "list") setList({ items: n.special.items.length ? n.special.items : [""], ordered: n.special.ordered });
       else if (n.special?.kind === "choice") setChoice(choiceDraft(n.special));
       if (w?.capable) {
@@ -1615,7 +1493,9 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
   const cloze = note?.kind === "cloze";
   const reversed = !!note && isReversed(note);
   const label = (i: number) =>
-    wn?.native
+    note?.own
+      ? note.names[i]
+      : wn?.native
       ? (["질문", "모범 답안", "채점 메모"][i] ?? note?.names[i] ?? "")
       : note?.kind === "basic"
       ? (reversed ? ["앞면", "뒷면"] : ["질문", "답변"])[i]
@@ -1625,7 +1505,8 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
           ? "추가 설명"
           : (note?.names[i] ?? "");
 
-  const save = async () => {
+  /** after: 저장한 뒤 onSaved 대신 (NT13 [저장하고 이동]). 실패하면 부르지 않고 오류를 남긴다 */
+  const save = async (after?: () => void) => {
     if (!note || saving) return;
     // 새 빈칸은 원래 노트에 있던 가장 큰 번호 다음부터. 지운 번호를 다시 쓰면 그 카드의 학습 기록이 엉뚱한 빈칸에 붙는다
     const firstFree = Math.max(0, ...note.values.flatMap((v) => [...v.matchAll(/\{\{c(\d+)::/g)].map((m) => Number(m[1])))) + 1;
@@ -1641,17 +1522,32 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
     try {
       if (list) await recall.updateList(note.note_id, { ...edit(), ...list });
       else if (choice) await recall.updateChoice(note.note_id, { ...edit(), ...choice });
-      else await api.updateNote(note.note_id, values);
+      else await api.updateNote(note.note_id, values, note.slots); // 보이는 순서의 값을 제 자리로 (순서를 바꾼 유형)
       if (wn) await writtenApi.saveNote(note.note_id, write, kws, dismissed);
       if (exam && JSON.stringify(exam) !== JSON.stringify(note.exam)) await examApi.set("note", [exam]);
       if (card && target && target.id !== here?.id) await api.moveCard(card.id, target.id);
       // 옮길 덱의 기본값과 같으면 개별 지정을 풀어 덱 설정을 따르게 한다
       if (card && level !== null && level !== card.importance) await api.setCardImportance(card.id, level === target?.importance ? null : level);
-      onSaved();
+      (after ?? onSaved)();
     } catch (e) {
       setError(errorText(e));
       setSaving(false);
     }
+  };
+
+  /** NT13 [편집]: 그 노트 유형 편집기로. 고친 것이 있으면 버릴지 먼저 묻는다 */
+  const toType = () => {
+    if (!note) return;
+    const to: Route = { name: "noteTypeEdit", id: note.note_type_id, note: note.note_id, back };
+    const changed =
+      touched.current ||
+      (level !== null && level !== card?.importance) ||
+      (deckId !== undefined && deckId !== here?.id) ||
+      JSON.stringify(exam) !== JSON.stringify(note.exam) ||
+      (!!wn && (write !== wn.write || JSON.stringify(kws) !== JSON.stringify(wn.keywords)));
+    setError(undefined);
+    if (changed) setLeaving(to);
+    else nav(to);
   };
 
   const remove = async () => {
@@ -1693,30 +1589,48 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
       {/* 확인 창이 떠 있으면 Esc 는 확인 창만 닫는다 (두 창의 Esc 중 어느 쪽이 먼저 받아도 같게). 하위 덱 드롭다운은 제 Esc 를 먼저 가로챈다 */}
       <Modal
         title="카드 편집"
-        sub={`${
-          wn?.native
-            ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
-            : note?.kind === "list" || note?.kind === "choice"
-              ? `${note.kind === "list" ? "목록 회상" : "선택형"} · `
-              : note?.kind === "other"
-              ? `Anki 노트타입 '${note.type_name}' · 필드 ${note.names.length}개 · `
-              : reversed
-                ? "양방향 · 카드 2장 · "
-                : ""
-        }저장해도 복습 일정은 그대로예요`}
+        sub={
+          <span className="edit__meta">
+            <span>
+              {`${
+                wn?.native
+                  ? `서술형 카드 · ${card ? `${pathLabel(card.deck_path)} · ` : ""}`
+                  : note?.kind === "list" || note?.kind === "choice"
+                    ? `${note.kind === "list" ? "목록 회상" : "선택형"} · `
+                    : note?.kind === "other"
+                      ? `필드 ${note.names.length}개 · `
+                      : reversed
+                        ? "양방향 · 카드 2장 · "
+                        : ""
+              }저장해도 복습 일정은 그대로예요`}
+            </span>
+            {note && typeLabel && (
+              <span className="edit__type t-label-s c-secondary">
+                <Icon name="layers" size={12} />
+                노트 유형 · {typeLabel}
+                <button className="edit__type-edit c-accent" onClick={toType}>
+                  <Icon name="pencil" size={12} />
+                  편집
+                </button>
+              </span>
+            )}
+          </span>
+        }
         className={`modal--edit ${wn || list || choice ? "modal--written" : ""}`}
-        onClose={() => (confirming ? setConfirming(false) : onClose())}
+        onClose={() => (confirming ? setConfirming(false) : leaving ? setLeaving(null) : onClose())}
       >
         <div
           className="edit"
+          onInput={() => (touched.current = true)}
           onKeyDown={(e) => {
-            if (confirming) return;
+            if (confirming || leaving) return;
             if (matchAction("save", e.nativeEvent) >= 0) {
               e.preventDefault();
               save();
             } else if (cloze && e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") {
               e.preventDefault();
-              makeCloze(fields.current[0]?.el());
+              // 사용자 빈칸 유형은 지금 쓰는 칸
+              makeCloze(((note?.own && fields.current.find((f) => f?.el()?.contains(document.activeElement))) || fields.current[0])?.el());
             }
           }}
         >
@@ -1753,14 +1667,14 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
                     toolbar={note.roles[i] === "front"}
                     onInput={() => i === wn?.answer_field && setAnswerHtml(fields.current[i]?.html() ?? "")}
                     extraTool={
-                      cloze && i === 0 ? (
+                      note.clozeAt[i] ? (
                         <Button
                           variant="secondary"
                           size="M"
                           label="빈칸 만들기"
                           shortcut="Ctrl Shift C"
                           onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => makeCloze(fields.current[0]?.el())}
+                          onClick={() => makeCloze(fields.current[i]?.el())}
                         />
                       ) : undefined
                     }
@@ -1819,9 +1733,10 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
           )}
           <div className="edit__actions">
             {card && <Button variant="ghost" size="M" icon="trash" label="카드 삭제" className="edit__delete" onClick={() => setConfirming(true)} />}
-            <span className="edit__msg t-body-s c-danger">{error}</span>
+            {/* 떠날 때 묻는 창이 떠 있으면 오류는 그 창 안에만 */}
+            <span className="edit__msg t-body-s c-danger">{leaving ? null : error}</span>
             <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
-            <Button size="M" icon="check" label="저장" shortcut={actionKey("save")} onClick={save} disabled={!note} busy={saving} busyLabel="저장 중…" />
+            <Button size="M" icon="check" label="저장" shortcut={actionKey("save")} onClick={() => save()} disabled={!note} busy={saving} busyLabel="저장 중…" />
           </div>
         </div>
       </Modal>
@@ -1836,6 +1751,22 @@ export function EditNote({ noteId, card, onClose, onSaved, onDeleted }: {
           <div className="modal__actions">
             <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={() => setConfirming(false)} />
             <Button variant="danger" size="M" icon="trash" label="삭제" shortcut="Enter" onClick={remove} busy={saving} />
+          </div>
+        </Modal>
+      )}
+      {leaving && (
+        // 주 버튼은 [저장하고 이동]. 저장이 안 되면 이동하지 않고 이 창에 이유를 보인다
+        <Modal title="고친 내용이 있어요" onClose={() => setLeaving(null)} className="edit__leave">
+          <p className="t-body-m c-secondary">노트 유형 편집으로 가기 전에 고친 내용을 저장할까요?</p>
+          {error && (
+            <p className="edit__leave-error t-body-s c-danger" role="alert">
+              저장하지 못했어요 · {error}
+            </p>
+          )}
+          <div className="modal__actions">
+            <Button variant="ghost" size="M" label="계속 고치기" shortcut="Esc" onClick={() => setLeaving(null)} />
+            <Button variant="secondary" size="M" label="버리고 이동" onClick={() => nav(leaving)} />
+            <Button size="M" icon="check" label="저장하고 이동" onClick={() => save(() => nav(leaving))} busy={saving} busyLabel="저장 중…" />
           </div>
         </Modal>
       )}

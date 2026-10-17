@@ -72,7 +72,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     const unlisten = await listen<ExportProgress>("export-progress", (e) => setProg(e.payload));
     try {
       const r = await api.exportApkg(deckId, path, history);
-      if (r.missing_media > 0) setResult(r);
+      if (r.missing_media > 0 || r.skipped_cards > 0) setResult(r);
       else {
         // C1-xr 경고가 없으면 결과 창 없이 토스트만
         onClose();
@@ -105,6 +105,8 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
         tone: "undo",
         icon: "check-circle",
         title: `${name}${eul(name)} 내보냈어요 · ${n(r.rows)}줄`,
+        // 카드가 모두 앞면이 빈 노트(학습에 나오지 않는 노트)는 줄을 쓰지 않았다
+        text: r.empty_fronts > 0 ? `앞면이 빈 노트 ${n(r.empty_fronts)}개는 넣지 않았어요` : undefined,
         action: { label: "폴더에서 보기", onClick: () => reveal(r.path) },
       });
     } catch (e) {
@@ -129,7 +131,13 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     const tiles: [string, number][] = [["노트", r.notes], ["카드", r.cards], ["미디어", r.media]];
     if (history) tiles.push(["복습 기록", r.reviews]); // 끈 경우 복습 기록 칸 없음
     return (
-      <Modal title={`내보냈지만 미디어 파일 ${n(r.missing_media)}개가 빠졌어요`} variant="confirm" icon="check" className="modal--export is-result" onClose={onClose}>
+      <Modal
+        title={r.missing_media > 0 ? `내보냈지만 미디어 파일 ${n(r.missing_media)}개가 빠졌어요` : `내보냈지만 카드 ${n(r.skipped_cards)}장은 빼고 넣었어요`}
+        variant="confirm"
+        icon="check"
+        className="modal--export is-result"
+        onClose={onClose}
+      >
         <p className="export__path c-tertiary" title={r.path}>
           {shortPath(r.path)}
         </p>
@@ -141,16 +149,29 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
             </span>
           ))}
         </div>
-        <div className="export__warn">
-          <Icon name="alert" size={18} className="c-warn" />
-          <span className="export__warn-text">
-            <span className="t-body-m-strong c-warn">미디어 {n(r.missing_media)}개를 찾지 못했어요</span>
-            <span className="t-body-s c-secondary">
-              저장한 .apkg 파일에서 카드 {n(r.missing_cards.length)}장의 그림이나 소리가 나오지 않아요. 이 앱의 카드는 그대로예요. 덱 안의 원래 파일이 지워졌거나 옮겨진 경우예요.
+        {r.skipped_cards > 0 && (
+          <div className="export__warn">
+            <Icon name="alert" size={18} className="c-warn" />
+            <span className="export__warn-text">
+              <span className="t-body-m-strong c-warn">카드 종류가 없는 카드 {n(r.skipped_cards)}장을 뺐어요</span>
+              <span className="t-body-s c-secondary">
+                카드 종류가 지워진 카드라 Anki가 받지 않아요. 넣으면 Anki가 파일 전체를 가져오지 않아요. 이 앱의 카드는 그대로예요.
+              </span>
             </span>
-          </span>
-          <Button variant="ghost" size="M" label="카드 보기" onClick={() => nav({ name: "cards", deckId, cardIds: r.missing_cards })} />
-        </div>
+          </div>
+        )}
+        {r.missing_media > 0 && (
+          <div className="export__warn">
+            <Icon name="alert" size={18} className="c-warn" />
+            <span className="export__warn-text">
+              <span className="t-body-m-strong c-warn">미디어 {n(r.missing_media)}개를 찾지 못했어요</span>
+              <span className="t-body-s c-secondary">
+                저장한 .apkg 파일에서 카드 {n(r.missing_cards.length)}장의 그림이나 소리가 나오지 않아요. 이 앱의 카드는 그대로예요. 덱 안의 원래 파일이 지워졌거나 옮겨진 경우예요.
+              </span>
+            </span>
+            <Button variant="ghost" size="M" label="카드 보기" onClick={() => nav({ name: "cards", deckId, cardIds: r.missing_cards })} />
+          </div>
+        )}
         <div className="modal__actions">
           <Button variant="secondary" size="M" icon="folder" label="폴더에서 보기" onClick={() => reveal(r.path)} />
           <Button size="M" label="닫기" shortcut="Enter" onClick={onClose} />

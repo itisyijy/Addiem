@@ -37,13 +37,15 @@ const key = (path: string[]) => path.join("\u0000");
 /** 목록 범위. deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
 type Scope = Pick<DeckDetail, "name" | "path" | "total" | "subdecks">;
 
-export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }: {
+export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, edit }: {
   deckId: number | null;
   buriedOnly?: boolean;
   /** 이 카드들만 본다 (C1-xr [카드 보기]: 내보내며 미디어가 빠진 카드) */
   cardIds?: number[];
   /** 약함으로 확정한 하위 덱 아래만 (C1-w [약한 챕터 카드 보기]) */
   weakOnly?: boolean;
+  /** 노트 유형 편집기에서 돌아왔다: 이 카드의 편집 창(E)을 다시 연다 (NT53) */
+  edit?: number;
 }) {
   const nav = useNav();
   const toast = useToast();
@@ -64,6 +66,9 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const anchor = useRef<number | null>(null); // Shift 클릭 범위의 시작 (목록 순서)
   const [editing, setEditing] = useState<CardRow | null>(null);
+  useEffect(() => {
+    if (edit !== undefined) api.listCards(null, "", 1, false, [edit]).then((l) => l.rows[0] && setEditing(l.rows[0]), () => {});
+  }, [edit]);
   const [deleting, setDeleting] = useState<CardRow | null>(null);
   const [bulkDelete, setBulkDelete] = useState(false);
   const [examFor, setExamFor] = useState<CardRow[] | null>(null); // N2 기출 표시 창
@@ -589,9 +594,16 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
                   />
                 )}
               </span>
-              <span title={day ? (day === "오늘" ? "오늘 복습으로 돌아와요" : `${day}에 복습으로 돌아와요`) : undefined}>
-                <Badge tone={tone}>{label}</Badge>
-              </span>
+              {c.front_empty ? (
+                // NT49 앞면이 빈 카드는 상태와 상관없이 학습에 나오지 않는다
+                <span title="앞면이 비어 학습에 나오지 않아요 · 필드를 채우면 다시 나와요">
+                  <Badge tone="warn">앞면 빔</Badge>
+                </span>
+              ) : (
+                <span title={day ? (day === "오늘" ? "오늘 복습으로 돌아와요" : `${day}에 복습으로 돌아와요`) : undefined}>
+                  <Badge tone={tone}>{label}</Badge>
+                </span>
+              )}
               <span className="cards__actions">
                 <span className="menu">
                   <button
@@ -721,6 +733,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false }:
         <EditNote
           noteId={editing.note_id}
           card={editing}
+          back={{ name: "cards", deckId, buriedOnly, cardIds, weakOnly, edit: editing.id }}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);

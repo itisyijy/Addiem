@@ -1525,3 +1525,462 @@ fn bench_merge_copy() {
     env.sync(&a);
     println!("A sync              {:>8.2?}", t.elapsed());
 }
+
+// ---------------------------------------------------------------- 8.1 노트 유형 · 템플릿 (notetype.rs)
+
+/// A 에서 앱 Basic 을 복제한 "내 유형" + 그 유형 노트 하나를 만들고 두 기기를 맞춘다. (A 의 유형 id, 노트 uid)
+fn user_type(env: &Env, a: &Dev, b: &Dev) -> (i64, String) {
+    use crate::notetype as nt;
+    let (id, note) = {
+        let con = a.con();
+        let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '2과목'", [], |r| r.get(0)).unwrap();
+        let id = nt::anki_clone(&con, "basic", Some("내 유형"));
+        let values = vec!["질문".to_string(), "답".to_string()];
+        nt::add_note(&con, &nt::TypedNote { deck_id: deck, note_type_id: id, values, importance: None }).unwrap();
+        (id, con.last_insert_rowid())
+    };
+    let note = a.con().query_row("SELECT n.uid FROM note n JOIN card c ON c.note_id = n.id WHERE c.id = ?1", [note], |r| r.get(0)).unwrap();
+    env.sync(a);
+    env.sync(b);
+    assert_eq!(a.dump(), b.dump());
+    (id, note)
+}
+
+/// 이 기기에서 노트를 편집기처럼 고친다 (commands::save_note_fields, 자리 순서)
+fn edit_note(d: &Dev, note_uid: &str, values: &[&str]) {
+    let id = d.id("note", note_uid).unwrap();
+    crate::commands::save_note_fields(&d.con(), id, &values.iter().map(|v| v.to_string()).collect::<Vec<_>>()).unwrap();
+}
+
+fn type_of(d: &Dev, note_uid: &str) -> crate::notetype::Nt {
+    let id: i64 = d.con().query_row("SELECT note_type_id FROM note WHERE uid = ?1", [note_uid], |r| r.get(0)).unwrap();
+    crate::notetype::load(&d.con(), id).unwrap()
+}
+
+#[test]
+fn field_added_while_note_edited_elsewhere() {
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    crate::notetype::add_field(&a.con(), id, "예문").unwrap();
+    edit_note(&b, &note, &["질문", "B 의 답"]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        let t = type_of(d, &note);
+        assert_eq!(t.slots, ["Front", "Back", "예문"]);
+        // 짧은 배열(필드를 더하기 전 기기가 쓴 값)은 없는 칸이 빈 값이다. 자리가 밀리지 않는다
+        assert_eq!(d.fields(&note), json!(["질문", "B 의 답"]).to_string());
+        let map = t.field_map(&serde_json::from_str::<Vec<String>>(&d.fields(&note)).unwrap());
+        assert_eq!((map["Back"].as_str(), map["예문"].as_str()), ("B 의 답", ""));
+    }
+    // 받은 뒤 새 칸을 채우면 그대로 따라간다
+    edit_note(&b, &note, &["질문", "B 의 답", "예문 b"]);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.fields(&note), json!(["질문", "B 의 답", "예문 b"]).to_string());
+}
+
+#[test]
+fn field_renamed_while_note_edited_elsewhere() {
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    crate::notetype::rename_field(&a.con(), id, 1, "뜻").unwrap();
+    edit_note(&b, &note, &["질문", "B 의 답"]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        let t = type_of(d, &note);
+        assert_eq!((t.slots[1].as_str(), t.templates[0].afmt.as_str()), ("뜻", r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{뜻}}</div>"#));
+        let values: Vec<String> = serde_json::from_str(&d.fields(&note)).unwrap();
+        let r = crate::render::render_card(&t.templates[0].qfmt, &t.templates[0].afmt, &t.field_map(&values), 0);
+        assert_eq!(r.back, r#"<div class="nt-l nt-center">질문</div><hr id=answer><div class="nt-m nt-left">B 의 답</div>"#, "이름이 바뀌어도 값은 같은 자리");
+    }
+}
+
+#[test]
+fn template_added_while_note_edited_elsewhere() {
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    let added = crate::notetype::add_template(&a.con(), id, Some("거꾸로"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
+    // 동기화 중에는 기기마다 다른 번호 (Q2-05): ord 1 이상, 2^16 으로 나눈 나머지가 이 기기 몫
+    assert!(added.ord >= 1 && added.cards == 1, "{added:?}");
+    edit_note(&b, &note, &["질문", "B 의 답"]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(d.fields(&note), json!(["질문", "B 의 답"]).to_string());
+        let ords: String = d
+            .con()
+            .query_row("SELECT group_concat(template_ord) FROM (SELECT template_ord FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 ORDER BY 1)", [&note], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ords, format!("0,{}", added.ord), "A 가 만든 카드가 B 에도");
+        assert_eq!(type_of(d, &note).templates.len(), 2);
+    }
+    // B 에서 두 번째 카드의 앞면 필드를 지워도 카드는 남고(Anki 처럼 만들기만), 다시 맞춰진다
+    edit_note(&b, &note, &["질문", "B 의 답 2"]);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn same_named_user_types_from_two_devices_stay_apart() {
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let make = |d: &Dev, front: &str| {
+        let con = d.con();
+        let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '2과목'", [], |r| r.get(0)).unwrap();
+        let id = nt::anki_clone(&con, "basic", Some("내 유형"));
+        let values = vec![front.to_string(), "답".to_string()];
+        nt::add_note(&con, &nt::TypedNote { deck_id: deck, note_type_id: id, values, importance: None }).unwrap();
+    };
+    make(&a, "A 의 질문");
+    // 모델 id 는 ms 시각이다. 두 기기가 같은 ms 에 만드는 일은 없다고 본다 (note-types.md 2장)
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    make(&b, "B 의 질문");
+    let b_type = b.n("SELECT max(id) FROM note_type");
+    crate::notetype::add_field(&b.con(), b_type, "B 만의 필드").unwrap();
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE name = '내 유형'"), 2, "이름이 같아도 합치지 않는다");
+        assert_eq!(d.n("SELECT count(DISTINCT anki_model_id) FROM note_type WHERE name = '내 유형'"), 2);
+        // 각 노트는 제 유형에 남는다: A 의 유형은 필드 둘, B 의 유형은 셋
+        let fields_of = |front: &str| -> i64 {
+            d.n(&format!("SELECT json_array_length(nt.fields) FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.fields LIKE '%{front}%'"))
+        };
+        assert_eq!((fields_of("A 의 질문"), fields_of("B 의 질문")), (2, 3));
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE native_kind = 'basic'"), 1, "앱 유형은 한 벌");
+    }
+    // 목록이 둘을 가린다: 이 기기에서 만든 것과, 다른 기기 것은 그 Drive 기기 이름 (Q2-11)
+    let rows = serde_json::to_value(crate::notetype::list(&a.con()).unwrap()).unwrap();
+    let mine: Vec<(bool, J)> = rows.as_array().unwrap().iter().filter(|r| r["name"] == "내 유형").map(|r| (r["made_here"].as_bool().unwrap(), r["made_by"].clone())).collect();
+    assert_eq!(mine.len(), 2);
+    assert!(mine.contains(&(true, J::Null)) && mine.contains(&(false, json!("데스크톱"))), "{mine:?}");
+}
+
+// ---------------------------------------------------------------- QA Q2 (8.1 노트 유형 ∥ 동기화)
+
+/// 이 기기의 "2과목" 덱
+fn sub_deck(d: &Dev) -> i64 {
+    d.n("SELECT id FROM deck WHERE name = '2과목'")
+}
+
+/// 그 유형에 노트 하나 (보이는 순서 값). 노트 uid
+fn typed_note(d: &Dev, type_id: i64, values: &[&str]) -> String {
+    use crate::notetype as nt;
+    let deck = sub_deck(d);
+    let con = d.con();
+    nt::add_note(&con, &nt::TypedNote { deck_id: deck, note_type_id: type_id, values: values.iter().map(|v| v.to_string()).collect(), importance: None }).unwrap();
+    con.query_row("SELECT uid FROM note ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap()
+}
+
+/// 카드 종류(템플릿) 없는 카드: 학습 · 목록에 첫 필드로 보이고 내보내면 Anki 에서 빈 카드다
+fn orphans(d: &Dev) -> i64 {
+    d.n("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id
+         WHERE NOT EXISTS (SELECT 1 FROM card_template t WHERE t.note_type_id = n.note_type_id AND (t.ord = c.template_ord OR t.qfmt LIKE '%{{cloze:%'))")
+}
+
+/// 그 노트의 카드 ord ("0,1")
+fn ords_of(d: &Dev, note_uid: &str) -> String {
+    d.con()
+        .query_row(
+            "SELECT coalesce(group_concat(template_ord), '') FROM (SELECT template_ord FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 ORDER BY 1)",
+            [note_uid],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn type_names(d: &Dev, type_uid: &str) -> Vec<String> {
+    let con = d.con();
+    let mut st = con.prepare("SELECT t.name FROM card_template t JOIN note_type nt ON nt.id = t.note_type_id WHERE nt.uid = ?1 ORDER BY t.ord").unwrap();
+    st.query_map([type_uid], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+}
+
+const REV_Q: &str = "{{Back}}";
+const REV_A: &str = "{{FrontSide}}<hr id=answer>{{Front}}";
+
+#[test]
+fn type_deleted_while_note_added_elsewhere_keeps_its_card_types() {
+    // Q2-01: A 가 노트 없는 유형을 지우는 사이 B 가 그 유형에 노트를 넣고 이름을 바꿨다.
+    // 유형은 B 의 노트가 붙잡아 남고(K29), 유형의 일부인 카드 종류도 함께 남는다 (전에는 card_template 0개)
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let id = nt::anki_clone(&a.con(), "basic", Some("지울 유형"));
+    nt::add_template(&a.con(), id, Some("거꾸로"), REV_Q, REV_A).unwrap();
+    env.sync(&a);
+    env.sync(&b);
+    let ty = a.uid("note_type", id);
+    let t = db::now_ms();
+    a.at(t + 1000, || nt::delete_type(&a.con(), id).unwrap());
+    let b_id = b.id("note_type", &ty).unwrap();
+    b.at(t + 2000, || {
+        typed_note(&b, b_id, &["B 가 넣은 노트", "답"]);
+        nt::rename_type(&b.con(), b_id, "B 가 바꾼 이름").unwrap();
+    });
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        assert!(d.id("note_type", &ty).is_some(), "유형이 남는다");
+        assert_eq!(type_names(d, &ty).len(), 2, "카드 종류도 함께 남는다");
+        assert_eq!(orphans(d), 0);
+    }
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn card_type_deleted_while_note_edited_elsewhere_leaves_no_orphan() {
+    // Q2-02: A 가 카드 종류를 지우는 사이 B 가 노트 하나를 고쳤다. 나중에 고친 노트의 카드는 남고(K29), 그 카드가 쓰는 카드 종류도 남는다.
+    // 고치지 않은 노트의 그 카드는 지운다. 템플릿 없는 카드가 생기지 않는다
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    let rev = nt::add_template(&a.con(), id, Some("거꾸로"), REV_Q, REV_A).unwrap().ord;
+    let other = typed_note(&a, id, &["그대로", "둔 노트"]);
+    env.sync(&a);
+    env.sync(&b);
+    let ty = a.uid("note_type", id);
+    let t = db::now_ms();
+    a.at(t + 1000, || nt::delete_template(&a.con(), id, rev, false).unwrap());
+    b.at(t + 2000, || edit_note(&b, &note, &["질문", "B 가 고친 답"]));
+    for d in [&b, &a, &b, &a] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        assert_eq!(orphans(d), 0, "템플릿 없는 카드가 없다");
+        assert_eq!(type_names(d, &ty).len(), 2, "남은 카드가 카드 종류를 붙잡는다");
+        assert_eq!((ords_of(d, &note), ords_of(d, &other).as_str()), (format!("0,{rev}"), "0"));
+    }
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn cloze_removed_in_the_same_edit_stays_removed() {
+    // Q2-03: 빈칸 c2 를 지우면 같은 트랜잭션에서 노트도 고친다 (같은 HLC). 지운 기기가 스스로 고친 것에 지우기가 지지 않는다
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let note = {
+        let con = a.con();
+        let cz = db::native_type_id(&con, "cloze").unwrap();
+        let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '2과목'", [], |r| r.get(0)).unwrap();
+        con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 1000, 1000)", params![cz, json!(["물은 {{c1::100}}도에서 {{c2::끓는다}}", ""]).to_string()])
+            .unwrap();
+        let n = con.last_insert_rowid();
+        for ord in 0..2 {
+            con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, ?3, 1000, 1000)", params![n, deck, ord]).unwrap();
+        }
+        n
+    };
+    let note = a.uid("note", note);
+    env.sync(&a);
+    env.sync(&b);
+    let id = b.id("note", &note).unwrap();
+    b.at(db::now_ms() + 1000, || crate::commands::save_note_fields(&b.con(), id, &["물은 {{c1::100}}도에서 끓는다".into(), String::new()]).unwrap());
+    assert_eq!(ords_of(&b, &note), "0");
+    for d in [&b, &a, &b, &a] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        assert_eq!(ords_of(d, &note), "0", "c2 카드는 두 기기 모두에서 지워진 채다");
+    }
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn card_type_added_while_note_added_elsewhere() {
+    // Q2-04: A 가 카드 종류를 더하는 사이 B 가 새 노트를 넣었다. 맞춘 뒤 새 노트에도 새 카드 종류의 카드가 있다.
+    // 카드는 그 노트를 쓴 기기가 만든다 (그 카드 종류를 몰랐던 기기). 받은 쪽이 따로 만들어 두 장이 되지 않는다
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, _) = user_type(&env, &a, &b);
+    let ty = a.uid("note_type", id);
+    let b_id = b.id("note_type", &ty).unwrap();
+    let rev = nt::add_template(&a.con(), id, Some("거꾸로"), REV_Q, REV_A).unwrap().ord;
+    let both = format!("0,{rev}");
+    let star = typed_note(&b, b_id, &["star", "별"]);
+    // 엇갈려 맞춘다: A 는 카드 종류만 먼저 올리고, B 는 받지 않고 새 노트를 올린다
+    let pull = |d: &Dev| assert!(matches!(engine::pull(&d.db, &env.cx(d)).unwrap(), Pulled::Done(_)));
+    let push = |d: &Dev| engine::push(&d.db, &env.cx(d)).unwrap();
+    push(&a);
+    push(&b);
+    pull(&a); // A: star 를 받았다. B 가 거꾸로를 알았는지 A 는 모른다 (만들지 않는다)
+    assert_eq!(ords_of(&a, &star), "0");
+    pull(&b); // B: 카드 종류를 받았다. star 는 B 가 그 카드 종류를 모르고 쓴 노트다: B 가 만든다
+    assert_eq!(ords_of(&b, &star), both, "노트를 쓴 기기가 새 카드 종류의 카드를 만든다");
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        assert_eq!(ords_of(d, &star), both, "한 장");
+        assert_eq!(orphans(d), 0);
+    }
+    // 평소처럼 맞춰도 (받기 -> 올리기) 같다: B 는 아직 올리지 않은 새 노트에 카드를 만들어 함께 올린다
+    let rev2 = nt::add_template(&a.con(), id, Some("둘째"), "{{Back}}!", REV_A).unwrap().ord;
+    let moon = typed_note(&b, b_id, &["moon", "달"]);
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        assert_eq!(ords_of(d, &moon), format!("0,{rev},{rev2}"));
+    }
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn card_types_added_on_both_devices_both_stay() {
+    // Q2-05: 같은 유형에 두 기기가 따로 카드 종류를 더했다. 기기마다 다른 ord 를 쓰므로 두 카드 종류와 그 카드가 모두 남는다
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    let ty = a.uid("note_type", id);
+    let b_id = b.id("note_type", &ty).unwrap();
+    // 기기 몫은 기기 uid 끝 4자리. 우연히 같으면(1/65536) 같은 ord 가 되어 예전처럼 한 행으로 합쳐진다 (K39 한계)
+    let lane = |d: &Dev| d.me()[d.me().len() - 4..].to_string();
+    if lane(&a) == lane(&b) {
+        return;
+    }
+    nt::add_template(&a.con(), id, Some("역방향"), REV_Q, REV_A).unwrap();
+    nt::add_template(&b.con(), b_id, Some("힌트 카드"), "힌트: {{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}").unwrap();
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    for d in [&a, &b] {
+        let mut names = type_names(d, &ty);
+        names.sort();
+        assert_eq!(names, ["Card 1", "역방향", "힌트 카드"], "어느 쪽 정의도 사라지지 않는다");
+        assert_eq!(ords_of(d, &note).split(',').count(), 3);
+        assert_eq!(orphans(d), 0);
+    }
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn fields_added_on_both_devices_keep_values_apart() {
+    // Q2-06: 같은 유형에 두 기기가 따로 필드를 더했다 (같은 자리 번호). A 는 뒷면에, B 는 앞면에 넣었다.
+    // 두 필드가 모두 남고, A 노트의 값은 A 의 필드 아래 그대로 뒷면에만 보인다 (B 의 앞면에 나와 답이 보이지 않는다)
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, _) = user_type(&env, &a, &b);
+    let ty = a.uid("note_type", id);
+    let b_id = b.id("note_type", &ty).unwrap();
+    let t = db::now_ms();
+    let a_note = a.at(t + 1000, || {
+        nt::add_field(&a.con(), id, "예문A").unwrap();
+        let q = nt::load(&a.con(), id).unwrap().templates[0].clone();
+        nt::save_template(&a.con(), id, 0, None, &q.qfmt, &format!("{}<br>{{{{예문A}}}}", q.afmt)).unwrap();
+        typed_note(&a, id, &["A 의 질문", "A 의 답", "A 의 예문(답)"])
+    });
+    let b_note = b.at(t + 2000, || {
+        nt::add_field(&b.con(), b_id, "힌트B").unwrap();
+        let q = nt::load(&b.con(), b_id).unwrap().templates[0].clone();
+        nt::save_template(&b.con(), b_id, 0, None, &format!("{}<br>{{{{힌트B}}}}", q.qfmt), &q.afmt).unwrap();
+        typed_note(&b, b_id, &["B 의 질문", "B 의 답", "B 의 힌트"])
+    });
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        let t = type_of(d, &a_note);
+        let mut names: Vec<String> = t.visible().into_iter().map(|(_, n)| n).collect();
+        names.sort();
+        assert_eq!(names, ["Back", "Front", "예문A", "힌트B"], "두 필드가 모두 남는다");
+        let render = |note: &str| {
+            let values: Vec<String> = serde_json::from_str(&d.fields(note)).unwrap();
+            let map = t.field_map(&values);
+            (crate::render::render_card(&t.templates[0].qfmt, &t.templates[0].afmt, &map, 0), map)
+        };
+        let (r, map) = render(&a_note);
+        assert_eq!(map["예문A"], "A 의 예문(답)");
+        assert!(!r.front.contains("A 의 예문"), "A 의 뒷면 값이 앞면에 나오지 않는다: {}", r.front);
+        assert!(r.back.contains("A 의 예문"));
+        let (r, map) = render(&b_note);
+        assert_eq!(map["힌트B"], "B 의 힌트");
+        assert!(r.front.contains("B 의 힌트"));
+    }
+}
+
+#[test]
+fn same_template_edited_on_both_devices_keeps_the_losing_version() {
+    // Q2-05 · Q2-06 지는 쪽 기록 (K7 처럼): 두 기기가 같은 카드 종류의 앞면을 따로 고쳤다. 나중에 고친 쪽으로 맞추고 진 쪽 내용을 남긴다
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, _) = user_type(&env, &a, &b);
+    let ty = a.uid("note_type", id);
+    let b_id = b.id("note_type", &ty).unwrap();
+    let afmt = nt::load(&a.con(), id).unwrap().templates[0].afmt.clone();
+    let t = db::now_ms();
+    a.at(t + 1000, || nt::save_template(&a.con(), id, 0, None, "A 앞면 {{Front}}", &afmt).unwrap());
+    b.at(t + 2000, || nt::save_template(&b.con(), b_id, 0, None, "B 앞면 {{Front}}", &afmt).unwrap());
+    for d in [&a, &b, &a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    let qfmt = |d: &Dev| -> String {
+        d.con().query_row("SELECT qfmt FROM card_template WHERE note_type_id = (SELECT id FROM note_type WHERE uid = ?1)", [&ty], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(qfmt(&a), "B 앞면 {{Front}}", "나중에 고친 쪽");
+    let kept = |d: &Dev| d.n("SELECT count(*) FROM sync_type_conflict WHERE loser = 'A 앞면 {{Front}}' AND winner = 'B 앞면 {{Front}}'");
+    assert!(kept(&a) + kept(&b) >= 1, "진 쪽 앞면을 기록에 남긴다");
+}
+
+#[test]
+fn card_type_deleted_while_a_card_is_recreated_and_a_cloze_re_added_elsewhere() {
+    // K37 · K40 섞임: A 가 사용자 유형의 카드 종류 하나를 지우는 사이, B 는 (1) 그 카드 종류의 카드 한 장을 지운 뒤 노트를 고쳐 다시 만들고(같은 노트 · ord 의 새 카드),
+    // (2) 빈칸 노트의 c2 를 지웠다 다시 넣었다. B 의 새 카드는 A 의 지우기를 모르고 나중에 만든 것이라 남고 그 카드 종류를 붙잡는다(K37). 옛 카드와 합치지 않는다(K40).
+    // 다른 노트의 그 카드 종류 카드는 지운다. 빈칸 노트에는 c1 · c2 가 한 장씩. 템플릿 없는 카드가 없고 두 기기가 같다
+    use crate::notetype as nt;
+    for b_first in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (id, note) = user_type(&env, &a, &b);
+        let rev = nt::add_template(&a.con(), id, Some("거꾸로"), REV_Q, REV_A).unwrap().ord;
+        let other = typed_note(&a, id, &["그대로", "둔 노트"]);
+        let (cz, _) = cloze_note(&a, sub_deck(&a));
+        let cz = a.uid("note", cz);
+        env.sync(&a);
+        env.sync(&b);
+        let ty = a.uid("note_type", id);
+        let old_rev: String = b.con().query_row("SELECT c.uid FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 AND c.template_ord = ?2", params![note, rev], |r| r.get(0)).unwrap();
+        let t = db::now_ms();
+        a.at(t + 1000, || nt::delete_template(&a.con(), id, rev, false).unwrap());
+        b.edit_at(t + 2000, "DELETE FROM card WHERE uid = ?1", [&old_rev]);
+        b.at(t + 2500, || edit_note(&b, &note, &["질문", "B 가 고친 답"]));
+        let bcz = b.id("note", &cz).unwrap();
+        save_note(&b, t + 3000, bcz, "{{c1::결측값}} 과 이상값");
+        save_note(&b, t + 3500, bcz, CLOZE_BOTH);
+        let new_rev: String = b.con().query_row("SELECT c.uid FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 AND c.template_ord = ?2", params![note, rev], |r| r.get(0)).unwrap();
+        assert_ne!(new_rev, old_rev, "노트를 고쳐 새 카드가 생겼다");
+        let order = if b_first { [&b, &a, &b, &a] } else { [&a, &b, &a, &b] };
+        for d in order {
+            env.sync(d);
+        }
+        for d in [&a, &b] {
+            assert_eq!(orphans(d), 0, "템플릿 없는 카드가 없다 (b_first={b_first})");
+            assert_eq!(type_names(d, &ty).len(), 2, "새 카드가 카드 종류를 붙잡는다");
+            assert!(d.id("card", &new_rev).is_some() && d.id("card", &old_rev).is_none(), "새 카드가 남고 옛 카드는 지운다");
+            assert_eq!((ords_of(d, &note), ords_of(d, &other).as_str(), ords_of(d, &cz).as_str()), (format!("0,{rev}"), "0", "0,1"));
+        }
+        assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
+    }
+}

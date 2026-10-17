@@ -81,6 +81,9 @@ export type DeckDetail = {
   core_learned_pct: number;
   per_day: number;
   finish_days: number | null;
+  /** 앞면이 빈 카드 (학습에 나오지 않는다). 그중 신규 수 (unseen 에 들지 않는다) */
+  front_empty: number[];
+  unseen_empty: number;
   learnable_days: number | null;
   on_track: boolean | null;
   subdeck_count: number;
@@ -127,6 +130,8 @@ export type CardRow = {
   occlusion: IoPos | null;
   /** AU6 소리가 있는 칸 [질문, 답]. 목록은 칩 대신 스피커 아이콘만 */
   sounds: [boolean, boolean];
+  /** 앞면이 빈 카드 (학습에 나오지 않는다, NT49) */
+  front_empty: boolean;
 };
 /** 그림 가리기 카드의 자리. ordinal: 칸 번호(편집기 focus), n/count: "그림 가리기 · n/N" */
 export type IoPos = { ordinal: number; n: number; count: number };
@@ -202,10 +207,14 @@ export type NoteEdit = {
   note_id: number;
   /** image_occlusion: 가리기 편집기(M2)로 연다 */
   kind: "basic" | "cloze" | "image_occlusion" | "list" | "choice" | "other";
-  /** 노트 유형 이름 */
+  /** 노트 유형 이름 · id (NT13 머리의 [편집]) */
   type_name: string;
+  note_type_id: number;
+  /** 보이는 순서 (8.1: 지운 필드는 빠지고 순서는 노트 유형의 필드 순서) */
   names: string[];
   values: string[];
+  /** names 의 자리 번호. updateNote 에 그대로 돌려준다 (순서를 바꾼 유형에서 값이 제자리에 가게) */
+  slots: number[];
   /** 필드마다 앞면 템플릿에 쓰이는가 */
   front: boolean[];
   /** 8.4 N1 기출 줄 */
@@ -213,6 +222,68 @@ export type NoteEdit = {
   /** Q24 목록 · 선택형 전용 편집기를 채운다 */
   special: Special | null;
 };
+/** 8.1 노트 유형 목록 행 (notetype.rs TypeRow). native_kind 가 있으면 앱 기본 유형 (basic · reversed · cloze · written · list · choice · io) */
+export type NoteTypeRow = {
+  id: number;
+  name: string;
+  native_kind: string | null;
+  editable: boolean;
+  cloneable: boolean;
+  imported: boolean;
+  user_made: boolean;
+  cloze: boolean;
+  /** 보이는 필드 수 · 카드 종류 수 */
+  fields: number;
+  templates: number;
+  notes: number;
+  cards: number;
+  /** 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저) */
+  decks: string[];
+  /** 만든 시각 · 이 기기에서 만들었나 (이름이 같은 유형을 가린다). made_by: 다른 기기면 그 Drive 기기 이름 (모르면 null) */
+  created_at: number;
+  made_here: boolean;
+  made_by: string | null;
+};
+/** K39 두 기기에서 고쳐 진 쪽 정의 (편집기 안내) */
+export type NoteTypeConflict = { what: string; at: number; winner: string; winner_device: string; loser: string; loser_device: string; seen: boolean };
+/** note_type_detail. fields 는 보이는 순서 (add_typed_note 의 values 순서) */
+export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
+  css: string;
+  fields: { slot: number; name: string }[];
+  /** layout: 쉬운 편집 구조 (없으면 HTML 전용, reason 이 그 이유) */
+  templates: { ord: number; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null }[];
+  /** 줄 상자 CSS. 템플릿이 쓰는데 CSS 에 없으면 저장할 때 붙는다 (편집기 미리보기도 붙여 그린다) */
+  layout_css: string;
+  /** 정의의 지문. 저장할 때 넘기면 그 사이 (동기화로) 바뀐 유형은 저장하지 않는다 */
+  version: string;
+};
+/** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽). 쉬운 편집이 쓰는 줄은 늘 상자 (NT41) */
+export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };
+export type Part =
+  | { kind: "field"; name: string; look?: Look }
+  | { kind: "cloze"; name: string; look?: Look }
+  | { kind: "type"; name: string }
+  | { kind: "tts"; opts: string; name: string }
+  | { kind: "front_side" };
+export type Layout = { front: Part[]; back: Part[] };
+/** 편집기 미리보기 카드 고르기. slots 는 자리 순서 값 */
+export type NoteTypeSample = { note_id: number; deck: string; slots: string[] };
+/** 편집기 초안 (save_note_type). fields 는 보이는 순서 · slot null 은 새 필드, 빠진 필드 · 카드 종류는 지운다 */
+export type NoteTypeEdit = {
+  fields: { slot: number | null; name: string }[];
+  templates: { ord: number | null; name: string | null; qfmt: string; afmt: string }[];
+  css: string;
+};
+/** 저장 전 확인 창의 수 (NT5) */
+export type NoteTypeImpact = {
+  empty_fronts: number;
+  made: number;
+  templates: { name: string; cards: number; reviews: number; notes: number }[];
+  fields: { name: string; notes: number }[];
+};
+/** suggest_card_kind: AddCard 의 유형 id */
+export type CardKindHint = "cloze" | "choice" | "list" | "occlusion";
+
 /** day_rollover: 학습 중 하루 경계를 넘어 세션이 닫혔다. 평가는 남지 않았다 (큐 명세 8장) */
 export type AnswerResult = { action: "next" | "again_later" | "buried" | "day_rollover"; due_in_ms: number | null };
 export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[] };
@@ -313,6 +384,8 @@ export type ExportResult = {
   path: string;
   /** 찾지 못한 미디어를 쓰는 카드 (C1-xr [카드 보기]) */
   missing_cards: number[];
+  /** 카드 종류가 없어 뺀 카드 수 (Anki 가 받지 않는다) */
+  skipped_cards: number;
 };
 /** C1-xe 덱 상자 */
 /** recall_cards: 목록 회상 · 선택형 카드 수 (Anki 에서는 보기만 해요) */
@@ -439,10 +512,38 @@ export const api = {
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
   /** C1-xc. columns: front | back | deck | tags | importance | due. plainText: 서식 빼고 글자만 */
   exportCsv: (deckId: number, path: string, columns: string[], plainText: boolean) =>
-    invoke<{ rows: number; path: string }>("export_csv", { deckId, path, columns, plainText }),
+    invoke<{ rows: number; path: string; empty_fronts: number }>("export_csv", { deckId, path, columns, plainText }),
   importanceBoard: (deckId: number) => invoke<BoardDeck[]>("importance_board", { deckId }),
   noteEdit: (noteId: number) => invoke<NoteEdit>("note_edit", { noteId }),
-  updateNote: (noteId: number, values: string[]) => invoke<void>("update_note", { noteId, values }),
+  /** slots: noteEdit 의 자리 번호. 없으면 지금 보이는 순서 */
+  updateNote: (noteId: number, values: string[], slots?: number[]) => invoke<void>("update_note", { noteId, values, slots }),
+  // 8.1 노트 유형 (notetype.rs). C3 노트 유형 고르기(NT6) · E 머리(NT7) · 유형 추천 칩
+  noteTypes: () => invoke<NoteTypeRow[]>("note_types"),
+  noteTypeDetail: (id: number) => invoke<NoteTypeDetail>("note_type_detail", { id }),
+  /** 그 덱(하위 덱 포함) 노트가 쓰는 유형 id, 많이 쓰는 것 먼저 */
+  deckNoteTypes: (deckId: number) => invoke<number[]>("deck_note_types", { deckId }),
+  /** values 는 보이는 순서. names 를 주면 편집 중인 필드 이름 (values 가 null 이면 이름 샘플) */
+  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[]) =>
+    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names }),
+  // NT1–NT5 목록 · 편집기
+  cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
+  renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),
+  deleteNoteType: (id: number) => invoke<void>("delete_note_type", { id }),
+  /** first: 먼저 보일 노트 (E 에서 연 카드의 노트) */
+  noteTypeSamples: (id: number, first?: number) => invoke<NoteTypeSample[]>("note_type_samples", { id, first }),
+  /** HTML 전용이면 이유 문자열로 거부한다 ("뒷면에 조건문 {{#예문}}") */
+  templateLayout: (qfmt: string, afmt: string) => invoke<Layout>("template_layout", { qfmt, afmt }),
+  buildTemplateLayout: (layout: Layout) => invoke<{ qfmt: string; afmt: string }>("build_template_layout", { layout }),
+  renameFieldRefs: (texts: string[], old: string, name: string) => invoke<string[]>("rename_field_refs", { texts, old, new: name }),
+  /** dryRun: 확인 창의 수만 세고 되돌린다. version: 연 때의 note_type_detail.version (다르면 저장하지 않는다) */
+  saveNoteType: (id: number, edit: NoteTypeEdit, dryRun: boolean, version?: string) => invoke<NoteTypeImpact>("save_note_type", { id, edit, dryRun, version }),
+  noteTypeConflicts: (id: number) => invoke<NoteTypeConflict[]>("note_type_conflicts", { id }),
+  noteTypeConflictsSeen: (id: number) => invoke<void>("note_type_conflicts_seen", { id }),
+  /** 사용자 · 가져온 유형으로 노트 추가. 만든 카드 수 */
+  addTypedNote: (note: { deck_id: number; note_type_id: number; values: string[]; importance: Level | null }) =>
+    invoke<number>("add_typed_note", { note }),
+  /** answer: 답 칸 HTML. 괄호 빈칸은 답이 있을 때만 빈칸으로 권한다 */
+  suggestCardKind: (text: string, answer: string) => invoke<CardKindHint | null>("suggest_card_kind", { text, answer }),
   readMedia: (name: string) => invoke<string>("read_media", { name }),
   appInfo: () => invoke<AppInfo>("app_info"),
   /** AU20 내장 읽어주기 음성이 읽는 언어 (음성 파일이 없는 빌드면 빈 목록) · 설정의 라이선스 전문 */

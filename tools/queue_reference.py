@@ -94,6 +94,7 @@ class Card:
     position: int = 0               # 같은 그룹 안의 원래 순서 (Anki의 due 필드)
     buried_until: date | None = None
     sibling: int | None = None      # 형제 묶음 (빈칸이 아닌 노트의 id). 같은 묶음은 하루에 한 장
+    front_empty: bool = False       # 앞면이 빈 카드 (Anki 의 빈 카드). 큐에 내지 않는다. 상태 · 일정은 그대로 (NT49)
 
 
 @dataclass
@@ -163,6 +164,12 @@ def new_target_for_deck(deck: Deck, today: date, remaining_new: int) -> tuple[in
     return min(want, remaining_new), f"남은 {remaining_new}장 / {days}일 = 하루 {want}장"
 
 
+def remaining_new(cards, deck_ids) -> int:
+    """남은 신규 카드 (덱 상세 · 목표 안내 · 계획의 "남은 N장"). 큐의 신규 후보와 같은 규칙:
+    일시 정지와 앞면이 빈 카드(NT49)는 학습에 나오지 않으므로 세지 않는다 (Q1-01, Rust notetype::new_left · Card::plays)"""
+    return sum(1 for c in cards if c.deck_id in deck_ids and c.state == "new" and not c.front_empty)
+
+
 # ------------------------------------------------------------------ 큐 구성
 
 def _with_descendants(roots, decks):
@@ -198,7 +205,8 @@ def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0
     skipped = _with_descendants([i for i in paused_ids if i not in chosen], decks)
 
     pool = [c for c in cards
-            if c.deck_id in wanted and c.deck_id not in skipped and c.state != "suspended"]
+            if c.deck_id in wanted and c.deck_id not in skipped and c.state != "suspended"
+            and not c.front_empty]
 
     # --- 1단계. 후보 수집
     for c in pool:
@@ -449,6 +457,26 @@ def test():
     p = build_queue(T, [Deck(1, "d")], [rv, Card(5, 1, "new", sibling=7), Card(6, 1, "new", sibling=10)])
     assert [c.id for c in p.ordered] == [2, 6], "복습이 남고 형제 신규는 빠진다. 빠진 자리는 다음 신규가 채운다"
     ok += 2
+
+    # ---- 앞면이 빈 카드 (NT49). 어느 상태든 빠지고 신규 몫 · 형제 자리를 쓰지 않는다
+    empties = [Card(1, 1, "review", due_day=T, front_empty=True),
+               Card(2, 1, "learning", due_day=T, front_empty=True),
+               Card(3, 1, "review", due_day=T - timedelta(days=3), front_empty=True),
+               Card(4, 1, "new", front_empty=True),
+               Card(5, 1, "new"),
+               Card(6, 1, "review", due_day=T, buried_until=T, front_empty=True),
+               Card(7, 1, "review", due_day=T, sibling=9, front_empty=True),
+               Card(8, 1, "review", due_day=T, sibling=9)]
+    p = build_queue(T, [Deck(1, "d", daily_new_limit=1)], empties)
+    assert [c.id for c in p.ordered] == [8, 5], "빈 앞면 카드만 빠진다"
+    ok += 1
+    # 남은 신규 · 하루 몫도 같은 규칙 (Q1-01): 빈 앞면 신규 3장 + 보통 신규 1장, 목표 2일 뒤 -> 남은 1장 ÷ 2일 = 하루 1장
+    goal = Deck(1, "d", target_date=T + timedelta(days=2))
+    pool = [Card(10 + i, 1, "new", front_empty=True) for i in range(3)] + [Card(20, 1, "new")]
+    assert remaining_new(pool, {1}) == 1, "앞면이 빈 신규는 남은 수에 들지 않는다"
+    p = build_queue(T, [goal], pool)
+    assert p.per_deck_new_target[1] == new_target_for_deck(goal, T, remaining_new(pool, {1}))[0] == 1, "큐 · 덱 상세가 같은 수"
+    ok += 1
 
     # ---- 쉬는 덱 (T1-04, I84)
     parent, child = Deck(1, "쉼", paused=True), Deck(2, "하위", parent_id=1)

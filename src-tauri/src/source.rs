@@ -1170,20 +1170,19 @@ pub(crate) fn card_texts(con: &Connection, ids: &str) -> Res<Vec<CardText>> {
     let names = note_field_names(con)?;
     let mut st = con
         .prepare(&format!(
-            "SELECT c.id, n.fields, c.template_ord, nt.name, t.qfmt, t.afmt
-             FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
-             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id
-                  AND t.ord = (CASE WHEN nt.name = 'Cloze' OR t.qfmt LIKE '%{{{{cloze:%' THEN 0 ELSE c.template_ord END)
-             WHERE c.deck_id IN ({ids}) ORDER BY c.id"
+            "SELECT c.id, n.fields, c.template_ord, n.note_type_id, t.qfmt, t.afmt
+             FROM card c JOIN note n ON n.id = c.note_id
+             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {}
+             WHERE c.deck_id IN ({ids}) ORDER BY c.id",
+            crate::notetype::TEMPLATE_OF_CARD
         ))
         .map_err(err)?;
     let rows = st
         .query_map([], |r| {
             let fields: String = r.get(1)?;
-            let nt: String = r.get(3)?;
             let q: Option<String> = r.get(4)?;
             let a: Option<String> = r.get(5)?;
-            let rendered = render_fields(&names, &nt, &fields, q.as_deref(), a.as_deref(), r.get(2)?);
+            let rendered = render_fields(&names, r.get(3)?, &fields, q.as_deref(), a.as_deref(), r.get(2)?);
             let front = render::strip_tags(&rendered.front);
             let text = format!("{front} {}", render::strip_tags(answer_part(&rendered.back)));
             Ok(CardText { id: r.get(0)?, front, text: text.chars().take(1000).collect() })

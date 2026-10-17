@@ -121,7 +121,7 @@ pub(crate) fn project(
     // 밀린 복습은 큐처럼 모든 덱에서 오래된 것부터 하루 200장 (상한은 함께 쓰고, 범위 안의 것만 센다)
     let mut backlog: Vec<(i64, i64, i64, i64, bool)> = vec![];
     let mut remaining: HashMap<i64, i64> = HashMap::new();
-    for c in cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && c.state != "suspended") {
+    for c in cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && c.plays()) {
         let mine = scope.contains(&c.deck_id);
         if c.state == "new" {
             if mine {
@@ -453,7 +453,7 @@ pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan
             deck_id: owner,
         }
     });
-    let remaining_new = cards.iter().filter(|c| scope.contains(&c.deck_id) && c.state == "new").count() as i64;
+    let remaining_new = cards.iter().filter(|c| scope.contains(&c.deck_id) && c.plays() && c.state == "new").count() as i64;
     let target = deck_id.and_then(|_| exams.first()).and_then(|e| db::day_from_date(&e.date));
     let owner_deck = deck_id.map(|id| queue::budget_owner(id, &by_id)).and_then(|o| by_id.get(&o).copied());
     let recompute = owner_deck.filter(|d| d.target_day.is_some()).map(|d| d.fixed_new.is_none());
@@ -576,9 +576,7 @@ pub fn set_recompute(state: State<AppState>, deck_id: i64, on: bool) -> Res<()> 
     } else {
         let deck = Deck { fixed_new: None, new_shift: 0, ..(*by_id.get(&owner).ok_or("덱을 찾을 수 없어요.")?).clone() };
         let ids = commands::descendants(owner, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        let left: i64 = con
-            .query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({ids}) AND state = 'new'"), [], |r| r.get(0))
-            .map_err(err)?;
+        let left = crate::notetype::new_left(&con, &ids)?;
         Some(queue::new_target_for_deck(&deck, study_day(now_ms()), left).0)
     };
     con.execute(
@@ -772,9 +770,7 @@ pub fn plan_adjust(state: State<AppState>, deck_id: i64) -> Res<Option<PlanAdjus
     let Some(adjusted) = decks.iter().find(|d| d.id == deck_id) else { return Ok(None) };
     let raw = Deck { new_until: None, new_from: None, ..adjusted.clone() };
     let ids = commands::descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let left: i64 = con
-        .query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({ids}) AND state = 'new'"), [], |r| r.get(0))
-        .map_err(err)?;
+    let left = crate::notetype::new_left(&con, &ids)?;
     let today = study_day(now_ms());
     let delta = queue::new_target_for_deck(adjusted, today, left).0 - queue::new_target_for_deck(&raw, today, left).0;
     Ok(Some(PlanAdjust { mode, delta }))
@@ -802,6 +798,7 @@ mod tests {
                 note_id: start + i,
                 weak: false,
                 exam: false,
+                front_empty: false,
             })
             .collect()
     }
@@ -817,6 +814,22 @@ mod tests {
         assert_eq!(weekday(0), 4, "1970-01-01 목요일");
         let sat = db::day_from_date("2026-10-17").unwrap();
         assert!(is_weekend(sat) && is_weekend(sat + 1) && !is_weekend(sat + 2));
+    }
+
+    #[test]
+    fn projection_leaves_out_empty_front_cards() {
+        // Q1-01: 앞면이 빈 카드는 큐에 나오지 않는다. 계획의 신규 · 복습 예측과 남은 수도 같다
+        let d = Deck { target_day: Some(T + 2), ..deck(1) };
+        let scope: HashSet<i64> = [1].into();
+        let mut cards = news(4, 1, 1);
+        cards.extend(reviews(&[T, T], 1, 10));
+        for c in cards.iter_mut().filter(|c| c.id <= 3 || c.id == 10) {
+            c.front_empty = true;
+        }
+        let days = project(T, 3, std::slice::from_ref(&d), &cards, &scope, &HashMap::new(), &HashMap::new(), 0);
+        assert_eq!((days[0].new, days[0].review), (1, 1), "빈 앞면 신규 3장 · 복습 1장은 세지 않는다");
+        let q = queue::build_queue(T, std::slice::from_ref(&d), &cards, None, 1.0);
+        assert_eq!((q.new.len(), q.review.len()), (1, 1), "큐와 같다");
     }
 
     #[test]
