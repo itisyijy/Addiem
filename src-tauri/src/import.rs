@@ -666,8 +666,9 @@ struct ADeck {
     filtered: bool,
 }
 
-/// 이미 있던 노트 유형에 들어오는 것: (Anki 필드 i -> 우리 자리, 우리 자리 이름 (지운 자리는 ""), Anki 템플릿 ord -> 우리 ord. 없는 ord = 이 앱에서 지운 카드 종류)
-type Remap = (Vec<Option<usize>>, Vec<String>, HashMap<u32, u32>);
+/// 이미 있던 노트 유형에 들어오는 것: (Anki 필드 i -> 우리 자리, 우리 자리 이름 (지운 자리는 ""), Anki 템플릿 ord -> 우리 ord. 없는 ord = 이 앱에서 지운 카드 종류.
+/// 빈칸 유형은 None: 카드 ord 가 빈칸 번호라 그대로 쓴다)
+type Remap = (Vec<Option<usize>>, Vec<String>, Option<HashMap<u32, u32>>);
 
 struct AType {
     name: String,
@@ -1398,7 +1399,8 @@ fn run_import_selected(
             Some(id) => {
                 let ours = crate::notetype::load(&tx, id)?;
                 let tmpls: Vec<(u32, String, String)> = t.templates.iter().map(|(o, n, q, _)| (*o, n.clone(), q.clone())).collect();
-                remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.clone(), crate::notetype::incoming_ords(&ours, &tmpls)));
+                let ords = (!ours.cloze()).then(|| crate::notetype::incoming_ords(&ours, &tmpls));
+                remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.clone(), ords));
                 id
             }
             None => insert_type(&tx, *aid, t, now)?,
@@ -1543,9 +1545,10 @@ fn run_import_selected(
             let Some((nid, tags)) = note_map.get(&anid) else { continue };
             // 다시 맞춘 유형: 우리 ord 로. 없으면 이 앱에서 지운 카드 종류다. 같은 순번의 다른 카드 종류에 붙이지 않고 건너뛴다
             let ord = match note_mid.get(&anid) {
-                Some(m) => match remap[m].2.get(&(aord as u32)) {
-                    Some(o) => *o as i64,
-                    None => {
+                Some(m) => match remap[m].2.as_ref().map(|o| o.get(&(aord as u32))) {
+                    None => aord,
+                    Some(Some(o)) => *o as i64,
+                    Some(None) => {
                         let t = &pkg.types[m];
                         let tpl = t.templates.iter().find(|x| x.0 as i64 == aord).map_or_else(|| format!("{}", aord + 1), |x| x.1.clone());
                         gone.entry((t.name.clone(), tpl)).or_default().push(acid);
@@ -1737,7 +1740,7 @@ fn run_import_selected(
     result.roots = roots.iter().copied().collect();
     // 기록도 고른 카드 것만 (덱을 고르지 않았으면 지운 카드의 기록까지 전부)
     let cards_of = chosen.as_ref().map(|c| &c.cards);
-    let ords_of: HashMap<i64, HashMap<u32, u32>> = remap.iter().map(|(m, r)| (*m, r.2.clone())).collect();
+    let ords_of: HashMap<i64, HashMap<u32, u32>> = remap.iter().filter_map(|(m, r)| Some((*m, r.2.clone()?))).collect();
     result.reviews = if with_history {
         import_revlog(&tx, &pkg.col, cards_of, &ords_of)?
     } else {
@@ -2265,6 +2268,24 @@ mod tests {
         let r = run_import_anki(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), true, &mut vec![]).unwrap();
         assert_eq!((r.notes, r.reviews), (0, 0), "다시 가져와도 기록 수가 그대로");
         assert_eq!(count(&s), (4, 0));
+    }
+
+    #[test]
+    fn reimport_into_existing_cloze_type_keeps_new_cards() {
+        // 같은 Anki 모델 id 의 빈칸 유형에 새 노트를 다시 가져온다 (같은 컬렉션에서 내보낸 두 번째 덱). 빈칸 카드 ord 는 빈칸 번호라 카드 종류로 맞추지 않는다
+        use deck_update::testpkg::{self, Model, note};
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-czre-{}-{}", std::process::id(), now_ms())));
+        let s = state(&tmp.0.join("data"));
+        let model = || Model { id: 8, name: "Cloze", fields: vec!["Text", "Back Extra"], templates: vec![("Cloze", "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}")], css: "" };
+        let (p1, p2) = (tmp.0.join("a.apkg"), tmp.0.join("b.apkg"));
+        testpkg::write(&p1, &[model()], &[(1, "A")], &[note(1, "g1", 8, &["{{c1::a}} {{c2::b}}", ""], &[(1, 0), (1, 1)])], &[]);
+        testpkg::write(&p2, &[model()], &[(2, "B")], &[note(2, "g2", 8, &["{{c1::x}} {{c2::y}}", ""], &[(2, 0), (2, 1)])], &[]);
+        run_import_anki(&|_, _, _| {}, &s, p1.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let r = run_import_anki(&|_, _, _| {}, &s, p2.to_str().unwrap(), true, &mut vec![]).unwrap();
+        assert_eq!((r.notes, r.cards, r.skipped, r.reviews), (1, 2, 0, 2), "{:?}", r.issues.iter().map(|i| &i.detail).collect::<Vec<_>>());
+        let con = s.db.lock().unwrap();
+        let linked: i64 = con.query_row("SELECT count(*) FROM review_log WHERE card_id IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(linked, 2, "기록도 그 빈칸 카드에 붙는다");
     }
 
     #[test]
