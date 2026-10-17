@@ -2143,9 +2143,10 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
             let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
             Ok(BuriedCard {
                 id: r.get(0)?,
-                question: render::strip_tags(&rendered.front),
+                question: render::strip_tags(special.as_ref().map_or(rendered.front.as_str(), |s| s.question())),
                 reason: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
                 importance: r.get(7)?,
                 deck_path: path_of(r.get(8)?, &by_id),

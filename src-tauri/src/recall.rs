@@ -80,6 +80,15 @@ pub enum Special {
     Choice { question: String, options: Vec<(u32, String)>, correct: Vec<u32>, shuffle: bool, extra: String },
 }
 
+impl Special {
+    /// 질문 필드 HTML. 한 줄 목록(D5 접어둔 카드)은 이것만 쓴다: 앞면 템플릿은 순서 · 보기까지 붙인다
+    pub(crate) fn question(&self) -> &str {
+        match self {
+            Special::List { question, .. } | Special::Choice { question, .. } => question,
+        }
+    }
+}
+
 fn plain(html: &str) -> String {
     render::strip_tags(html).trim().to_string()
 }
@@ -410,7 +419,7 @@ const SEND_OPTION_CHARS: usize = 200;
 const DISTRACTOR_INSTRUCTIONS: &str = "선택형 암기 카드의 오답 보기를 만드는 일을 도와요. 사용자가 보낸 질문 · 정답 · 이미 쓴 오답을 보고, \
 \"만들 오답 수\"만큼 새 오답 보기를 만드세요.
 - 정답과 뜻이 같거나 정답이 될 수 있는 보기는 쓰지 마세요. 정답이 여러 개면 모두 정답이에요.
-- 이미 쓴 보기와 겹치지 않게, 이미 쓴 보기와 같은 문체 · 길이로, 질문과 같은 언어로 쓰세요.
+- 이미 쓴 보기 · 앞서 제안한 오답과 겹치지 않게, 이미 쓴 보기와 같은 문체 · 길이로, 질문과 같은 언어로 쓰세요.
 - 보기 글자만 쓰세요. 번호나 설명은 붙이지 마세요.
 - 답은 {\"options\": [보기, …]} 모양의 JSON 하나만.";
 
@@ -425,16 +434,19 @@ fn option_key(t: &str) -> String {
 }
 
 /// 보내는 글자 전부. 질문은 편집기 HTML → 화면 글자 (태그 · 그림 · [sound:] 를 뺀다), 정답 · 오답은 보기 칸 글자.
+/// avoid: 이 편집 창에서 앞서 받았지만 보기 칸에 없는 제안 ([다시 제안]이 같은 것을 다시 받지 않게).
 /// 덱 이름 · 복습 기록 · 다른 카드는 받지도 않는다 (편집 중인 글자만 받는 명령이다)
-fn distractor_input(question: &str, correct: &[String], wrong: &[String], count: usize) -> String {
+fn distractor_input(question: &str, correct: &[String], wrong: &[String], avoid: &[String], count: usize) -> String {
     let mut s = format!("질문: {}\n", rag::clip(&render::strip_tags(&render::strip_sound(question)), SEND_QUESTION_CHARS));
     for c in correct {
         s.push_str(&format!("정답: {}\n", rag::clip(c, SEND_OPTION_CHARS)));
     }
-    if !wrong.is_empty() {
-        s.push_str("이미 쓴 오답:\n");
-        for w in wrong {
-            s.push_str(&format!("- {}\n", rag::clip(w, SEND_OPTION_CHARS)));
+    for (title, list) in [("이미 쓴 오답", wrong), ("앞서 제안한 오답 (다시 쓰지 마세요)", avoid)] {
+        if !list.is_empty() {
+            s.push_str(&format!("{title}:\n"));
+            for w in list {
+                s.push_str(&format!("- {}\n", rag::clip(w, SEND_OPTION_CHARS)));
+            }
         }
     }
     s.push_str(&format!("만들 오답 수: {count}\n"));
@@ -471,23 +483,24 @@ fn parse_distractors(text: &str, taken: &[String], count: usize) -> Result<Vec<S
     Ok(out)
 }
 
-/// 가짜 응답 (NEOANKI_AI_FAKE). 검증까지 보이게 정답(대소문자 · 띄어쓰기만 다름) · 보낸 보기 · 빈 글 · 너무 긴 글을 앞에 섞는다.
-/// 남는 것은 TCP 예시(Figma 237:16413)에 맞춘 고정 목록이라 다른 질문에는 엉뚱하다 (가짜다)
-fn fake_distractors(correct: &[String], wrong: &[String]) -> String {
+/// 가짜 응답 (NEOANKI_AI_FAKE). 검증까지 보이게 정답(대소문자 · 띄어쓰기만 다름) · 보낸 보기 · 앞 제안 · 빈 글 · 너무 긴 글을 앞에 섞는다.
+/// 남는 것은 TCP 예시(Figma 237:16413)에 맞춘 고정 목록이라 다른 질문에는 엉뚱하다 (가짜다). 앞 제안은 검증이 버려
+/// [다시 제안]은 목록의 다음 것을 받고, 다 쓰면 "알맞은 오답을 만들지 못했어요"
+fn fake_distractors(correct: &[String], wrong: &[String], avoid: &[String]) -> String {
     let mut v: Vec<String> = correct.iter().take(1).map(|c| format!(" {} ", c.to_lowercase())).collect();
-    v.extend(wrong.iter().take(1).cloned());
+    v.extend(wrong.iter().take(1).chain(avoid.iter().take(1)).cloned());
     v.extend([String::new(), "가".repeat(MAX_DISTRACTOR_CHARS + 1)]);
     v.extend(["ACK", "FIN-ACK", "RST", "URG", "PSH", "FIN"].map(String::from));
     serde_json::json!({ "options": v }).to_string()
 }
 
-/// Q8 [오답 보기 N개 제안 받기]: 편집 중인 질문(HTML) · 정답 · 보낼 오답 글자를 보내 오답 보기 count 개까지 받는다. 아무것도 저장하지 않는다
-/// (넣기는 화면이 편집기 보기 칸에, 저장은 늘 하던 추가 · 편집 길로). 카드 추가에는 아직 카드가 없어 card_id 대신 글자를 받는다
+/// Q8 [오답 보기 N개 제안 받기]: 편집 중인 질문(HTML) · 정답 · 보낼 오답 글자 · 앞서 받은 제안(avoid)을 보내 오답 보기 count 개까지 받는다.
+/// 아무것도 저장하지 않는다 (넣기는 화면이 편집기 보기 칸에, 저장은 늘 하던 추가 · 편집 길로). 카드 추가에는 아직 카드가 없어 card_id 대신 글자를 받는다
 #[tauri::command]
-pub async fn ai_distractors(app: AppHandle, question: String, correct: Vec<String>, options: Vec<String>, count: usize) -> Result<Vec<String>, AiError> {
+pub async fn ai_distractors(app: AppHandle, question: String, correct: Vec<String>, options: Vec<String>, avoid: Vec<String>, count: usize) -> Result<Vec<String>, AiError> {
     tauri::async_runtime::spawn_blocking(move || {
         let clean = |v: &[String]| v.iter().map(|t| option_text(t)).filter(|t| !t.is_empty()).collect::<Vec<_>>();
-        let (correct, wrong) = (clean(&correct), clean(&options));
+        let (correct, wrong, avoid) = (clean(&correct), clean(&options), clean(&avoid));
         if render::is_blank(&question) {
             return Err(AiError::Other("질문을 먼저 써 주세요.".into()));
         }
@@ -499,10 +512,10 @@ pub async fn ai_distractors(app: AppHandle, question: String, correct: Vec<Strin
         if count == 0 {
             return Err(AiError::Other("보기가 6개라 더 받을 수 없어요.".into()));
         }
-        let input = distractor_input(&question, &correct, &wrong, count);
+        let input = distractor_input(&question, &correct, &wrong, &avoid, count);
         let schema = distractor_schema();
-        let text = ai::generate(&app, &|m, f| ai::request_body(m, DISTRACTOR_INSTRUCTIONS, &input, f.then_some(("distractors", &schema))), || fake_distractors(&correct, &wrong))?;
-        parse_distractors(&text, &[correct, wrong].concat(), count)
+        let text = ai::generate(&app, &|m, f| ai::request_body(m, DISTRACTOR_INSTRUCTIONS, &input, f.then_some(("distractors", &schema))), || fake_distractors(&correct, &wrong, &avoid))?;
+        parse_distractors(&text, &[correct, wrong, avoid].concat(), count)
     })
     .await
     .map_err(|e| AiError::Other(e.to_string()))?
@@ -678,18 +691,33 @@ mod tests {
     fn distractor_input_is_plain_editor_text_only() {
         // Q8: 질문은 편집기 HTML → 화면 글자. 그림 · [sound:] · 태그는 빠지고, 받은 글자 말고는 아무것도 붙지 않는다
         let q = "<b>TCP 3-way handshake</b>에서 두 번째로<br>오가는 것은? <img src=\"secret.png\"> [sound:voice.mp3]";
-        let input = distractor_input(q, &strings(&["SYN-ACK"]), &strings(&["SYN"]), 2);
+        let input = distractor_input(q, &strings(&["SYN-ACK"]), &strings(&["SYN"]), &[], 2);
         assert_eq!(input, "질문: TCP 3-way handshake에서 두 번째로 오가는 것은?\n정답: SYN-ACK\n이미 쓴 오답:\n- SYN\n만들 오답 수: 2\n");
         for leak in ["<", "secret.png", "sound", "voice"] {
             assert!(!input.contains(leak), "{leak}");
         }
         // 정답 여러 개 · 이미 쓴 오답 없음 (✕ 로 모두 뺐다)
-        let input = distractor_input("Q", &strings(&["가", "나"]), &[], 3);
+        let input = distractor_input("Q", &strings(&["가", "나"]), &[], &[], 3);
         assert_eq!(input, "질문: Q\n정답: 가\n정답: 나\n만들 오답 수: 3\n");
+        // [다시 제안]: 앞서 받은 제안을 피할 보기로 (이미 쓴 오답이 없어도)
+        let input = distractor_input("Q", &strings(&["a"]), &[], &strings(&["ACK", "FIN-ACK"]), 2);
+        assert_eq!(input, "질문: Q\n정답: a\n앞서 제안한 오답 (다시 쓰지 마세요):\n- ACK\n- FIN-ACK\n만들 오답 수: 2\n");
         // 긴 질문은 600자에서 자른다 (R14 와 같다)
-        let input = distractor_input(&"가".repeat(700), &strings(&["a"]), &[], 1);
+        let input = distractor_input(&"가".repeat(700), &strings(&["a"]), &[], &[], 1);
         assert!(input.lines().next().unwrap().ends_with("…(잘림)") && input.lines().next().unwrap().chars().count() < 620);
         assert_eq!(option_text(" 공유된   가치 [sound:a.mp3] "), "공유된 가치", "보기 칸 글자: 소리만 빼고 띄어쓰기 하나로");
+    }
+
+    #[test]
+    fn one_line_question_is_the_question_field() {
+        // D5 접어둔 카드 한 줄: 앞면 템플릿은 보기 · 순서까지 붙인다. 질문 필드만 쓴다
+        let names = CHOICE_FIELDS.map(String::from);
+        let f = ["TCP 두 번째는?", "SYN-ACK", "SYN", "", "", "", "", "1", "섞기", ""].map(String::from);
+        let map = names.iter().cloned().zip(f.iter().cloned()).collect();
+        assert_eq!(render::strip_tags(&render::render_card(CHOICE_QFMT, CHOICE_AFMT, &map, 0).front), "TCP 두 번째는? SYN-ACK SYN");
+        assert_eq!(special(CHOICE, &names, &serde_json::to_string(&f).unwrap()).unwrap().question(), "TCP 두 번째는?");
+        let list = serde_json::to_string(&["OSI 하위?", "물리<br>링크", "순서대로", ""]).unwrap();
+        assert_eq!(special(LIST, &LIST_FIELDS.map(String::from), &list).unwrap().question(), "OSI 하위?");
     }
 
     #[test]
@@ -728,9 +756,18 @@ mod tests {
         // 가짜 모드: 정답 · 보낸 보기 · 빈 글 · 긴 글은 검증이 버리고 Figma 예시처럼 ACK · FIN-ACK 가 남는다
         let st = ai::AiState::new();
         let (correct, wrong) = (strings(&["SYN-ACK"]), strings(&["SYN"]));
-        let text = ai::fake_text(&st, 0, "ok", || fake_distractors(&correct, &wrong)).unwrap();
+        let text = ai::fake_text(&st, 0, "ok", || fake_distractors(&correct, &wrong, &[])).unwrap();
         assert_eq!(parse_distractors(&text, &[correct.clone(), wrong.clone()].concat(), 2).unwrap(), ["ACK", "FIN-ACK"]);
-        let text = ai::fake_text(&st, 0, "slow", || fake_distractors(&correct, &[])).unwrap();
+        // [다시 제안]: 앞 제안을 피할 보기로 보내면 다른 보기, 고정 목록을 다 쓰면 BadOutput
+        let again = |avoid: &[&str]| {
+            let avoid = strings(avoid);
+            let text = ai::fake_text(&st, 0, "ok", || fake_distractors(&correct, &wrong, &avoid)).unwrap();
+            parse_distractors(&text, &[correct.clone(), wrong.clone(), avoid].concat(), 2)
+        };
+        assert_eq!(again(&["ACK", "FIN-ACK"]).unwrap(), ["RST", "URG"]);
+        assert_eq!(again(&["ACK", "FIN-ACK", "RST", "URG"]).unwrap(), ["PSH", "FIN"]);
+        assert!(matches!(again(&["ACK", "FIN-ACK", "RST", "URG", "PSH", "FIN"]), Err(AiError::BadOutput(_))));
+        let text = ai::fake_text(&st, 0, "slow", || fake_distractors(&correct, &[], &[])).unwrap();
         assert_eq!(parse_distractors(&text, &correct, 3).unwrap(), ["ACK", "FIN-ACK", "RST"], "slow 도 결과는 ok 와 같다 (기다림만 길다)");
         let text = ai::fake_text(&st, 0, "malformed", || unreachable!()).unwrap();
         assert!(matches!(parse_distractors(&text, &correct, 2), Err(AiError::BadOutput(_))));

@@ -293,8 +293,9 @@ export function splitBack(back: string, front: string) {
 
 /** 토스트 · 목록에 쓰는 한 줄 질문. 붙어 있는 태그 사이에 띄어쓰기를 넣는다 ("OX높음" 이 되지 않게) */
 /** 수식은 구분자만 벗겨 TeX 원문으로 ("\(z\)" → "z"). 한 줄 글에서 그린 수식은 읽기 어렵다 */
-const lineOf = (html: string) => {
-  const text = plainText(html.replace(/></g, "> <"));
+/** 목록 · 선택형은 앞면 템플릿이 순서 · 보기까지 붙여 질문 필드만 (D5 와 같다, recall.rs Special::question) */
+const lineOf = (v: CardView) => {
+  const text = plainText((v.special?.question ?? v.front).replace(/></g, "> <"));
   return findMath(text).reduceRight((t, m) => t.slice(0, m.start) + m.tex.trim() + t.slice(m.end), text);
 };
 
@@ -611,7 +612,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     foldedIds.current = [...foldedIds.current, c.view.id];
     setFolded((list) => [
       ...list,
-      { id: c.view.id, question: lineOf(c.view.front), importance: c.view.importance, deck_path: c.view.deck_path, auto, at: Date.now() },
+      { id: c.view.id, question: lineOf(c.view), importance: c.view.importance, deck_path: c.view.deck_path, auto, at: Date.now() },
     ]);
     // I2: 두 번째 Again 으로 접히는 카드에 자료가 있으면 [원자료 보기]
     setToast({ id: c.view.id, auto, source: auto && c.source });
@@ -653,7 +654,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       if (res.action === "buried") fold(c, true);
       else {
         setToast(null); // 토스트 자리는 하나. 연달아 평가하면 내용만 바뀐다
-        setRated({ rating: r, question: lineOf(c.view.front) });
+        setRated({ rating: r, question: lineOf(c.view) });
       }
       await advance();
     });
