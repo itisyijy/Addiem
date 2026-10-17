@@ -1885,3 +1885,43 @@ fn same_template_edited_on_both_devices_keeps_the_losing_version() {
     assert!(kept(&a) + kept(&b) >= 1, "진 쪽 앞면을 기록에 남긴다");
 }
 
+#[test]
+fn card_type_deleted_while_a_card_is_recreated_and_a_cloze_re_added_elsewhere() {
+    // K37 · K40 섞임: A 가 사용자 유형의 카드 종류 하나를 지우는 사이, B 는 (1) 그 카드 종류의 카드 한 장을 지운 뒤 노트를 고쳐 다시 만들고(같은 노트 · ord 의 새 카드),
+    // (2) 빈칸 노트의 c2 를 지웠다 다시 넣었다. B 의 새 카드는 A 의 지우기를 모르고 나중에 만든 것이라 남고 그 카드 종류를 붙잡는다(K37). 옛 카드와 합치지 않는다(K40).
+    // 다른 노트의 그 카드 종류 카드는 지운다. 빈칸 노트에는 c1 · c2 가 한 장씩. 템플릿 없는 카드가 없고 두 기기가 같다
+    use crate::notetype as nt;
+    for b_first in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (id, note) = user_type(&env, &a, &b);
+        let rev = nt::add_template(&a.con(), id, Some("거꾸로"), REV_Q, REV_A).unwrap().ord;
+        let other = typed_note(&a, id, &["그대로", "둔 노트"]);
+        let (cz, _) = cloze_note(&a, sub_deck(&a));
+        let cz = a.uid("note", cz);
+        env.sync(&a);
+        env.sync(&b);
+        let ty = a.uid("note_type", id);
+        let old_rev: String = b.con().query_row("SELECT c.uid FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 AND c.template_ord = ?2", params![note, rev], |r| r.get(0)).unwrap();
+        let t = db::now_ms();
+        a.at(t + 1000, || nt::delete_template(&a.con(), id, rev, false).unwrap());
+        b.edit_at(t + 2000, "DELETE FROM card WHERE uid = ?1", [&old_rev]);
+        b.at(t + 2500, || edit_note(&b, &note, &["질문", "B 가 고친 답"]));
+        let bcz = b.id("note", &cz).unwrap();
+        save_note(&b, t + 3000, bcz, "{{c1::결측값}} 과 이상값");
+        save_note(&b, t + 3500, bcz, CLOZE_BOTH);
+        let new_rev: String = b.con().query_row("SELECT c.uid FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 AND c.template_ord = ?2", params![note, rev], |r| r.get(0)).unwrap();
+        assert_ne!(new_rev, old_rev, "노트를 고쳐 새 카드가 생겼다");
+        let order = if b_first { [&b, &a, &b, &a] } else { [&a, &b, &a, &b] };
+        for d in order {
+            env.sync(d);
+        }
+        for d in [&a, &b] {
+            assert_eq!(orphans(d), 0, "템플릿 없는 카드가 없다 (b_first={b_first})");
+            assert_eq!(type_names(d, &ty).len(), 2, "새 카드가 카드 종류를 붙잡는다");
+            assert!(d.id("card", &new_rev).is_some() && d.id("card", &old_rev).is_none(), "새 카드가 남고 옛 카드는 지운다");
+            assert_eq!((ords_of(d, &note), ords_of(d, &other).as_str(), ords_of(d, &cz).as_str()), (format!("0,{rev}"), "0", "0,1"));
+        }
+        assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
+    }
+}
