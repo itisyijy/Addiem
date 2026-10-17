@@ -107,6 +107,7 @@
 .src-link__group > .t-label-s { padding-bottom: 4px; }
 .src-link__text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .src-link__text > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-link__img { margin-right: 6px; vertical-align: -2px; } /* 그림 카드: 답이 첫 줄일 때 앞에 (목록 소리 아이콘과 같은 자리) */
 .src-link__search.field__input { height: 40px; }
 .src-link__done { display: inline-flex; align-items: center; gap: 4px; padding: 0 16px; }
 

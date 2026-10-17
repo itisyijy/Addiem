@@ -239,9 +239,10 @@ export type NoteTypeRow = {
   cards: number;
   /** 이 유형 카드가 있는 덱 이름 (카드가 많은 덱 먼저) */
   decks: string[];
-  /** 만든 시각 · 이 기기에서 만들었나 (이름이 같은 유형을 가린다) */
+  /** 만든 시각 · 이 기기에서 만들었나 (이름이 같은 유형을 가린다). made_by: 다른 기기면 그 Drive 기기 이름 (모르면 null) */
   created_at: number;
   made_here: boolean;
+  made_by: string | null;
 };
 /** K39 두 기기에서 고쳐 진 쪽 정의 (편집기 안내) */
 export type NoteTypeConflict = { what: string; at: number; winner: string; winner_device: string; loser: string; loser_device: string; seen: boolean };

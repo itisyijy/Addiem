@@ -950,7 +950,17 @@ function CardSummary({ c, how }: { c: CardRow; how?: string }) {
   const sub = [!io && q && c.answer && `답 · ${c.answer}`, how, deck].filter(Boolean).join(" · ");
   return (
     <span className="src-link__text">
-      {title && <span className="t-body-s c-primary">{title}</span>}
+      {title && (
+        <span className="t-body-s c-primary">
+          {/* 첫 줄이 질문이 아니라 그림 카드의 답임을 알린다 (소리만 있는 질문은 그림 카드가 아니다) */}
+          {!q && !c.sounds[0] && (
+            <span role="img" aria-label="그림 카드">
+              <Icon name="image" size={14} scaled className="src-link__img c-tertiary" />
+            </span>
+          )}
+          {title}
+        </span>
+      )}
       <span className="t-caption c-tertiary">{sub}</span>
     </span>
   );

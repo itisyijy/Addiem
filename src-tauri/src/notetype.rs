@@ -1495,10 +1495,32 @@ pub struct TypeRow {
     /// 만든 시각 · 이 기기에서 만들었나 (같은 이름 유형을 가린다, Q2-11). 다른 기기에서 받은 유형만 false
     created_at: i64,
     made_here: bool,
+    /// 다른 기기에서 만들었으면 Drive 에 올린 그 기기 이름 (모르면 None: 화면은 "다른 기기")
+    made_by: Option<String>,
+}
+
+/// 그 노트 유형을 만든 기기 (동기화 행 시계의 기기 = 그 행을 만든 기기, 받은 행은 보낸 기기)와 그 이름 (Drive 기기 파일).
+/// 이 기기이거나 동기화 표가 없으면 None
+fn maker(con: &Connection, nt: &Nt) -> Option<(String, Option<String>)> {
+    let hlc: String = con
+        .query_row("SELECT r.hlc FROM sync_row r JOIN note_type nt ON nt.uid = r.uid WHERE r.table_name = 'note_type' AND nt.id = ?1", [nt.id], |r| r.get(0))
+        .ok()?;
+    let dev = hlc.splitn(3, '-').nth(2).unwrap_or_default().to_string();
+    let me: String = con.query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).ok()?;
+    if dev == me {
+        return None;
+    }
+    let devices: Option<String> = con.query_row("SELECT value FROM sync_local WHERE key = 'devices'", [], |r| r.get(0)).ok();
+    let name = devices
+        .and_then(|d| serde_json::from_str::<Vec<serde_json::Value>>(&d).ok())
+        .and_then(|list| list.into_iter().find(|x| x["uid"].as_str() == Some(dev.as_str()))?["name"].as_str().map(String::from))
+        .filter(|n| !n.trim().is_empty());
+    Some((dev, name))
 }
 
 fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
     let count = |sql: &str| con.query_row(sql, [nt.id], |r| r.get::<_, i64>(0)).map_err(err);
+    let maker = maker(con, nt);
     Ok(TypeRow {
         id: nt.id,
         name: nt.name.clone(),
@@ -1522,18 +1544,8 @@ fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
             st.query_map([nt.id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
         },
         created_at: count("SELECT created_at FROM note_type WHERE id = ?1")?,
-        // 동기화 행 시계의 기기 = 그 행을 만든 기기 (받은 행은 보낸 기기). 동기화 표가 없으면 모두 이 기기 것
-        made_here: con
-            .query_row(
-                "SELECT r.hlc NOT LIKE '%-' || (SELECT value FROM schema_meta WHERE key = 'device_uid') FROM sync_row r JOIN note_type nt ON nt.uid = r.uid
-                 WHERE r.table_name = 'note_type' AND nt.id = ?1",
-                [nt.id],
-                |r| r.get::<_, bool>(0),
-            )
-            .optional()
-            .ok()
-            .flatten()
-            .is_none_or(|elsewhere| !elsewhere),
+        made_here: maker.is_none(),
+        made_by: maker.and_then(|(_, name)| name),
     })
 }
 
