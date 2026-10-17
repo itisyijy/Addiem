@@ -27,8 +27,8 @@ const THEMES: [ThemePref, string][] = [
   ["dark", "어둡게"],
 ];
 
-function when(ms: number) {
-  return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(ms);
+function when(ms: number, secs = false) {
+  return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", second: secs ? "2-digit" : undefined, hour12: false }).format(ms);
 }
 
 /** 긴 경로는 끝의 세 단계만. C:\Users\me\AppData\Roaming\앱\backups -> …\Roaming\앱\backups */
@@ -362,7 +362,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
               <input type="radio" name="restore" checked={pick === b.name} onChange={() => setPick(b.name)} />
               <span className="import__radio" />
               <span className="import__option-text">
-                <span className="t-body-m-strong">{when(b.at)}</span>
+                {/* 같은 분에 만든 백업끼리만 초까지 (DU51) */}
+                <span className="t-body-m-strong">{when(b.at, list.some((o) => o !== b && when(o.at) === when(b.at)))}</span>
                 <span className="t-caption c-tertiary">
                   {BACKUP_KIND[b.kind]} · {size(b.bytes)}
                 </span>
