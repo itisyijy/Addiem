@@ -2006,7 +2006,7 @@ fn deck_update_origin_follows_and_the_other_device_judges_with_it() {
     };
     let up = |d: &Dev, p: &std::path::Path| {
         let choices = Choices::default();
-        deck_update::run(&mut d.con(), &d.dir, &Req { path: p, selected: None, choices: &choices, voices: &[] }, false, &mut vec![]).unwrap()
+        deck_update::run(&mut d.con(), &d.dir, &Req { path: p, selected: None, choices: &choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false }, false, &mut vec![]).unwrap()
     };
     let origin = |d: &Dev, guid: &str| -> String { d.con().query_row("SELECT origin FROM note WHERE anki_guid = ?1", [guid], |r| r.get(0)).unwrap() };
     let fields = |d: &Dev, guid: &str| -> String { d.con().query_row("SELECT fields FROM note WHERE anki_guid = ?1", [guid], |r| r.get(0)).unwrap() };

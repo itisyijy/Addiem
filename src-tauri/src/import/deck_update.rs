@@ -140,7 +140,7 @@ pub struct UpdateHint {
     notes: usize,
     /// 그중 이미 있는 노트 (같은 guid)
     existing_notes: usize,
-    /// 같은 Anki 덱 id 로 가져온 우리 덱 이름
+    /// 같은 Anki 덱 id 로 가져온 우리 덱의 최상위 덱 이름
     known_decks: Vec<String>,
     /// 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15)
     suggested: bool,
@@ -160,12 +160,16 @@ pub struct ConflictNote {
     note_id: i64,
     /// 첫 필드 글 (지금 값)
     title: String,
-    /// 첫 카드의 덱
+    /// 첫 카드의 덱 경로 ("정보처리기사 › 데이터베이스")
     deck: String,
     fields: Vec<ConflictField>,
     /// 같은 노트에서 충돌 없이 새 버전으로 바뀌는 필드 · 내 것으로 지키는 필드 (태그 포함)
     auto_new: usize,
     auto_mine: usize,
+    /// 그 새 버전으로 바뀌는 필드 이름 ("태그" 포함)
+    auto_new_fields: Vec<String>,
+    /// 내가 마지막으로 고친 시각 (note.updated_at, ms)
+    edited_at: i64,
     /// 지금 고른 것 (기본 false = 내 것)
     take_new: bool,
     /// 원본이 없어 어림으로 충돌로 본 노트 (DU18)
@@ -183,12 +187,22 @@ pub struct LookConflict {
     new_front: String,
     new_back: String,
     take_new: bool,
+    /// 원본과 달라진 면: 내 것 · 새 버전 ("앞면" · "뒷면" · "CSS")
+    mine_changed: Vec<&'static str>,
+    new_changed: Vec<&'static str>,
+    /// 이 앱에서 그 카드 종류를 마지막으로 고친 시각 (CSS 는 없다)
+    edited_at: Option<i64>,
 }
 
 #[derive(Serialize, Default)]
 pub struct TypeChange {
     note_type_id: i64,
     name: String,
+    /// 이 유형의 노트 수 (B2-kt "이 유형 노트 n개")
+    notes: usize,
+    /// B2-kt 미리보기: 지금 CSS · 새 버전 CSS (쉬운 편집 줄 상자 CSS 를 붙인 것)
+    css_mine: String,
+    css_new: String,
     /// 이번에 새로 만든 노트 유형
     created: bool,
     /// 원본이 없는 예전 유형: 새 필드 · 카드 종류를 내가 지운 것과 구별하지 못해 넣지 않는다 (NT29 · Q2-08 · Q2-13)
@@ -269,12 +283,16 @@ pub struct UpdateSummary {
     /// 새로 저장할 미디어 파일, 그중 이름은 같은데 내용이 달라 새 이름으로 저장하는 것 (DU10)
     pub(crate) media_new: usize,
     pub(crate) media_renamed: usize,
+    /// 이미 같은 이름의 파일이 있어 내용을 비교한 미디어 (B2-u0 "이름이 같은 n개는 내용을 비교해요")
+    pub(crate) media_compared: usize,
+    /// 사전 검사만: 충돌 필드의 새 버전이 쓰는데 아직 저장하지 않은 그림 (이름 -> data URL, 합쳐 8MB 까지). B2-k 가 나란히 보인다
+    pub(crate) media_preview: HashMap<String, String>,
     /// 옮기지 않는 새 .apkg 의 복습 기록 (DU12)
     pub(crate) reviews_skipped: usize,
     pub(crate) issues: Vec<Issue>,
     /// 적용했으면 그 전에 만든 백업 (DU16)
     pub(crate) backup: Option<String>,
-    /// 새 노트가 들어간 최상위 덱
+    /// 업데이트한 덱 · 새 노트가 들어간 덱의 최상위 덱 (결과의 [덱 열기])
     pub(crate) roots: Vec<i64>,
 }
 
@@ -328,12 +346,18 @@ fn hint(con: &Connection, guids: &[&str], decks: &BTreeSet<i64>) -> Res<UpdateHi
     for g in guids {
         existing += st.query_row([g], |r| r.get::<_, bool>(0)).map_err(err)? as usize;
     }
-    let list = decks.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let known: Vec<String> = con
-        .prepare(&format!("SELECT name FROM deck WHERE anki_deck_id IN ({list}) ORDER BY id"))
-        .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
-        .map_err(err)?;
+    // 그 덱들의 최상위 덱 이름 (요약 · 결과의 덱 "…")
+    let mut known: Vec<String> = vec![];
+    for id in roots_of(con, &known_decks(con, decks)?)? {
+        known.push(con.query_row("SELECT name FROM deck WHERE id = ?1", [id], |r| r.get(0)).map_err(err)?);
+    }
     Ok(UpdateHint { notes: guids.len(), existing_notes: existing, suggested: existing > 0 && (existing * 2 >= guids.len() || !known.is_empty()), known_decks: known })
+}
+
+/// 이번 패키지 덱(Anki 덱 id)으로 가져온 우리 덱
+fn known_decks(con: &Connection, decks: &BTreeSet<i64>) -> Res<HashSet<i64>> {
+    let list = decks.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    con.prepare(&format!("SELECT id FROM deck WHERE anki_deck_id IN ({list})")).and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)
 }
 
 /// inspect_anki (B2): 이미 있는 노트가 하나라도 있으면 [업데이트로 가져오기] 를 보일 근거
@@ -412,17 +436,22 @@ impl DeckFinder {
 
 // ------------------------------------------------------------------ 미디어 (I85 · DU10)
 
-/// 이번 노트 · 유형이 쓰는 미디어만. 같은 이름 · 같은 내용이면 그 파일, 다른 내용이면 `이름-<sha8>` 로 새로 저장하고 들어온 값의 참조를 고친다.
-/// 패키지 이름 -> 저장할 이름 (바뀐 것만). dry 면 파일을 쓰지 않고, 이름이 겹치는 파일만 풀어서 비교한다.
-/// ponytail: 신형 패키지의 미디어 목록 sha1 로 풀지 않고 비교하는 것은 하지 않았다 (큰 구형 · 신형 모두 겹친 파일만 푼다, 위험 ⑨)
-fn place_media(tx: &Connection, pkg: &mut Package, dir: &Path, wanted: impl Fn(&str) -> bool, dry: bool, written: &mut Vec<PathBuf>, s: &mut UpdateSummary) -> Res<HashMap<String, String>> {
+/// 미디어를 둘 곳 (I85 · DU10). 이번 노트 · 유형이 쓰는 것만. 같은 이름 · 같은 내용이면 그 파일, 다른 내용이면 `이름-<sha8>` 로 새로 저장하고
+/// 들어온 값의 참조를 고친다. 파일은 쓰지 않는다 (적용의 마지막 단계 `write_media`): 이름이 겹치는 파일만 풀어서 비교한다.
+/// ponytail: 신형 패키지의 미디어 목록 sha1 로 풀지 않고 비교하는 것은 하지 않았다 (위험 ⑨)
+struct MediaPlan {
+    /// 패키지 이름 -> 저장할 이름 (바뀐 것만)
+    renamed: HashMap<String, String>,
+    /// (zip 항목, 저장할 이름) 전부. 아직 없는 파일은 write_media 가 쓴다
+    files: Vec<(String, String)>,
+}
+
+fn plan_media(pkg: &mut Package, dir: &Path, wanted: impl Fn(&str) -> bool, s: &mut UpdateSummary) -> Res<MediaPlan> {
     let mut names = media_names(pkg)?;
     names.retain(|(_, n)| wanted(n));
-    if !dry && !names.is_empty() {
-        std::fs::create_dir_all(dir).map_err(err)?;
-    }
-    let mut renamed = HashMap::new();
+    let mut plan = MediaPlan { renamed: HashMap::new(), files: vec![] };
     let mut unpacked = 0u64;
+    let mut new: HashSet<String> = HashSet::new();
     for (key, name) in &names {
         if safe_media_name(name).is_err() {
             s.issues.push(issue("skipped", "media_name", format!("미디어 '{name}' 는 이름이 올바르지 않아 건너뛰었어요")));
@@ -430,8 +459,8 @@ fn place_media(tx: &Connection, pkg: &mut Package, dir: &Path, wanted: impl Fn(&
         }
         let storable = storable_name(name).into_owned();
         let mut target = storable.clone();
-        let mut blob = None;
-        if !dry || dir.join(&target).exists() {
+        if dir.join(&target).exists() {
+            s.media_compared += 1;
             let mut b = vec![];
             if let Err(e) = unpack(&mut pkg.zip, key, &format!("미디어 '{name}'"), MAX_MEDIA_FILE, &mut b) {
                 s.issues.push(issue("warning", "media", format!("미디어 '{name}' 를 읽지 못했어요: {e}")));
@@ -449,27 +478,43 @@ fn place_media(tx: &Connection, pkg: &mut Package, dir: &Path, wanted: impl Fn(&
                     continue;
                 }
             }
-            blob = Some(b);
         }
         if target != *name {
-            renamed.insert(name.clone(), target.clone());
+            plan.renamed.insert(name.clone(), target.clone());
         }
-        let file = dir.join(&target);
-        if !file.exists() {
+        if !dir.join(&target).exists() && new.insert(target.clone()) {
             s.media_new += 1;
             s.media_renamed += (target != storable) as usize;
-            if let (false, Some(b)) = (dry, &blob) {
-                written.push(file.clone()); // 쓰다가 실패해도 지우게 먼저 남긴다
-                std::fs::write(&file, b).map_err(err)?;
-            }
         }
+        plan.files.push((key.clone(), target));
+    }
+    Ok(plan)
+}
+
+/// 아직 없는 미디어 파일을 쓰고 미디어 행을 남긴다. 새로 쓴 파일은 written 에 남겨, 실패하거나 멈추면 부르는 쪽이 지운다
+fn write_media(tx: &Connection, pkg: &mut Package, dir: &Path, plan: &MediaPlan, written: &mut Vec<PathBuf>, s: &mut UpdateSummary) -> Res<()> {
+    if !plan.files.is_empty() {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
+    for (key, target) in &plan.files {
+        let file = dir.join(target);
+        if !file.exists() {
+            let mut b = vec![];
+            if let Err(e) = unpack(&mut pkg.zip, key, &format!("미디어 '{target}'"), MAX_MEDIA_FILE, &mut b) {
+                s.issues.push(issue("warning", "media", format!("미디어 '{target}' 를 읽지 못했어요: {e}")));
+                continue;
+            }
+            written.push(file.clone()); // 쓰다가 실패해도 지우게 먼저 남긴다
+            std::fs::write(&file, &b).map_err(err)?;
+        }
+        let size = std::fs::metadata(&file).map_or(0, |m| m.len() as i64);
         tx.execute(
             "INSERT OR IGNORE INTO media (filename, rel_path, sha256, byte_size, mime_type, created_at, anki_media_key) VALUES (?1, ?2, '', ?3, ?4, ?5, ?6)",
-            params![target, format!("media/{target}"), blob.as_ref().map_or(0, |b| b.len() as i64), mime_of(&target), now_ms(), key],
+            params![target, format!("media/{target}"), size, mime_of(target), now_ms(), key],
         )
         .map_err(err)?;
     }
-    Ok(renamed)
+    Ok(())
 }
 
 // ------------------------------------------------------------------ 노트 유형 (DU8 · DU9)
@@ -645,6 +690,7 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
         let conflict = pq == Pick::Conflict || pa == Pick::Conflict;
         let write = if conflict {
             let take = choices.new_looks.contains(&(id, Some(x)));
+            let sides = |who: Pick| [("앞면", pq), ("뒷면", pa)].into_iter().filter(|(_, p)| *p == who || *p == Pick::Conflict).map(|(n, _)| n).collect();
             c.looks.push(LookConflict {
                 ord: Some(x),
                 name: now.name.clone(),
@@ -653,6 +699,11 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
                 new_front: nq.clone(),
                 new_back: na.clone(),
                 take_new: take,
+                mine_changed: sides(Pick::Mine),
+                new_changed: sides(Pick::New),
+                edited_at: tx
+                    .query_row("SELECT updated_at FROM card_template WHERE note_type_id = ?1 AND ord = ?2", params![id, x], |r| r.get(0))
+                    .map_err(err)?,
             });
             take.then_some((nq, na))
         } else if pq == Pick::New || pa == Pick::New {
@@ -688,6 +739,9 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
                 new_front: t.css.clone(),
                 new_back: String::new(),
                 take_new: take,
+                mine_changed: vec!["CSS"],
+                new_changed: vec!["CSS"],
+                edited_at: None,
             });
             take
         }
@@ -698,6 +752,8 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
         _ => false,
     };
     let css = notetype::with_layout_css(&t.css, cur.templates.iter().any(notetype::uses_box));
+    (c.css_mine, c.css_new) = (cur.css.clone(), css.clone());
+    c.notes = tx.query_row("SELECT count(*) FROM note WHERE note_type_id = ?1", [id], |r| r.get::<_, i64>(0)).map_err(err)? as usize;
     if take_css && css != cur.css {
         tx.execute("UPDATE note_type SET css = ?2, updated_at = ?3 WHERE id = ?1", params![id, css, now_ms()]).map_err(err)?;
     }
@@ -721,7 +777,15 @@ pub(crate) struct Req<'a> {
     pub selected: Option<&'a HashSet<i64>>,
     pub choices: &'a Choices,
     pub voices: &'a [String],
+    /// B2-p 진행 (단계, 끝난 수, 전체): backup → types → notes → cards → media → done
+    pub emit: &'a dyn Fn(&'static str, usize, usize),
+    /// B2-p [취소] (import_cancel). 사전 검사는 늘 false
+    pub cancel: &'a dyn Fn() -> bool,
 }
+
+pub(crate) const STOPPED: &str = "업데이트를 멈췄어요. 아무것도 바뀌지 않았어요.";
+/// 백업을 만들지 못하면 적용하지 않는다 (DU16). 화면이 이 머리로 "백업을 만들 수 없음"을 가린다
+pub(crate) const NO_BACKUP: &str = "적용 전 백업을 만들지 못해 업데이트하지 않았어요.";
 
 /// 덱 업데이트. dry 면 한 트랜잭션에서 다 해 보고 되돌린다 (미디어 파일은 쓰지 않는다). 적용은 부르는 쪽이 먼저 백업한다
 pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, written: &mut Vec<PathBuf>) -> Res<UpdateSummary> {
@@ -778,9 +842,11 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
         .flat_map(|t| std::iter::once(t.css.as_str()).chain(t.templates.iter().flat_map(|x| [x.2.as_str(), x.3.as_str()])))
         .collect();
     let wanted = |n: &str| refs.contains(n) || (n.starts_with('_') && type_text.contains(n));
-    let renamed = place_media(&tx, &mut pkg, &media_dir(data_dir), wanted, dry, written, &mut s)?;
+    let media = plan_media(&mut pkg, &media_dir(data_dir), wanted, &mut s)?;
+    let renamed = &media.renamed;
 
     // 노트 유형
+    (req.emit)("types", 0, used_types.len());
     let mut maps: HashMap<i64, TypeMap> = HashMap::new();
     let mut type_at: HashMap<i64, usize> = HashMap::new();
     for aid in &used_types {
@@ -804,6 +870,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
         maps.insert(*aid, map);
         s.types.push(change);
     }
+    (req.emit)("types", used_types.len(), used_types.len());
     let nts: HashMap<i64, Nt> = maps.values().map(|m| Ok((m.ntid, notetype::load(&tx, m.ntid)?))).collect::<Res<_>>()?;
     let fronts = notetype::Fronts::load(&tx)?;
 
@@ -813,7 +880,13 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     let mut card_tags: HashMap<i64, Vec<Option<(i64, String)>>> = HashMap::new();
     let mut dropped: BTreeMap<String, usize> = BTreeMap::new();
     let (mut no_tpl, mut no_deck) = (0, 0);
-    for n in &notes {
+    for (i, n) in notes.iter().enumerate() {
+        if i.is_multiple_of(50) {
+            if (req.cancel)() {
+                return Err(STOPPED.into());
+            }
+            (req.emit)("notes", i, notes.len());
+        }
         let (Some(tm), Some(t)) = (maps.get(&n.mid), pkg.types.get(&n.mid)) else { continue };
         let nt = &nts[&tm.ntid];
         // N: 들어온 값을 우리 자리에 (미디어 이름 바꾸기 뒤). 넣을 자리가 없는 값은 알린다 (Q2-13)
@@ -821,7 +894,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
         let mut lost = vec![];
         for (j, v) in n.flds.split(SEP).enumerate() {
             match tm.slots.get(j).copied().flatten() {
-                Some(sl) if sl < inc.len() => inc[sl] = Some(rename_refs(v, &renamed)),
+                Some(sl) if sl < inc.len() => inc[sl] = Some(rename_refs(v, renamed)),
                 _ if !v.is_empty() => lost.push(t.fields.get(j).cloned().unwrap_or_default()),
                 _ => {}
             }
@@ -900,6 +973,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
             }
         }
     }
+    (req.emit)("cards", 0, 1);
     // 새 카드 종류: 이 유형의 다른 노트(이번 파일에 없는 노트 포함)도 앞면이 비지 않으면 카드를 만든다 (NT22, 덱 · 중요도는 노트의 첫 카드)
     for tm in maps.values().filter(|m| !m.new_ords.is_empty()) {
         let nt = &nts[&tm.ntid];
@@ -939,6 +1013,8 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     // 새 노트의 기출 태그 · 덱 중요도 제안 (새로 넣은 카드만 센다, 사용자가 정한 덱은 건드리지 않는다, I1 · I24)
     crate::exam::fill_from_tags(&tx).map_err(err)?;
     suggest_from_tags(&tx, &card_tags)?;
+    // 결과의 [덱 열기] · [학습 시작]: 업데이트한 덱과 새 노트가 들어간 덱의 최상위 덱
+    used_decks.extend(known_decks(&tx, &deck_ids)?);
     s.roots = roots_of(&tx, &used_decks)?.into_iter().collect();
     for (f, c) in &dropped {
         s.issues.push(issue("warning", "dropped_field", format!("이 노트 유형에 없는 필드 '{f}'의 값이 있는 노트 {}개는 그 값을 넣지 않았어요", n(*c))));
@@ -948,6 +1024,31 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     }
     if no_deck > 0 {
         s.issues.push(issue("skipped", "missing_deck", format!("덱을 찾지 못한 새 카드 {}장은 넣지 않았어요", n(no_deck))));
+    }
+    (req.emit)("cards", 1, 1);
+    if !dry {
+        (req.emit)("media", 0, media.files.len());
+        write_media(&tx, &mut pkg, &media_dir(data_dir), &media, written, &mut s)?;
+        (req.emit)("media", media.files.len(), media.files.len());
+    }
+    if (req.cancel)() {
+        return Err(STOPPED.into());
+    }
+    if dry {
+        let mut want: HashSet<String> = HashSet::new();
+        s.conflicts.iter().flat_map(|c| &c.fields).for_each(|f| crate::export::media_refs(&f.new, &mut want));
+        let mut budget = 8usize << 20;
+        for (key, target) in &media.files {
+            if !want.contains(target) || media_dir(data_dir).join(target).exists() {
+                continue;
+            }
+            let mut b = vec![];
+            if unpack(&mut pkg.zip, key, target, MAX_MEDIA_FILE, &mut b).is_ok() && b.len() <= budget {
+                use base64::Engine;
+                budget -= b.len();
+                s.media_preview.insert(target.clone(), format!("data:{};base64,{}", mime_of(target), base64::engine::general_purpose::STANDARD.encode(&b)));
+            }
+        }
     }
     s.types.retain(|t| !t.is_empty());
     s.kept_looks = s.types.iter().filter(|t| t.looks.iter().any(|l| !l.take_new)).count();
@@ -960,6 +1061,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
         tx.rollback().map_err(err)?;
     } else {
         tx.commit().map_err(err)?;
+        (req.emit)("done", 1, 1);
     }
     Ok(s)
 }
@@ -980,6 +1082,7 @@ fn update_note(tx: &Connection, nt: &Nt, fronts: &notetype::Fronts, o: &Ours, in
     let touched = o.updated_at % 1000 != 0;
     let (mut new, mut mine) = (0, 0);
     let mut conflicts = vec![];
+    let mut new_names: Vec<String> = vec![];
     for (sl, v) in inc.iter().enumerate() {
         let Some(v) = v else { continue };
         let b = base.as_ref().map(|_| if of[sl].is_empty() { h("") } else { of[sl].clone() });
@@ -988,6 +1091,7 @@ fn update_note(tx: &Connection, nt: &Nt, fronts: &notetype::Fronts, o: &Ours, in
             Pick::New => {
                 fin[sl] = v.clone();
                 new += 1;
+                new_names.push(nt.slots.get(sl).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| "(숨긴 필드)".into()));
             }
             Pick::Mine => mine += 1,
             Pick::Conflict => {
@@ -1004,6 +1108,9 @@ fn update_note(tx: &Connection, nt: &Nt, fronts: &notetype::Fronts, o: &Ours, in
     let set = |t: &str| t.split_whitespace().map(String::from).collect::<BTreeSet<_>>();
     let tags_changed = set(&fin_tags) != set(&o.tags);
     new += tags_changed as usize;
+    if tags_changed {
+        new_names.push("태그".into());
+    }
     mine += base.as_ref().is_some_and(|b| set(&b.t) != set(&o.tags)) as usize;
     // 기출 표시: 지금 값이 지금 태그의 해석과 같으면(또는 아직 정하지 않았으면) 새 태그로 다시 채운다. 다르면 사용자가 고친 것이라 지킨다 (DU7)
     let exam = if o.exam == exam_of(&o.tags) || o.exam.0.is_none() { exam_of(&fin_tags) } else { o.exam.clone() };
@@ -1014,11 +1121,27 @@ fn update_note(tx: &Connection, nt: &Nt, fronts: &notetype::Fronts, o: &Ours, in
         (false, _, _) => {
             let title = nt.visible().first().map(|(sl, _)| crate::render::strip_tags(&m[*sl])).unwrap_or_default().chars().take(80).collect();
             let deck: String = tx
-                .query_row("SELECT d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = ?1 ORDER BY c.id LIMIT 1", [o.id], |r| r.get(0))
-                .optional()
-                .map_err(err)?
-                .unwrap_or_default();
-            s.conflicts.push(ConflictNote { note_id: o.id, title, deck, fields: conflicts, auto_new: new, auto_mine: mine, take_new: take, no_base: base.is_none() });
+                .query_row(
+                    "WITH RECURSIVE up(id, name, parent_id, depth) AS (
+                       SELECT d.id, d.name, d.parent_id, 0 FROM deck d WHERE d.id = (SELECT deck_id FROM card WHERE note_id = ?1 ORDER BY id LIMIT 1)
+                       UNION ALL SELECT d.id, d.name, d.parent_id, up.depth + 1 FROM deck d JOIN up ON d.id = up.parent_id)
+                     SELECT coalesce(group_concat(name, ' › '), '') FROM (SELECT name FROM up ORDER BY depth DESC)",
+                    [o.id],
+                    |r| r.get(0),
+                )
+                .map_err(err)?;
+            s.conflicts.push(ConflictNote {
+                note_id: o.id,
+                title,
+                deck,
+                fields: conflicts,
+                auto_new: new,
+                auto_mine: mine,
+                auto_new_fields: new_names,
+                edited_at: o.updated_at,
+                take_new: take,
+                no_base: base.is_none(),
+            });
         }
         (true, true, true) => s.merged += 1,
         (true, true, false) => s.changed += 1,
@@ -1112,24 +1235,41 @@ pub async fn inspect_update(
 ) -> Res<UpdateSummary> {
     let selected: Option<HashSet<i64>> = deck_ids.map(|v| v.into_iter().collect());
     let (choices, voices) = (choices.unwrap_or_default(), voices.unwrap_or_default());
-    let req = Req { path: Path::new(&path), selected: selected.as_ref(), choices: &choices, voices: &voices };
+    let req = Req { path: Path::new(&path), selected: selected.as_ref(), choices: &choices, voices: &voices, emit: &|_, _, _| {}, cancel: &|| false };
     let mut con = state.db.lock().map_err(err)?;
     run(&mut con, &state.data_dir, &req, true, &mut vec![])
 }
 
-/// [업데이트 적용]: 자동 백업(DU16) → 한 트랜잭션. 멈추면 아무것도 바뀌지 않고 새로 쓴 미디어도 지운다 (I36).
-/// 동기화가 연결돼 있으면 화면이 먼저 받는다 (sync_now → sync_status 가 idle 이 될 때까지, deck-update.md 9장)
+/// [업데이트 적용]: 자동 백업(DU16) → 한 트랜잭션. 멈추면(cancel_import) 아무것도 바뀌지 않고 새로 쓴 미디어도 지운다 (I36).
+/// 진행은 "update-progress" (B2-p). 동기화가 연결돼 있으면 화면이 먼저 받는다 (sync_now → sync_status, deck-update.md 9장)
 #[tauri::command]
-pub async fn apply_update(state: State<'_, AppState>, path: String, deck_ids: Option<Vec<i64>>, choices: Option<Choices>, voices: Option<Vec<String>>) -> Res<UpdateSummary> {
+pub async fn apply_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    deck_ids: Option<Vec<i64>>,
+    choices: Option<Choices>,
+    voices: Option<Vec<String>>,
+) -> Res<UpdateSummary> {
+    state.import_cancel.store(false, Ordering::Relaxed);
     let selected: Option<HashSet<i64>> = deck_ids.map(|v| v.into_iter().collect());
     let (choices, voices) = (choices.unwrap_or_default(), voices.unwrap_or_default());
-    let req = Req { path: Path::new(&path), selected: selected.as_ref(), choices: &choices, voices: &voices };
+    let emit = |step: &'static str, done: usize, total: usize| {
+        let _ = app.emit("update-progress", Progress { step, done, total });
+    };
+    let cancel = || state.import_cancel.load(Ordering::Relaxed);
+    let req = Req { path: Path::new(&path), selected: selected.as_ref(), choices: &choices, voices: &voices, emit: &emit, cancel: &cancel };
     apply(&mut *state.db.lock().map_err(err)?, &state.data_dir, &req)
 }
 
 /// 자동 백업 → 적용. 실패하면 새로 쓴 미디어 파일을 지운다 (DB 는 트랜잭션이 되돌린다)
 pub(crate) fn apply(con: &mut Connection, data_dir: &Path, req: &Req) -> Res<UpdateSummary> {
-    let backup = crate::commands::write_backup(con, data_dir)?;
+    (req.emit)("backup", 0, 1);
+    let backup = crate::commands::write_backup(con, data_dir).map_err(|e| format!("{NO_BACKUP} {e}"))?;
+    (req.emit)("backup", 1, 1);
+    if (req.cancel)() {
+        return Err(STOPPED.into());
+    }
     let mut written = vec![];
     let result = run(con, data_dir, req, false, &mut written);
     if result.is_err() {
@@ -1260,7 +1400,7 @@ mod tests {
     }
 
     fn update(s: &AppState, p: &Path, choices: &Choices, dry: bool) -> UpdateSummary {
-        let req = Req { path: p, selected: None, choices, voices: &[] };
+        let req = Req { path: p, selected: None, choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false };
         let mut con = s.db.lock().unwrap();
         if dry { run(&mut con, &s.data_dir, &req, true, &mut vec![]).unwrap() } else { apply(&mut con, &s.data_dir, &req).unwrap() }
     }
@@ -1432,8 +1572,8 @@ mod tests {
         assert_eq!((r.new_notes, r.new_note_cards, r.gone, r.missing_notes, r.missing_card_ids.len()), (1, 2, 1, 1, 2), "g_missing 의 카드 + 새 카드 종류로 생긴 카드");
         assert_eq!((r.new_cards, r.emptied_cards), (10, 1), "Card 2 아홉 장 + c3 / c2");
         assert_eq!((r.cloze.renumbered_notes, r.cloze.new_cards, r.cloze.emptied_cards), (1, 1, 1));
-        assert_eq!((r.media_new, r.media_renamed, r.reviews_skipped, r.kept_looks), (1, 1, 13, 0));
-        assert_eq!((r.hint.notes, r.hint.existing_notes, r.hint.known_decks.clone(), r.hint.suggested), (11, 9, vec!["2장".to_string()], true));
+        assert_eq!((r.media_new, r.media_renamed, r.media_compared, r.reviews_skipped, r.kept_looks), (1, 1, 1, 13, 0));
+        assert_eq!((r.hint.notes, r.hint.existing_notes, r.hint.known_decks.clone(), r.hint.suggested), (11, 9, vec!["공유덱".to_string()], true));
         assert_eq!(r.types.len(), 1, "Cloze 는 바뀐 것이 없다");
         let ty = &r.types[0];
         assert_eq!(
@@ -1443,7 +1583,7 @@ mod tests {
         let conf = r.conflicts.iter().find(|c| c.note_id == id_of(&s, "g_conf")).unwrap();
         assert_eq!(
             (conf.title.as_str(), conf.deck.as_str(), conf.fields.len(), conf.fields[0].name.as_str(), conf.fields[0].mine.as_str(), conf.fields[0].new.as_str(), conf.take_new),
-            ("ARP는?", "2장", 1, "Back", "MAC 찾기", "IP→MAC", false)
+            ("ARP는?", "공유덱 › 2장", 1, "Back", "MAC 찾기", "IP→MAC", false)
         );
         // 고르기를 반영한 요약
         let choices = Choices { take_new: vec![id_of(&s, "g_conf2")], ..Default::default() };
@@ -1617,6 +1757,11 @@ mod tests {
             Note { tags: "기출::2023 기출::2024", ..note(2, "g2", 7, &["2", "y"], &[(1, 0)]) },
         ];
         testpkg::write(&p2, &[basic(false)], &[(1, "D")], &v2, &[]);
+        // B2-p [취소]: 멈추면 아무것도 바뀌지 않는다 (백업은 남는다)
+        let before = dump(&s);
+        let req = Req { path: &p2, selected: None, choices: &Choices::default(), voices: &[], emit: &|_, _, _| {}, cancel: &|| true };
+        assert_eq!(apply(&mut s.db.lock().unwrap(), &s.data_dir, &req).err().as_deref(), Some(STOPPED));
+        assert_eq!(dump(&s), before);
         let r = update(&s, &p2, &Choices::default(), false);
         assert_eq!(r.changed, 1);
         assert_eq!(r.merged, 1, "g1: 내가 더한 태그 c 와 만든 사람의 태그 변경을 합친다");
@@ -1656,5 +1801,92 @@ mod tests {
         assert_eq!(n("SELECT count(*) FROM pragma_table_info('note') WHERE name = 'origin'") + n("SELECT count(*) FROM pragma_table_info('note_type') WHERE name = 'origin'"), 2);
         assert_eq!(n("SELECT count(*) FROM sqlite_master WHERE name IN ('origin_gone', 'note_origin_gone')"), 2);
         assert_eq!(n("SELECT count(*) FROM origin_gone"), 1);
+    }
+
+    /// 화면 확인(B2-u0 ~ B3-u)용 데이터: NEOANKI_DU_OUT/data 에 v1 을 가져와 몇 장 고치고 지운 DB, NEOANKI_DU_OUT/v2.apkg.
+    /// NEOANKI_DU_OUT=<폴더> cargo test --lib deck_update_sample -- --ignored
+    #[test]
+    #[ignore]
+    fn deck_update_sample() {
+        let out = PathBuf::from(std::env::var("NEOANKI_DU_OUT").expect("NEOANKI_DU_OUT"));
+        let s = state(&out.join("data"));
+        let decks = [(1, "정보처리기사 실기"), (2, "정보처리기사 실기::데이터베이스"), (3, "정보처리기사 실기::네트워크")];
+        let afmt = "{{FrontSide}}<hr id=answer>{{뒷면}}";
+        let basic = |v2: bool| Model {
+            id: 100,
+            name: "기본 (정보처리)",
+            fields: if v2 { vec!["앞면", "뒷면", "보충 설명"] } else { vec!["앞면", "뒷면"] },
+            templates: if v2 {
+                vec![
+                    ("카드 1", "<span class=\"tag\">{{보충 설명}}</span><div>{{앞면}}</div>", afmt),
+                    ("용어 → 정의", "{{뒷면}}", "{{FrontSide}}<hr id=answer>{{앞면}}"),
+                ]
+            } else {
+                vec![("카드 1", "{{앞면}}", afmt)]
+            },
+            css: if v2 { ".card { font-size: 20px; text-align: left; } .tag { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: #16161d; color: #fff; }" } else { ".card { font-size: 24px; text-align: center; }" },
+        };
+        let cloze = || Model { id: 101, name: "빈칸 (정보처리)", fields: vec!["본문", "추가 설명"], templates: vec![("빈칸", "{{cloze:본문}}", "{{cloze:본문}}<br>{{추가 설명}}")], css: "" };
+        let acid1 = "원자성(Atomicity): 모두 반영되거나 전혀 반영되지 않음<br>일관성(Consistency): 실행 전후 DB가 일관된 상태<br>독립성(Isolation): 동시에 실행돼도 서로 간섭하지 않음<br>영속성(Durability): 완료된 결과는 영구히 반영";
+        let acid2 = "원자성(Atomicity): All or Nothing<br>일관성(Consistency): 실행 전후 DB가 일관된 상태<br>격리성(Isolation): 실행 중인 트랜잭션에 다른 트랜잭션이 끼어들 수 없음<br>영속성(Durability): 완료된 결과는 영구히 반영";
+        let svg = |fill: &str, text: &str| format!("<svg xmlns='http://www.w3.org/2000/svg' width='240' height='90'><rect width='240' height='90' rx='12' fill='{fill}'/><text x='20' y='55' font-size='22' fill='white'>{text}</text></svg>");
+        let b = |id, g, f: &str, k: &str, d| note(id, g, 100, &[f, k], &[(d, 0)]);
+        let b2 = |id, g, f: &str, k: &str, x: &str, d| note(id, g, 100, &[f, k, x], &[(d, 0)]);
+        let cz = |id, g, t: &str, ords: &[i64]| Note { cards: ords.iter().map(|o| (2, *o)).collect(), ..note(id, g, 101, &[t, ""], &[]) };
+        let v1 = vec![
+            b(1, "acid", "트랜잭션의 특성 4가지(ACID)를 쓰시오.", acid1, 2),
+            b(2, "nf", "정규화 단계: 1NF → 2NF 조건은?", "부분 함수 종속 제거", 2),
+            b(3, "osi", "OSI 7계층 그림에서 3계층의 이름은?", "<img src=\"osi.svg\"><br>네트워크 계층", 3),
+            cz(4, "http", "HTTP는 {{c1::80}}번 포트를 써요", &[0]),
+            b(5, "tcp", "TCP와 UDP의 차이는?", "TCP는 연결 지향", 3),
+            b(6, "dns", "DNS의 역할은?", "도메인 이름을 IP로", 3),
+            b(7, "pk", "기본키의 조건 두 가지는?", "유일성", 2),
+            b(8, "fk", "외래키란?", "다른 릴레이션의 기본키를 참조", 2),
+            b(9, "view", "뷰(View)의 장점은?", "논리적 독립성", 2),
+            cz(10, "sql", "{{c1::SELECT}} 열 {{c2::FROM}} 테이블", &[0, 1]),
+            b(11, "old", "Gopher 프로토콜의 포트는?", "70", 3),
+            b(12, "dup", "중복으로 만든 카드", "지울 것", 3),
+            b(13, "arp", "ARP의 역할은?", "IP 주소로 MAC 주소 찾기", 3),
+        ];
+        testpkg::write(&out.join("v1.apkg"), &[basic(false), cloze()], &decks, &v1, &[("osi.svg", svg("#4433ff", "OSI v1").as_bytes())]);
+        import(&s, &out.join("v1.apkg"));
+        edit(&s, "acid", 1, &acid1.replace("간섭하지 않음", "간섭하지 않음 ← 시험에 자주 나옴"));
+        edit(&s, "nf", 0, "정규화: 1NF에서 2NF로 가려면?");
+        edit(&s, "nf", 1, "부분 함수 종속을 없앤다");
+        edit(&s, "osi", 1, "<img src=\"osi.svg\"><br>네트워크 계층 (라우터)");
+        edit(&s, "http", 0, "HTTP는 {{c1::80}}번, HTTPS는 {{c2::443}}번 포트를 써요");
+        edit(&s, "fk", 1, "다른 릴레이션의 기본키를 참조 (참조 무결성)");
+        edit(&s, "view", 1, "논리적 독립성 · 보안 (내 메모)");
+        {
+            let con = s.db.lock().unwrap();
+            let nt: i64 = con.query_row("SELECT id FROM note_type WHERE anki_model_id = 100", [], |r| r.get(0)).unwrap();
+            notetype::save_template(&con, nt, 0, None, "{{앞면}}<div class=\"hint\">힌트: 원 · 일 · 독 · 영</div>", afmt).unwrap();
+            con.execute("DELETE FROM card WHERE note_id = (SELECT id FROM note WHERE anki_guid = 'dup')", []).unwrap();
+            con.execute("DELETE FROM note WHERE anki_guid = 'dup'", []).unwrap();
+        }
+        let v2 = vec![
+            b2(1, "acid", "트랜잭션의 특성 4가지(ACID)를 쓰시오.", acid2, "데이터베이스", 2),
+            b2(2, "nf", "정규화 단계: 1NF에서 2NF로 가는 조건은?", "부분 함수 종속을 제거한다", "데이터베이스", 2),
+            b2(3, "osi", "OSI 7계층 그림에서 3계층의 이름은?", "<img src=\"osi.svg\"><br>네트워크 계층 (Network)", "네트워크", 3),
+            cz(4, "http", "HTTP는 {{c1::80}}번, HTTPS는 {{c2::443}}번", &[0, 1]),
+            b2(5, "tcp", "TCP와 UDP의 차이는?", "TCP는 연결 지향, UDP는 비연결", "네트워크", 3),
+            b2(6, "dns", "DNS의 역할은?", "도메인 이름을 IP 주소로 바꾼다", "네트워크", 3),
+            b2(7, "pk", "기본키의 조건 두 가지는?", "유일성 · 최소성", "데이터베이스", 2),
+            b2(8, "fk", "외래키(Foreign Key)란?", "다른 릴레이션의 기본키를 참조", "데이터베이스", 2),
+            b2(9, "view", "뷰(View)의 장점은?", "논리적 독립성", "데이터베이스", 2),
+            cz(10, "sql", "{{c1::SELECT}} 열 {{c3::FROM}} 테이블", &[0, 2]),
+            b2(12, "dup", "중복으로 만든 카드", "지울 것", "", 3),
+            b2(13, "arp", "ARP의 역할은?", "IP 주소로 MAC 주소 찾기", "네트워크", 3),
+            Note { cards: vec![(3, 0), (3, 1)], ..b2(14, "rarp", "RARP의 역할은?", "MAC 주소로 IP 주소 찾기", "네트워크", 3) },
+            Note { cards: vec![(2, 0), (2, 1)], ..b2(15, "idx", "인덱스를 쓰는 까닭은?", "검색 속도를 높인다", "데이터베이스", 2) },
+        ];
+        testpkg::write(&out.join("v2.apkg"), &[basic(true), cloze()], &decks, &v2, &[("osi.svg", svg("#1f7a4a", "OSI v2").as_bytes())]);
+        // B2-p 진행을 볼 만큼 큰 다음 버전: v2 + 새 노트 6천 개
+        let mut big = v2;
+        for i in 0..6000 {
+            let guid: &'static str = Box::leak(format!("bulk{i}").into_boxed_str());
+            big.push(b2(10_000 + i, guid, &format!("대량 노트 {i}"), "답", "", 2));
+        }
+        testpkg::write(&out.join("big.apkg"), &[basic(true), cloze()], &decks, &big, &[("osi.svg", svg("#1f7a4a", "OSI v2").as_bytes())]);
     }
 }
