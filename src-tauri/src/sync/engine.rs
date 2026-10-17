@@ -173,6 +173,23 @@ pub fn gen_of(con: &Connection) -> SRes<i64> {
     local_i64(con, "gen")
 }
 
+/// 이 기기 백업으로 되돌렸다 (S1-6). 받은 위치 · 올린 번호도 백업 때로 돌아가서, 백업 뒤에 이 기기가 올린 변경 파일을
+/// 다음 받기가 다른 기기 것처럼 다시 받는다. 그 전에는 올리지 않는다 (Drive 에 있는 번호를 다시 쓰지 않게, Q2-09)
+pub fn mark_restored(con: &Connection) -> SRes<()> {
+    ensure_tables(con)?;
+    if gen_of(con)? > 0 {
+        set_local(con, "restored", "1")?;
+    }
+    Ok(())
+}
+
+/// Drive 가 아는 이 기기 id 의 마지막 번호: 변경 파일과 기기 파일(devices/<나>.json) 중 큰 것.
+/// 정리(5.5)는 기기 파일의 번호 뒤 파일을 지우지 않는다. 변경 파일이 모두 지워졌어도 기기 파일에 남는다
+fn pushed_top(r: &Remote, devices: &[J], me: &str) -> i64 {
+    let file = devices.iter().filter(|d| d["uid"].as_str() == Some(me)).filter_map(|d| d["seq"].as_i64()).max().unwrap_or(0);
+    r.changes.get(me).and_then(|v| v.last()).map_or(0, |(s, _)| *s).max(file)
+}
+
 /// 기기마다 어디까지 받았는가 (변경 파일 번호). 이 기기 것은 올린 번호
 pub fn positions(con: &Connection) -> SRes<BTreeMap<String, i64>> {
     Ok(local(con, "pos")?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
@@ -804,16 +821,29 @@ fn remote_media(store: &dyn Store) -> SRes<HashSet<String>> {
 
 /// 올리기 한 번. 올린 변경이 없으면 false
 pub fn push(db: &Mutex<Connection>, cx: &Ctx) -> SRes<bool> {
+    let (me, my_seq) = {
+        let con = lock(db)?;
+        ensure_tables(&con)?;
+        // 올릴 것이 없다. 또는 이 기기 백업으로 되돌렸다: 받기가 Drive 와 다시 맞춘 뒤에 올린다 (mark_restored)
+        let empty: bool = con.query_row("SELECT NOT EXISTS (SELECT 1 FROM sync_outbox)", [], |r| r.get(0)).map_err(dbe)?;
+        if empty || local(&con, "restored")?.is_some() {
+            return Ok(false);
+        }
+        (device_uid(&con)?, local_i64(&con, "my_seq")?)
+    };
+    // 이 기기가 올린 번호보다 큰 이 기기 파일이 있으면 같은 기기 id 를 쓰는 다른 데이터가 올렸다
+    // (연결된 데이터 폴더를 복사했거나, 앱 밖에서 옛 파일로 되돌렸다). 덮지 않는다.
+    // 번호를 차지하기 전에 멈춘다: 차지한 뒤에 멈추면 다음 번에는 말없이 다음 번호로 올리고 그 파일들은 끝내 받지 않는다 (Q2-09)
+    let mine: Vec<J> = cx.store.get(&format!("devices/{me}.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).into_iter().collect();
+    if pushed_top(&remote(cx.store)?, &mine, &me) > my_seq {
+        return Err(other("이 기기 데이터를 다른 컴퓨터로 복사했거나 앱 밖에서 예전 파일로 되돌린 것 같아요. 설정 › Google Drive에서 연결을 끊고(Drive 데이터 남기기) 다시 연결해 주세요."));
+    }
     let batch = { prepare_push(&mut *lock(db)?, cx)? };
     let Some(batch) = batch else { return Ok(false) };
     (cx.progress)("push", 0, 1);
     if !batch.media.is_empty() {
         let mut have = remote_media(cx.store)?;
         upload_media(cx, &batch.media, &mut have)?;
-    }
-    // 이 번호의 파일이 이미 있으면 같은 기기 id 를 쓰는 다른 컴퓨터가 있다 (연결된 데이터 폴더를 복사했다). 덮지 않는다
-    if !cx.store.list(&batch.path)?.is_empty() {
-        return Err(other("이 기기 데이터가 다른 컴퓨터에서 복사된 것 같아요. Google Drive 연결을 끊고 다시 연결해 주세요."));
     }
     cx.store.put(&batch.path, &batch.data)?;
     finish_push(&mut *lock(db)?, &batch)?;
@@ -904,11 +934,13 @@ pub enum Pulled {
 
 /// 받기 한 번: 다른 기기의 새 변경 파일을 모두 받아 한 트랜잭션에서 합친다
 pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
-    let (me, generation, pos) = {
+    let (me, generation, pos, restored) = {
         let con = lock(db)?;
         init(&con)?;
-        (device_uid(&con)?, gen_of(&con)?, positions(&con)?)
+        (device_uid(&con)?, gen_of(&con)?, positions(&con)?, local(&con, "restored")?.is_some())
     };
+    // 받을 기기. 이 기기 백업으로 되돌렸으면 백업 뒤에 이 기기가 올린 파일도 받는다 (mark_restored)
+    let theirs = |d: &str| d != me || restored;
     (cx.progress)("pull", 0, 1);
     let r = remote(cx.store)?;
     if r.is_empty() {
@@ -928,16 +960,17 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         };
         return Ok(Pulled::Choice(Choice { generation: r.generation(), header }));
     }
-    // 뒤처진 기기: 필요한 변경 파일이 이미 정리됐으면 스냅샷부터 (5.5)
+    // 뒤처진 기기: 필요한 변경 파일이 이미 정리됐으면 스냅샷부터 (5.5).
+    // 되돌린 기기도: 백업 뒤에 이 기기가 올린 파일은 정리돼 스냅샷에만 있을 수 있다 (남은 파일로는 알 수 없다)
     let mut from = pos.clone();
     let mut recs: Vec<Rec> = vec![];
     let mut aliases = vec![];
-    let gap = r.changes.iter().any(|(d, files)| d != &me && files.first().is_some_and(|(s, _)| *s > from.get(d).copied().unwrap_or(0) + 1));
+    let gap = restored || r.changes.iter().any(|(d, files)| theirs(d) && files.first().is_some_and(|(s, _)| *s > from.get(d).copied().unwrap_or(0) + 1));
     if gap && let Some(snap) = r.newest(generation) {
         let (header, snap_recs) = decode(cx.store.get(&snap.path)?, cx.key())?;
         for (d, s) in header["covers"].as_object().into_iter().flatten() {
             let s = s.as_i64().unwrap_or(0);
-            if d != &me && s > from.get(d).copied().unwrap_or(0) {
+            if theirs(d) && s > from.get(d).copied().unwrap_or(0) {
                 from.insert(d.clone(), s);
             }
         }
@@ -948,7 +981,7 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
     let todo: Vec<(String, i64, String)> = r
         .changes
         .iter()
-        .filter(|(d, _)| *d != &me)
+        .filter(|(d, _)| theirs(d))
         .flat_map(|(d, files)| files.iter().filter(|(s, _)| *s > from.get(d).copied().unwrap_or(0)).map(move |(s, p)| (d.clone(), *s, p.clone())))
         .collect();
     for (i, (dev, seq, path)) in todo.iter().enumerate() {
@@ -979,6 +1012,13 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
         for (d, s) in new_pos {
             let e = pos.entry(d).or_insert(0);
             *e = (*e).max(s);
+        }
+        if restored {
+            // 다음 올리기는 Drive 에 있는 이 기기 번호 뒤부터
+            let seq = local_i64(&tx, "my_seq")?.max(pushed_top(&r, &devices, &me));
+            set_local(&tx, "my_seq", &seq.to_string())?;
+            pos.insert(me.clone(), seq);
+            tx.execute("DELETE FROM sync_local WHERE key = 'restored'", []).map_err(dbe)?;
         }
         set_local(&tx, "pos", &serde_json::to_string(&pos).map_err(other)?)?;
         set_local(&tx, "devices", &serde_json::to_string(&devices).map_err(other)?)?;
@@ -1244,7 +1284,20 @@ struct Applier<'a> {
     new_tpls: HashSet<i64>,
     /// 같은 자리에 따로 더한 필드: (노트 유형 rowid, 원래 자리, 새 자리, 진 쪽 필드 id). 끝에 진 쪽 노트 값을 옮긴다 (Q2-06)
     moves: Vec<(i64, usize, usize, String)>,
+    /// 이 묶음에 지우기가 온 행. 같은 자연 키로 새 행이 오면 같은 것으로 합치지 않고 지우기를 정한 뒤 다시 넣는다 (K40)
+    doomed: HashSet<(String, String)>,
+    /// 지우기를 기다리는 행 (지웠다 다시 만든 행과 그것을 가리키는 행)
+    parked: HashSet<(String, String)>,
+    /// 지웠다 다시 만든 자리의 옛 행
+    replaced: HashSet<(String, String)>,
+    /// 노트를 나중에 고친 것만 붙잡은 카드 지우기. 같은 자리에 새 카드가 왔으면 지운다 (K40)
+    by_note: Vec<(&'static str, String, String)>,
+    /// 다시 보낸 refused 의 수 (delete_rows 를 두 번 불러도 한 번만)
+    revived: usize,
 }
+
+/// 같은 자리에 두 기기가 따로 더한 필드: 잃은 것이 없다 (둘 다 남기고 나중 쪽이 그 자리, 다른 쪽은 끝 자리). 화면이 이 제목으로 따로 그린다
+pub const KEPT_BOTH: &str = "같은 자리에 두 기기가 필드를 더해 둘 다 남겼어요";
 
 /// 두 기기에서 고친 노트 유형 정의를 남기는 열 (K39): (표, 열, 화면 이름)
 const TYPE_COLS: [(&str, &str, &str); 5] =
@@ -1322,6 +1375,8 @@ enum Step {
     Done,
     /// 부모(덱)가 아직 없다. 다음 바퀴에 다시
     Later,
+    /// 지우기를 정한 뒤에 다시 (K40)
+    Park,
 }
 
 impl Applier<'_> {
@@ -1358,6 +1413,13 @@ impl Applier<'_> {
         let t = table.name;
         if !safe_paths(t, f) {
             return Ok(self.skip());
+        }
+        // 기다리는 행을 가리키면 같이 기다린다 (새 덱의 카드, 새 카드의 복습 기록)
+        let refs = f.row.iter().flat_map(|(_, r)| r.iter()).chain(f.cols.iter().map(|(c, (v, _))| (c, v)));
+        if !self.parked.is_empty()
+            && refs.filter_map(|(c, v)| Some((table.fks.get(c)?.0, v.as_str()?))).any(|(p, u)| self.parked.contains(&(p.to_string(), alias_of(&self.aliases, p, u))))
+        {
+            return Ok(Step::Park);
         }
         match rowid_of(self.tx, t, &uid)? {
             Some(rowid) => self.update(table, &uid, rowid, f),
@@ -1399,6 +1461,12 @@ impl Applier<'_> {
             return Ok(if t == "deck" { Step::Later } else { self.skip() });
         };
         if let Some((rowid, local_uid)) = natural_match(self.tx, table, &vals, self.mode)? {
+            // 이 묶음이 그 행을 지운다: 지웠다 다시 만든 것(빈칸 c2 를 지웠다 다시 넣기, 같은 이름의 덱)이라 같은 것이 아니다.
+            // 합치면 옛 행의 지우기가 새 행까지 지운다. 지우기를 정한 뒤 다시: 지웠으면 새 행으로, 남았으면 그때 합친다 (K40)
+            if self.doomed.contains(&(t.to_string(), local_uid.clone())) {
+                self.replaced.insert((t.to_string(), local_uid));
+                return Ok(Step::Park);
+            }
             if t == "daily_plan" {
                 return self.daily_plan(table, &uid, rowid, &local_uid, &vals, row_h);
             }
@@ -1577,8 +1645,13 @@ impl Applier<'_> {
                     },
                     None => from_json(&v),
                 };
-                if self.tx.execute(&format!("UPDATE {t} SET \"{c}\" = ?2 WHERE rowid = ?1"), params![rowid, val]).is_ok() {
-                    clock.cols.insert(c, h);
+                match self.tx.execute(&format!("UPDATE {t} SET \"{c}\" = ?2 WHERE rowid = ?1"), params![rowid, val]) {
+                    Ok(_) => {
+                        clock.cols.insert(c, h);
+                    }
+                    // 이 묶음이 지울 행이 아직 그 이름(유일 키)을 차지했다 (지운 덱 이름으로 바꾸기): 지운 뒤 다시
+                    Err(_) if !self.doomed.is_empty() => return Ok(Step::Park),
+                    Err(_) => {}
                 }
             }
             if applied {
@@ -1591,16 +1664,18 @@ impl Applier<'_> {
         save_clock(self.tx, t, uid, &clock)?;
         if let Some(d) = &f.del {
             // 지운 것이 그 행을 마지막으로 고친 것보다 나중일 때만 지운다. 카드는 노트(앞뒤 내용)를 고친 것도 그 카드를 고친 것이다 (K29).
-            // 지운 기기가 이미 받은 수정이면 지운 HLC 가 더 크다 (고친 순간의 HLC 는 받은 값보다 크다): 다른 기기가 모르고 나중에 고친 것만 남긴다
+            // 지운 기기가 이미 받은 수정이면 지운 HLC 가 더 크다 (고친 순간의 HLC 는 받은 값보다 크다): 다른 기기가 모르고 나중에 고친 것만 남긴다.
+            // 지운 기기 자신이 고친 것은 보지 않는다 (같은 트랜잭션의 노트 수정 · 지운 뒤 고친 것, K37). 같은 HLC 는 같은 기기의 같은 동작이라 지운다 (K40)
             let by = hlc_device(d);
-            let mut newest = self.newest(t, uid, by)?;
-            if t == "card"
-                && let Some(note) = local.get("note_id").and_then(|v| v.as_str())
-            {
-                newest = newest.max(self.newest("note", note, by)?);
-            }
-            if *d > newest {
+            let own = self.newest(t, uid, by)?;
+            let note = match (t, local.get("note_id").and_then(|v| v.as_str())) {
+                ("card", Some(n)) => Some(self.newest("note", n, by)?),
+                _ => None,
+            };
+            if *d >= own && note.as_ref().is_none_or(|n| d >= n) {
                 self.deletes.push((t, uid.to_string(), d.clone()));
+            } else if *d >= own {
+                self.by_note.push((t, uid.to_string(), d.clone()));
             } else if t != "review_log" {
                 self.refused.push((t, uid.to_string(), d.clone()));
             }
@@ -1699,7 +1774,7 @@ impl Applier<'_> {
         for (from, to, id) in m.moved {
             let at_from = m.names.get(from).cloned().unwrap_or_default();
             let moved = m.names.get(to).cloned().unwrap_or_default();
-            self.type_conflict("note_type", uid, local, "같은 자리에 따로 더한 필드 (진 쪽을 새 자리로 옮겼어요)", (&at_from, wh), (&moved, loh))?;
+            self.type_conflict("note_type", uid, local, KEPT_BOTH, (&at_from, wh), (&moved, loh))?;
             self.moves.push((rowid, from, to, id));
         }
         Ok(())
@@ -1889,6 +1964,11 @@ impl Applier<'_> {
     ///
     /// 남긴 행은 지운 기기가 되살리게 다시 보내고, 붙잡은 자식도 다시 보낸다 (지운 기기는 부모가 없어 건너뛰었을 수 있다)
     fn delete_rows(&mut self) -> SRes<()> {
+        // 노트를 나중에 고친 것만 붙잡은 카드: 그 자리(노트 · ord)에 새 카드가 왔으면 그 노트 저장은 새 카드를 만든 것이다 (K40)
+        for (t, u, d) in std::mem::take(&mut self.by_note) {
+            let to = if self.replaced.contains(&(t.to_string(), u.clone())) { &mut self.deletes } else { &mut self.refused };
+            to.push((t, u, d));
+        }
         let mut cand: HashMap<(&'static str, String), String> =
             std::mem::take(&mut self.deletes).into_iter().filter(|(t, _, _)| *t != "review_log").map(|(t, u, d)| ((t, u), d)).collect();
         let mut kept: HashSet<(&'static str, String)> = self.refused.iter().map(|(t, u, _)| (*t, u.clone())).collect();
@@ -1963,7 +2043,7 @@ impl Applier<'_> {
                 .map(|_| ())
                 .map_err(dbe)
         };
-        for (t, u, d) in &self.refused {
+        for (t, u, d) in &self.refused[self.revived..] {
             let Some(rowid) = rowid_of(self.tx, t, u)? else { continue };
             put(t, u, REVIVE, 0, Some(d))?;
             if *t == "card" {
@@ -1977,6 +2057,7 @@ impl Applier<'_> {
         for (t, u) in survivors {
             put(t, &u, RESEND, now, None)?;
         }
+        self.revived = self.refused.len();
         Ok(())
     }
 }
@@ -2033,11 +2114,17 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
         new_notes: HashSet::new(),
         new_tpls: HashSet::new(),
         moves: vec![],
+        doomed: folds.iter().filter(|(_, f)| f.del.is_some()).map(|(k, _)| k.clone()).collect(),
+        parked: HashSet::new(),
+        replaced: HashSet::new(),
+        by_note: vec![],
+        revived: 0,
     };
     if mode == Mode::Merge {
         // 아직 차례가 오지 않은 행도 Drive 가 아는 uid 다 (insert 가 이 기기 uid 를 버려도 되는지 본다)
         ap.remote_rows.extend(folds.keys().cloned());
     }
+    let mut parked: Vec<(&Table, String, Fold)> = vec![];
     for table in &tables {
         let mut keys: Vec<(String, String)> = folds.keys().filter(|(t, _)| t == table.name).cloned().collect();
         // 같은 HLC 순서로 (먼저 생긴 부모가 먼저)
@@ -2048,9 +2135,16 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
             let mut later = vec![];
             for k in keys {
                 let f = folds.remove(&k).expect("키");
-                if let Step::Later = ap.row(table, k.1.clone(), &f)? {
-                    folds.insert(k.clone(), f);
-                    later.push(k);
+                match ap.row(table, k.1.clone(), &f)? {
+                    Step::Done => {}
+                    Step::Later => {
+                        folds.insert(k.clone(), f);
+                        later.push(k);
+                    }
+                    Step::Park => {
+                        ap.parked.insert(k.clone());
+                        parked.push((table, k.1, f));
+                    }
                 }
             }
             if later.is_empty() || later.len() == before {
@@ -2061,6 +2155,19 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
         }
     }
     ap.delete_rows()?;
+    // 지우기를 기다린 행 (부모 먼저 쌓였다): 옛 행을 지웠으면 새 행으로 넣고, 남았으면 같은 것으로 합친다 (K40)
+    if !parked.is_empty() {
+        ap.doomed.clear();
+        ap.parked.clear();
+        for (table, uid, f) in parked {
+            if let Step::Later = ap.row(table, uid, &f)? {
+                ap.report.skipped += 1;
+            }
+        }
+        ap.delete_rows()?;
+    }
+    // 받은 행 · 지우기가 모두 정해진 뒤에: 진 쪽 노트 값 옮기기, 빠진 카드 만들기 (다시 넣은 노트 · 카드 종류도 insert 가 new_notes · new_tpls 에 넣었다).
+    // 받은 가장 큰 HLC 는 처음에 남겼다 (bump_hlc_last): 여기서 쓰는 이 기기 변경은 받은 어떤 값보다 크다 (K28)
     ap.move_values()?;
     ap.fill_cards()?;
     ap.recompute(fsrs)?;
@@ -2215,10 +2322,11 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
         let con = lock(db)?;
         init(&con)?;
         con.execute("UPDATE sync_flags SET enabled = 1, applying = 0", []).map_err(dbe)?;
-        // 데이터 폴더를 다른 컴퓨터로 복사하면 기기 id 도 따라온다. 아직 합류하지 않았는데 Drive 에 같은 id 의 기기가 있으면
-        // 이 기기는 복사본이다: 새 id 를 쓴다 (같은 id 둘이 서로의 변경 파일을 덮지 않게)
+        // 데이터 폴더를 다른 컴퓨터로 복사하면 기기 id 도 따라온다. 아직 합류하지 않았는데 Drive 에 같은 id 의 기기나 변경 파일이 있으면
+        // 이 기기는 복사본이거나 연결을 끊었던 기기다: 새 id 를 쓴다 (같은 id 둘이 서로의 변경 파일을 덮지 않게.
+        // [연결 끊기]는 Drive 의 기기 파일을 지우므로 변경 파일도 본다, Q2-09)
         let me = device_uid(&con)?;
-        if gen_of(&con)? == 0 && r.devices.contains(&format!("devices/{me}.json")) {
+        if gen_of(&con)? == 0 && (r.devices.contains(&format!("devices/{me}.json")) || r.changes.contains_key(&me)) {
             let fresh = format!("{:012x}{}", db::now_ms(), crypto::random_hex(10));
             con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [&fresh]).map_err(dbe)?;
             set_local(&con, "my_seq", "0")?;

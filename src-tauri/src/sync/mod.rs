@@ -955,6 +955,11 @@ fn others_in(store: &dyn Store, me: &str, now: i64) -> bool {
 /// 남기면 다른 기기가 없을 때만 폐기하고, 있으면 이 기기 키체인의 토큰만 지운다
 #[tauri::command]
 pub async fn sync_disconnect(state: State<'_, SyncState>, delete_remote: bool) -> Res<()> {
+    disconnect(&state, delete_remote).await
+}
+
+/// [연결 끊기] · 모든 데이터 삭제(남기기, Q2-10): 이 기기의 동기화 기록 · Google 로그인 토큰 · Drive 잠금 키를 지운다
+pub(crate) async fn disconnect(state: &SyncState, delete_remote: bool) -> Res<()> {
     let sh = state.0.clone();
     let r = tauri::async_runtime::spawn_blocking({
         let sh = sh.clone();

@@ -398,7 +398,7 @@ CREATE TABLE IF NOT EXISTS written_answer (
 );
 
 -- Q9 목록 회상 · 선택형: 마지막 평가 때 빠뜨린 항목 · 고른 보기 (번호 JSON 배열, 선택형은 보기 필드 번호). 카드마다 하나.
--- 이 기기 안에서만 쓴다 (동기화하지 않는다. Anki 에는 평가만 간다). 답 면의 "지난번" 표시 (Q30)
+-- 이 기기 안에서만 쓴다 (동기화하지 않는다. Anki 에는 평가만 간다). 답 면의 "지난번" 표시 (Q31)
 --   shown: 그때의 항목 · 보기 · 정답 (지금 노트와 다르면 읽지 않는다), log_id: 이 값을 만든 평가, prev: 바로 전 값 (그 평가를 되돌리면 돌아간다)
 CREATE TABLE IF NOT EXISTS recall_mark (
     card_id   INTEGER PRIMARY KEY REFERENCES card(id) ON DELETE CASCADE,

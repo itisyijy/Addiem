@@ -197,7 +197,7 @@ pub fn cram_cards(state: State<AppState>, deck_id: i64, scope: Scope) -> Res<Vec
 }
 
 /// 압축 회독 평가. 일정은 그대로 두고 기록만 남긴다. 되돌리기에 쓸 기록 id 를 돌려준다.
-/// marks: Q 목록 · 선택형 (Q9). 압축 회독 결과도 "지난번"이 된다 (Q20 · Q31)
+/// marks: Q 목록 · 선택형 (Q9). 압축 회독 결과도 "지난번"이 된다 (Q20 · Q32)
 #[tauri::command]
 pub fn cram_answer(state: State<AppState>, card_id: i64, rating: u8, elapsed_ms: i64, marks: Option<Vec<u32>>) -> Res<i64> {
     if !(1..=4).contains(&rating) {

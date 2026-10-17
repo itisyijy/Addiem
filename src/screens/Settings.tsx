@@ -15,8 +15,8 @@ import { DeleteDeckConfirm } from "./Deck";
 import { NO_AUTOPLAY, SKIP_SUMMARY, TTS_AUTOPLAY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
 import { ModelRow } from "./Sources";
-import { DriveSection } from "../sync";
-import { AiSection } from "../ai";
+import { DriveSection, useSyncStatus } from "../sync";
+import { AiSection, useAiStatus } from "../ai";
 import { NoteTypesEntry } from "./NoteTypes";
 import { LAST_TYPE } from "./AddCard";
 
@@ -306,6 +306,14 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const ok = typed.trim() === "삭제";
+  const drive = useSyncStatus();
+  const ai = useAiStatus();
+  // 함께 지우는 것과 남는 것 (Q2-10). 학습 데이터가 아닌 ChatGPT 연결은 남긴다
+  const also = [
+    drive?.connected &&
+      `Google Drive 연결도 끊어요. 이 기기에 저장한 Google 로그인 정보${drive.lock ? "와 Drive 잠금 키를" : "를"} 지우고, Drive의 백업·동기화 데이터는 남겨요.`,
+    ai?.connected && "ChatGPT 연결은 그대로예요.",
+  ].filter(Boolean);
 
   const run = async () => {
     if (!ok || busy) return;
@@ -330,6 +338,7 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
       <p className="t-body-m c-secondary">
         덱 {n(info.decks)}개 · 카드 {n(info.cards)}장 · 복습 기록 {n(info.reviews)}건이 이 기기에서 사라져요. 되돌릴 수 없어요.
       </p>
+      {also.length > 0 && <p className="t-body-s c-secondary">{also.join(" ")}</p>}
       <Checkbox checked={backup} label="지우기 전에 백업 파일 만들기 (권장)" onChange={setBackup} />
       <Input
         label="확인을 위해 '삭제'를 입력해 주세요"
