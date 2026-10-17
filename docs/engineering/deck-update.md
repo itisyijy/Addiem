@@ -1,6 +1,6 @@
 # 덱 업데이트 가져오기 (8.7 공유 · 협업의 서버 없는 조각)
 
-2026-10-18. 설계 메모 (코드 변경 없음). 결정 후보는 [DECISIONS DU 섹션](../DECISIONS-PENDING-REVIEW.md). 사용자 요청: "원본 · 내 수정 · 새 버전을 비교해 내 수정과 복습 기록을 보존하는 기준부터 정해 주세요."
+2026-10-18. 설계 메모. **엔진 1단계 구현됨 (2026-10-18, 브랜치 `feat/deck-update`, 9장).** 화면은 2단계. 결정 후보는 [DECISIONS DU 섹션](../DECISIONS-PENDING-REVIEW.md). 사용자 요청: "원본 · 내 수정 · 새 버전을 비교해 내 수정과 복습 기록을 보존하는 기준부터 정해 주세요."
 
 ## 0. 문제와 원칙
 
@@ -35,7 +35,7 @@
 **추천 (a).**
 
 - `note.origin` (TEXT, NULL 허용) = `{"f": [자리마다 해시], "t": "태그"}`. 해시는 **넣은 값**(자리 맞추기 · 미디어 이름 바꾸기 뒤)을 가볍게 정규화한 글의 SHA-256 앞 16자다. 정규화는 공백 · 줄바꿈 접기, `<br/>` · `<br />` → `<br>`, 끝의 `<br>` · 공백 떼기, `&nbsp;` → 공백이다 (편집기가 바꾼 모양을 내 수정으로 보지 않게. ponytail: 모양만 다른 HTML 을 다 거르지는 못한다). 태그는 글자 그대로 둔다 (짧고, 집합 3-way 에 원본 집합이 필요하다). 출처 태그는 뺀다.
-- `note_type.origin` (TEXT, NULL 허용) = `{"f": [Anki 필드 이름…], "t": [{"o": Anki ord, "n": 이름, "our": 우리 ord, "q": 앞면 해시, "a": 뒷면 해시}], "c": CSS 해시}`. Anki ord → 우리 ord 를 적어 두므로 다음 업데이트는 이름 · 앞면 어림(`incoming_ords`)없이 카드 종류를 찾는다.
+- `note_type.origin` (TEXT, NULL 허용) = `{"f": [[Anki 필드 이름, 우리 자리 | null]…], "t": [{"o": Anki ord, "n": 이름, "our": 우리 ord | null, "q": 앞면 해시, "a": 뒷면 해시}], "c": CSS 해시}`. Anki ord → 우리 ord 를 적어 두므로 다음 업데이트는 이름 · 앞면 어림(`incoming_ords`)없이 카드 종류를 찾는다. (구현에서 바꿈, DU21: `f` 는 Anki 순서의 (이름, 우리 자리) 쌍이다. 새 필드가 끝 자리에 붙으면 Anki 순서와 자리가 달라진다. null = 이 앱에서 지웠거나 넣지 못한 것. 템플릿 해시는 Anki 필드 이름 그대로, CSS 해시는 쉬운 편집 줄 상자 CSS 를 뺀 값.)
 - **쓰는 때.** 처음 가져올 때(새 노트 · 새 유형, 미디어 이름 바꾸기가 끝난 뒤)와 업데이트를 적용할 때다. 적용할 때는 고른 결과와 상관없이 **새 버전 값**으로 쓴다. 그래서 내 것을 지킨 필드는 다음 업데이트에서도 "내가 고침"으로 남는다. "새 노트만 더하기"로 건너뛴 노트는 건드리지 않는다.
 - **동기화.** 두 열 모두 동기화 대상 표(`note`, `note_type`)의 NULL 허용 열이라 raw_cols 로 따라가고, 옛 앱은 건너뛴다 (I78 · I82 와 같다). 기기 전용으로 두면 다른 기기에는 기준이 없어 바뀐 노트가 모두 "기준 없음"이 된다. 다른 기기에서 업데이트를 받으면 필드 · 태그 · origin · 새 노트 · 카드 · 유형 변경이 보통 편집처럼 들어와 같은 상태가 된다. 그 기기에서 다음 버전을 가져와도 같은 기준으로 판정한다. 같은 파일을 다시 가져오면 바뀌는 것이 없다 (멱등).
 - 열 단위 LWW 라 `origin` 과 `fields` 가 다른 기기 것일 수 있다 (A 가 업데이트하는 동안 B 가 고침 → fields = B, origin = v2). 그러면 다음 판정에서 B 의 값이 "내가 고침"으로 지켜진다. 어긋나도 지키는 쪽으로만 어긋난다.
@@ -148,6 +148,34 @@
 **크기 어림.** 백엔드 Rust 900–1,300줄 (테스트 약 400줄 포함, 판정은 새 모듈 `deck_update.rs`, 적용은 `import.rs` 의 모드 하나), 화면 600–800줄 (`Import.tsx` 확장 + 검토 화면), 디자인 프레임 6개 × 라이트 · 다크. 작업자 세션으로 백엔드 2, 화면 1–2 (디자인 뒤). NT 엔진 1단계보다 조금 작다.
 
 **위험.** ① 정규화가 못 거른 편집기 HTML 차이는 "내가 고침"이 되어 새 버전이 말없이 안 들어간다 (요약의 "내 수정 지킴 n"에만 보인다). ② 자동 합치기(DU5, 결정됨)는 앞면 · 뒷면처럼 뜻이 이어진 필드를 엇갈려 합칠 수 있다. ③ 오프라인 편집과 업데이트가 엇갈리면 K7 로만 돌아갈 수 있고, 두 기기 업데이트는 새 노트가 두 벌 된다. ④ 기준 없는 예전 노트는 어림(DU18)이라 틀릴 수 있다. ⑤ 빈칸 번호를 다시 매긴 덱은 기록이 다른 내용에 붙는다. ⑥ 쉬운 편집으로 저장한 유형은 만든 사람의 템플릿 변경을 늘 충돌로 받는다. ⑦ 옛 미디어가 쌓인다. ⑧ 스냅샷으로 합류한 기기에서는 내가 지운 노트가 돌아온다. ⑨ 큰 구형 패키지는 이름이 겹친 미디어를 풀어 비교하느라 사전 검사가 느려진다. ⑩ 백업 복구는 DB 전체라 되돌리기가 거칠다.
+
+## 9. 1단계 구현 (2026-10-18)
+
+코드: `src-tauri/src/import/deck_update.rs` (판정 · 적용 · 원본, import.rs 의 자식 모듈이라 패키지 읽기 · 미디어 · 덱 함수를 그대로 쓴다). 결정은 DU20–DU27.
+
+**원본 저장.** 1장 그대로 `note.origin` · `note_type.origin` 열 (db.rs migrate, NULL 허용, 동기화 대상 표의 열이라 raw_cols 로 따라간다) + 기기 안 표 `origin_gone(guid, at)` 와 트리거 `note_origin_gone` (`OLD.origin IS NOT NULL AND OLD.anki_guid IS NOT NULL`). 지금 가져오기(`import_anki`)도 새 노트 · 새 유형에 원본을 쓴다 (미디어 이름 바꾸기 뒤). 예전에 가져온 노트 · 유형은 채우지 않고 업데이트 때 어림한다 (DU18 · DU22). `wipe_all` 은 `origin_gone` 도 비운다.
+
+**사전 검사 = 적용.** `run` 하나가 한 트랜잭션에서 모두 하고, 사전 검사면 되돌린다 (미디어 파일만 쓰지 않는다). 그래서 요약의 수가 곧 적용 결과이고, 고른 것(choices)을 넘기면 그대로 반영한 요약이 나온다 (DU20).
+
+**명령 (화면이 쓴다).**
+
+| 명령 | 입력 | 출력 |
+|---|---|---|
+| `inspect_anki` (기존) | path, voices | `AnkiPreview` 에 `update: UpdateHint \| null` 추가 (이미 있는 노트가 없으면 null) — B2-u0 |
+| `inspect_update` | path, deck_ids?, choices?, voices? | `UpdateSummary` (쓰지 않는다) — B2-u · B2-k · B2-kt |
+| `apply_update` | path, deck_ids?, choices?, voices? | `UpdateSummary` + `backup` (적용 전 백업 경로) — B3-u |
+
+- `choices = { take_new: [노트 id…], new_looks: [[노트 유형 id, ord | null]…] }`. 기본(빈 값)은 모두 내 것 · 내 모양. `take_new` 는 그 노트의 충돌한 필드에만, `new_looks` 의 ord null 은 CSS.
+- `UpdateHint = { notes, existing_notes, known_decks: [덱 이름], suggested }`. suggested = 절반 이상이 이미 있거나 같은 Anki 덱 id 의 덱이 있다.
+- `UpdateSummary` (부록 A B2-u 의 줄 순서): `hint` · `changed` (새 버전으로 바뀌는 노트) · `merged` · `conflicts[]` (`note_id, title, deck, fields[{slot, name, mine, new}], auto_new, auto_mine, take_new, no_base`) · `mine_kept` · `same` · `new_notes` · `new_note_cards` · `missing_notes` · `missing_card_ids` ([카드 목록에서 보기]) · `gone` · `cloze{renumbered_notes, new_cards, emptied_cards}` · `new_cards` (이미 있는 노트에 생기는 카드 전부) · `emptied_cards` (앞면이 비어 학습에서 빠지는 카드 전부) · `types[]` (`note_type_id, name, created, no_base, new_fields, renamed_fields, removed_fields, new_templates, new_template_cards, removed_templates, updated_looks, looks[{ord, name, mine_front, mine_back, new_front, new_back, take_new}]`) · `kept_looks` · `no_base` · `other_type` · `media_new` · `media_renamed` · `reviews_skipped` · `issues[]` · `backup` · `roots`.
+
+**화면의 명령 순서.**
+1. `inspect_anki(path)` → `update` 가 있으면 B2-u0 고르기 (기본 = `suggested`). [새 노트만 더하기] 는 지금의 `import_anki` 그대로.
+2. 동기화가 연결돼 있으면 (`sync_status().connected && enabled`) `sync_now()` → `sync_status().state` 가 `idle` (또는 `offline` · `error` 면 경고 한 줄 뒤 계속) 이 될 때까지 기다린다. 받기가 DB 를 잠그므로 3 과 겹치지 않는다.
+3. `inspect_update(path, deck_ids)` → B2-u 요약. 충돌이 있으면 B2-k · B2-kt 에서 고르고 `inspect_update(path, deck_ids, choices)` 로 요약을 다시 받는다.
+4. `apply_update(path, deck_ids, choices)` → B3-u. 백업 → 한 트랜잭션. 동기화는 다음 올리기에 실린다 (트리거가 남긴 변경, HLC 는 적용한 순간 K28).
+
+**메모와 달라진 점.** ① `note_type.origin.f` 형식 (위 1장, DU21). ② 원본 없는 예전 유형에서 모양(앞 · 뒷면 · CSS)이 다르면 충돌로 보고 내 모양을 지킨다: [새 모양으로]로 고를 수 있다 (2장 6 "지금처럼 덮지 않는다"를 지키면서 고를 길을 남김, DU22). ③ [복습 기록도 옮기기]는 1단계에 없다 (`reviews_skipped` 로 수만, DU23). ④ 새 카드 종류는 이 유형의 모든 노트(이번 파일에 없는 노트 포함)에 카드를 만든다 (노트 유형 편집과 같다, DU24). ⑤ 미디어는 이번 노트 · 유형이 쓰는 것만 다룬다. 이름이 겹치는 파일만 풀어 비교하고 신형 패키지의 sha1 은 쓰지 않았다 (DU24). ⑥ 진행 표시 · 취소 이벤트는 없다 (DU26). ⑦ 이 작업 중 찾은 지금 가져오기의 버그(같은 모델 id 의 빈칸 유형에 다시 가져오면 새 노트가 모두 빠진다)를 고쳤다 (DU27).
 
 ## 부록 A. 디자인 세션에 줄 화면 요청 (초안)
 
