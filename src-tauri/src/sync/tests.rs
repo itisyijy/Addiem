@@ -809,8 +809,10 @@ fn copied_data_folder_gets_its_own_device_id() {
     env.sync(&a);
     clone.deck("복사본의 새 덱", None);
     assert!(engine::push(&clone.db, &env.cx(&clone)).is_err(), "같은 번호의 파일을 덮지 않는다");
-    // 끊고 다시 연결하면 새 id 로 합류한다
+    assert!(engine::push(&clone.db, &env.cx(&clone)).is_err(), "다음 번에도 말없이 다음 번호로 올리지 않는다 (Q2-09)");
+    // 끊고 다시 연결하면 새 id 로 합류한다. [연결 끊기]가 Drive 의 기기 파일을 지웠어도 (이 id 의 변경 파일이 남아 있다)
     super::forget_local(&clone.con()).unwrap();
+    env.store.delete(&format!("devices/{}.json", id(&clone))).unwrap();
     engine::join(&clone.db, &env.cx(&clone), Join::Merge, json!({})).unwrap();
     assert_ne!(id(&clone), id(&a));
     env.sync(&clone);
@@ -1324,6 +1326,58 @@ fn pending_count_includes_card_only_changes() {
     a.review(&env.fsrs, card, 3, 1_800_000_000_000);
     let (pending, reviews, _) = super::pending_counts(&a.con());
     assert_eq!((pending, reviews), (1, 1), "복습한 카드의 변경은 복습 묶음으로 센다");
+}
+
+#[test]
+fn restoring_an_old_local_backup_catches_up_with_drive() {
+    // Q2-09: 동기화하는 기기(B)가 오래된 이 기기 백업으로 복구해도 Drive 와 다시 맞춘다.
+    // 백업 뒤에 B 가 올린 것(X1 · 덱 이름 · 지운 노트 · 복습)과 A 가 올린 것(Y)을 다시 받고, 옛 상태가 더 새 변경을 덮지 않는다.
+    // 백업 뒤의 B 파일이 정리돼 스냅샷에만 남았어도 같다
+    restore_old_backup(false);
+    restore_old_backup(true);
+}
+
+fn restore_old_backup(compacted: bool) {
+    let env = Env::new();
+    let (a, b, card) = pair(&env);
+    let card = b.id("card", &a.uid("card", card)).unwrap();
+    let deck = b.n("SELECT id FROM deck WHERE name = '2과목'");
+    let (gone, _) = b.note(deck, "백업 뒤 지울 노트", None, 1500);
+    env.sync(&b);
+    env.sync(&a);
+    let backup = b.dir.join("backup.sqlite");
+    b.con().execute("VACUUM INTO ?1", [backup.to_string_lossy()]).unwrap();
+    b.note(deck, "X1", None, 2000);
+    b.con().execute("UPDATE deck SET name = '2과목 (B)', updated_at = 2000 WHERE id = ?1", [deck]).unwrap();
+    b.con().execute("DELETE FROM note WHERE id = ?1", [gone]).unwrap();
+    b.review(&env.fsrs, card, 3, 1_800_000_000_000);
+    env.sync(&b);
+    let top = a.n("SELECT id FROM deck WHERE name = '빅데이터분석기사'");
+    a.note(top, "Y", None, 2100);
+    env.sync(&a);
+    env.sync(&b);
+    if compacted {
+        engine::write_snapshot(&a.db, &env.cx(&a), 1, json!({ "kind": "compact" })).unwrap();
+        for p in env.files(&format!("changes/{}/", b.me())) {
+            env.store.delete(&p).unwrap();
+        }
+    }
+    // commands::restore_backup: 파일을 백업으로 바꾸고 표시한다. 받기 전의 올리기(학습을 마칠 때 · 창을 닫을 때)는 기다린다
+    *b.con() = db::open(&backup).unwrap();
+    engine::mark_restored(&b.con()).unwrap();
+    b.note(deck, "X2", None, 3000);
+    assert!(!engine::push(&b.db, &env.cx(&b)).unwrap(), "Drive 와 다시 맞추기 전에는 올리지 않는다");
+    env.sync(&b);
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(a.dump(), b.dump(), "두 기기가 같다 (정리됨: {compacted})");
+    for front in ["X1", "X2", "Y"] {
+        assert_eq!(b.n(&format!("SELECT count(*) FROM note WHERE fields LIKE '%\"{front}\"%'")), 1, "{front}");
+    }
+    assert_eq!(b.n("SELECT count(*) FROM note WHERE fields LIKE '%백업 뒤 지울 노트%'"), 0, "백업 뒤에 지운 노트가 되살아나지 않는다");
+    assert_eq!(b.n("SELECT count(*) FROM deck WHERE name = '2과목 (B)'"), 1, "백업 뒤에 바꾼 이름");
+    assert_eq!(b.n("SELECT count(*) FROM review_log"), 1, "백업 뒤의 복습 기록");
+    assert_eq!(b.srs(card).reps, 1);
 }
 
 /// 다른 기기(zz)가 올린 것처럼 변경 파일 하나를 써 넣는다 (변조된 Drive 흉내)

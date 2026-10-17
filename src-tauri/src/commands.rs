@@ -2610,6 +2610,8 @@ pub async fn restore_backup(state: State<'_, AppState>) -> Res<String> {
         std::fs::write(target, buf).map_err(err)?;
     }
     *guard = db::open(&db_path).map_err(|e| format!("백업도 열지 못했어요: {e}"))?;
+    // 동기화하던 백업이면 다음 동기화가 Drive 와 다시 맞춘다 (백업 뒤의 이 기기 · 다른 기기 변경을 받는다, Q2-09)
+    crate::sync::engine::mark_restored(&guard).map_err(err)?;
     *state.startup_error.lock().map_err(err)? = None;
     Ok(latest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
 }
@@ -2641,12 +2643,13 @@ pub fn set_cutoff_hour(state: State<AppState>, hour: i64) -> Res<()> {
 
 /// E1-b 모든 데이터 삭제. backup 이면 먼저 백업 파일을 만든다. 만든 백업 경로를 돌려준다
 #[tauri::command]
-pub async fn wipe_all(state: State<'_, AppState>, backup: bool) -> Res<Option<String>> {
+pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::SyncState>, backup: bool) -> Res<Option<String>> {
+    let saved = if backup { Some(write_backup(&*state.db.lock().map_err(err)?, &state.data_dir)?.display().to_string()) } else { None };
+    // "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 Drive 동기화를 먼저 끊는다. [연결 끊기 · 남기기]와 같다:
+    // 이 기기의 동기화 기록 · Google 로그인 토큰 · Drive 잠금 키를 지우고 Drive 데이터는 그대로 (K19 · Q2-10)
+    crate::sync::disconnect(&sync, false).await?;
     let mut con = state.db.lock().map_err(err)?;
-    let saved = if backup { Some(write_backup(&con, &state.data_dir)?.display().to_string()) } else { None };
     let tx = con.transaction().map_err(err)?;
-    // Drive 동기화 중이면 "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 먼저 끊는다 (Drive 데이터는 그대로, K10)
-    crate::sync::forget_local(&tx).map_err(err)?;
     // K7 두 기기에서 고친 카드 · K39 노트 유형의 진 쪽 내용도 학습 데이터다 (연결 끊기와 달리 지운다)
     tx.execute_batch("DROP TABLE IF EXISTS sync_conflict; DROP TABLE IF EXISTS sync_type_conflict;").map_err(err)?;
     tx.execute_batch(
