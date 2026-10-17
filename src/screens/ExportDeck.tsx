@@ -72,7 +72,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     const unlisten = await listen<ExportProgress>("export-progress", (e) => setProg(e.payload));
     try {
       const r = await api.exportApkg(deckId, path, history);
-      if (r.missing_media > 0 || r.skipped_cards > 0) setResult(r);
+      if (r.missing_media > 0 || r.skipped_cards > 0 || r.duplicate_guids > 0) setResult(r);
       else {
         // C1-xr 경고가 없으면 결과 창 없이 토스트만
         onClose();
@@ -132,7 +132,13 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     if (history) tiles.push(["복습 기록", r.reviews]); // 끈 경우 복습 기록 칸 없음
     return (
       <Modal
-        title={r.missing_media > 0 ? `내보냈지만 미디어 파일 ${n(r.missing_media)}개가 빠졌어요` : `내보냈지만 카드 ${n(r.skipped_cards)}장은 빼고 넣었어요`}
+        title={
+          r.missing_media > 0
+            ? `내보냈지만 미디어 파일 ${n(r.missing_media)}개가 빠졌어요`
+            : r.skipped_cards > 0
+              ? `내보냈지만 카드 ${n(r.skipped_cards)}장은 빼고 넣었어요`
+              : `내보냈어요 · 같은 노트가 두 벌인 노트 ${n(r.duplicate_guids)}개가 있어요`
+        }
         variant="confirm"
         icon="check"
         className="modal--export is-result"
@@ -156,6 +162,17 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
               <span className="t-body-m-strong c-warn">카드 종류가 없는 카드 {n(r.skipped_cards)}장을 뺐어요</span>
               <span className="t-body-s c-secondary">
                 카드 종류가 지워진 카드라 Anki가 받지 않아요. 넣으면 Anki가 파일 전체를 가져오지 않아요. 이 앱의 카드는 그대로예요.
+              </span>
+            </span>
+          </div>
+        )}
+        {r.duplicate_guids > 0 && (
+          <div className="export__warn">
+            <Icon name="alert" size={18} className="c-warn" />
+            <span className="export__warn-text">
+              <span className="t-body-m-strong c-warn">같은 노트가 두 벌인 노트 {n(r.duplicate_guids)}개</span>
+              <span className="t-body-s c-secondary">
+                두 기기가 받기 전에 같은 덱 업데이트를 적용해 생긴 것 같아요. Anki가 하나로 합치지 않게 두 번째 것은 다른 노트로 내보냈어요. 이 앱에서 하나를 지우면 다음부터 한 벌로 나가요.
               </span>
             </span>
           </div>

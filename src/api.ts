@@ -379,6 +379,9 @@ export type AnkiPreview = {
 
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
+/** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" };
+
 export type UpdateHint = {
   notes: number;
   existing_notes: number;
@@ -429,6 +432,9 @@ export type UpdateTypeChange = {
   new_templates: string[];
   new_template_cards: number;
   removed_templates: string[];
+  /** 원본 없는 예전 유형이라 넣지 않는 새 필드 · 카드 종류 (DU22) */
+  skipped_fields: string[];
+  skipped_templates: string[];
   updated_looks: string[];
   looks: LookConflict[];
 };
@@ -455,6 +461,11 @@ export type UpdateSummary = {
   media_new: number;
   media_renamed: number;
   media_compared: number;
+  /** 같은 guid 노트가 두 벌 이상인 노트 · 그 카드 (DU-06) */
+  duplicate_notes: number;
+  duplicate_card_ids: number[];
+  /** 새 노트를 넣으려고 새로 만드는 덱 */
+  new_decks: number;
   /** 사전 검사만: 충돌 필드의 새 버전이 쓰는데 아직 저장하지 않은 그림 (이름 -> data URL) */
   media_preview: Record<string, string>;
   reviews_skipped: number;
@@ -468,6 +479,8 @@ export type UpdateProgress = { step: "backup" | "types" | "notes" | "cards" | "m
 export type ImportProgress = { step: "unzip" | "decks" | "cards" | "media" | "done"; done: number; total: number };
 /** export_apkg 결과. missing_media: 노트가 쓰지만 미디어 폴더에 없어 빠진 파일 수 */
 export type ExportResult = {
+  /** 같은 guid 를 가진 두 번째 노트 (새 guid 로 내보냈다, DU-06) */
+  duplicate_guids: number;
   notes: number;
   cards: number;
   media: number;
@@ -652,7 +665,9 @@ export const api = {
   createBackup: () => invoke<string>("create_backup"),
   retryOpen: () => invoke<void>("retry_open"),
   /** 가장 최근 백업으로 되돌린다. 쓴 백업 파일 이름을 돌려준다 */
-  restoreBackup: () => invoke<string>("restore_backup"),
+  /** name 이 없으면 가장 최근 백업. backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */
+  restoreBackup: (name: string | null = null, backupFirst = false) => invoke<string>("restore_backup", { name, backupFirst }),
+  localBackups: () => invoke<LocalBackup[]>("local_backups"),
   openBackupDir: () => invoke<void>("open_backup_dir"),
   setCutoffHour: (hour: number) => invoke<void>("set_cutoff_hour", { hour }),
   wipeAll: (backup: boolean) => invoke<string | null>("wipe_all", { backup }),

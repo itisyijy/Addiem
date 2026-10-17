@@ -68,3 +68,12 @@ u.du-diff { text-decoration: underline; text-underline-offset: 3px; }
 .du-css { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); }
 .du-css > span:last-child { flex: 1; min-width: 0; }
 .du-look__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* B2-p [취소]로 멈춤: 오류가 아니라 회색 상자 (DU-14) */
+.import__fail.du-stopped { background: var(--bg-subtle); }
+
+/* 설정 › 이 기기 백업 [백업으로 복구] (DU42) */
+.modal.restore { gap: 14px; }
+.restore__list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow: auto; }
+.restore__list .import__option { padding: 12px 14px; }
+.restore__list .import__option.is-on { padding: 11px 13px; }

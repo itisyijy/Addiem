@@ -124,7 +124,7 @@ function Screen({ route }: { route: Route }) {
     case "importance":
       return <Importance key={route.deckId} deckId={route.deckId} next={route.next} />;
     case "settings":
-      return <Settings focus={route.focus} />;
+      return <Settings key={`${route.focus}-${route.backup}`} focus={route.focus} backup={route.backup} />;
     case "noteTypes":
       return <NoteTypes back={route.back} />;
     case "noteTypeEdit":

@@ -312,7 +312,11 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
         <div className="deck__title">
           <h1 className="t-title-l">{buriedOnly ? "접어둔 카드" : "카드"} {n(list?.total ?? deck.total)}장</h1>
           <p className="t-body-s c-secondary">
-            {deckId === null ? "모든 덱 · 자동으로 또는 직접 접어둔 카드" : `${deck.name} · 중요도는 하위 덱 설정을 따르고, 카드마다 직접 지정할 수 있어요`}
+            {deckId === null
+              ? cardIds
+                ? "모든 덱 · 고른 카드만 보여요"
+                : "모든 덱 · 자동으로 또는 직접 접어둔 카드"
+              : `${deck.name} · 중요도는 하위 덱 설정을 따르고, 카드마다 직접 지정할 수 있어요`}
           </p>
         </div>
         {deckId !== null && <Button size="M" icon="plus" label="카드 추가" shortcut={actionKey("addCard")} onClick={() => nav({ name: "addCard", deckId })} />}

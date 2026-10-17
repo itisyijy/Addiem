@@ -61,8 +61,8 @@ async function pullFirst(onStart: () => void): Promise<Exclude<Pull, "pulling">>
 
 export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPreview; onAdd: () => void }) {
   const nav = useNav();
-  const hint = info.update!;
-  const [mode, setMode] = useState<"update" | "add">(hint.suggested ? "update" : "add");
+  const first = info.update!;
+  const [mode, setMode] = useState<"update" | "add">(first.suggested ? "update" : "add");
   const [pull, setPull] = useState<Pull | null>(null);
   const [summary, setSummary] = useState<UpdateSummary | null>(null);
   const [error, setError] = useState<string>();
@@ -81,6 +81,8 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
     check();
   }, [check]);
 
+  // 다른 기기 변경을 받은 뒤의 근거 (사전 검사가 받은 뒤에 센다, DU-09). 그 전에는 파일을 열 때의 근거
+  const hint = summary?.hint ?? first;
   const deck = hint.known_decks[0];
   const half = hint.existing_notes * 2 >= hint.notes;
   const adds = hint.notes - hint.existing_notes;
@@ -88,6 +90,7 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
   const counts = summary
     ? [
         summary.changed > 0 && `새 버전으로 바뀌는 노트 ${n(summary.changed)}개`,
+        summary.merged > 0 && `합친 노트 ${n(summary.merged)}개`,
         summary.new_notes > 0 && `새 노트 ${n(summary.new_notes)}개`,
         summary.conflicts.length > 0 && `충돌 ${n(summary.conflicts.length)}개`,
       ].filter(Boolean)
@@ -287,6 +290,7 @@ function typeDesc(t: UpdateTypeChange) {
   // 카드 종류 이름은 따옴표, CSS 는 그대로
   const looks = (xs: string[]) => xs.map((x) => (x === "CSS" ? x : `"${x}"`)).join(", ");
   const gone = [...t.removed_fields, ...t.removed_templates];
+  const skipped = [t.skipped_fields.length > 0 && `필드 ${q(t.skipped_fields)}`, t.skipped_templates.length > 0 && `카드 종류 ${q(t.skipped_templates)}`].filter(Boolean) as string[];
   const clauses = [
     t.created && ["새 노트 유형으로 넣고", "새 노트 유형으로 넣어요"],
     t.new_fields.length > 0 && [`${q(t.new_fields)} 필드를 끝에 더하고`, `${q(t.new_fields)} 필드를 끝에 더해요`],
@@ -297,6 +301,10 @@ function typeDesc(t: UpdateTypeChange) {
     ],
     t.updated_looks.length > 0 && [`${looks(t.updated_looks)}${eun(t.updated_looks.slice(-1)[0])} 새 모양으로 바꾸고`, `${looks(t.updated_looks)}${eun(t.updated_looks.slice(-1)[0])} 새 모양으로 바꿔요`],
     gone.length > 0 && [`새 버전에서 없어진 ${q(gone)}${eun(gone.slice(-1)[0])} 그대로 두고`, `새 버전에서 없어진 ${q(gone)}${eun(gone.slice(-1)[0])} 그대로 둬요`],
+    skipped.length > 0 && [
+      `비교할 원본이 없는 예전 유형이라 새 버전의 ${skipped.join(" · ")}${eun(skipped.slice(-1)[0])} 넣지 않고 (내가 지운 것과 구별할 수 없어요)`,
+      `비교할 원본이 없는 예전 유형이라 새 버전의 ${skipped.join(" · ")}${eun(skipped.slice(-1)[0])} 넣지 않아요 (내가 지운 것과 구별할 수 없어요)`,
+    ],
   ].filter(Boolean) as [string, string][];
   const sentence = clauses.map((c, i) => c[i === clauses.length - 1 ? 1 : 0]).join(", ");
   return `"${t.name}"${sentence ? `: ${sentence}` : ""}`;
@@ -317,18 +325,39 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
   useKey("Escape", onMode);
   const conflicts = s.conflicts.length;
   const takeNew = s.conflicts.filter((c) => c.take_new).length;
-  const typeRows = s.types.filter((t) => t.created || t.new_fields.length || t.renamed_fields.length || t.new_templates.length || t.updated_looks.length || t.removed_fields.length || t.removed_templates.length);
+  const typeRows = s.types.filter(
+    (t) =>
+      t.created ||
+      t.new_fields.length ||
+      t.renamed_fields.length ||
+      t.new_templates.length ||
+      t.updated_looks.length ||
+      t.removed_fields.length ||
+      t.removed_templates.length ||
+      t.skipped_fields.length ||
+      t.skipped_templates.length,
+  );
   const newFields = typeRows.reduce((a, t) => a + t.new_fields.length, 0);
   const newTpls = typeRows.reduce((a, t) => a + t.new_templates.length, 0);
   const tplCards = s.types.reduce((a, t) => a + t.new_template_cards, 0);
-  const looked = s.types.filter((t) => t.looks.length > 0);
-  const lookNames = looked.flatMap((t) => t.looks.map((l) => `"${t.name}" ${l.name}`));
-  const sides = [...new Set(looked.flatMap((t) => t.looks.flatMap((l) => l.mine_changed)))];
+  // 모양 충돌: 지키는 것(고르지 않음 · 내 모양)과 새 모양으로 고른 것 (DU-03). 원본 없는 유형은 내가 고친 것이 아니다 (DU-08)
+  const looks = s.types.flatMap((t) => t.looks.map((l) => ({ t, l, label: `"${t.name}" ${l.name}` })));
+  const kept = looks.filter((x) => !x.l.take_new);
+  const chosen = looks.filter((x) => x.l.take_new);
+  const editedKept = kept.filter((x) => !x.t.no_base);
+  const baseless = kept.filter((x) => x.t.no_base);
+  const sides = [...new Set(editedKept.flatMap((x) => x.l.mine_changed))];
+  const keptDesc = [
+    editedKept.length > 0 && `${editedKept.map((x) => x.label).join(", ")}의 ${sides.join(" · ") || "모양"}${eul(sides.join(" · ") || "모양")} 나도 고쳐서 내 모양을 지켜요`,
+    baseless.length > 0 && `${baseless.map((x) => x.label).join(", ")}${eun(baseless.slice(-1)[0].label)} 비교할 원본이 없어 새 버전과 다른 모양을 내 것으로 지켜요`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   // 빈칸 · 새 카드 종류 밖에서 생기거나 비는 카드 (필드가 새로 차거나 비었다)
   const otherNew = s.new_cards - s.cloze.new_cards - tplCards;
   const otherEmpty = s.emptied_cards - s.cloze.emptied_cards;
   const noBase = s.conflicts.filter((c) => c.no_base).length;
-  const nothing = s.changed + s.merged + conflicts + s.new_notes + s.new_cards + typeRows.length + s.media_new === 0;
+  const nothing = s.changed + s.merged + conflicts + s.new_notes + s.new_cards + typeRows.length + s.media_new + chosen.length === 0;
 
   const all: Row[] = [
     { key: "changed", icon: "rotate", title: "새 버전으로 바뀌는 노트", desc: "만든 사람만 고친 노트예요. 카드 기록과 일정은 그대로예요", right: `${n(s.changed)}개` },
@@ -342,7 +371,23 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
       warn: !reviewed,
       actions: [{ label: reviewed ? "다시 검토" : "검토", onClick: onReview, ink: !reviewed }],
     },
-    { key: "new", icon: "plus", title: "새 노트", desc: "새 카드는 신규로 시작해요 · 하위 덱 자리는 새 버전을 따라요", right: `${n(s.new_notes)}개 · 카드 ${n(s.new_note_cards)}장` },
+    {
+      key: "new",
+      icon: "plus",
+      title: "새 노트",
+      desc: `새 카드는 신규로 시작해요 · 하위 덱 자리는 새 버전을 따라요${s.new_decks > 0 ? ` · 이 기기에 없는 덱 ${n(s.new_decks)}개를 새로 만들어요` : ""}`,
+      right: `${n(s.new_notes)}개 · 카드 ${n(s.new_note_cards)}장`,
+    },
+    ...(chosen.length > 0
+      ? [{
+          key: "newlooks",
+          icon: "layers" as IconName,
+          title: "새 모양으로 바꾸는 카드 종류",
+          desc: `${chosen.map((x) => x.label).join(", ")}${eun(chosen.slice(-1)[0].label)} 고른 대로 새 모양으로 바꿔요`,
+          right: `${n(chosen.length)}개`,
+          actions: [{ label: "새 모양 보기", onClick: onLooks }],
+        }]
+      : []),
     ...(typeRows.length
       ? [{
           key: "types",
@@ -381,7 +426,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
   ];
   const changes = all.filter((r) => !["changed", "merged", "conflicts", "new"].includes(r.key) || { changed: s.changed, merged: s.merged, conflicts, new: s.new_notes }[r.key as "changed"] > 0);
 
-  const kept: Row[] = [
+  const stays: Row[] = [
     ...(s.mine_kept > 0 ? [{ key: "mine", icon: "pencil" as IconName, title: "내가 고쳐 지키는 노트", desc: "내가 고친 필드만 있고 만든 사람은 고치지 않았어요", right: `${n(s.mine_kept)}개` }] : []),
     ...(s.missing_notes > 0
       ? [{
@@ -394,20 +439,27 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
         }]
       : []),
     ...(s.gone > 0 ? [{ key: "gone", icon: "trash" as IconName, title: "내가 지운 노트", desc: "다시 넣지 않아요", right: `${n(s.gone)}개` }] : []),
-    ...(looked.length > 0
+    ...(kept.length > 0
       ? [{
           key: "looks",
           icon: "lock" as IconName,
-          title: s.kept_looks > 0 ? "내 모양을 지킨 노트 유형" : "새 모양으로 고른 노트 유형",
-          desc:
-            s.kept_looks > 0
-              ? `${lookNames.join(", ")}의 ${sides.join(" · ") || "모양"}${eul(sides.join(" · ") || "모양")} 나도 고쳐서 내 모양을 지켜요`
-              : `${lookNames.join(", ")}${eun(lookNames[lookNames.length - 1] ?? "")} 새 모양으로 바꿔요`,
-          right: `${n(s.kept_looks > 0 ? s.kept_looks : looked.length)}개`,
+          title: "내 모양을 지킨 노트 유형",
+          desc: keptDesc,
+          right: `${n(kept.length)}개`,
           actions: [
             { label: "새 모양 보기", onClick: onLooks },
-            ...(s.kept_looks > 0 ? [{ label: "새 모양으로", onClick: onAllNewLooks }] : []),
+            { label: "새 모양으로", onClick: onAllNewLooks },
           ],
+        }]
+      : []),
+    ...(s.duplicate_notes > 0
+      ? [{
+          key: "dups",
+          icon: "alert" as IconName,
+          title: "같은 노트가 두 벌 있어요",
+          desc: "다른 기기 변경을 받기 전에 두 기기에서 같은 파일을 적용했을 수 있어요. 첫 번째 것만 고쳐요 · 하나를 지워 주세요",
+          right: `${n(s.duplicate_notes)}개`,
+          actions: [{ label: "카드 목록에서 보기", onClick: () => nav({ name: "cards", deckId: null, cardIds: s.duplicate_card_ids }) }],
         }]
       : []),
     ...(noBase > 0
@@ -439,7 +491,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
       </div>
       <p className="t-body-m c-secondary">적용하기 전에 바뀌는 것을 모두 보여 드려요. 내 것은 지금 내 덱, 새 버전은 이 파일이에요.</p>
       <RowGroup accent title="바뀌는 것" caption="적용하면 이렇게 돼요" rows={changes} empty={s.changed + s.merged + conflicts === 0 ? "새 버전에서 바뀐 노트가 없어요" : undefined} />
-      {kept.length > 0 && <RowGroup title="그대로 두는 것" rows={kept} />}
+      {stays.length > 0 && <RowGroup title="그대로 두는 것" rows={stays} />}
       {s.issues.length > 0 && (
         <div className="du-group">
           <div className="du-group__head">
@@ -457,7 +509,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
         </span>
         <span className="du-line">
           <Icon name="check" size={16} className="c-success" />
-          <span className="t-label-m">적용하기 전에 백업을 만들어요 · 문제가 생기면 설정 › 백업에서 [백업으로 복구]</span>
+          <span className="t-label-m">적용하기 전에 백업을 만들어요 · 문제가 생기면 설정 › 이 기기 백업에서 [백업으로 복구]</span>
         </span>
         {s.reviews_skipped > 0 && (
           <span className="du-line">
@@ -819,7 +871,7 @@ function LookCompare({ summary, looks, onPick, onBack }: { summary: UpdateSummar
         <Button variant="secondary" size="M" label="내 모양 유지" onClick={() => set("mine")} />
         <Button variant="secondary" size="M" label="새 모양으로" onClick={() => set("new")} />
         <span className="t-caption c-tertiary">
-          새 모양으로 바꾸면 내가 고친 {mineSides || "모양"}{eun(mineSides || "모양")} 사라져요 · 적용 전 백업에서 되돌릴 수 있어요
+          {item.t.no_base ? "새 모양으로 바꾸면 지금 모양은 사라져요" : `새 모양으로 바꾸면 내가 고친 ${mineSides || "모양"}${eun(mineSides || "모양")} 사라져요`} · 적용 전 백업에서 되돌릴 수 있어요
         </span>
       </span>
       <div className="import__foot">
@@ -918,7 +970,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
       </span>
       <span className="du-look__foot">
         <span className="t-caption c-secondary">
-          {who === "mine" ? "내가 고친 것" : "만든 사람이 고친 것"}: {changed.join(" · ") || "—"}
+          {who === "mine" && t.no_base ? "비교할 원본이 없어요 · 새 버전과 달라서 내 모양으로 지켜요" : `${who === "mine" ? "내가 고친 것" : "만든 사람이 고친 것"}: ${changed.join(" · ") || "—"}`}
         </span>
         <Button variant="ghost" size="M" label={raw ? "미리보기" : "HTML 보기"} onClick={() => setRaw(!raw)} />
       </span>
@@ -1018,14 +1070,16 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
     }
   };
   const noBackup = failed?.startsWith(NO_BACKUP);
+  // [취소]로 멈춘 것은 오류가 아니다 (엔진 STOPPED 와 같은 글)
+  const stopped = failed?.startsWith("업데이트를 멈췄어요");
 
   return (
     <main className="import">
-      <button className="backlink t-label-m c-secondary" disabled>
+      <button className="backlink t-label-m c-secondary" disabled={!failed} onClick={() => nav({ name: "home" })}>
         <Icon name="chevron-left" size={18} />홈
       </button>
       <div className="import__head">
-        <h1 className="t-title-l">업데이트 적용 중</h1>
+        <h1 className="t-title-l">{stopped ? "업데이트를 멈췄어요" : noBackup ? "업데이트하지 않았어요" : failed ? "업데이트하지 못했어요" : "업데이트 적용 중"}</h1>
       </div>
       <div className="import__file">
         <span className="import__file-icon">
@@ -1046,15 +1100,17 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
         </span>
       </div>
       {failed ? (
-        <div className="import__fail">
-          <Icon name={noBackup ? "alert" : "x"} size={20} className="c-danger" />
+        <div className={`import__fail ${stopped ? "du-stopped" : ""}`}>
+          <Icon name={stopped ? "info" : noBackup ? "alert" : "x"} size={20} className={stopped ? "c-secondary" : "c-danger"} />
           <span className="import__fail-text">
-            <span className="t-body-m-strong c-danger">{noBackup ? "백업을 만들 수 없어요 · 백업 없이는 적용하지 않아요" : "업데이트를 멈췄어요 · 아무것도 바뀌지 않았어요"}</span>
-            <span className="t-body-s c-secondary">{failed}</span>
+            <span className={`t-body-m-strong ${stopped ? "" : "c-danger"}`}>
+              {stopped ? "업데이트를 멈췄어요 · 아무것도 바뀌지 않았어요" : noBackup ? "백업을 만들 수 없어요 · 백업 없이는 적용하지 않아요" : "업데이트하지 못했어요 · 아무것도 바뀌지 않았어요"}
+            </span>
+            {!stopped && <span className="t-body-s c-secondary">{failed}</span>}
             <span className="du-actions">
               <Button variant="secondary" size="M" label="요약으로" onClick={onBack} />
               {noBackup ? (
-                <Button variant="secondary" size="M" label="설정 › 백업 열기" onClick={() => nav({ name: "settings" })} />
+                <Button variant="secondary" size="M" label="설정 › 이 기기 백업 열기" onClick={() => nav({ name: "settings" })} />
               ) : (
                 <Button variant="secondary" size="M" label="다시 시도" onClick={() => (setFailed(undefined), setProg(null), setBackupAt(null), setRound((r) => r + 1))} />
               )}
@@ -1122,7 +1178,7 @@ function report(s: UpdateSummary) {
     s.backup ? `업데이트 전 백업: ${s.backup}` : "",
     "",
     "항목",
-    ...s.issues.map((i) => `[${i.severity}] ${i.detail}`),
+    ...s.issues.map((i) => `[${{ skipped: "건너뜀", warning: "경고", info: "참고" }[i.severity]}] ${i.detail}`),
   ];
   return lines.join("\n");
 }
@@ -1207,8 +1263,9 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
             <Icon name="download" size={20} className="c-success" />
             <span className="result__row-text">
               <span className="t-body-m-strong">업데이트 전 백업을 만들었어요</span>
-              <span className="t-body-s c-secondary">되돌리려면 설정 › 백업에서 [백업으로 복구] · 그 뒤의 학습도 함께 돌아가요.{synced ? "" : looks}</span>
+              <span className="t-body-s c-secondary">되돌리려면 설정 › 이 기기 백업에서 [백업으로 복구] · 그 뒤의 학습도 함께 돌아가요.{synced ? "" : looks}</span>
             </span>
+            <Button variant="ghost" size="M" label="백업으로 복구" onClick={() => nav({ name: "settings", focus: "restore", backup: s.backup!.split(/[\\/]/).pop() })} />
           </div>
         )}
         {synced && (

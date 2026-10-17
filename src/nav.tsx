@@ -27,7 +27,7 @@ export type Route =
   | { name: "study"; deckIds: number[] | null; scale: number; cardIds?: number[]; sessionId?: number; cram?: boolean; mix?: MixRun; edit?: number } // D2~D4. cram: H3 압축 회독 (cardIds 를 SRS 없이), mix: P2 혼합 회독. edit: 노트 유형 편집기에서 돌아왔다 (그 카드가 먼저 나오면 카드 편집을 다시 연다, NT13)
   | { name: "done"; sessionId: number; summary: SessionSummary; completed: boolean; deckIds: number[] | null; scale: number } // D5
   | { name: "mixDone"; sessionId: number; run: MixRun; stats: MixStats; minutes: number; completed: boolean } // P3 혼합 회독 끝난 뒤
-  | { name: "settings"; focus?: "archived" } // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N")
+  | { name: "settings"; focus?: "archived" | "restore"; backup?: string } // E1. focus: 열자마자 그 칸으로 (홈 "보관한 덱 N"), restore: [백업으로 복구] 창 (backup 을 미리 골라, B3-u)
   | { name: "noteTypes"; back?: Route } // NT1 설정 · 노트 유형 목록. back: 카드 추가 · 편집에서 왔으면 그리로
   | { name: "noteTypeEdit"; id: number; ord?: number; note?: number; back?: Route }; // NT2 · NT3 편집기 (앱 기본 유형이면 NT4 보기). ord: 처음 열 카드 종류, note: 미리보기에 먼저 보일 노트
 
