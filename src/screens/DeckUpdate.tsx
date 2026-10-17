@@ -381,7 +381,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
     ...(chosen.length > 0
       ? [{
           key: "newlooks",
-          icon: "layers" as IconName,
+          icon: "sparkles" as IconName,
           title: "새 모양으로 바꾸는 카드 종류",
           desc: `${chosen.map((x) => x.label).join(", ")}${eun(chosen.slice(-1)[0].label)} 고른 대로 새 모양으로 바꿔요`,
           right: `${n(chosen.length)}개`,
@@ -456,8 +456,8 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
       ? [{
           key: "dups",
           icon: "alert" as IconName,
-          title: "같은 노트가 두 벌 있어요",
-          desc: "다른 기기 변경을 받기 전에 두 기기에서 같은 파일을 적용했을 수 있어요. 첫 번째 것만 고쳐요 · 하나를 지워 주세요",
+          title: "두 벌 있는 노트",
+          desc: "먼저 만든 노트만 고쳐요 · 카드 목록에서 하나를 지워 주세요",
           right: `${n(s.duplicate_notes)}개`,
           actions: [{ label: "카드 목록에서 보기", onClick: () => nav({ name: "cards", deckId: null, cardIds: s.duplicate_card_ids }) }],
         }]
@@ -1104,7 +1104,8 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
           <Icon name={stopped ? "info" : noBackup ? "alert" : "x"} size={20} className={stopped ? "c-secondary" : "c-danger"} />
           <span className="import__fail-text">
             <span className={`t-body-m-strong ${stopped ? "" : "c-danger"}`}>
-              {stopped ? "업데이트를 멈췄어요 · 아무것도 바뀌지 않았어요" : noBackup ? "백업을 만들 수 없어요 · 백업 없이는 적용하지 않아요" : "업데이트하지 못했어요 · 아무것도 바뀌지 않았어요"}
+              {/* 제목과 같은 앞말은 빼고 (DU48) */}
+              {stopped ? "아무것도 바뀌지 않았어요 · 덱은 업데이트 전 그대로예요" : noBackup ? "백업을 만들 수 없어요 · 백업 없이는 적용하지 않아요" : "아무것도 바뀌지 않았어요"}
             </span>
             {!stopped && <span className="t-body-s c-secondary">{failed}</span>}
             <span className="du-actions">
@@ -1194,8 +1195,8 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
   useKey("Escape", openDeck);
   const takeNew = s.conflicts.filter((c) => c.take_new).length;
   const tiles = [
-    s.changed + s.merged > 0 && { label: "바꾼 노트", value: n(s.changed + s.merged), sub: `새 버전 ${n(s.changed)} · 합친 노트 ${n(s.merged)}` },
-    s.conflicts.length > 0 && { label: "충돌", value: n(s.conflicts.length), sub: `내 것 ${n(s.conflicts.length - takeNew)} · 새 버전 ${n(takeNew)}` },
+    s.changed + s.merged > 0 && { label: "바꾼 노트", value: n(s.changed + s.merged), sub: [s.changed > 0 && `새 버전 ${n(s.changed)}`, s.merged > 0 && `합친 노트 ${n(s.merged)}`].filter(Boolean).join(" · ") },
+    s.conflicts.length > 0 && { label: "충돌", value: n(s.conflicts.length), sub: [s.conflicts.length > takeNew && `내 것 ${n(s.conflicts.length - takeNew)}`, takeNew > 0 && `새 버전 ${n(takeNew)}`].filter(Boolean).join(" · ") },
     s.new_notes > 0 && { label: "새 노트", value: n(s.new_notes), sub: `새 카드 ${n(s.new_note_cards + s.new_cards)}장 · 신규` },
     s.mine_kept > 0 && { label: "지킨 노트", value: n(s.mine_kept), sub: "내가 고친 노트" },
   ].filter(Boolean) as { label: string; value: string; sub: string }[];
@@ -1263,7 +1264,7 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
             <Icon name="download" size={20} className="c-success" />
             <span className="result__row-text">
               <span className="t-body-m-strong">업데이트 전 백업을 만들었어요</span>
-              <span className="t-body-s c-secondary">되돌리려면 설정 › 이 기기 백업에서 [백업으로 복구] · 그 뒤의 학습도 함께 돌아가요.{synced ? "" : looks}</span>
+              <span className="t-body-s c-secondary">되돌리면 그 뒤의 학습도 함께 돌아가요.{synced ? "" : looks}</span>
             </span>
             <Button variant="ghost" size="M" label="백업으로 복구" onClick={() => nav({ name: "settings", focus: "restore", backup: s.backup!.split(/[\\/]/).pop() })} />
           </div>

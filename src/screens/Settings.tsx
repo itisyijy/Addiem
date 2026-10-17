@@ -118,7 +118,7 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
         <div className="prefs__row">
           <span className="prefs__text">
             <span className="t-body-m-strong">백업으로 복구</span>
-            <span className="t-body-s c-secondary">고른 백업 때로 덱 · 카드 · 복습 기록을 되돌려요. 덱 업데이트를 되돌릴 때도 여기서 해요.</span>
+            <span className="t-body-s c-secondary">고른 백업을 만든 때로 덱 · 카드 · 복습 기록을 되돌려요. 덱 업데이트를 되돌릴 때도 여기서 해요.</span>
           </span>
           <Button variant="secondary" size="M" icon="rotate" label="백업 고르기" disabled={!info.last_backup} onClick={() => setRestoring(true)} />
         </div>
@@ -310,6 +310,8 @@ function Licenses() {
   );
 }
 
+/** 복구한 뒤 다시 불러온 홈의 토스트 (값: 그 백업의 시각 글) */
+export const RESTORED_KEY = "neoanki.restored";
 const BACKUP_KIND: Record<LocalBackup["kind"], string> = { manual: "직접 만든 백업", update: "덱 업데이트 적용 전 자동 백업", restore: "복구 전 자동 백업" };
 const size = (b: number) => (b < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(1)}MB`);
 
@@ -337,6 +339,12 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
     setBusy(true);
     try {
       await api.restoreBackup(pick, true);
+      // 다시 불러온 홈이 토스트로 알린다 (DU49). 저장이 막혀도 복구는 됐다
+      try {
+        sessionStorage.setItem(RESTORED_KEY, when(list!.find((b) => b.name === pick)!.at));
+      } catch {
+        /* 토스트만 빠진다 */
+      }
       window.location.reload(); // 화면이 들고 있던 덱 · 카드를 모두 새로 읽는다
     } catch (e) {
       setError(errorText(e));
@@ -345,7 +353,7 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
   };
   return (
     <Modal title="백업으로 복구할까요?" onClose={onClose} variant="confirm" icon="rotate" className="restore">
-      <p className="t-body-m c-secondary">지금 데이터가 이 백업으로 바뀌어요 · 그 뒤 학습은 사라져요. 복구하기 전에 지금 상태도 백업해 둬요.</p>
+      <p className="t-body-m c-secondary">지금 데이터가 이 백업 때로 바뀌어요 · 이 백업 뒤에 한 학습은 빠져요. 복구하기 전에 지금 상태를 백업해 두니 다시 되돌릴 수 있어요.</p>
       {list && list.length === 0 && <p className="t-body-s c-tertiary">이 기기 백업이 아직 없어요</p>}
       {list && list.length > 0 && (
         <div className="restore__list" role="radiogroup" aria-label="복구할 백업">

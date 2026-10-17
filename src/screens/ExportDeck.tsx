@@ -137,7 +137,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
             ? `내보냈지만 미디어 파일 ${n(r.missing_media)}개가 빠졌어요`
             : r.skipped_cards > 0
               ? `내보냈지만 카드 ${n(r.skipped_cards)}장은 빼고 넣었어요`
-              : `내보냈어요 · 같은 노트가 두 벌인 노트 ${n(r.duplicate_guids)}개가 있어요`
+              : `내보냈어요 · 두 벌 있는 노트 ${n(r.duplicate_guids)}개`
         }
         variant="confirm"
         icon="check"
@@ -170,7 +170,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
           <div className="export__warn">
             <Icon name="alert" size={18} className="c-warn" />
             <span className="export__warn-text">
-              <span className="t-body-m-strong c-warn">같은 노트가 두 벌인 노트 {n(r.duplicate_guids)}개</span>
+              <span className="t-body-m-strong c-warn">두 벌 있는 노트 {n(r.duplicate_guids)}개</span>
               <span className="t-body-s c-secondary">
                 두 기기가 받기 전에 같은 덱 업데이트를 적용해 생긴 것 같아요. Anki가 하나로 합치지 않게 두 번째 것은 다른 노트로 내보냈어요. 이 앱에서 하나를 지우면 다음부터 한 벌로 나가요.
               </span>

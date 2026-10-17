@@ -1496,7 +1496,7 @@ fn run_import_selected(
             .query_row("SELECT count(*) FROM (SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL GROUP BY anki_guid HAVING count(*) > 1)", [], |r| r.get(0))
             .map_err(err)?;
         if twins > 0 {
-            result.issues.push(issue("warning", "duplicate_notes", format!("같은 노트가 두 벌 있는 노트 {}개가 있어요. 카드 목록에서 하나를 지워 주세요", n(twins as usize))));
+            result.issues.push(issue("warning", "duplicate_notes", format!("두 벌 있는 노트 {}개가 있어요. 카드 목록에서 하나를 지워 주세요", n(twins as usize))));
         }
     }
     for (f, c) in &hidden {
