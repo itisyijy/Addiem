@@ -2343,6 +2343,11 @@ fn last_backup(dir: &std::path::Path) -> Option<i64> {
 
 /// 파일 하나로 백업한다: DB 사본(VACUUM INTO) + 미디어 폴더. 복원은 zip 을 풀어 데이터 폴더에 두면 된다
 pub(crate) fn write_backup(con: &Connection, data_dir: &std::path::Path) -> Res<std::path::PathBuf> {
+    write_backup_as(con, data_dir, "")
+}
+
+/// tag: 백업 목록이 무엇의 백업인지 보이게 이름 끝에 붙인다 ("update" = 덱 업데이트 적용 전, "restore" = 복구 전). 빈 값이면 직접 만든 백업
+pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag: &str) -> Res<std::path::PathBuf> {
     use std::io::Write;
     let dir = backup_dir(data_dir);
     std::fs::create_dir_all(&dir).map_err(err)?;
@@ -2351,7 +2356,8 @@ pub(crate) fn write_backup(con: &Connection, data_dir: &std::path::Path) -> Res<
     let _ = std::fs::remove_file(&db_copy);
     con.execute("VACUUM INTO ?1", [db_copy.to_string_lossy()]).map_err(err)?;
 
-    let out = dir.join(format!("neoanki-{stamp}.zip"));
+    let suffix = if tag.is_empty() { String::new() } else { format!("-{tag}") };
+    let out = dir.join(format!("neoanki-{stamp}{suffix}.zip"));
     let result = (|| -> Res<()> {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&out).map_err(err)?);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -2592,22 +2598,61 @@ pub fn retry_open(state: State<AppState>) -> Res<()> {
     Ok(())
 }
 
-/// S1-6 "백업에서 복구". 가장 최근 백업 zip 으로 되돌린다.
-/// 지금 파일은 지우지 않고 neoanki-before-restore-<시각>.sqlite 로 옆에 남긴다. 미디어는 없는 것만 채운다
+/// 설정 › 이 기기 백업의 목록 한 줄
+#[derive(Serialize)]
+pub struct LocalBackup {
+    name: String,
+    /// 만든 시각 (파일 시각, ms)
+    at: i64,
+    bytes: u64,
+    /// manual | update (덱 업데이트 적용 전) | restore (복구 전)
+    kind: &'static str,
+}
+
+/// 이 기기 백업 zip 들, 최근 것부터
 #[tauri::command]
-pub async fn restore_backup(state: State<'_, AppState>) -> Res<String> {
+pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
+    let Ok(entries) = std::fs::read_dir(backup_dir(&state.data_dir)) else { return Ok(vec![]) };
+    let mut out: Vec<LocalBackup> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "zip"))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
+            let name = e.file_name().to_string_lossy().into_owned();
+            let kind = if name.ends_with("-update.zip") { "update" } else if name.ends_with("-restore.zip") { "restore" } else { "manual" };
+            Some(LocalBackup { name, at, bytes: m.len(), kind })
+        })
+        .collect();
+    out.sort_by_key(|b| std::cmp::Reverse(b.at));
+    Ok(out)
+}
+
+/// S1-6 "백업에서 복구" · 설정 › 이 기기 백업 [백업으로 복구]. name 이 없으면 가장 최근 백업 zip 으로 되돌린다.
+/// backup_first 면 바꾸기 전에 지금 상태를 백업한다 (-restore). 지금 파일은 지우지 않고 neoanki-before-restore-<시각>.sqlite 로 옆에도 남긴다.
+/// 미디어는 없는 것만 채운다
+#[tauri::command]
+pub async fn restore_backup(state: State<'_, AppState>, name: Option<String>, backup_first: Option<bool>) -> Res<String> {
     use std::io::Read;
     let dir = backup_dir(&state.data_dir);
-    let latest = std::fs::read_dir(&dir)
-        .map_err(|_| "백업 파일이 없어요.".to_string())?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "zip"))
-        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-        .ok_or("백업 파일이 없어요.")?;
+    let latest = match name {
+        // 목록에서 고른 이름만 (경로 · 다른 폴더는 받지 않는다)
+        Some(n) if safe_media_name(&n).is_ok() && n.ends_with(".zip") && dir.join(&n).is_file() => dir.join(n),
+        Some(_) => return Err("그 백업 파일을 찾을 수 없어요.".into()),
+        None => std::fs::read_dir(&dir)
+            .map_err(|_| "백업 파일이 없어요.".to_string())?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "zip"))
+            .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+            .ok_or("백업 파일이 없어요.")?,
+    };
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&latest).map_err(err)?).map_err(|_| "백업 파일을 읽을 수 없어요.".to_string())?;
 
     let mut guard = state.db.lock().map_err(err)?;
+    if backup_first.unwrap_or(false) {
+        write_backup_as(&guard, &state.data_dir, "restore").map_err(|e| format!("지금 상태를 백업하지 못해 복구하지 않았어요. {e}"))?;
+    }
     // 파일을 옮기려면 연결부터 닫는다 (Windows 는 열린 파일을 옮기지 못한다)
     *guard = db::open_in_memory().map_err(err)?;
     let db_path = state.data_dir.join("neoanki.sqlite");
@@ -2685,7 +2730,7 @@ pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::S
         "DELETE FROM session_card_state; DELETE FROM study_session; DELETE FROM review_log; DELETE FROM card;
          DELETE FROM note; DELETE FROM card_template; DELETE FROM note_type; DELETE FROM deck_config; DELETE FROM deck;
          DELETE FROM media; DELETE FROM import_issue; DELETE FROM import_batch;
-         DELETE FROM card_change; DELETE FROM plan_setting; DELETE FROM embedding_cache;",
+         DELETE FROM card_change; DELETE FROM plan_setting; DELETE FROM embedding_cache; DELETE FROM origin_gone;",
     )
     .map_err(err)?;
     db::seed_note_types(&tx).map_err(err)?;

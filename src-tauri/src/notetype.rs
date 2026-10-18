@@ -222,9 +222,14 @@ fn cloze_refs(tpl: &str) -> Vec<String> {
 
 /// 필드 이름을 바꾼 템플릿
 pub fn rename_refs(tpl: &str, old: &str, new: &str) -> String {
+    rename_all_refs(tpl, &HashMap::from([(old.to_string(), new.to_string())]))
+}
+
+/// 필드 이름 여러 개를 한 번에 바꾼다 (맞바꾸기도 된다). 덱 업데이트가 Anki 이름과 우리 이름 사이를 옮길 때 쓴다
+pub fn rename_all_refs(tpl: &str, map: &HashMap<String, String>) -> String {
     map_tags(tpl, |inner| {
         let (s, e) = name_range(inner);
-        (&inner[s..e] == old).then(|| format!("{}{new}{}", &inner[..s], &inner[e..]))
+        map.get(&inner[s..e]).map(|new| format!("{}{new}{}", &inner[..s], &inner[e..]))
     })
 }
 
@@ -245,7 +250,7 @@ fn sections_ok(tpl: &str) -> bool {
 }
 
 /// 템플릿 저장 검사. 빈칸 여부는 템플릿으로 바꾸지 못한다 (카드 ord 의 뜻이 통째로 바뀐다)
-fn check_template(nt: &Nt, qfmt: &str, afmt: &str) -> Res<()> {
+pub(crate) fn check_template(nt: &Nt, qfmt: &str, afmt: &str) -> Res<()> {
     let names: Vec<String> = nt.visible().into_iter().map(|(_, n)| n).collect();
     if nt.cloze() && !cloze_like(qfmt) {
         return Err("빈칸 유형의 앞면에는 {{cloze:필드}} 가 있어야 해요.".into());
@@ -684,7 +689,14 @@ pub(crate) fn add_template(con: &Connection, id: i64, name: Option<&str>, qfmt: 
     if nt.cloze() {
         return Err("빈칸 유형은 카드 종류를 더할 수 없어요.".into());
     }
-    check_template(&nt, qfmt, afmt)?;
+    let ord = insert_template(con, &nt, name, qfmt, afmt)?;
+    Ok(TemplateAdded { ord, cards: fill_cards(con, id)? })
+}
+
+/// 카드 종류 한 줄만 넣는다 (검사 · 번호 · next_ord). 카드는 만들지 않는다: 덱 업데이트는 노트 값을 고친 뒤에 만든다
+pub(crate) fn insert_template(con: &Connection, nt: &Nt, name: Option<&str>, qfmt: &str, afmt: &str) -> Res<u32> {
+    let id = nt.id;
+    check_template(nt, qfmt, afmt)?;
     let max = nt.templates.iter().map(|t| t.ord as i64 + 1).max().unwrap_or(0);
     let base = nt.next_ord.unwrap_or(0).max(max);
     // 동기화를 켰으면 기기마다 다른 번호: ord 를 ORD_LANES 로 나눈 나머지가 이 기기 몫이다. 두 기기가 같은 유형에 따로 더해도
@@ -703,7 +715,7 @@ pub(crate) fn add_template(con: &Connection, id: i64, name: Option<&str>, qfmt: 
         None => base,
     } as u32;
     let name = match name {
-        Some(n) => template_name(&nt, n, None)?,
+        Some(n) => template_name(nt, n, None)?,
         None => (nt.templates.len() + 1..).map(|i| format!("Card {i}")).find(|n| nt.templates.iter().all(|t| t.name != *n)).unwrap_or_default(),
     };
     let now = now_ms();
@@ -713,7 +725,7 @@ pub(crate) fn add_template(con: &Connection, id: i64, name: Option<&str>, qfmt: 
     )
     .map_err(err)?;
     con.execute("UPDATE note_type SET next_ord = ?2, updated_at = ?3 WHERE id = ?1", params![id, ord + 1, now]).map_err(err)?;
-    Ok(TemplateAdded { ord, cards: fill_cards(con, id)? })
+    Ok(ord)
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -1178,7 +1190,7 @@ pub fn without_layout_css(css: &str) -> String {
     css.replace(LAYOUT_CSS, "")
 }
 
-fn uses_box(t: &Tpl) -> bool {
+pub(crate) fn uses_box(t: &Tpl) -> bool {
     t.qfmt.contains(BOX) || t.afmt.contains(BOX)
 }
 

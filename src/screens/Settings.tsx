@@ -1,7 +1,7 @@
 // E1 백업과 기본 설정 / E1-b 데이터 삭제 확인 / E2 학습 지표 (E2-0 데이터 모자람) / E3 보관한 덱
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, errorText, type AppInfo, type ArchivedDeck, type HeatDay, type MvpMetrics } from "../api";
+import { api, errorText, type AppInfo, type ArchivedDeck, type HeatDay, type LocalBackup, type MvpMetrics } from "../api";
 import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
 import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useOverlayScope } from "../nav";
@@ -27,8 +27,8 @@ const THEMES: [ThemePref, string][] = [
   ["dark", "어둡게"],
 ];
 
-function when(ms: number) {
-  return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(ms);
+function when(ms: number, secs = false) {
+  return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", second: secs ? "2-digit" : undefined, hour12: false }).format(ms);
 }
 
 /** 긴 경로는 끝의 세 단계만. C:\Users\me\AppData\Roaming\앱\backups -> …\Roaming\앱\backups */
@@ -37,7 +37,7 @@ const shortPath = (p: string) => {
   return parts.length > 3 ? `…\\${parts.slice(-3).join("\\")}` : p;
 };
 
-export function Settings({ focus }: { focus?: "archived" }) {
+export function Settings({ focus, backup }: { focus?: "archived" | "restore"; backup?: string }) {
   const nav = useNav();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [hourMenu, setHourMenu] = useState(false);
@@ -50,6 +50,8 @@ export function Settings({ focus }: { focus?: "archived" }) {
   const [ttsAutoplay, setTtsAutoplay] = useState(() => pref(TTS_AUTOPLAY));
   const [theme, setTheme] = useState(getThemePref);
   const [version, setVersion] = useState<string>();
+  // [백업으로 복구] 창. 문자열이면 그 백업을 미리 골라 연다 (B3-u 업데이트 결과에서)
+  const [restoring, setRestoring] = useState<string | boolean>(focus === "restore" ? (backup ?? true) : false);
 
   const load = useCallback(() => api.appInfo().then(setInfo), []);
   useEffect(() => {
@@ -57,7 +59,7 @@ export function Settings({ focus }: { focus?: "archived" }) {
     getVersion().then(setVersion, () => {});
   }, [load]);
   const back = useCallback(() => nav({ name: "home" }), [nav]);
-  useKey("Escape", back, !wiping);
+  useKey("Escape", back, !wiping && !restoring);
   // 메뉴가 떠 있는 동안 화면 단축키는 꺼지고 Esc 는 메뉴만 닫는다 (E4 노트)
   useOverlayScope(hourMenu);
   useKey("Escape", () => setHourMenu(false), hourMenu, { modal: true });
@@ -113,8 +115,16 @@ export function Settings({ focus }: { focus?: "archived" }) {
             <Button variant="ghost" size="M" icon="folder" label="폴더 열기" onClick={() => act(api.openBackupDir)} />
           </span>
         </div>
+        <div className="prefs__row">
+          <span className="prefs__text">
+            <span className="t-body-m-strong">백업으로 복구</span>
+            <span className="t-body-s c-secondary">고른 백업을 만든 때로 덱 · 카드 · 복습 기록을 되돌려요. 덱 업데이트를 되돌릴 때도 여기서 해요.</span>
+          </span>
+          <Button variant="secondary" size="M" icon="rotate" label="백업 고르기" disabled={!info.last_backup} onClick={() => setRestoring(true)} />
+        </div>
         {(msg || error) && <p className={`prefs__msg t-body-s ${error ? "c-danger" : "c-success"}`}>{error ?? msg}</p>}
       </section>
+      {restoring && <RestoreBackup initial={typeof restoring === "string" ? restoring : undefined} onClose={() => setRestoring(false)} />}
 
       <Metrics />
       <Archived focus={focus === "archived"} />
@@ -297,6 +307,80 @@ function Licenses() {
         </div>
       ))}
     </section>
+  );
+}
+
+/** 복구한 뒤 다시 불러온 홈의 토스트 (값: 그 백업의 시각 글) */
+export const RESTORED_KEY = "neoanki.restored";
+const BACKUP_KIND: Record<LocalBackup["kind"], string> = { manual: "직접 만든 백업", update: "덱 업데이트 적용 전 자동 백업", restore: "복구 전 자동 백업" };
+const size = (b: number) => (b < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(1)}MB`);
+
+/**
+ * 설정 › 이 기기 백업 [백업으로 복구] (DU16 의 되돌리기, DU42). 백업을 골라 DB 전체를 그때로 바꾼다.
+ * 바꾸기 전에 지금 상태도 백업하고(-restore), 복구한 뒤 앱을 다시 불러온다. 동기화 중이면 다음 받기에서 Drive 와 다시 맞춘다 (K35)
+ */
+function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => void }) {
+  const [list, setList] = useState<LocalBackup[] | null>(null);
+  const [pick, setPick] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const drive = useSyncStatus();
+  useEffect(() => {
+    api.localBackups().then(
+      (l) => {
+        setList(l);
+        setPick((p) => (p && l.some((b) => b.name === p) ? p : l[0]?.name));
+      },
+      (e) => setError(errorText(e)),
+    );
+  }, []);
+  const run = async () => {
+    if (!pick || busy) return;
+    setBusy(true);
+    try {
+      await api.restoreBackup(pick, true);
+      // 다시 불러온 홈이 토스트로 알린다 (DU49). 저장이 막혀도 복구는 됐다
+      try {
+        sessionStorage.setItem(RESTORED_KEY, when(list!.find((b) => b.name === pick)!.at));
+      } catch {
+        /* 토스트만 빠진다 */
+      }
+      window.location.reload(); // 화면이 들고 있던 덱 · 카드를 모두 새로 읽는다
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="백업으로 복구할까요?" onClose={onClose} variant="confirm" icon="rotate" className="restore">
+      <p className="t-body-m c-secondary">지금 데이터가 이 백업 때로 바뀌어요 · 이 백업 뒤에 한 학습은 빠져요. 복구하기 전에 지금 상태를 백업해 두니 다시 되돌릴 수 있어요.</p>
+      {list && list.length === 0 && <p className="t-body-s c-tertiary">이 기기 백업이 아직 없어요</p>}
+      {list && list.length > 0 && (
+        <div className="restore__list" role="radiogroup" aria-label="복구할 백업">
+          {list.map((b) => (
+            <label key={b.name} className={`import__option ${pick === b.name ? "is-on" : ""}`}>
+              <input type="radio" name="restore" checked={pick === b.name} onChange={() => setPick(b.name)} />
+              <span className="import__radio" />
+              <span className="import__option-text">
+                {/* 같은 분에 만든 백업끼리만 초까지 (DU51) */}
+                <span className="t-body-m-strong">{when(b.at, list.some((o) => o !== b && when(o.at) === when(b.at)))}</span>
+                <span className="t-caption c-tertiary">
+                  {BACKUP_KIND[b.kind]} · {size(b.bytes)}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+      {drive?.connected && (
+        <p className="t-body-s c-secondary">Google Drive 동기화를 켜 두었으면 다음 동기화 때 Drive와 다시 맞춰요. 이미 다른 기기로 올라간 변경은 다시 들어와요.</p>
+      )}
+      {error && <p className="t-body-s c-danger">{error}</p>}
+      <div className="modal__actions">
+        <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+        <Button variant="danger" size="M" icon="rotate" label={busy ? "복구하는 중…" : "이 백업으로 복구"} disabled={!pick || busy} onClick={run} />
+      </div>
+    </Modal>
   );
 }
 

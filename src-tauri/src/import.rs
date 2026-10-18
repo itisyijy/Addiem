@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
 
+pub(crate) mod deck_update;
+
 type Res<T> = Result<T, String>;
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -664,8 +666,9 @@ struct ADeck {
     filtered: bool,
 }
 
-/// 이미 있던 노트 유형에 들어오는 것: (Anki 필드 i -> 우리 자리, 우리 자리 이름 (지운 자리는 ""), Anki 템플릿 ord -> 우리 ord. 없는 ord = 이 앱에서 지운 카드 종류)
-type Remap = (Vec<Option<usize>>, Vec<String>, HashMap<u32, u32>);
+/// 이미 있던 노트 유형에 들어오는 것: (Anki 필드 i -> 우리 자리, 우리 자리 이름 (지운 자리는 ""), Anki 템플릿 ord -> 우리 ord. 없는 ord = 이 앱에서 지운 카드 종류.
+/// 빈칸 유형은 None: 카드 ord 가 빈칸 번호라 그대로 쓴다)
+type Remap = (Vec<Option<usize>>, Vec<String>, Option<HashMap<u32, u32>>);
 
 struct AType {
     name: String,
@@ -1048,6 +1051,8 @@ pub struct AnkiPreview {
     degraded_types: Vec<i64>,
     /// 지운 카드의 기록. 덱에 속하지 않아 덱을 전부 골랐을 때만 함께 옮긴다
     orphan_reviews: usize,
+    /// B2-u0 이미 가져온 덱의 새 버전 같으면 그 근거 (이미 있는 노트가 하나도 없으면 없다). 기본 모드는 suggested (DU15)
+    update: Option<deck_update::UpdateHint>,
 }
 
 #[derive(Serialize, Default)]
@@ -1207,6 +1212,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
         rows.collect::<Result<_, _>>().map_err(err)?
     };
     let deck_tree = deck_stats(&pkg, &existing, overdue_before)?;
+    let update = deck_update::file_hint(&*state.db.lock().map_err(err)?, &pkg)?;
     Ok(AnkiPreview {
         file_name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         bytes: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
@@ -1234,6 +1240,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
         deck_tree,
         degraded_types: pkg.types.iter().filter(|(_, t)| !t.degraded.is_empty()).map(|(id, _)| *id).collect(),
         orphan_reviews: count(&pkg.col, "SELECT count(*) FROM revlog WHERE cid NOT IN (SELECT id FROM cards)")?,
+        update,
     })
 }
 
@@ -1392,35 +1399,11 @@ fn run_import_selected(
             Some(id) => {
                 let ours = crate::notetype::load(&tx, id)?;
                 let tmpls: Vec<(u32, String, String)> = t.templates.iter().map(|(o, n, q, _)| (*o, n.clone(), q.clone())).collect();
-                remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.clone(), crate::notetype::incoming_ords(&ours, &tmpls)));
+                let ords = (!ours.cloze()).then(|| crate::notetype::incoming_ords(&ours, &tmpls));
+                remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.clone(), ords));
                 id
             }
-            None => {
-                tx.execute(
-                    "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id, anki_stock_kind)
-                     VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        t.name,
-                        serde_json::to_string(&t.fields).map_err(err)?,
-                        t.css,
-                        now,
-                        t.degraded.is_empty() as i64,
-                        (!t.degraded.is_empty()).then(|| t.degraded.join(", ")),
-                        aid,
-                        (t.stock > 0).then_some(t.stock)
-                    ],
-                )
-                .map_err(err)?;
-                let id = tx.last_insert_rowid();
-                for (ord, name, q, a) in &t.templates {
-                    tx.execute(
-                        "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![id, ord, name, q, a],
-                    )
-                    .map_err(err)?;
-                }
-                id
-            }
+            None => insert_type(&tx, *aid, t, now)?,
         };
         nt_map.insert(*aid, id);
         // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
@@ -1508,6 +1491,13 @@ fn run_import_selected(
     result.notes = note_map.len();
     if dup > 0 {
         result.issues.push(issue("info", "duplicate", format!("이미 가져온 노트 {}개는 다시 넣지 않았어요", n(dup))));
+        // 같은 guid 가 이 기기에 두 벌 (두 기기가 받지 않은 채 같은 파일을 업데이트했다, DU-06)
+        let twins: i64 = tx
+            .query_row("SELECT count(*) FROM (SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL GROUP BY anki_guid HAVING count(*) > 1)", [], |r| r.get(0))
+            .map_err(err)?;
+        if twins > 0 {
+            result.issues.push(issue("warning", "duplicate_notes", format!("두 벌 있는 노트 {}개가 있어요. 카드 목록에서 하나를 지워 주세요", n(twins as usize))));
+        }
     }
     for (f, c) in &hidden {
         result.issues.push(issue("info", "hidden_field", format!("이 앱에서 지운 필드 '{f}'의 값이 있는 노트 {}개는 그 값을 숨긴 자리에 넣었어요. 카드에는 나오지 않아요", n(*c))));
@@ -1562,9 +1552,10 @@ fn run_import_selected(
             let Some((nid, tags)) = note_map.get(&anid) else { continue };
             // 다시 맞춘 유형: 우리 ord 로. 없으면 이 앱에서 지운 카드 종류다. 같은 순번의 다른 카드 종류에 붙이지 않고 건너뛴다
             let ord = match note_mid.get(&anid) {
-                Some(m) => match remap[m].2.get(&(aord as u32)) {
-                    Some(o) => *o as i64,
-                    None => {
+                Some(m) => match remap[m].2.as_ref().map(|o| o.get(&(aord as u32))) {
+                    None => aord,
+                    Some(Some(o)) => *o as i64,
+                    Some(None) => {
                         let t = &pkg.types[m];
                         let tpl = t.templates.iter().find(|x| x.0 as i64 == aord).map_or_else(|| format!("{}", aord + 1), |x| x.1.clone());
                         gone.entry((t.name.clone(), tpl)).or_default().push(acid);
@@ -1715,18 +1706,21 @@ fn run_import_selected(
         .map_err(err)?;
     }
     emit("media", names.len(), names.len());
-    if !renamed.is_empty() {
-        let notes: Vec<(i64, String)> = {
-            let mut st = tx.prepare("SELECT id, fields FROM note WHERE import_batch_id = ?1").map_err(err)?;
-            let rows = st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+    // 넣은 노트의 미디어 참조를 바꾼 이름으로 고치고, 넣은 값(자리 맞추기 · 미디어 이름 바꾸기 뒤)을 원본(B)으로 남긴다 (DU1)
+    {
+        let notes: Vec<(i64, String, String)> = {
+            let mut st = tx.prepare("SELECT id, fields, tags FROM note WHERE import_batch_id = ?1").map_err(err)?;
+            let rows = st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
             rows.collect::<Result<_, _>>().map_err(err)?
         };
-        for (id, fields) in notes {
+        for (id, fields, tags) in notes {
             let old: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
             let new: Vec<String> = old.iter().map(|f| rename_refs(f, &renamed)).collect();
-            if new != old {
-                tx.execute("UPDATE note SET fields = ?2 WHERE id = ?1", params![id, serde_json::to_string(&new).map_err(err)?]).map_err(err)?;
-            }
+            tx.execute(
+                "UPDATE note SET fields = ?2, origin = ?3 WHERE id = ?1",
+                params![id, serde_json::to_string(&new).map_err(err)?, deck_update::note_origin(&new, &tags)],
+            )
+            .map_err(err)?;
         }
     }
     if clashes > 0 {
@@ -1753,7 +1747,7 @@ fn run_import_selected(
     result.roots = roots.iter().copied().collect();
     // 기록도 고른 카드 것만 (덱을 고르지 않았으면 지운 카드의 기록까지 전부)
     let cards_of = chosen.as_ref().map(|c| &c.cards);
-    let ords_of: HashMap<i64, HashMap<u32, u32>> = remap.iter().map(|(m, r)| (*m, r.2.clone())).collect();
+    let ords_of: HashMap<i64, HashMap<u32, u32>> = remap.iter().filter_map(|(m, r)| Some((*m, r.2.clone()?))).collect();
     result.reviews = if with_history {
         import_revlog(&tx, &pkg.col, cards_of, &ords_of)?
     } else {
@@ -1792,6 +1786,32 @@ fn run_import_selected(
     tx.commit().map_err(err)?;
     emit("done", 1, 1);
     Ok(result)
+}
+
+/// 처음 보는 Anki 노트타입을 그대로 넣는다. 원본(B)도 함께 남긴다 (DU1, 덱 업데이트가 다음 버전과 비교한다)
+fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64) -> Res<i64> {
+    tx.execute(
+        "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id, anki_stock_kind, origin)
+         VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            t.name,
+            serde_json::to_string(&t.fields).map_err(err)?,
+            t.css,
+            now,
+            t.degraded.is_empty() as i64,
+            (!t.degraded.is_empty()).then(|| t.degraded.join(", ")),
+            aid,
+            (t.stock > 0).then_some(t.stock),
+            deck_update::new_type_origin(t)
+        ],
+    )
+    .map_err(err)?;
+    let id = tx.last_insert_rowid();
+    for (ord, name, q, a) in &t.templates {
+        tx.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, ord, name, q, a])
+            .map_err(err)?;
+    }
+    Ok(id)
 }
 
 // ------------------------------------------------------------------ 복습 기록 이전 (mvp-scope 7장)
@@ -2255,6 +2275,24 @@ mod tests {
         let r = run_import_anki(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), true, &mut vec![]).unwrap();
         assert_eq!((r.notes, r.reviews), (0, 0), "다시 가져와도 기록 수가 그대로");
         assert_eq!(count(&s), (4, 0));
+    }
+
+    #[test]
+    fn reimport_into_existing_cloze_type_keeps_new_cards() {
+        // 같은 Anki 모델 id 의 빈칸 유형에 새 노트를 다시 가져온다 (같은 컬렉션에서 내보낸 두 번째 덱). 빈칸 카드 ord 는 빈칸 번호라 카드 종류로 맞추지 않는다
+        use deck_update::testpkg::{self, Model, note};
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-czre-{}-{}", std::process::id(), now_ms())));
+        let s = state(&tmp.0.join("data"));
+        let model = || Model { id: 8, name: "Cloze", fields: vec!["Text", "Back Extra"], templates: vec![("Cloze", "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}")], css: "" };
+        let (p1, p2) = (tmp.0.join("a.apkg"), tmp.0.join("b.apkg"));
+        testpkg::write(&p1, &[model()], &[(1, "A")], &[note(1, "g1", 8, &["{{c1::a}} {{c2::b}}", ""], &[(1, 0), (1, 1)])], &[]);
+        testpkg::write(&p2, &[model()], &[(2, "B")], &[note(2, "g2", 8, &["{{c1::x}} {{c2::y}}", ""], &[(2, 0), (2, 1)])], &[]);
+        run_import_anki(&|_, _, _| {}, &s, p1.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let r = run_import_anki(&|_, _, _| {}, &s, p2.to_str().unwrap(), true, &mut vec![]).unwrap();
+        assert_eq!((r.notes, r.cards, r.skipped, r.reviews), (1, 2, 0, 2), "{:?}", r.issues.iter().map(|i| &i.detail).collect::<Vec<_>>());
+        let con = s.db.lock().unwrap();
+        let linked: i64 = con.query_row("SELECT count(*) FROM review_log WHERE card_id IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(linked, 2, "기록도 그 빈칸 카드에 붙는다");
     }
 
     #[test]

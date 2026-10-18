@@ -128,6 +128,8 @@ pub struct ExportResult {
     occlusion_labels: usize,
     /// 카드 종류(템플릿)가 없어 뺀 카드 수. Anki 는 템플릿 없는 노트 유형이 든 패키지를 통째로 거부한다 (Q2-01 · Q2-02)
     skipped_cards: usize,
+    /// 같은 guid 를 가진 두 번째 노트 (두 기기 업데이트로 생긴 두 벌, DU-06). Anki 가 하나로 합치지 않게 새 guid 로 내보냈다
+    duplicate_guids: usize,
 }
 
 const CANCELLED: &str = "내보내기를 멈췄어요. 만들던 파일만 지웠어요.";
@@ -646,6 +648,8 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let mut note_ids: HashMap<i64, i64> = HashMap::new();
     let mut used = HashSet::new();
     let total = notes.len() + cards.len();
+    let mut guids: HashSet<String> = HashSet::new();
+    let mut duplicate_guids = 0;
     for (i, n) in notes.iter().enumerate() {
         if i % 200 == 0 {
             job.tick("notes", i, total)?;
@@ -667,6 +671,11 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         let tags = crate::exam::to_tags(&n.tags, n.exam_hits, n.exam_names.clone());
         let tags = with_source_tags(&tags, sources.get(&n.id).map_or(&[][..], Vec::as_slice));
         let guid = match &n.anki_guid {
+            // 같은 guid 가 이미 나갔으면 이 노트는 새 guid 로 (Anki 는 같은 guid 를 한 노트로 본다)
+            Some(g) if !guids.insert(g.clone()) => {
+                duplicate_guids += 1;
+                guid_for(n.id, n.created_at)
+            }
             Some(g) => g.clone(),
             None => {
                 // 앱에서 만든 노트. guid 를 남겨 두면 Anki 에서 공부한 뒤 다시 가져와도 같은 노트로 본다 (중복 방지)
@@ -752,7 +761,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     )
     .map_err(err)?;
     tx.commit().map_err(err)?;
-    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, occlusion_labels: labels, skipped_cards, ..Default::default() };
+    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, occlusion_labels: labels, skipped_cards, duplicate_guids, ..Default::default() };
     Ok((result, media))
 }
 

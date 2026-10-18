@@ -14,6 +14,7 @@ import { MixDone, PreExam } from "./screens/PreExam";
 import { Cards } from "./screens/Cards";
 import { DeckSettings } from "./screens/DeckSettings";
 import { Import, ImportResultScreen } from "./screens/Import";
+import { DeckUpdate, UpdateResultScreen } from "./screens/DeckUpdate";
 import { Importance } from "./screens/Importance";
 import { Settings } from "./screens/Settings";
 import { Recover } from "./screens/Recover";
@@ -44,6 +45,10 @@ export default function App() {
     setRoute(r);
     window.scrollTo(0, 0);
   }, []);
+  // 개발 빌드에서만: 화면 확인(CDP)이 파일 대화상자 없이 가져오기 화면을 연다 (B2-u [방식 바꾸기]와 같은 { name: "import", path })
+  useEffect(() => {
+    if (import.meta.env.DEV) Object.assign(window, { __nav: nav });
+  }, [nav]);
 
   // 학습 중에는 상단 내비게이션과 배경 장식을 끈다 (브리프 3.7)
   const focused = route.name === "study";
@@ -107,7 +112,11 @@ function Screen({ route }: { route: Route }) {
         />
       );
     case "import":
-      return <Import key="anki" tab="anki" pick={route.pick} />;
+      return <Import key={`anki-${route.path ?? ""}`} tab="anki" pick={route.pick} path={route.path} />;
+    case "deckUpdate":
+      return <DeckUpdate {...route} />;
+    case "updateResult":
+      return <UpdateResultScreen summary={route.summary} info={route.info} />;
     case "importJson":
       return <Import key={`json-${route.deckId}`} tab="json" deckId={route.deckId ?? null} />;
     case "importResult":
@@ -115,7 +124,7 @@ function Screen({ route }: { route: Route }) {
     case "importance":
       return <Importance key={route.deckId} deckId={route.deckId} next={route.next} />;
     case "settings":
-      return <Settings focus={route.focus} />;
+      return <Settings key={`${route.focus}-${route.backup}`} focus={route.focus} backup={route.backup} />;
     case "noteTypes":
       return <NoteTypes back={route.back} />;
     case "noteTypeEdit":

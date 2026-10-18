@@ -95,7 +95,8 @@
   --blob-apricot: #ffcba6;
 
   --font-sans: "Pretendard", system-ui, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  /* 시스템 고정폭 글꼴 (내려받지 않는다). 고정폭 글꼴에는 한글이 없어 한글은 앱에 든 Pretendard 로 (GulimChe 로 떨어지면 '.' 이 ',' 처럼 보였다, DU39) */
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, Menlo, "Pretendard", monospace;
 }
 
 /* Dark (Figma 35:4975). 구조는 그대로, 값만 바뀐다. bg/inverse 는 흰색으로 뒤집지 않고 남색 면으로 둔다 */

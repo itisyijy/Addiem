@@ -1,0 +1,79 @@
+/*
+ * 8.7 덱 업데이트 (Figma Row DU: B2-u0 244:16815 · B2-u 247:16889 · B2-k 249:17005 · B2-kt 251:17086 · B2-p 251:17329 · B3-u 252:17200).
+ * 틀은 가져오기(import.css · screens.css 의 .import · .import__file · .import__checks · .import__option · .import__progress · .result)를 그대로 쓰고 여기는 더한 것만
+ */
+
+/* ---------------------------------------------------------------- B2-u0 */
+.du-banner { display: flex; align-items: flex-start; gap: 12px; padding: 14px 20px 14px 16px; border-radius: 16px; background: var(--accent-subtle); }
+.du-banner__text { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.du-chip { display: inline-flex; align-items: center; gap: 8px; margin-top: 6px; padding: 8px 12px 8px 10px; border-radius: 12px; background: var(--bg-subtle); }
+.du-check__right { display: inline-flex; align-items: center; gap: 8px; }
+.du-adding { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 16px; border-radius: 16px; background: var(--bg-subtle); }
+.du-adding > span:nth-child(2) { flex: 1; min-width: 0; }
+
+/* ---------------------------------------------------------------- B2-u 요약 */
+.du-group { display: flex; flex-direction: column; padding: 6px 20px; border: 1px solid var(--border-default); border-radius: 24px; background: var(--bg-surface); }
+.du-group__head { display: flex; align-items: center; gap: 8px; padding: 12px 0 6px; white-space: nowrap; }
+.du-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 0; border-top: 1px solid var(--border-default); }
+.du-row > .icon { margin-top: 4px; flex-shrink: 0; }
+.du-row--warn { padding: 11px 12px; border-radius: 12px; background: var(--status-warn-bg); }
+.du-row__text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.du-row__right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; white-space: nowrap; }
+.du-row .import__issues { flex: 1; }
+.du-fixed { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border-radius: 16px; background: var(--bg-subtle); }
+.du-line { display: flex; align-items: center; gap: 8px; }
+
+/* ---------------------------------------------------------------- B2-k 충돌 검토 · B2-kt 카드 모양 비교 (넓은 틀) */
+.import.du-wide { width: 1040px; }
+.du-toolbar { display: flex; align-items: center; justify-content: space-between; }
+.du-list { display: flex; flex-direction: column; gap: 8px; }
+.du-item { display: flex; flex-direction: column; gap: 14px; padding: 14px 18px; border: 1px solid var(--border-default); border-radius: 18px; background: var(--bg-surface); }
+/* 지금 줄(↑↓)은 accent 2px. 굵어진 1px 만큼 안쪽을 줄여 내용이 움직이지 않게 */
+.du-item.is-cursor { padding: 13px 17px; border: 2px solid var(--accent-default); }
+.du-item__head { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
+.du-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.du-field { display: flex; align-items: center; gap: 8px; }
+.du-compare { display: flex; align-items: flex-start; gap: 12px; }
+.du-side { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; padding: 16px 18px; border: 1px solid var(--border-default); border-radius: 14px; background: var(--bg-canvas); }
+.du-side.is-default { border: 1px dashed var(--border-strong); }
+.du-side.is-chosen { padding: 15px 17px; border: 2px solid var(--accent-default); }
+.du-side__head { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* 긴 필드는 240 까지 보이고 아래가 흐려진다. [전체 보기]로 두 칸을 함께 편다 */
+.du-side__body { max-height: 240px; overflow: hidden; overflow-wrap: anywhere; -webkit-mask-image: linear-gradient(to bottom, #000 200px, transparent 240px); mask-image: linear-gradient(to bottom, #000 200px, transparent 240px); }
+.du-side.is-full .du-side__body { max-height: none; -webkit-mask-image: none; mask-image: none; }
+.du-side__body img { max-width: 100%; height: auto; }
+u.du-diff { text-decoration: underline; text-underline-offset: 3px; }
+.du-cloze { display: inline-flex; align-items: baseline; gap: 4px; padding: 0 6px; border-radius: 6px; background: var(--accent-subtle); color: var(--accent-text); }
+.du-cloze__n { font: 600 11px/14px var(--font-mono); opacity: 0.8; }
+.du-other { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--bg-subtle); }
+.du-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.du-keys { display: flex; align-items: center; gap: 6px; }
+.du-keys .kbd + span { margin-right: 10px; }
+
+.du-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.du-chipbtn { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border: 1px solid var(--border-default); border-radius: 999px; background: var(--bg-surface); color: var(--text-primary); }
+.du-chipbtn.is-on { border-color: var(--border-ink); }
+.du-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--status-warn-fg); }
+.du-dot--mine { background: var(--text-tertiary); }
+.du-dot--new { background: var(--accent-default); }
+.du-typehead { display: flex; align-items: center; justify-content: space-between; }
+.du-looks { display: flex; align-items: stretch; gap: 16px; }
+.du-look { display: flex; flex-direction: column; gap: 12px; flex: 1; min-width: 0; padding: 16px; border: 1px solid var(--border-default); border-radius: 18px; background: var(--bg-surface); }
+.du-look.is-default { border: 1px dashed var(--border-strong); background: var(--bg-canvas); }
+.du-look.is-chosen { padding: 15px; border: 2px solid var(--accent-default); }
+.du-look__card, .du-look__card.study { min-height: 0; height: 220px; overflow: auto; padding: 24px 28px; border: 1px solid var(--border-default); border-radius: 16px; background: var(--bg-surface); }
+.du-look__card .study__card-content { min-height: 100%; }
+.du-look__raw { display: flex; flex-direction: column; gap: 8px; }
+.du-look__raw pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); }
+.du-css { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg-subtle); }
+.du-css > span:last-child { flex: 1; min-width: 0; }
+.du-look__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* B2-p [취소]로 멈춤: 오류가 아니라 회색 상자 (DU-14) */
+.import__fail.du-stopped { background: var(--bg-subtle); }
+
+/* 설정 › 이 기기 백업 [백업으로 복구] (DU42) */
+.modal.restore { gap: 14px; }
+.restore__list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow: auto; }
+.restore__list .import__option { padding: 12px 14px; }
+.restore__list .import__option.is-on { padding: 11px 13px; }

@@ -9,6 +9,7 @@ import { Badge, Button, Icon, Spinner, StatTile, Toggle, type IconName } from ".
 import { eul, lockNav, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
+import { UpdateChoice } from "./DeckUpdate";
 import "../styles/import.css";
 
 // String.raw: JSON 문자열 안의 수식은 역슬래시를 두 번 쓴다 (\\( … \\)). 그대로 보여주고 그대로 붙여넣게
@@ -22,7 +23,8 @@ const EXAMPLE = String.raw`{ "deck": "정보처리기사",
   ]
 }`;
 
-const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+/** 파일 크기. 0.1MB 미만은 KB (0.0MB 로 보이지 않게) */
+const mb = (bytes: number) => (bytes < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`);
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const JSON_FILE = /\.json$/i;
 
@@ -38,7 +40,7 @@ const BACKLOG_PER_DAY = 200;
 
 type Tab = "anki" | "json" | "csv";
 
-export function Import({ tab: initial, deckId = null, pick = false }: { tab: "anki" | "json"; deckId?: number | null; pick?: boolean }) {
+export function Import({ tab: initial, deckId = null, pick = false, path }: { tab: "anki" | "json"; deckId?: number | null; pick?: boolean; path?: string }) {
   const nav = useNav();
   const [tab, setTab] = useState<Tab>(initial);
   // 단축키 I 로 들어오면 파일 선택 창을 바로 연다 (B2-0). 탭을 오가며 다시 열리지 않게 한 번만
@@ -72,7 +74,7 @@ export function Import({ tab: initial, deckId = null, pick = false }: { tab: "an
         </div>
       </div>
       {tab === "anki" ? (
-        <AnkiImport onLock={setLocked} autoPick={autoPick} />
+        <AnkiImport onLock={setLocked} autoPick={autoPick} initialPath={path} />
       ) : tab === "json" ? (
         <JsonImport deckId={deckId} onCancel={back} />
       ) : (
@@ -141,7 +143,7 @@ const ANKI_FILE = /\.(apkg|colpkg)$/i;
 /** S1 오류 문구 공식: 무엇이 안 됐는지 + 기존 데이터는 그대로 */
 const safe = (msg: string) => (msg.includes("그대로") ? msg : `${msg} 기존 덱과 카드는 그대로예요.`);
 
-function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPick: boolean }) {
+function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) => void; autoPick: boolean; initialPath?: string }) {
   const nav = useNav();
   const toast = useToast();
   const [path, setPath] = useState<string | null>(null);
@@ -170,6 +172,8 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
   const [cancelling, setCancelling] = useState(false);
   const started = useRef(0);
   const cancelled = useRef(false);
+  // B2-u0: 이미 가져온 노트가 있으면 먼저 방식을 고른다 (업데이트 · 새 노트만). adding = 지금의 가져오기
+  const [adding, setAdding] = useState(false);
 
   const inspect = async (p: string) => {
     setPath(p);
@@ -178,6 +182,7 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
     setChecking(true);
     try {
       const i = await api.inspectAnki(p);
+      setAdding(false);
       setInfo(i);
       setHistory(i.reviews > 0);
       setSel(new Set(i.deck_tree.map((d) => d.id)));
@@ -201,7 +206,12 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
       autoPicked.current = true;
       pick();
     }
-  }, [autoPick]);
+    // B2-u [방식 바꾸기]: 그 파일을 다시 살펴본다
+    if (initialPath && !autoPicked.current) {
+      autoPicked.current = true;
+      inspect(initialPath);
+    }
+  }, [autoPick, initialPath]);
 
   // 가져오는 동안 앱 전체의 화면 전환을 막는다 (TopNav, N · I 단축키 포함). 결과로 넘어가기 전에 꼭 푼다
   const lock = (v: boolean) => {
@@ -357,6 +367,16 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
         </span>
         {!importing && !failed && <Button variant="ghost" size="M" label="다른 파일" onClick={pick} />}
       </div>
+      {info.update && !adding && !failed && path && <UpdateChoice key={path} path={path} info={info} onAdd={() => setAdding(true)} />}
+      {info.update && adding && !importing && (
+        <div className="du-adding">
+          <Icon name="plus" size={16} className="c-secondary" />
+          <span className="t-body-s c-secondary">새 노트만 더해요 · 이미 있는 노트 {n(info.update.existing_notes)}개는 그대로예요</span>
+          <Button variant="ghost" size="M" label="방식 바꾸기" onClick={() => setAdding(false)} />
+        </div>
+      )}
+      {(!info.update || adding || failed) && (
+        <>
 
       {failure ||
         (slow ? (
@@ -369,7 +389,7 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
           />
         ) : (
           <div className="b2s">
-            <DeckTree tree={tree} sel={sel} onChange={setSel} total={info.deck_tree} />
+            <DeckTree tree={tree} sel={sel} onChange={setSel} total={info.deck_tree} newOnly={!!info.update} />
             <div className="b2s__side">
             <div className="import__checks">
               {rows.map((r) => (
@@ -446,6 +466,8 @@ function AnkiImport({ onLock, autoPick }: { onLock: (v: boolean) => void; autoPi
           </span>
         </div>
       )}
+        </>
+      )}
     </>
   );
 }
@@ -486,15 +508,17 @@ const pickOf = (node: DeckNode, sel: Set<number>): Pick => {
   const k = node.units.filter((u) => sel.has(u.id)).length;
   return k === 0 ? "off" : k === node.units.length ? "on" : "mixed";
 };
-const sumOf = (units: DeckStat[], key: "cards" | "notes" | "existing_notes") => units.reduce((a, u) => a + u[key], 0);
+const sumOf = (units: DeckStat[], key: "cards" | "notes" | "existing_notes" | "new_cards") => units.reduce((a, u) => a + u[key], 0);
 const descendants = (n: DeckNode): DeckNode[] => n.children.flatMap((c) => [c, ...descendants(c)]);
 
 /** B2-s 왼쪽 "가져올 덱". 3상태 체크박스, 최상위만 펼친 채 시작, 고르는 단위는 하위 덱 전체 */
-function DeckTree({ tree, sel, onChange, total }: {
+function DeckTree({ tree, sel, onChange, total, newOnly = false }: {
   tree: DeckNode[];
   sel: Set<number>;
   onChange: (update: (s: Set<number>) => Set<number>) => void;
   total: DeckStat[];
+  /** 업데이트로 알아본 파일을 [새 노트만 더하기]로: 머리를 들어갈 새 카드 기준으로 ([n장 가져오기]와 같은 수) */
+  newOnly?: boolean;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const rows: DeckNode[] = [];
@@ -515,7 +539,9 @@ function DeckTree({ tree, sel, onChange, total }: {
         <span className="b2s__tree-title">
           <span className="t-title-s">가져올 덱</span>
           <span className="t-caption c-tertiary">
-            {n(sumOf(total, "cards"))}장 중 {n(sumOf(picked, "cards"))}장 · 덱 {n(tree.length)}개 중 {n(tree.filter((t) => pickOf(t, sel) !== "off").length)}개
+            {newOnly
+              ? `새 카드 ${n(sumOf(picked, "new_cards"))}장 · 이미 있는 ${n(sumOf(picked, "cards") - sumOf(picked, "new_cards"))}장 제외`
+              : `${n(sumOf(total, "cards"))}장 중 ${n(sumOf(picked, "cards"))}장 · 덱 ${n(tree.length)}개 중 ${n(tree.filter((t) => pickOf(t, sel) !== "off").length)}개`}
           </span>
         </span>
         <span>
@@ -648,7 +674,7 @@ function ProgressCard({ prog, started, cards, decks, media }: {
 
 // ---------------------------------------------------------------- B2-j
 
-function IssueList({ issues, limit = 30 }: { issues: ImportIssue[]; limit?: number }) {
+export function IssueList({ issues, limit = 30 }: { issues: ImportIssue[]; limit?: number }) {
   if (!issues.length) return null;
   return (
     <div className="import__issues">

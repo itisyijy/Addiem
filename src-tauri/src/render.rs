@@ -223,6 +223,17 @@ pub fn cloze_numbers(text: &str) -> BTreeSet<u32> {
     nums
 }
 
+/// 빈칸마다 (번호, 답). 덱 업데이트가 "빈칸 글은 같고 번호만 바뀐 노트"를 알아볼 때 쓴다
+pub fn cloze_parts(text: &str) -> Vec<(u32, &str)> {
+    let mut out = vec![];
+    let mut rest = text;
+    while let Some((_, num, answer, _, end)) = next_cloze(rest) {
+        out.push((num, answer));
+        rest = &rest[end..];
+    }
+    out
+}
+
 /// (시작, 번호, 답, 힌트, 끝)
 fn next_cloze(s: &str) -> Option<(usize, u32, &str, Option<&str>, usize)> {
     let mut from = 0;

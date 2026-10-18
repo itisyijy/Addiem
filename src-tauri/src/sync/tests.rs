@@ -1984,3 +1984,96 @@ fn card_type_deleted_while_a_card_is_recreated_and_a_cloze_re_added_elsewhere() 
         assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
     }
 }
+
+// ---------------------------------------------------------------- 8.7 덱 업데이트 (DU2 · DU17)
+
+#[test]
+fn deck_update_origin_follows_and_the_other_device_judges_with_it() {
+    use crate::import::deck_update::testpkg::{self, Model, note};
+    use crate::import::deck_update::{self, Choices, Req};
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let b = Dev::new("데스크톱");
+    let pkg = |d: &Dev, name: &str, g1: [&str; 2], g2: [&str; 2], g3: bool| {
+        let model = Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")], css: "" };
+        let mut notes = vec![note(1, "g1", 7, &g1, &[(1, 0)]), note(2, "g2", 7, &g2, &[(1, 0)])];
+        if g3 {
+            notes.push(note(3, "g3", 7, &["새 노트", "답"], &[(1, 0)]));
+        }
+        let p = d.dir.join(name);
+        testpkg::write(&p, &[model], &[(1, "공유덱")], &notes, &[]);
+        p
+    };
+    let up = |d: &Dev, p: &std::path::Path| {
+        let choices = Choices::default();
+        deck_update::run(&mut d.con(), &d.dir, &Req { path: p, selected: None, choices: &choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false }, false, &mut vec![]).unwrap()
+    };
+    let origin = |d: &Dev, guid: &str| -> String { d.con().query_row("SELECT origin FROM note WHERE anki_guid = ?1", [guid], |r| r.get(0)).unwrap() };
+    let fields = |d: &Dev, guid: &str| -> String { d.con().query_row("SELECT fields FROM note WHERE anki_guid = ?1", [guid], |r| r.get(0)).unwrap() };
+
+    // A 가 v1 을 가져오고(빈 DB 의 업데이트 = 가져오기) 동기화를 시작한다. 원본 열이 B 로 따라간다
+    up(&a, &pkg(&a, "v1.apkg", ["Q1", "A1"], ["Q2", "A2"], false));
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    engine::join(&b.db, &env.cx(&b), Join::Take, json!({})).unwrap();
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(origin(&b, "g2"), origin(&a, "g2"));
+    assert_eq!(b.n("SELECT count(*) FROM note_type WHERE anki_model_id = 7 AND origin IS NOT NULL"), 1);
+
+    // B 가 g2 를 고친 채(올리기 전) A 가 나중에 v2 업데이트를 적용했다: 열마다 나중에 고친 쪽(업데이트)이 이기고 B 의 수정은 K7 에 남는다
+    let t = db::now_ms();
+    let g2b = json!(["Q2", "A2 (B 가 고침)"]).to_string();
+    b.edit_at(t + 1000, "UPDATE note SET fields = ?1, updated_at = ?2 WHERE anki_guid = 'g2'", params![g2b, t + 1000]);
+    let v2 = pkg(&a, "v2.apkg", ["Q1", "A1 v2"], ["Q2 v2", "A2"], true);
+    let r = a.at(t + 2000, || up(&a, &v2));
+    assert_eq!((r.changed, r.new_notes), (2, 1));
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(fields(&b, "g2"), json!(["Q2 v2", "A2"]).to_string(), "나중에 적용한 업데이트 (K28)");
+    assert_eq!(b.conflicts().last().map(|c| c.5.clone()), Some(g2b.clone()), "내용이 바뀐 B 에 진 쪽 K7 기록 (30일, [이 버전으로 바꾸기])");
+    assert_eq!(b.n("SELECT count(*) FROM note WHERE anki_guid = 'g3'"), 1);
+
+    // B 가 v3 를 가져온다: A 의 업데이트로 따라온 원본이 있어 만든 사람이 고친 g1 은 "새 버전"이다 (원본 없음 · 충돌이 아니다)
+    let v3 = pkg(&b, "v3.apkg", ["Q1 v3", "A1 v2"], ["Q2 v2", "A2"], true);
+    let r = b.at(t + 3000, || up(&b, &v3));
+    assert_eq!((r.changed, r.same, r.conflicts.len(), r.no_base, r.new_notes), (1, 2, 0, 0, 0));
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(fields(&a, "g1"), json!(["Q1 v3", "A1 v2"]).to_string());
+
+    // 반대로 A 의 수정이 B 의 업데이트(v4)보다 나중이면 A 의 수정이 이기고, 원본은 v4 라 다음 업데이트에서 "내 것"으로 지켜진다 (지키는 쪽으로만 어긋난다)
+    let v4 = pkg(&b, "v4.apkg", ["Q1 v3", "A1 v4"], ["Q2 v2", "A2"], true);
+    b.at(t + 4000, || up(&b, &v4));
+    let g1a = json!(["Q1 v3", "A1 (A 가 고침)"]).to_string();
+    a.edit_at(t + 5000, "UPDATE note SET fields = ?1, updated_at = ?2 WHERE anki_guid = 'g1'", params![g1a, t + 5000]);
+    env.sync(&b);
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(fields(&b, "g1"), g1a);
+    let r = b.at(t + 6000, || up(&b, &v4));
+    assert_eq!((r.mine_kept, r.changed, r.conflicts.len()), (1, 0, 0));
+    assert_eq!(fields(&b, "g1"), g1a);
+
+    // DU-05 · DU42: 내가 지운 노트(origin_gone)는 동기화로 따라간다. 나중에 스냅샷으로 합류한 기기의 업데이트도 다시 넣지 않아, 지운 기기에 되살아나지 않는다
+    a.edit_at(t + 7000, "DELETE FROM card WHERE note_id = (SELECT id FROM note WHERE anki_guid = 'g3')", params![]);
+    a.edit_at(t + 7000, "DELETE FROM note WHERE anki_guid = 'g3'", params![]);
+    env.sync(&a);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(b.n("SELECT count(*) FROM origin_gone WHERE guid = 'g3'"), 1);
+    let c = Dev::new("태블릿");
+    engine::join(&c.db, &env.cx(&c), Join::Take, json!({})).unwrap();
+    env.sync(&c);
+    assert_eq!(c.n("SELECT count(*) FROM origin_gone WHERE guid = 'g3'"), 1, "합류한 기기도 안다");
+    let r = c.at(t + 8000, || up(&c, &v4));
+    assert_eq!((r.gone, r.new_notes), (1, 0));
+    env.sync(&c);
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(a.n("SELECT count(*) FROM note WHERE anki_guid = 'g3'"), 0, "지운 기기에 되살아나지 않는다");
+    assert_eq!(a.dump(), c.dump());
+}

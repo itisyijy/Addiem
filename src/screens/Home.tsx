@@ -9,9 +9,22 @@ import { PlanConflictBanner } from "./Plan";
 import { addDays } from "./Deck";
 import { dateLabel, n, useKey, useNav } from "../nav";
 import { DriveLoadLink, useSyncStatus } from "../sync";
+import { RESTORED_KEY } from "./Settings";
+
+// 백업으로 복구한 뒤 다시 불러왔으면 그 백업의 시각 (페이지를 불러올 때 한 번 읽고 지운다, DU49)
+let restored = (() => {
+  try {
+    const v = sessionStorage.getItem(RESTORED_KEY);
+    sessionStorage.removeItem(RESTORED_KEY);
+    return v;
+  } catch {
+    return null;
+  }
+})();
 
 export function Home() {
   const toast = useToast();
+  const nav = useNav();
   const [data, setData] = useState<HomeData | null>(null);
   const [error, setError] = useState<string>();
   const reload = useCallback(() => api.home().then(setData, (e) => setError(errorText(e))), []);
@@ -19,8 +32,17 @@ export function Home() {
     api.home().then(
       (d) => {
         setData(d);
+        if (restored) {
+          toast({
+            title: `${restored} 백업으로 복구했어요`,
+            text: "복구 전 상태도 백업해 뒀어요",
+            action: { label: "설정 › 이 기기 백업", onClick: () => nav({ name: "settings" }) },
+            ms: 5000,
+          });
+          restored = null;
+        }
         // 쉬기 날짜가 지나 오늘 다시 시작한 덱
-        if (d.resumed.length)
+        else if (d.resumed.length)
           toast({
             title: d.resumed.length === 1 ? `${d.resumed[0]} 쉬기를 마쳤어요` : `덱 ${d.resumed.length}개의 쉬기를 마쳤어요`,
             text: "오늘 분량에 다시 들어가요",
@@ -28,7 +50,7 @@ export function Home() {
       },
       (e) => setError(errorText(e)),
     );
-  }, [toast]);
+  }, [toast, nav]);
   // K Drive 받기로 데이터가 바뀌면 다시 읽는다 (다른 기기에서 만든 덱이 바로 보이게)
   const changed = useSyncStatus()?.changed_seq ?? 0;
   useEffect(() => {

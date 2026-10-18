@@ -55,7 +55,7 @@ fn table(target: &str) -> Res<&'static str> {
     }
 }
 
-fn names_json(names: &[String]) -> Option<String> {
+pub(crate) fn names_json(names: &[String]) -> Option<String> {
     (!names.is_empty()).then(|| serde_json::to_string(names).unwrap_or_default())
 }
 
