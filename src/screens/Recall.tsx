@@ -379,7 +379,7 @@ function dqError(f: AiError): [IconName, string, string] {
   if (f.kind === "expired") return ["link-off", "c-danger", "ChatGPT 연결이 끊겼어요"];
   if (f.kind === "scope") return ["link-off", "c-danger", "사용량 권한이 필요해요"];
   if (f.kind === "limit") return ["gauge", "c-warn", "요금제 사용 한도에 닿았어요 · 잠시 뒤 다시 해 주세요"];
-  if (f.kind === "bad_output") return ["alert", "c-warn", "알맞은 오답을 만들지 못했어요 · 질문이 짧으면 그럴 수 있어요"];
+  if (f.kind === "bad_output") return ["alert", "c-warn", "알맞은 오답을 만들지 못했어요 · 다시 시도해 주세요"];
   if (f.kind === "offline") return ["wifi-off", "c-secondary", "인터넷에 연결되어 있지 않아요"];
   if (f.kind === "unavailable") return ["alert", "c-warn", "지금은 ChatGPT 요금제를 쓸 수 없어요 · 잠시 뒤 다시 해 보세요"];
   if (f.kind === "not_eligible") return ["alert", "c-warn", "이 요금제에서는 쓸 수 없어요"];
@@ -418,6 +418,7 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
   const [offered, setOffered] = useState<string[]>([]);
   const [sentWhat, setSentWhat] = useState("");
   const [skip, setSkip] = useState<string[]>([]); // 보낼 목록에서 ✕ 로 뺀 이미 쓴 보기 (이 창 동안)
+  const [prior, setPrior] = useState<string[]>([]); // 이 창에서 받은 제안 모두 (넣은 것 · 뺀 것 · 남은 것). 다시 받을 때 피할 보기로
   const [fail, setFail] = useState<AiError | null>(null);
   const [slow, setSlow] = useState(false);
   const [reconnect, setReconnect] = useState<boolean | null>(null); // [다시 연결] (사용량 권한을 다시 묻는가)
@@ -445,15 +446,26 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
     const t = setTimeout(() => setSlow(true), 30_000);
     return () => clearTimeout(t);
   }, [phase]);
+  // 낮은 창의 카드 편집(E): 받은 제안이 보기 목록과 함께 보이게 창 안에서 맞춘다. 보기 머리를 위로, 그래도 제안이 넘치면 제안 끝까지
+  // (700px 은 study.css 의 낮은 창과 같다. 800 이상은 그대로)
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (phase !== "done" || !el?.closest(".modal--edit") || !matchMedia("(max-height: 700px)").matches) return;
+    el.parentElement?.querySelector(".lc__head")?.scrollIntoView({ block: "start" });
+    el.scrollIntoView({ block: "nearest" });
+  }, [phase]);
 
   if (!ai?.connected && phase !== "error" && reconnect === null) return null;
 
   const filled = value.options.flatMap((t, i) => (t.trim() ? [{ t: t.trim(), on: value.correct.includes(i) }] : []));
   const correct = filled.filter((o) => o.on).map((o) => o.t);
   const sending = filled.filter((o) => !o.on && !skip.includes(o.t)).map((o) => o.t);
+  // 넣은 제안은 보기 칸에 있어 이미 쓴 보기로 간다. 나머지(뺀 것 · 남은 것 · 넣은 뒤 고친 것)는 피할 보기로
+  const avoid = prior.filter((t) => !value.options.some((o) => optionKey(o) === optionKey(t)));
   const want = wantedDistractors(filled.length);
   const room = value.options.some((o) => !o.trim()) || value.options.length < 6;
-  const what = `질문 · 정답${correct.length > 1 ? ` ${n(correct.length)}개` : ""}${sending.length ? ` · 이미 쓴 보기 ${n(sending.length)}개` : ""}`;
+  const what = `질문 · 정답${correct.length > 1 ? ` ${n(correct.length)}개` : ""}${sending.length ? ` · 이미 쓴 보기 ${n(sending.length)}개` : ""}${avoid.length ? ` · 앞서 받은 제안 ${n(avoid.length)}개` : ""}`;
 
   const send = () => {
     setSendConfirmed(true);
@@ -462,7 +474,7 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
     setFail(null);
     setPhase("busy");
     const sent = `보낸 것 · ${what}`;
-    recall.distractors(question(), correct, sending, want).then(
+    recall.distractors(question(), correct, sending, avoid, want).then(
       (got) => {
         if (seq.current !== my) return;
         inFlight.current = false;
@@ -474,6 +486,7 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
           setFail({ kind: "bad_output", message: "" });
           return setPhase("error");
         }
+        setPrior((p) => [...p, ...fresh]);
         setOffered(fresh);
         setSentWhat(sent);
         setPhase("done");
@@ -583,6 +596,14 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
         remove: () => setSkip([...skip, t]),
         removeLabel: "이 보기 빼기",
       })),
+      ...avoid.map((t) => ({
+        key: `p-${t}`,
+        icon: "sparkles" as const,
+        meta: <span className="t-label-s c-secondary">앞서 받은 제안</span>,
+        text: t,
+        remove: () => setPrior(prior.filter((x) => x !== t)), // 빼면 피하지 않는다 (다시 나올 수 있다)
+        removeLabel: "이 제안 빼기",
+      })),
     ];
     body = (
       <>
@@ -614,7 +635,7 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
     );
   }
   return (
-    <div className="dq">
+    <div className="dq" ref={box}>
       {body}
       {reconnect !== null &&
         createPortal(

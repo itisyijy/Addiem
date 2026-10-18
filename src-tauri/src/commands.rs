@@ -1225,7 +1225,12 @@ pub fn list_cards(
                 Some(_) => serde_json::from_str::<Vec<String>>(&fields).ok().and_then(|v| v.get(3).map(|x| render::strip_tags(x))).unwrap_or_default(),
                 None => render::strip_tags(answer_part(&rendered.back)),
             };
-            let (question, answer) = table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer));
+            // 목록 · 선택형은 질문 필드만 + 정답 · 항목 한 줄 (D5 와 같은 질문, Q48). 검색은 위 필드 원문이라 보기 · 항목 글자로도 찾는다
+            let special = field_names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
+            let (question, answer) = match &special {
+                Some(s) => (render::strip_tags(s.question()), s.answer_line()),
+                None => table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer)),
+            };
             let buried_until: Option<i64> = r.get(9)?;
             Ok(CardRow {
                 id: r.get(0)?,
@@ -2143,9 +2148,10 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
             let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
             Ok(BuriedCard {
                 id: r.get(0)?,
-                question: render::strip_tags(&rendered.front),
+                question: render::strip_tags(special.as_ref().map_or(rendered.front.as_str(), |s| s.question())),
                 reason: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
                 importance: r.get(7)?,
                 deck_path: path_of(r.get(8)?, &by_id),

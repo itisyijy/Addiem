@@ -371,6 +371,14 @@
 .edit__written { order: 2; display: flex; flex-direction: column; gap: 16px; }
 /* 서술형 편집 창은 필드 셋 + 키워드 + 스위치라 길다 (목록 · 선택형 Q24 도 같다). 창 아래 32px 까지 쓴다 (Figma J3: 위 64 · 아래 여백) */
 .modal.modal--edit.modal--written { max-height: calc(100vh - 96px); }
+/* 낮은 창(1180×640): 위아래 여백 · 간격 · 보기 줄 높이를 줄여 필드 영역을 217 → 315px 로. 선택형 보기 목록과 Q8 제안 2개가
+   함께 들어가고, 제안을 받으면 DistractorLine 이 그 줄을 창 안에서 보이게 내린다 (같은 700px). 800 이상은 그대로 */
+@media (max-height: 700px) {
+  .modal.modal--edit, .modal.modal--edit.modal--written { top: 16px; max-height: calc(100vh - 32px); gap: 12px; padding: 20px 32px 16px; }
+  .modal--edit .lc__opt { padding-block: 7px; }
+  .modal--edit .dq__opt { padding-block: 3px; }
+  .modal--edit .dq__opt .btn { padding-block: 5px; }
+}
 .edit__write { display: inline-flex; align-items: center; gap: 10px; align-self: flex-start; cursor: pointer; }
 
 /* ---------------------------------------------------------------- H3 압축 회독 (Figma 53:6439) */
