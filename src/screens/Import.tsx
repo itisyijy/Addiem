@@ -184,7 +184,8 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
       const i = await api.inspectAnki(p);
       setAdding(false);
       setInfo(i);
-      setHistory(i.reviews > 0);
+      // 업데이트로 알아본 파일(B2-u0)의 기록은 덱을 만든 사람 것일 수 있어 기본은 신규로 (DU52). 화면에서 바꿀 수 있다
+      setHistory(i.reviews > 0 && !i.update);
       setSel(new Set(i.deck_tree.map((d) => d.id)));
     } catch (e) {
       setFailed(safe(errorText(e)));
@@ -410,7 +411,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
                   <span className="import__option-text">
                     <span className="import__option-title">
                       <span className="t-body-m-strong">복습 기록과 다음 복습 일정 가져오기</span>
-                      <Badge tone="accent">권장 · {n(reviews)}건</Badge>
+                      {info.update ? <Badge tone="neutral">{n(reviews)}건</Badge> : <Badge tone="accent">권장 · {n(reviews)}건</Badge>}
                     </span>
                     <span className="t-body-s c-secondary">
                       카드마다 간격·기한·기억 상태를 이어받아 시작해요. 이후 평가는 Neo-Anki의 일정 계산을 따르고, 학습 순서·하루 분량은 Neo-Anki 설정을 써요.
@@ -432,10 +433,14 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
                   <input type="radio" name="history" checked={!history} onChange={() => setHistory(false)} />
                   <span className="import__radio" />
                   <span className="import__option-text">
-                    <span className="t-body-m-strong">신규 카드로 시작</span>
+                    <span className="import__option-title">
+                      <span className="t-body-m-strong">신규 카드로 시작</span>
+                      {info.update && <Badge tone="accent">권장</Badge>}
+                    </span>
                     <span className="t-body-s c-secondary">
                       Anki에서 학습한 카드도 복습 기록 없이 신규 카드로 시작해요. 목표일이 있으면 신규로 다시 나눠요. 원본 기록은 Anki에 그대로 남아요.
                     </span>
+                    {info.update && <span className="t-caption c-tertiary">이미 있는 노트가 많은 파일이라, 이 기록은 덱을 만든 사람의 것일 수 있어요</span>}
                   </span>
                 </label>
               </div>
