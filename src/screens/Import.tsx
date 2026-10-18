@@ -314,7 +314,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
     {
       icon: "check",
       tone: "c-success",
-      label: "노트타입",
+      label: "노트 유형",
       value: all
         ? info.note_types_ok === info.note_types
           ? `${n(info.note_types)}종 모두 지원 (필드 치환 템플릿)`
@@ -440,7 +440,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
                     <span className="t-body-s c-secondary">
                       Anki에서 학습한 카드도 복습 기록 없이 신규 카드로 시작해요. 목표일이 있으면 신규로 다시 나눠요. 원본 기록은 Anki에 그대로 남아요.
                     </span>
-                    {info.update && <span className="t-caption c-tertiary">이미 있는 노트가 많은 파일이라, 이 기록은 덱을 만든 사람의 것일 수 있어요</span>}
+                    {info.update && <span className="t-caption c-tertiary">이미 가져온 덱의 새 버전이라, 이 기록은 덱을 만든 사람의 것일 수 있어요. 내가 Anki에서 공부한 기록이면 위를 골라 주세요.</span>}
                   </span>
                 </label>
               </div>
