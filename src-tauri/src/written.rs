@@ -475,7 +475,7 @@ pub(crate) fn guard(relations: &mut [crate::llm::Relation], keywords: &[Keyword]
 
 /// 서술형 카드가 나오면 (답을 쓰는 동안): 엔진을 띄워 모델을 읽고 관계 뽑기 · 판정 앞부분을 미리 한다. 쓸 수 없으면 아무것도 하지 않는다
 #[tauri::command]
-pub async fn concept_prepare(app: tauri::AppHandle, card_id: i64) -> Res<()> {
+pub async fn concept_prepare(app: tauri::AppHandle, card_id: i64, token: u64) -> Res<()> {
     use tauri::Manager;
     let st = app.state::<AppState>();
     let bin = crate::llm::engine_bin(&app);
@@ -489,7 +489,7 @@ pub async fn concept_prepare(app: tauri::AppHandle, card_id: i64) -> Res<()> {
     };
     let dir = st.data_dir.clone();
     // 미리 하기의 실패는 알리지 않는다 (비교할 때 run 이 다시 띄우고 알린다)
-    let _ = tauri::async_runtime::spawn_blocking(move || crate::llm::prepare(bin.as_deref(), &dir, &question, &model)).await;
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::llm::prepare(bin.as_deref(), &dir, &question, &model, token)).await;
     Ok(())
 }
 

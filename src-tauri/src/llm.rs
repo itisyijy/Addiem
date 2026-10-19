@@ -642,15 +642,19 @@ pub fn check_detail(e: &mut Engine, question: &str, model: &str, answer: &str, s
     Ok(Some(Detail { relations, lp }))
 }
 
+/// 같은 질문 · 모범 답안 · 답의 판정이 캐시에 있으면 (엔진 없이)
+fn cached(question: &str, model: &str, answer: &str) -> Res<Option<Vec<Relation>>> {
+    Ok(RESULTS.lock().map_err(err)?.get(&key(&[question, model, answer])))
+}
+
 /// 두 단계 모두. 같은 답은 캐시에서. 관계 형식이 틀리면 없다
 pub fn check(e: &mut Engine, question: &str, model: &str, answer: &str, stop: &dyn Fn() -> bool) -> Res<Option<Vec<Relation>>> {
-    let k = key(&[question, model, answer]);
-    if let Some(r) = RESULTS.lock().map_err(err)?.get(&k) {
+    if let Some(r) = cached(question, model, answer)? {
         return Ok(Some(r));
     }
     let r = check_detail(e, question, model, answer, stop)?.map(|d| d.relations);
     if let Some(r) = &r {
-        RESULTS.lock().map_err(err)?.put(k, r.clone());
+        RESULTS.lock().map_err(err)?.put(key(&[question, model, answer]), r.clone());
     }
     Ok(r)
 }
@@ -695,6 +699,10 @@ fn usable(bin: Option<&Path>, data_dir: &Path) -> Res<PathBuf> {
 /// 그래도 안 되면 이번 학습에서는 끈다 (OFF, 화면이 알린다). 사용자가 멈춘 것은 실패로 치지 않는다
 pub fn run(bin: Option<&Path>, data_dir: &Path, job: u64, question: &str, model: &str, answer: &str) -> Res<Option<Vec<Relation>>> {
     let bin = usable(bin, data_dir)?;
+    // 캐시는 엔진 잠금 앞에서 본다: 다른 카드의 미리 하기가 엔진을 쥐고 있어도 기다리지 않는다 (QA Q5 L1: 되돌리기로 돌아온 카드가 9.5초)
+    if let Some(r) = cached(question, model, answer)? {
+        return Ok(Some(r));
+    }
     let started = Instant::now();
     let mut last = String::new();
     for _ in 0..2 {
@@ -717,14 +725,27 @@ pub fn run(bin: Option<&Path>, data_dir: &Path, job: u64, question: &str, model:
     Err(format!("{OFF_MSG} ({last})"))
 }
 
-/// 서술형 카드가 나오면: 엔진을 띄워 모델을 읽고 그 카드의 관계 · 기준 판정 · 판정 앞부분을 미리 한다 (답을 쓰는 동안).
-/// 새 카드가 오면 앞의 것은 멈춘다. 실패는 여기서 알리지 않는다 (비교할 때 run 이 다시 띄우고 알린다)
-pub fn prepare(bin: Option<&Path>, data_dir: &Path, question: &str, model: &str) -> Res<()> {
+/// 화면이 멈추라고 한 미리 하기 표(token)의 가장 큰 값. 표는 화면이 늘려 가며 준다 (그 카드를 떠나면 그 표까지 멈춘다)
+static PREP_CANCELLED: AtomicU64 = AtomicU64::new(0);
+
+/// 서술형 카드가 나오면: 엔진을 띄워 모델을 읽고 그 카드의 관계 · 판정 앞부분을 미리 한다 (답을 쓰는 동안).
+/// 새 카드의 미리 하기가 오거나 화면이 그 표를 멈추면(카드가 바뀜 · 되돌리기 · 접어두기) 멈추고 엔진 잠금을 놓는다.
+/// 실패는 여기서 알리지 않는다 (비교할 때 run 이 다시 띄우고 알린다)
+pub fn prepare(bin: Option<&Path>, data_dir: &Path, question: &str, model: &str, token: u64) -> Res<()> {
     let bin = usable(bin, data_dir)?;
     let job = PREP.fetch_add(1, Ordering::SeqCst) + 1;
     let deadline = Instant::now() + TIMEOUT;
-    let stop = || PREP.load(Ordering::SeqCst) != job || Instant::now() > deadline;
+    let stop = || PREP.load(Ordering::SeqCst) != job || PREP_CANCELLED.load(Ordering::SeqCst) >= token || Instant::now() > deadline;
+    if stop() {
+        return Ok(()); // 시작하기 전에 이미 떠난 카드
+    }
     with_engine(&bin, data_dir, &stop, |e| if stop() { Ok(()) } else { warm(e, question, model, &stop) })
+}
+
+/// 그 표의 미리 하기를 멈춘다 (화면이 카드를 떠날 때). 늦게 와도 그 뒤의 미리 하기(더 큰 표)는 멈추지 않는다
+#[tauri::command]
+pub fn llm_stop_prepare(token: u64) {
+    PREP_CANCELLED.fetch_max(token, Ordering::SeqCst);
 }
 
 /// 돌던 확인 · 미리 하기를 멈춘다 (평가했거나 다음 카드)

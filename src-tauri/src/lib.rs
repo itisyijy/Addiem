@@ -140,7 +140,7 @@ pub fn run() {
             // J 서술형 · G3 신호 · H3 압축 회독 (학습 화면)
             written::written_card, written::save_written_answer, written::compare_written, written::written_note, written::save_written_note,
             written::suggest_keywords, written::add_written_card, written::split_signal,
-            written::concept_check, llm::llm_status, llm::llm_download, llm::llm_cancel, llm::llm_delete, written::concept_prepare, llm::llm_stop, llm::llm_release,
+            written::concept_check, llm::llm_status, llm::llm_download, llm::llm_cancel, llm::llm_delete, written::concept_prepare, llm::llm_stop, llm::llm_stop_prepare, llm::llm_release,
             cram::cram_plan, cram::cram_cards, cram::cram_answer, cram::cram_undo, cram::mix_cards, cram::mix_start, cram::mix_restart, cram::mix_summary,
             // M 그림 가리기
             occlusion::occlusion_note, occlusion::save_occlusion,

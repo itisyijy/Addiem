@@ -213,6 +213,9 @@ const tipHidden = () => {
 
 type Phase = "idle" | "busy" | "done" | "bad" | "error";
 
+/** 미리 하기 표. 늘려 가며 준다 (앱을 다시 열어도 줄지 않게 시각에서 시작) */
+let prepToken = Date.now() * 1000;
+
 /**
  * J2 의 개념 관계 확인. on: 쓴 답과 비교 화면이 있을 때. writing: 서술형 카드의 질문 면 (답을 쓰는 동안 미리 한다).
  * 돌려주는 것: 비교 블록 바로 아래 한 줄(기다림 · 요약 · 펼침 · 안내 · 실패), 멈춤
@@ -242,9 +245,22 @@ export function useConcept({ cardId, typed, on, writing }: { cardId: number | nu
   const offToast = useRef(false);
 
   // 서술형 카드가 나오면 답을 쓰는 동안 미리 (엔진 띄우기 · 모델 읽기 · 관계 뽑기 · 판정 앞부분). 학습 화면을 떠나면 엔진을 끝낸다
+  const prep = useRef<number | null>(null);
   useEffect(() => {
-    if (writing && ready && cardId !== null) writtenApi.prepareConcept(cardId).catch(() => {});
+    if (!writing || !ready || cardId === null) return;
+    const token = ++prepToken;
+    prep.current = token;
+    writtenApi.prepareConcept(cardId, token).catch(() => {});
   }, [writing, ready, cardId]);
+  // 카드가 바뀌면(다음 카드 · 되돌리기 · 접어두기) 그 카드의 미리 하기를 멈춘다: 엔진 잠금을 쥔 채 돌아온 카드의 확인을 막지 않게 (QA Q5 L1).
+  // 같은 카드에서 답을 비교할 때(질문 면 → 답 면)는 멈추지 않는다 (그 확인이 미리 한 것을 쓴다)
+  useEffect(
+    () => () => {
+      if (prep.current !== null) writtenApi.stopPrepare(prep.current).catch(() => {});
+      prep.current = null;
+    },
+    [cardId],
+  );
   useEffect(() => () => void llm.release().catch(() => {}), []);
 
   const run = useCallback(() => {

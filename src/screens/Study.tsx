@@ -1157,6 +1157,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                       if (matchAction("save", e.nativeEvent) >= 0) {
                         e.preventDefault();
                         reveal();
+                      } else if (!typed && last && matchAction("undo", e.nativeEvent) >= 0) {
+                        // 다음 카드가 서술형이면 입력 칸에 초점이 와 있다. 칸이 비었으면 되돌릴 글이 없으니 토스트의 Ctrl Z = 평가 되돌리기 (QA Q5 L2)
+                        e.preventDefault();
+                        undo();
                       } else if (e.key === "Escape") {
                         e.preventDefault();
                         e.currentTarget.blur();
