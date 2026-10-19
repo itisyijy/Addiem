@@ -220,7 +220,7 @@ let prepToken = Date.now() * 1000;
  * J2 의 개념 관계 확인. on: 쓴 답과 비교 화면이 있을 때. writing: 서술형 카드의 질문 면 (답을 쓰는 동안 미리 한다).
  * 돌려주는 것: 비교 블록 바로 아래 한 줄(기다림 · 요약 · 펼침 · 안내 · 실패), 멈춤
  */
-export function useConcept({ cardId, typed, on, writing }: { cardId: number | null; typed: string; on: boolean; writing: boolean }) {
+export function useConcept({ cardId, typed, on, writing, toastBusy }: { cardId: number | null; typed: string; on: boolean; writing: boolean; toastBusy: boolean }) {
   const s = useLlm();
   const notify = useToast();
   // 이번 학습에서 껐으면(엔진이 다시 띄워도 멈춤) 더 부르지 않는다. 알림은 토스트 한 번 (카드 안 줄 없음)
@@ -243,6 +243,13 @@ export function useConcept({ cardId, typed, on, writing }: { cardId: number | nu
     return () => clearTimeout(t);
   }, [open]);
   const offToast = useRef(false);
+  // "이번 학습에서는 껐어요" 는 학습 화면의 되돌리기 · 접기 토스트가 닫힌 뒤에 띄운다 (겹치지 않게, 대기열처럼)
+  const [offPending, setOffPending] = useState(false);
+  useEffect(() => {
+    if (!offPending || toastBusy) return;
+    setOffPending(false);
+    notify({ title: "개념 관계 확인을 이번 학습에서는 껐어요", text: "다음 학습에서 다시 켜져요. 핵심어 검사와 평가는 그대로예요.", icon: "info" });
+  }, [offPending, toastBusy, notify]);
 
   // 서술형 카드가 나오면 답을 쓰는 동안 미리 (엔진 띄우기 · 모델 읽기 · 관계 뽑기 · 판정 앞부분). 학습 화면을 떠나면 엔진을 끝낸다
   const prep = useRef<number | null>(null);
@@ -287,7 +294,7 @@ export function useConcept({ cardId, typed, on, writing }: { cardId: number | nu
           setPhase("idle");
           if (offToast.current) return;
           offToast.current = true;
-          notify({ title: "개념 관계 확인을 이번 학습에서는 껐어요", text: "다음 학습에서 다시 켜져요. 핵심어 검사와 평가는 그대로예요.", icon: "info" });
+          setOffPending(true);
         });
       },
     );

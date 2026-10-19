@@ -378,7 +378,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const [srcSeg, setSrcSeg] = useState<number | null>(null);
   const grade = useGrade({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, confirmed: gradeOk, openSegment: setSrcSeg });
   // 8.3 개념 관계 확인 (로컬 모델을 받았고 이 PC 에서 쓸 수 있을 때 비교 화면에서 저절로, 참고용)
-  const concept = useConcept({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, writing: phase === "q" && !!card?.written?.written });
+  const concept = useConcept({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, writing: phase === "q" && !!card?.written?.written, toastBusy: !!rated || !!toast });
 
   const finish = useCallback(
     async (completed: boolean) => {
