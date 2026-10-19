@@ -162,7 +162,7 @@ export function Quality({ deckId }: { deckId: number }) {
       },
       (e) => toast({ title: "되돌리지 못했어요", text: errorText(e), tone: "error" }),
     );
-  const rewriteDone = (changeId: number, how: "format" | "ai") => {
+  const rewriteDone = (changeId: number, how: "format" | "ai" | "edit") => {
     setRewriting(null);
     load();
     toast({ title: how === "format" ? "서식을 고쳤어요" : "카드를 고쳤어요", tone: "undo", action: { label: "되돌리기", onClick: () => undoRewrite(changeId) } });
@@ -345,7 +345,7 @@ export function Quality({ deckId }: { deckId: number }) {
             keep(rewriting.cardId);
           }}
           onEdit={() => edit(rewriting.cardId)}
-          onDone={(id) => rewriteDone(id, rewriting.mode)}
+          onDone={rewriteDone}
         />
       )}
       {viewing !== null && <ChangeModal change={viewing} onClose={() => setViewing(null)} onUndo={() => undoRewrite(viewing.id)} />}
@@ -530,9 +530,12 @@ function FixedCard({ before, value, onChange, locked, readOnly, label = "고친 
           {locked?.[i] && <span className="t-caption c-tertiary">그림 · 소리 · 서식이 있는 칸이라 카드 편집에서 고쳐 주세요</span>}
         </>
       ) : (
-        <p className={`rewrite__text ${i ? "t-body-m" : "t-body-m-strong"}`}>
-          <Diff before={before[i]} after={value[i]} />
-        </p>
+        <>
+          <p className={`rewrite__text ${i ? "t-body-m" : "t-body-m-strong"}`}>
+            <Diff before={before[i]} after={value[i]} />
+          </p>
+          {locked?.[i] && !readOnly && <span className="t-caption c-tertiary">그림 · 소리 · 서식이 있는 칸이라 여기서는 바꾸지 않아요</span>}
+        </>
       )}
     </>
   );
@@ -598,7 +601,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
   onClose: () => void;
   onKeep: () => void;
   onEdit: () => void;
-  onDone: (changeId: number) => void;
+  onDone: (changeId: number, how: "format" | "ai" | "edit") => void;
 }) {
   const [r, setR] = useState<Rewrite | null>(null);
   const [value, setValue] = useState<[string, string]>(["", ""]);
@@ -698,9 +701,14 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
 
   const before: [string, string] = [r.question, r.answer];
   const changed = tidy(value[0]) !== r.question || tidy(value[1]) !== r.answer;
+  const lockedChange = r.locked.some((l, i) => l && tidy(value[i]) !== before[i]);
+  // 제안 그대로인가 (서식 고치기를 손으로 바꿨으면 "직접 고침"으로 남긴다, QA L3)
+  const proposal = mode === "format" ? [r.new_question, r.new_answer] : check?.fix ? [check.fix.question, check.fix.answer] : null;
+  const asProposed = !!proposal && proposal.every((p, i) => tidy(p) === tidy(value[i]));
+  const how = mode === "format" && !asProposed ? "edit" : mode;
   const apply = () => {
     setBusy(true);
-    qualityApi.rewriteApply(cardId, value[0], value[1], mode).then(onDone, (e) => {
+    qualityApi.rewriteApply(cardId, value[0], value[1], how).then((id) => onDone(id, how), (e) => {
       setError(errorText(e));
       setBusy(false);
     });
@@ -771,7 +779,6 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
       <section className="rewrite__card rewrite__card--plain">
         <AiErrorBox
           e={aiFail}
-          onClose={onClose}
           onRetry={() => send((segs ?? []).map((s) => s.id))}
           onReconnect={(reconsent) => setConnect({ start: "wait", reconsent })}
           retryLabel="다시 확인"
@@ -788,7 +795,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
     right = (
       <section className="rewrite__card rewrite__card--check" aria-label="확인해 주세요">
         <span className="t-label-s c-tertiary">확인해 주세요</span>
-        {(check.checks.length ? check.checks : ["질문과 답을 직접 확인해 주세요."]).map((c, i) => (
+        {(check.checks.length ? check.checks : [check.kept_locked ? "그림 · 소리 · 서식이 있는 칸이라 카드 편집에서 직접 고쳐 주세요." : "질문과 답을 직접 확인해 주세요."]).map((c, i) => (
           <p key={i} className="t-body-m">
             {check.checks.length ? `${i + 1}. ` : ""}
             {c}
@@ -825,7 +832,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
         ) : noFix && check ? (
           <p className="rewrite__warn t-body-s">
             <Icon name="alert" size={16} />
-            수정안을 만들지 않았어요 · 근거가 부족해요. {check.reason}
+            {check.kept_locked ? "고친 안이 서식이 있는 칸만 바꿔서 쓰지 않았어요." : "수정안을 만들지 않았어요 · 근거가 부족해요."} {check.reason}
           </p>
         ) : check?.fix ? (
           <p className="quality__info split__why t-body-s">
@@ -858,16 +865,17 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
             )}
           </p>
         )}
+        {check?.fix && check.kept_locked && <p className="rewrite__locked t-caption">그림 · 소리 · 서식이 있는 칸은 바꾸지 않았어요</p>}
         {error && <p className="t-body-s c-danger">{error}</p>}
         <div className="split__foot">
           <span className="t-caption c-secondary">
-            {fix ? `고친 뒤 7일 동안 카드 점검의 "최근 고친 카드"에서 되돌릴 수 있어요` : noFix ? "근거 없이 고친 답은 만들지 않아요" : ""}
+            {fix ? `고친 뒤 7일 동안 카드 점검의 "최근 고친 카드"에서 되돌릴 수 있어요` : noFix && !check?.kept_locked ? "근거 없이 고친 답은 만들지 않아요" : ""}
           </span>
           <span className="split__actions">
             {fix ? (
               <>
                 <Button variant="ghost" size="M" label={mode === "format" ? "고치지 않기" : "그대로 두기"} onClick={stop} />
-                <Button size="M" icon="check" label="이대로 고치기" disabled={!changed} busy={busy} busyLabel="고치는 중…" onClick={apply} />
+                <Button size="M" icon="check" label="이대로 고치기" disabled={!changed || lockedChange} busy={busy} busyLabel="고치는 중…" onClick={apply} />
               </>
             ) : check && !check.fix ? (
               <>
@@ -901,7 +909,7 @@ function ChangeModal({ change, onClose, onUndo }: { change: CardChange; onClose:
     <Modal title="고친 전후" sub={`${HOW[change.how ?? "edit"]} · ${ago(change.created_at)}`} onClose={onClose} className="split rewrite">
       {r ? (
         <Compare before={[r.question, r.answer]} label="고치기 전">
-          <FixedCard before={[r.question, r.answer]} value={[r.new_question, r.new_answer]} readOnly label="고친 뒤 · 지금 카드" />
+          <FixedCard before={[r.question, r.answer]} value={[r.new_question, r.new_answer]} readOnly label={r.edited_since ? "지금 카드 · 적용 뒤 다시 고쳤어요" : "고친 뒤 · 지금 카드"} />
         </Compare>
       ) : (
         <p className="t-body-s c-danger">{error}</p>
