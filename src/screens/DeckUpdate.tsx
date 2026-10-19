@@ -891,7 +891,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
   const [tpl, setTpl] = useState<{ q: string; a: string; ord: number } | null>(null);
   // 새 모양은 적용 전이라 새 필드 · 바뀐 필드 이름이 아직 없다 (빈 칸이 점처럼 그려진다). 미리보기에서만 그 자리에 새 필드는 이름, 바뀐 이름은 옛 이름의 값
   const needFill = who === "new" && t.new_fields.length + t.renamed_fields.length > 0;
-  const [fill, setFill] = useState<{ names: string[]; values: string[] } | null>(null);
+  const [fill, setFill] = useState<{ names: string[]; values: string[]; note?: number } | null>(null);
   useEffect(() => {
     if (!needFill) return;
     Promise.all([api.noteTypeDetail(t.note_type_id), api.noteTypeSamples(t.note_type_id)]).then(
@@ -904,7 +904,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
           if (i >= 0 && !names.includes(b)) (names.push(b), values.push(values[i]));
         }
         for (const f of t.new_fields) if (!names.includes(f)) (names.push(f), values.push(f));
-        setFill({ names, values });
+        setFill({ names, values, note: samples[0]?.note_id });
       },
       () => setError(true),
     );
@@ -925,7 +925,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
     let live = true;
     setError(false);
     api
-      .previewTemplate(t.note_type_id, tpl.q, tpl.a, tpl.ord, fill?.values ?? null, fill?.names)
+      .previewTemplate(t.note_type_id, tpl.q, tpl.a, tpl.ord, fill?.values ?? null, fill?.names, fill?.note)
       .then(async (p) => {
         const [front, back] = await Promise.all([renderCardHtml(p.front), renderCardHtml(p.back)]);
         if (live) setHtml({ front, back });

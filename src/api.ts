@@ -635,8 +635,9 @@ export const api = {
   /** 그 덱(하위 덱 포함) 노트가 쓰는 유형 id, 많이 쓰는 것 먼저 */
   deckNoteTypes: (deckId: number) => invoke<number[]>("deck_note_types", { deckId }),
   /** values 는 보이는 순서. names 를 주면 편집 중인 필드 이름 (values 가 null 이면 이름 샘플) */
-  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[]) =>
-    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names }),
+  /** note: 값을 가져온 노트 ({{Tags}} {{Deck}} 같은 특수 필드를 그 노트 것으로) */
+  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[], note?: number) =>
+    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names, note }),
   // NT1–NT5 목록 · 편집기
   cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
   renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),

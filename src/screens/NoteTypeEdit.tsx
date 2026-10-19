@@ -1135,7 +1135,7 @@ function Preview({ d, draft, tpl, note }: { d: Detail; draft: Draft; tpl: DTpl |
     if (!tpl || samples === null) return;
     let live = true;
     api
-      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names)
+      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names, sample?.note_id)
       .then(async (p) => {
         const parts = splitBack(p.back, p.front);
         const [front, question, answer] = (await Promise.all([renderCardHtml(p.front), renderCardHtml(parts.question), renderCardHtml(parts.answer)])).map(withMath);

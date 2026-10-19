@@ -46,6 +46,7 @@
 
 - `note_field_names` 는 노트 유형 **id** 키 (전에는 이름 키라 가져온 "Basic" 과 앱 Basic 이 서로 덮였다). 지운 자리는 맵에 넣지 않는다.
 - 미리보기는 render.rs 그대로 (`preview_template`).
+- 특수 필드 · 필터 (2026-10-19, NT72 · NT73): `{{Tags}}` `{{Deck}}` `{{Subdeck}}` `{{Type}}` `{{Card}}` `{{CardFlag}}` 는 `render::special_fields` 를 필드 맵에 넣어 그린다 (학습 화면 `card_view` 와 미리보기만, 다른 render_fields 호출부는 빈 값 그대로). `text:` 는 서식 빼기, `hint:` 는 스크립트 없는 `<details>`.
 
 ## 6. 쉬운 편집기 구조
 
@@ -96,4 +97,4 @@
 
 ## 다음 (이번에 하지 않음)
 
-특수 필드 `{{Tags}}` `{{Deck}}` `{{Card}}` 등, `text:` · `hint:` 필터, `anki_raw` 보존(sortf · 필드 글꼴 · latex), 앱 기본 유형의 기기 공통 모델 id. 쉬운 편집의 서식(굵게 · 색) · 한 줄에 필드 여러 개.
+~~특수 필드 · `text:` · `hint:` 필터~~ (2026-10-19 됨, 5장), `anki_raw` 보존(sortf · 필드 글꼴 · latex), 앱 기본 유형의 기기 공통 모델 id. 쉬운 편집의 서식(굵게 · 색) · 한 줄에 필드 여러 개.

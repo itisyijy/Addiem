@@ -839,25 +839,51 @@ pub struct Preview {
 
 /// 초안 템플릿 미리보기 (render.rs 그대로). values 는 보이는 순서. 없으면 이 유형의 가장 최근 노트, 그것도 없으면 필드 이름
 /// (빈칸으로 쓰는 필드는 "{{c1::이름}}"). names 를 주면 편집 중인 필드 이름 (이름을 바꾸거나 더한 초안): values 는 그 순서, 없으면 이름 샘플
-pub(crate) fn preview(con: &Connection, id: i64, qfmt: &str, afmt: &str, ord: u32, values: Option<&[String]>, names: Option<&[String]>) -> Res<Preview> {
+#[allow(clippy::too_many_arguments)]
+/// note: 값을 가져온 노트 (특수 필드 {{Tags}} {{Deck}} 를 그 노트 것으로). 없으면 "(태그)" · "(덱)" 같은 이름 샘플
+pub(crate) fn preview(con: &Connection, id: i64, qfmt: &str, afmt: &str, ord: u32, values: Option<&[String]>, names: Option<&[String]>, note: Option<i64>) -> Res<Preview> {
     let nt = load(con, id)?;
     let cz = cloze_refs(qfmt);
     let sample = |n: &String| if cz.contains(n) { format!("{{{{c1::{n}}}}}") } else { format!("({n})") };
-    let map = match (names, values) {
+    let mut note = note;
+    let mut map: HashMap<String, String> = match (names, values) {
         (Some(names), Some(v)) if v.len() != names.len() => return Err("필드 수가 노트 유형과 달라요.".into()),
         (Some(names), Some(v)) => names.iter().cloned().zip(v.iter().cloned()).collect(),
         (Some(names), None) => names.iter().map(|n| (n.clone(), sample(n))).collect(),
         (None, Some(v)) => nt.field_map(&nt.to_slots(v)?),
         (None, None) => {
-            let latest: Option<String> =
-                con.query_row("SELECT fields FROM note WHERE note_type_id = ?1 ORDER BY id DESC LIMIT 1", [id], |r| r.get(0)).optional().map_err(err)?;
+            let latest: Option<(i64, String)> = con
+                .query_row("SELECT id, fields FROM note WHERE note_type_id = ?1 ORDER BY id DESC LIMIT 1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
+                .map_err(err)?;
             let slots = match latest {
-                Some(f) => serde_json::from_str(&f).unwrap_or_default(),
+                Some((n, f)) => {
+                    note = note.or(Some(n));
+                    serde_json::from_str(&f).unwrap_or_default()
+                }
                 None => nt.slots.iter().map(sample).collect::<Vec<_>>(),
             };
             nt.field_map(&slots)
         }
     };
+    // 특수 필드: 그 노트의 태그 · 첫 카드 덱, 이 유형 이름 · 카드 종류 이름 (빈칸 유형은 카드 종류 하나)
+    let card = nt.templates.iter().find(|t| t.ord == ord || nt.cloze()).map_or("", |t| t.name.as_str());
+    let found: Option<(String, Option<i64>)> = match note {
+        Some(n) => con
+            .query_row("SELECT tags, (SELECT deck_id FROM card WHERE note_id = ?1 ORDER BY id LIMIT 1) FROM note WHERE id = ?1", [n], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(err)?,
+        None => None,
+    };
+    let special = match found {
+        Some((tags, deck)) => {
+            let decks = crate::commands::load_decks(con)?;
+            let by_id = decks.iter().map(|d| (d.id, d)).collect();
+            render::special_fields(&tags, &deck.map(|d| crate::commands::path_of(d, &by_id)).unwrap_or_default(), &nt.name, card)
+        }
+        None => render::special_fields("(태그)", &["(덱)".to_string()], &nt.name, card),
+    };
+    map.extend(special);
     let r = render::render_card(qfmt, afmt, &map, ord);
     Ok(Preview { front: r.front, back: r.back })
 }
@@ -1736,8 +1762,18 @@ pub fn note_type_empty_fronts(state: State<AppState>, id: i64, drafts: Vec<Draft
 }
 
 #[tauri::command]
-pub fn preview_template(state: State<AppState>, id: i64, qfmt: String, afmt: String, ord: u32, values: Option<Vec<String>>, names: Option<Vec<String>>) -> Res<Preview> {
-    preview(&*state.db.lock().map_err(err)?, id, &qfmt, &afmt, ord, values.as_deref(), names.as_deref())
+#[allow(clippy::too_many_arguments)]
+pub fn preview_template(
+    state: State<AppState>,
+    id: i64,
+    qfmt: String,
+    afmt: String,
+    ord: u32,
+    values: Option<Vec<String>>,
+    names: Option<Vec<String>>,
+    note: Option<i64>,
+) -> Res<Preview> {
+    preview(&*state.db.lock().map_err(err)?, id, &qfmt, &afmt, ord, values.as_deref(), names.as_deref(), note)
 }
 
 #[tauri::command]
@@ -2057,11 +2093,11 @@ mod tests {
         let (con, deck) = setup();
         let nt = anki_clone(&con, "basic", None);
         let names = s(&["앞", "새 필드"]);
-        let p = preview(&con, nt, "{{앞}}<br>{{새 필드}}", "", 0, None, Some(&names)).unwrap();
+        let p = preview(&con, nt, "{{앞}}<br>{{새 필드}}", "", 0, None, Some(&names), None).unwrap();
         assert_eq!(p.front, "(앞)<br>(새 필드)");
-        let p = preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값", ""])), Some(&names)).unwrap();
+        let p = preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값", ""])), Some(&names), None).unwrap();
         assert_eq!(p.front, "값");
-        assert!(preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값"])), Some(&names)).is_err());
+        assert!(preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값"])), Some(&names), None).is_err());
         note(&con, deck, nt, &["q1", "a1"]);
         note(&con, deck, nt, &["q2", "a2"]);
         let got = samples(&con, nt, 1, None).unwrap();
@@ -2308,11 +2344,11 @@ mod tests {
     fn preview_and_deck_type() {
         let (con, deck) = setup();
         let nt = anki_clone(&con, "cloze", None);
-        let p = preview(&con, nt, "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", 0, None, None).unwrap();
+        let p = preview(&con, nt, "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", 0, None, None, None).unwrap();
         assert!(p.front.contains("class=\"cloze\"") && p.back.contains("(Back Extra)"), "{p:?}");
-        let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"])), None).unwrap();
+        let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"])), None, None).unwrap();
         assert_eq!(p.front, "덧붙임");
-        assert!(preview(&con, nt, "", "", 0, Some(&s(&["t"])), None).is_err());
+        assert!(preview(&con, nt, "", "", 0, Some(&s(&["t"])), None, None).is_err());
         assert!(deck_types(&con, deck).unwrap().is_empty());
         note(&con, deck, nt, &["{{c1::a}}", ""]);
         con.execute("INSERT INTO deck (name, parent_id, created_at, updated_at) VALUES ('하위', ?1, 0, 0)", [deck]).unwrap();
@@ -2328,8 +2364,21 @@ mod tests {
         assert_eq!(rows.iter().find(|r| r.id == basic).unwrap().decks, ["하위"]);
         assert!(rows.iter().find(|r| r.id == nt).is_some_and(|r| r.user_made && r.decks == ["덱"]));
         // 미리보기 기본값: 가장 최근 노트 (이 유형의)
-        let p = preview(&con, nt, "{{cloze:Text}}", "", 0, None, None).unwrap();
+        let p = preview(&con, nt, "{{cloze:Text}}", "", 0, None, None, None).unwrap();
         assert!(p.front.starts_with("<span class=\"cloze\">["), "{p:?}");
+        // 특수 필드: 그 노트의 태그 · 덱 경로 · 하위 덱 · 유형 · 카드 종류 이름. 깃발은 없다
+        let name: String = con.query_row("SELECT name FROM note_type WHERE id = ?1", [nt], |r| r.get(0)).unwrap();
+        let tpl = "{{Tags}}|{{Deck}}|{{Subdeck}}|{{Type}}|{{Card}}|{{CardFlag}}|{{#Tags}}t{{/Tags}}";
+        let n: i64 = con.query_row("SELECT max(id) FROM note WHERE note_type_id = ?1", [nt], |r| r.get(0)).unwrap();
+        con.execute("UPDATE note SET tags = '기출::2023 <x>' WHERE id = ?1", [n]).unwrap();
+        con.execute("UPDATE card SET deck_id = ?2 WHERE note_id = ?1", [n, sub]).unwrap();
+        let p = preview(&con, nt, tpl, "", 0, None, None, Some(n)).unwrap();
+        assert_eq!(p.front, format!("기출::2023 &lt;x&gt;|덱::하위|하위|{name}|Cloze||t"));
+        let p = preview(&con, nt, tpl, "", 0, None, Some(&s(&["Text"])), None).unwrap();
+        assert_eq!(p.front, format!("(태그)|(덱)|(덱)|{name}|Cloze||t"), "노트가 없으면 이름 샘플");
+        // 다른 곳(목록 · 품질 · 서술형)의 render_fields 는 지금처럼 빈 값
+        let names = crate::commands::note_field_names(&con).unwrap();
+        assert_eq!(crate::commands::render_fields(&names, nt, r#"["x",""]"#, Some("{{Tags}}{{Deck}}{{Text}}"), Some(""), 0).front, "x");
     }
 
     #[test]

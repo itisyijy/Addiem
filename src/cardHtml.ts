@@ -6,6 +6,8 @@ const ALLOWED_TAGS = [
   "b", "strong", "i", "em", "u", "s", "br", "p", "div", "span", "ul", "ol", "li", "img", "hr",
   "sub", "sup", "table", "thead", "tbody", "tr", "td", "th", "font", "code", "pre", "blockquote",
   "h1", "h2", "h3", "h4", "h5", "h6",
+  // {{hint:필드}} (render.rs): 스크립트 없는 펼치기
+  "details", "summary",
 ];
 
 /**
