@@ -408,3 +408,15 @@ CREATE TABLE IF NOT EXISTS recall_mark (
     log_id    INTEGER,
     prev      TEXT
 );
+
+-- ---- 8.7 덱 업데이트 되돌리기 (import/deck_update.rs, DU57). 기기 안 표: 적용한 업데이트가 바꾼 행의 전후 · 만든 행.
+-- import_batch 가 머리 (status 'rolled_back' = 되돌림). 행은 uid 로 가리킨다 (Drive 데이터로 바꾸면 비운다: sync LOCAL_REFS)
+--   kind: meta (요약 수 · 백업, uid '') | note (이미 있던 노트의 전후) | note_new | card_new (이미 있던 노트에 생긴 카드) | type (노트 유형 모양 · 원본의 전후)
+CREATE TABLE IF NOT EXISTS update_journal (
+    batch_id INTEGER NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
+    kind     TEXT    NOT NULL,
+    uid      TEXT    NOT NULL,
+    before   TEXT,
+    after    TEXT,
+    PRIMARY KEY (batch_id, kind, uid)
+);

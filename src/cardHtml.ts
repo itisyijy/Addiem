@@ -6,6 +6,8 @@ const ALLOWED_TAGS = [
   "b", "strong", "i", "em", "u", "s", "br", "p", "div", "span", "ul", "ol", "li", "img", "hr",
   "sub", "sup", "table", "thead", "tbody", "tr", "td", "th", "font", "code", "pre", "blockquote",
   "h1", "h2", "h3", "h4", "h5", "h6",
+  // {{hint:필드}} (render.rs): 스크립트 없는 펼치기
+  "details", "summary",
 ];
 
 /**
@@ -16,7 +18,7 @@ const ALLOWED_TAGS = [
 export function sanitize(html: string): string {
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
-    ALLOWED_ATTR: ["src", "alt", "class", "style", "color", "colspan", "rowspan", "data-media", "data-c", "data-hint", "data-snd", "data-tts", "data-text", "data-speed"],
+    ALLOWED_ATTR: ["src", "alt", "class", "style", "color", "colspan", "rowspan", "data-media", "data-c", "data-hint", "data-snd", "data-tts", "data-text", "data-speed", "open"],
     ALLOWED_URI_REGEXP: /^(?:data:image\/[a-z+.-]+;base64,|[^:/?#\\]+$)/i,
   });
 }

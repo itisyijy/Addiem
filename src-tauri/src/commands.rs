@@ -1399,11 +1399,25 @@ pub(crate) fn render_fields(
     afmt: Option<&str>,
     ord: u32,
 ) -> render::Rendered {
+    render_fields_with(names, note_type, fields_json, qfmt, afmt, ord, &[])
+}
+
+/// render_fields + 특수 필드 ({{Tags}} {{Deck}} …, render::special_fields). 학습 화면(card_view)만 쓴다
+pub(crate) fn render_fields_with(
+    names: &HashMap<i64, (String, Vec<String>)>,
+    note_type: i64,
+    fields_json: &str,
+    qfmt: Option<&str>,
+    afmt: Option<&str>,
+    ord: u32,
+    special: &[(String, String)],
+) -> render::Rendered {
     let values: Vec<String> = serde_json::from_str(fields_json).unwrap_or_default();
-    let map: HashMap<String, String> = names
+    let mut map: HashMap<String, String> = names
         .get(&note_type)
         .map(|(_, n)| n.iter().cloned().zip(values.iter().cloned()).filter(|(k, _)| !k.is_empty()).collect())
         .unwrap_or_default();
+    map.extend(special.iter().cloned());
     match (qfmt, afmt) {
         (Some(q), Some(a)) => render::render_card(q, a, &map, ord),
         _ => render::Rendered { front: values.first().cloned().unwrap_or_default(), back: values.get(1).cloned().unwrap_or_default() },
@@ -1811,7 +1825,8 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let mut view = con.query_row(
         &format!(
-            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS}
+            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS},
+                    n.tags, nt.name, coalesce(t.name, '')
          FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
          LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
          WHERE c.id = ?1"
@@ -1822,7 +1837,8 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
             let nt: i64 = r.get(2)?;
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
-            let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = render::special_fields(&r.get::<_, String>(13)?, &path_of(r.get(6)?, &by_id), &r.get::<_, String>(14)?, &r.get::<_, String>(15)?);
+            let rendered = render_fields_with(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?, &special);
             let special = names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
             Ok(CardView {
                 id: r.get(0)?,

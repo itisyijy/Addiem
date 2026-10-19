@@ -6,6 +6,7 @@ import {
   type Layout, type Look, type NoteTypeConflict, type NoteTypeDetail as Detail, type NoteTypeEdit as TypeEdit, type NoteTypeImpact as SaveImpact,
   type NoteTypeSample as Sample, type Part,
 } from "../api";
+import type { ChangeImpact, ChangePlan, NoteTypeRow } from "../api";
 import { useSyncStatus, when } from "../sync";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
 import { iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
@@ -63,14 +64,15 @@ function fieldNameError(name: string, others: string[]) {
 /** show: 화면 필드 이름 (앱 기본 유형은 "질문 · 답변" 처럼, NT51) */
 type Show = (name: string) => string;
 const same: Show = (x) => x;
-function tplTitle(t: DTpl, i: number, cloze: boolean, show: Show = same) {
+type TplText = Pick<DTpl, "name" | "qfmt" | "afmt">;
+function tplTitle(t: TplText, i: number, cloze: boolean, show: Show = same) {
   return `카드 ${i + 1} · ${tplName(t, cloze, show)}`;
 }
-function tplName(t: DTpl, cloze: boolean, show: Show = same) {
+function tplName(t: TplText, cloze: boolean, show: Show = same) {
   if (t.name && !/^(Card \d+|Cloze)$/.test(t.name)) return t.name;
   return autoName(t, cloze, show);
 }
-function autoName(t: DTpl, cloze: boolean, show: Show = same) {
+function autoName(t: TplText, cloze: boolean, show: Show = same) {
   const f = refsOf(t.qfmt);
   if (cloze) return `빈칸${f[0] ? ` · ${show(f[0])}` : ""}`;
   const b = refsOf(t.afmt).find((x) => !f.includes(x));
@@ -262,6 +264,16 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
       return { ...x, fields };
     });
   const removeField = (key: number) => setDraft((x) => ({ ...x, fields: x.fields.filter((f) => f.key !== key) }));
+  // NT74 숨긴 필드 되살리기: 그 자리를 초안 끝에 다시 넣는다 (저장하면 이름만 붙고 값은 그대로). 기본 이름이 없거나 겹치면 이름부터
+  const hiddenLeft = d.hidden.filter((h) => !draft.fields.some((f) => f.slot === h.slot));
+  const [hiddenOpen, setHiddenOpen] = useState(true);
+  const restored = (f: DField) => f.slot !== null && d.hidden.some((h) => h.slot === f.slot);
+  const restoreField = (h: Detail["hidden"][number]) => {
+    const key = seq.current--;
+    const ok = h.name !== null && !fieldNameError(h.name, names);
+    setDraft((x) => ({ ...x, fields: [...x.fields, { key, slot: h.slot, name: ok ? (h.name ?? "") : "" }] }));
+    if (!ok) setRenaming({ what: "field", key, value: h.name ?? "" });
+  };
 
   // ---------------------------------------------------------------- 쉬운 편집 줄
 
@@ -683,7 +695,10 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     return (
       <section className="nte__panel nte__fields" aria-label="필드">
         <div className="nte__panel-head">
-          <span className="t-label-m">필드 {n(names.filter(Boolean).length)}</span>
+          <span className="t-label-m">
+            필드 {n(names.filter(Boolean).length)}
+            {!readOnly && hiddenLeft.length > 0 && ` · 숨긴 필드 ${n(hiddenLeft.length)}`}
+          </span>
           {!readOnly && (
             <button className="nte__add t-label-m c-accent" onClick={addField}>
               <Icon name="plus" size={14} />
@@ -750,7 +765,9 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                       }
                     }}
                   />
-                  {renameError && renaming.value.trim() && <span className="t-caption c-danger">{renameError}</span>}
+                  {renameError && renaming.value.trim() && (
+                    <span className="t-caption c-danger">{restored(f) && renameError.endsWith("이미 있어요.") ? "같은 이름 필드가 있어요. 다른 이름으로 되살려 주세요" : renameError}</span>
+                  )}
                 </span>
               ) : (
                 <button
@@ -765,6 +782,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               )}
               {!editing && <span className="t-caption c-tertiary">{use}</span>}
               {!editing && show(f.name) !== f.name && <span className="nte__dbname t-mono-key c-tertiary" title="템플릿 · Anki 에 쓰는 필드 이름">{f.name}</span>}
+              {!editing && restored(f) && !use && <span className="nte__restored t-caption c-accent">되살렸어요 · 카드 모양에 넣으려면 앞면 · 뒷면으로 끌어 오세요</span>}
               {!readOnly && !editing && (
                 <span className="nte__trash-wrap">
                   <button
@@ -787,6 +805,31 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             </div>
           );
         })}
+        {!readOnly && hiddenLeft.length > 0 && (
+          <div className="nte__hidden">
+            <button type="button" className="nte__hidden-head t-label-m" aria-expanded={hiddenOpen} onClick={() => setHiddenOpen((o) => !o)}>
+              <Icon name={hiddenOpen ? "chevron-down" : "chevron-right"} size={14} />
+              숨긴 필드 {n(hiddenLeft.length)}
+            </button>
+            {hiddenOpen && (
+              <>
+                {hiddenLeft.map((h) => (
+                  <div key={h.slot} className="nte__hidden-row">
+                    <span className="nte__hidden-text">
+                      <span className="t-body-m">{h.name ?? "이름 없는 필드"}</span>
+                      <span className="t-caption c-tertiary">{h.notes ? `노트 ${n(h.notes)}개에 남아 있어요` : "내용이 남은 노트가 없어요"}</span>
+                    </span>
+                    <button type="button" className="nte__restore t-label-m" aria-label={`${h.name ?? "이름 없는 필드"} 되살리기`} onClick={() => restoreField(h)}>
+                      <Icon name="rotate" size={16} />
+                      되살리기
+                    </button>
+                  </div>
+                ))}
+                <p className="t-caption c-tertiary">지운 필드는 내용을 지우지 않고 숨겨 둬요. 되살리면 필드 끝에 다시 붙고, 카드 모양에는 직접 넣어야 보여요.</p>
+              </>
+            )}
+          </div>
+        )}
         <p className="t-caption c-tertiary">
           {readOnly
             ? "필드 이름과 순서도 복제한 뒤에 바꿀 수 있어요."
@@ -1135,7 +1178,7 @@ function Preview({ d, draft, tpl, note }: { d: Detail; draft: Draft; tpl: DTpl |
     if (!tpl || samples === null) return;
     let live = true;
     api
-      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names)
+      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names, sample?.note_id)
       .then(async (p) => {
         const parts = splitBack(p.back, p.front);
         const [front, question, answer] = (await Promise.all([renderCardHtml(p.front), renderCardHtml(parts.question), renderCardHtml(parts.answer)])).map(withMath);
@@ -1264,7 +1307,7 @@ function SaveConfirm({ impact, labels, busy, onBack, onSave }: {
       icon: "trash",
       tone: "warn",
       title: `"${f.name}" 필드를 지워요`,
-      text: `${f.notes ? `노트 ${n(f.notes)}개에 든 "${f.name}" 내용은 지우지 않고 숨겨요.` : `"${f.name}"에 내용이 든 노트는 없어요.`} 카드 추가 · 편집 칸과 내보내기에서 빠져요.`,
+      text: `${f.notes ? `노트 ${n(f.notes)}개에 든 "${f.name}" 내용은 지우지 않고 숨겨요.` : `"${f.name}"에 내용이 든 노트는 없어요.`} 카드 추가 · 편집 칸과 내보내기에서 빠지고, 숨긴 필드에서 되살릴 수 있어요.`,
     });
   if (impact.made)
     items.push({ icon: "plus", tone: "info", title: `카드 ${n(impact.made)}장이 새로 생겨요`, text: "앞면이 비지 않는 노트마다 새 카드 종류의 카드가 한 장씩 생겨요." });
@@ -1349,6 +1392,189 @@ function ConflictList({ list, onClose }: { list: NoteTypeConflict[]; onClose: ()
       </ul>
       <div className="modal__actions">
         <Button size="M" label="닫기" onClick={onClose} />
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------- NT9 다른 유형으로 옮기기 (C2 여러 장 선택 [⋯], NT75)
+
+const DRAWN_KINDS = ["io", "list", "choice"];
+
+/** 대응 고르기 칸. 옮기지 않음 · 없앰이면 주황 */
+function MapSelect({ value, options, none, label, onChange }: { value: number | null; options: [number, string][]; none: string; label: string; onChange: (v: number | null) => void }) {
+  return (
+    <span className={`ntm__select ${value === null ? "is-none" : ""}`}>
+      <select className="t-body-m" aria-label={label} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}>
+        {options.map(([v, l]) => (
+          <option key={v} value={v}>
+            {l}
+          </option>
+        ))}
+        <option value="">{none}</option>
+      </select>
+      <Icon name="chevron-down" size={16} scaled className="c-secondary" />
+    </span>
+  );
+}
+
+export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number[]; onClose: () => void; onDone: (toName: string) => void }) {
+  const [types, setTypes] = useState<NoteTypeRow[]>([]);
+  const [plan, setPlan] = useState<ChangePlan | null>(null);
+  const [from, setFrom] = useState<Detail | null>(null);
+  const [to, setTo] = useState<Detail | null>(null);
+  const [fields, setFields] = useState<[number, number | null][]>([]);
+  const [cards, setCards] = useState<[number, number | null][]>([]);
+  const [impact, setImpact] = useState<ChangeImpact | null>(null);
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  useKey("Escape", onClose, !busy, { modal: true });
+  const load = useCallback(
+    (target: number | null) =>
+      api.changeTypePlan(noteIds, target).then(
+        async (p) => {
+          const [f, t] = await Promise.all([api.noteTypeDetail(p.from), api.noteTypeDetail(p.to)]);
+          setFrom(f);
+          setTo(t);
+          setFields(p.fields);
+          setCards(p.card_map);
+          setPlan(p);
+          setError(undefined);
+        },
+        (e) => setError(errorText(e)),
+      ),
+    [noteIds],
+  );
+  useEffect(() => {
+    api.noteTypes().then(setTypes, () => {});
+    load(null);
+  }, [load]);
+  // 고른 대응으로 확인 창의 수를 다시 센다 (dry-run, 쓰지 않는다)
+  useEffect(() => {
+    if (!plan) return;
+    let live = true;
+    api.changeNoteType({ note_ids: noteIds, to: plan.to, fields, cards }, true).then(
+      (i) => live && (setImpact(i), setError(undefined)),
+      (e) => live && (setImpact(null), setError(errorText(e))),
+    );
+    return () => {
+      live = false;
+    };
+  }, [plan, fields, cards, noteIds]);
+  // 앱 기본 유형은 카드 추가 · 편집과 같은 칸 이름 (NT51: Front · Back 대신 질문 · 답변)
+  const showOf = (d: Detail | null): Show => {
+    const labels = d?.native_kind ? nativeLabels(d.native_kind) : undefined;
+    const map = new Map(labels && d ? d.fields.map((f, i) => [f.name, labels[i] ?? f.name]) : []);
+    return (x) => map.get(x) ?? x;
+  };
+  const [showFrom, showTo] = [showOf(from), showOf(to)];
+  const fromTpl = (ord: number) => {
+    if (!from) return "";
+    if (from.cloze) return `빈칸 ${ord + 1}`;
+    const i = from.templates.findIndex((t) => t.ord === ord);
+    return i < 0 ? `카드 ${ord + 1}` : tplTitle(from.templates[i], i, false, showFrom);
+  };
+  const toOptions: [number, string][] =
+    !to || !plan ? [] : to.cloze ? Array.from({ length: Math.max(1, plan.card_ords.length) }, (_, i) => [i, `빈칸 ${i + 1}`]) : to.templates.map((t, i) => [t.ord, tplTitle(t, i, false, showTo)]);
+  const toTpl = (ord: number) => toOptions.find(([o]) => o === ord)?.[1] ?? `카드 ${ord + 1}`;
+  const fromField = (slot: number) => showFrom(from?.fields.find((f) => f.slot === slot)?.name ?? "");
+  const toName = to ? typeLabel(to) : "";
+  const choices = types.filter((t) => t.id !== plan?.from && !DRAWN_KINDS.includes(t.native_kind ?? "") && t.templates > 0);
+  const setOne = <K extends number>(list: [K, number | null][], k: K, v: number | null) =>
+    // 새 자리 · 새 카드 종류는 한 번씩만: 같은 것을 고른 다른 줄은 비운다
+    list.map(([a, b]): [K, number | null] => (a === k ? [a, v] : v !== null && b === v ? [a, null] : [a, b]));
+  const free = to?.fields.some((f) => !fields.some(([, t]) => t === f.slot));
+  const lose = !!impact && impact.removed.length + impact.lost.length + impact.removed_notes > 0;
+  type Line = { icon: IconName; text: string };
+  const lines: Line[] = !impact
+    ? []
+    : [
+        ...impact.removed.map(([ord, count]): Line => ({ icon: "trash", text: `「${fromTpl(ord)}」의 카드 ${n(count)}장을 지워요 · 되돌릴 수 없어요. 이 카드들의 복습 기록은 학습 통계에만 남아요.` })),
+        ...(impact.removed_notes > 0 ? [{ icon: "trash" as const, text: `카드가 하나도 남지 않는 노트 ${n(impact.removed_notes)}개도 함께 지워요.` }] : []),
+        ...impact.lost.map(([raw, notes]): Line => {
+          const name = showFrom(raw);
+          return {
+          icon: "alert",
+          text: free
+            ? `옮기지 않는 칸이 있어요 · ${name} 칸은 옮기지 않아요. 옮기면 노트 ${n(notes)}개의 ${name} 칸에 쓴 내용은 지워져요.`
+            : `옮기지 못하는 칸이 있어요 · ${name} 칸은 「${toName}」에 없어요. 옮기면 노트 ${n(notes)}개의 ${name} 칸에 쓴 내용은 지워져요.`,
+          };
+        }),
+        ...(impact.unclozed > 0 ? [{ icon: "info" as const, text: "빈칸 표시는 글자로 바뀌어요." }] : []),
+        ...(impact.empty_fronts > 0 ? [{ icon: "alert" as const, text: `옮기면 카드 ${n(impact.empty_fronts)}장의 앞면이 비어요 · 학습에 나오지 않고, 필드를 채우면 다시 나와요.` }] : []),
+        ...(impact.made > 0 ? [{ icon: "plus" as const, text: `카드 ${n(impact.made)}장이 새로 생겨요.` }] : []),
+        ...(lose ? impact.kept.map(([a, b]): Line => ({ icon: "check", text: `${fromTpl(a)}의 복습 기록 · 일정은 「${toTpl(b)}」 카드로 이어져요.` })) : [{ icon: "check" as const, text: `카드 ${n(impact.cards)}장 · 복습 기록이 모두 이어져요.` }]),
+      ];
+  const run = async () => {
+    if (!plan || busy) return;
+    setBusy(true);
+    try {
+      await api.changeNoteType({ note_ids: noteIds, to: plan.to, fields, cards }, false);
+      onDone(toName);
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={`노트 ${n(noteIds.length)}개를 다른 유형으로 옮길까요?`}
+      sub={plan && from ? `고른 노트 ${n(plan.notes)}개 · 지금 유형 「${typeLabel(from)}」 · 카드 ${n(plan.cards)}장` : undefined}
+      onClose={onClose}
+      className="ntm"
+    >
+      {plan && from && to && (
+        <>
+          <label className="ntm__type">
+            <span className="t-label-m">옮길 유형</span>
+            <MapSelect value={plan.to} options={choices.map((t) => [t.id, typeLabel(t)])} none="—" label="옮길 유형" onChange={(v) => v !== null && load(v)} />
+          </label>
+          <section className="ntm__box" aria-label="필드">
+            <p className="ntm__head">
+              <span className="t-label-m">필드</span>
+              <span className="t-caption c-tertiary">같은 이름 칸으로 먼저 맞춰 두었어요</span>
+            </p>
+            {fields.map(([s, t]) => (
+              <div key={s} className="ntm__row">
+                <span className="t-body-m">{fromField(s)}</span>
+                <Icon name="arrow-right" size={16} className="c-tertiary" />
+                <MapSelect value={t} options={to.fields.map((f) => [f.slot, showTo(f.name)])} none="옮기지 않음" label={`${fromField(s)} 옮길 칸`} onChange={(v) => setFields(setOne(fields, s, v))} />
+              </div>
+            ))}
+          </section>
+          <section className="ntm__box" aria-label="카드 종류">
+            <p className="ntm__head">
+              <span className="t-label-m">카드 종류</span>
+              <span className="t-caption c-tertiary">복습 기록은 이어지는 카드로 함께 가요</span>
+            </p>
+            {cards.map(([o, t]) => (
+              <div key={o} className="ntm__row">
+                <span className="t-body-m">{fromTpl(o)}</span>
+                <Icon name="arrow-right" size={16} className="c-tertiary" />
+                <MapSelect value={t} options={toOptions} none="없앰" label={`${fromTpl(o)} 옮길 카드 종류`} onChange={(v) => setCards(setOne(cards, o, v))} />
+              </div>
+            ))}
+          </section>
+          {lines.length > 0 && (
+            <ul className={`ntm__lines ${lose ? "is-warn" : ""}`}>
+              {lines.map((x) => (
+                <li key={x.text}>
+                  <Icon name={x.icon} size={16} className={x.icon === "check" ? "c-success" : x.icon === "trash" ? "c-danger" : "c-warn"} />
+                  <span className="t-body-s">{x.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="ntm__backup t-caption c-tertiary">
+            <Icon name="download" size={14} className="c-success" />
+            옮기기 전에 이 기기 백업을 먼저 만들어요
+          </p>
+        </>
+      )}
+      {error && <p className="t-body-s c-danger">{error}</p>}
+      <div className="modal__actions">
+        <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+        <Button variant={lose ? "danger" : "primary"} size="M" label={`노트 ${n(noteIds.length)}개 옮기기`} busy={busy} busyLabel="옮기는 중" disabled={!impact} onClick={run} />
       </div>
     </Modal>
   );

@@ -1,5 +1,6 @@
 //! Anki 템플릿 -> HTML. MVP 6.4.2 의 지원 범위만 다룬다:
-//! {{필드}}, {{FrontSide}}, {{#필드}}..{{/필드}}, {{^필드}}..{{/필드}}, {{cloze:필드}}, {{필터:필드}}.
+//! {{필드}}, {{FrontSide}}, {{#필드}}..{{/필드}}, {{^필드}}..{{/필드}}, {{cloze:필드}}, {{text:필드}}, {{hint:필드}}, {{필터:필드}}.
+//! 특수 필드(Tags · Deck · …)는 부르는 쪽이 `special_fields` 를 필드 맵에 넣을 때만 값이 있다.
 //! AU20 {{tts 언어:필드}} 는 읽어주기 자리 표시로 바꾼다 (tts_mark).
 //! 스파이크 1: 실측 컬렉션의 템플릿은 전부 이 범위 안이었다. 그림 가리기(Anki IO) 칸은 occlusion.rs 가 그린다.
 //!
@@ -10,6 +11,20 @@ use std::collections::{BTreeSet, HashMap};
 pub struct Rendered {
     pub front: String,
     pub back: String,
+}
+
+/// Anki 특수 필드 {{Tags}} {{Deck}} {{Subdeck}} {{Type}} {{Card}} {{CardFlag}} 의 값. 필드 맵에 넣어(같은 이름 필드보다 이긴다, Anki 와 같다) 그린다.
+/// 학습 화면(card_view) · 노트 유형 미리보기만 넣는다: 다른 곳(목록 · 품질 · 서술형)은 지금처럼 빈 값. 깃발은 앱에 없어 늘 빈 값 (Anki 의 깃발 없는 카드).
+/// 값은 실제 Anki 와 같다 (pylib 26.9.3 으로 확인, 코디네이터 QA): 태그는 공백으로 잇고 앞뒤 공백 없음, 덱은 전체 경로 "A::B", 하위 덱은 마지막 칸
+pub fn special_fields(tags: &str, deck_path: &[String], type_name: &str, card_name: &str) -> [(String, String); 6] {
+    [
+        ("Tags".into(), crate::occlusion::escape(&tags.split_whitespace().collect::<Vec<_>>().join(" "))),
+        ("Deck".into(), crate::occlusion::escape(&deck_path.join("::"))),
+        ("Subdeck".into(), crate::occlusion::escape(deck_path.last().map_or("", String::as_str))),
+        ("Type".into(), crate::occlusion::escape(type_name)),
+        ("Card".into(), crate::occlusion::escape(card_name)),
+        ("CardFlag".into(), String::new()),
+    ]
 }
 
 pub fn render_card(qfmt: &str, afmt: &str, fields: &HashMap<String, String>, ord: u32) -> Rendered {
@@ -112,7 +127,8 @@ fn render(tpl: &str, fields: &HashMap<String, String>, ord: u32, is_back: bool, 
 
 fn tag_value(tag: &str, fields: &HashMap<String, String>, ord: u32, is_back: bool, front_side: &str) -> String {
     if tag == "FrontSide" {
-        return front_side.to_string();
+        // 답 면의 앞면 부분 힌트도 펼친 채 (디자인 NT10: 답을 볼 때는 힌트가 열려 있다)
+        return front_side.replace("<details class=\"hint\">", "<details class=\"hint\" open>");
     }
     match tag.rsplit_once(':') {
         Some((filters, field)) => {
@@ -127,6 +143,17 @@ fn tag_value(tag: &str, fields: &HashMap<String, String>, ord: u32, is_back: boo
                 cloze(&value, ord + 1, is_back)
             } else if has("cloze-only") {
                 cloze_only(&value, ord + 1, is_back)
+            } else {
+                value
+            };
+            // text: 서식을 뺀 글자, 엔티티는 푼다 (Anki 와 같다: `<b>굵은</b> &amp; 뒷면` → `굵은 & 뒷면`). 결과는 화면이 살균한다
+            let value = if has("text") { strip_tags(&value) } else { value };
+            // hint: Anki 는 스크립트 링크, 여기는 스크립트 없는 네이티브 펼치기 (cardHtml.ts 살균이 details · summary · open 을 받는다).
+            // 이름은 필드 이름 ("힌트 보기 · " 는 CSS, 디자인 NT10), 답 면은 펼친 채, 빈 값이면 없음
+            let value = if has("hint") && !value.trim().is_empty() {
+                format!("<details class=\"hint\"{}><summary>{}</summary>{value}</details>", if is_back { " open" } else { "" }, crate::occlusion::escape(field.trim()))
+            } else if has("hint") {
+                String::new()
             } else {
                 value
             };
@@ -268,7 +295,7 @@ pub fn strip_tags(html: &str) -> String {
     // 템플릿이 붙여 쓴 span 들("<span>구분</span><span>높음</span>")이 한 단어로 붙지 않게 한다
     let spaced = html.replace("</span><span", "</span> <span");
     let html = spaced.as_str();
-    const BLOCK: [&str; 14] = ["br", "div", "p", "li", "tr", "td", "th", "hr", "h1", "h2", "h3", "h4", "h5", "h6"];
+    const BLOCK: [&str; 16] = ["br", "div", "p", "li", "tr", "td", "th", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "details", "summary"];
     let mut out = String::with_capacity(html.len());
     let mut tag: Option<String> = None;
     for ch in html.chars() {
@@ -393,6 +420,17 @@ mod tests {
     #[test]
     fn filters_and_missing_fields() {
         assert_eq!(render_card("{{text:Front}}|{{Nope}}", "", &f(&[("Front", "Q")]), 0).front, "Q|");
+        // text: 은 서식을 뺀 글자, 엔티티는 푼다 (실제 Anki 와 같다)
+        assert_eq!(render_card("{{text:Back}}", "", &f(&[("Back", "<b>굵은</b> &amp; 뒷면")]), 0).front, "굵은 & 뒷면");
+        // hint: 은 스크립트 없는 펼치기, 빈 값이면 없음. 빈칸과 함께 쓰면 빈칸을 먼저 푼다
+        let h = render_card("{{Front}}{{hint:Extra}}", "", &f(&[("Front", "Q"), ("Extra", "<i>메모</i>")]), 0);
+        assert_eq!(h.front, "Q<details class=\"hint\"><summary>Extra</summary><i>메모</i></details>");
+        assert_eq!(render_card("{{hint:Extra}}", "", &f(&[("Extra", " ")]), 0).front, "");
+        assert_eq!(render_card("{{hint:text:Extra}}", "", &f(&[("Extra", "<b>a</b>")]), 0).front, "<details class=\"hint\"><summary>Extra</summary>a</details>");
+        assert_eq!(render_card("", "{{hint:Extra}}", &f(&[("Extra", "a")]), 0).back, "<details class=\"hint\" open><summary>Extra</summary>a</details>", "답 면은 펼친 채");
+        let fs = render_card("{{hint:Extra}}", "{{FrontSide}}", &f(&[("Extra", "a")]), 0);
+        assert_eq!((fs.front.contains(" open"), fs.back.contains(" open")), (false, true), "답 면의 앞면 부분도 펼친 채");
+        assert_eq!(strip_tags(&h.front), "Q Extra 메모");
         assert_eq!(render_card("{{Front", "", &f(&[]), 0).front, "{{Front", "닫히지 않은 태그는 그대로 둔다");
         // type-in: 앞면은 비우고 뒷면은 정답 (J1)
         let t = render_card("{{Front}}{{type:Back}}", "{{FrontSide}}<hr id=answer>{{type:Back}}", &f(&[("Front", "Q"), ("Back", "A")]), 0);

@@ -1394,7 +1394,8 @@ fn run_import_selected(
         if !by_type.contains_key(aid) {
             continue;
         }
-        let existing: Option<i64> = tx.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [aid], |r| r.get(0)).optional().map_err(err)?;
+        // 내보낸 내 덱의 앱 기본 유형은 내보낸 모델 id 로 찾는다 (DU55, 새 "Basic" 이 생기지 않게)
+        let existing = deck_update::type_of_model(&tx, *aid)?.map(|(id, _)| id);
         let id = match existing {
             Some(id) => {
                 let ours = crate::notetype::load(&tx, id)?;

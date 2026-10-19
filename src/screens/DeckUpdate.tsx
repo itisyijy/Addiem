@@ -15,6 +15,8 @@ import {
   type UpdateSummary,
   type UpdateTypeChange,
 } from "../api";
+import type { UndoSummary } from "../api";
+import { Modal } from "./NewDeck";
 import { renderCardHtml } from "../cardHtml";
 import { scopeCss } from "../cardCss";
 import { Badge, Button, Icon, Kbd, Segment, Spinner, StatTile, type IconName } from "../ui";
@@ -205,8 +207,9 @@ type Pick = "mine" | "new";
 const lookKey = (t: number, ord: number | null) => `${t}:${ord ?? "css"}`;
 
 /** 화면의 고르기 → 엔진 choices. 카드 종류를 새 모양으로 고르면 그 유형의 CSS 충돌도 새 모양 (B2-kt "앞면 · 뒷면 · CSS를 모두"), CSS 만 따로 내 것으로 고르면 지킨다 */
-function toChoices(picks: Map<number, Pick>, looks: Map<string, Pick>, s: UpdateSummary): UpdateChoices {
-  const take_new = [...picks].filter(([, v]) => v === "new").map(([k]) => k);
+function toChoices(picks: Map<string, Pick>, looks: Map<string, Pick>, s: UpdateSummary): UpdateChoices {
+  // 필드마다 고른 것 (DU54). 노트 단위 take_new 는 쓰지 않는다 (엔진은 둘 다 받는다)
+  const take_new_fields = [...picks].filter(([, v]) => v === "new").map(([k]) => k.split(":").map(Number) as [number, number]);
   const new_looks: [number, number | null][] = [];
   for (const t of s.types) {
     const anyNew = t.looks.some((l) => l.ord !== null && looks.get(lookKey(t.note_type_id, l.ord)) === "new");
@@ -215,7 +218,7 @@ function toChoices(picks: Map<number, Pick>, looks: Map<string, Pick>, s: Update
       if (v === "new" || (l.ord === null && anyNew && v !== "mine")) new_looks.push([t.note_type_id, l.ord]);
     }
   }
-  return { take_new, new_looks };
+  return { take_new: [], take_new_fields, new_looks };
 }
 
 type Step = "summary" | "conflicts" | "looks" | "apply";
@@ -224,7 +227,7 @@ export function DeckUpdate({ path, info, summary: first }: { path: string; info:
   const nav = useNav();
   const [summary, setSummary] = useState(first);
   const [step, setStep] = useState<Step>("summary");
-  const [picks, setPicks] = useState<Map<number, Pick>>(new Map());
+  const [picks, setPicks] = useState<Map<string, Pick>>(new Map());
   const [looks, setLooks] = useState<Map<string, Pick>>(new Map());
   const [reviewed, setReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -628,85 +631,176 @@ function underlineDiff(a: string, b: string): [string, string] {
 /** 그림 이름 (src) */
 const srcs = (html: string) => [...html.matchAll(/src=["']?([^"' >]+)/g)].map((m) => m[1]);
 
-function FieldCompare({ name, mine, next, pick, edited, preview }: {
-  name: string;
-  mine: string;
-  next: string;
+/** 충돌 필드 하나의 고르기 키 (필드마다 고르기, DU54) */
+const fieldKey = (note: number, slot: number) => `${note}:${slot}`;
+type Field = UpdateConflict["fields"][number];
+
+function FieldCompare({ f, pick, showBase, cursor, edited, preview, onPick, onBase }: {
+  f: Field;
   pick: Pick | undefined;
+  showBase: boolean;
+  cursor: boolean;
   edited: number;
   preview: Record<string, string>;
+  onPick: (v: Pick) => void;
+  onBase: () => void;
 }) {
-  const [html, setHtml] = useState<[string, string] | null>(null);
+  const [html, setHtml] = useState<{ base: string; mine: string; next: string } | null>(null);
   const [full, setFull] = useState(false);
+  const base = showBase ? f.base : null;
   useEffect(() => {
     let live = true;
     // 적용 전이라 아직 저장하지 않은 새 그림은 사전 검사가 준 data URL 로 (I85 새 이름)
-    const withPreview = next.replace(/src=(["']?)([^"' >]+)/g, (m, q, src) => (preview[src] ? `src=${q}${preview[src]}` : m));
-    Promise.all([renderCardHtml(showCloze(mine)), renderCardHtml(showCloze(withPreview))]).then(([a, b]) => live && setHtml(underlineDiff(a, b)));
+    const withPreview = f.new.replace(/src=(["']?)([^"' >]+)/g, (m, q, src) => (preview[src] ? `src=${q}${preview[src]}` : m));
+    Promise.all([renderCardHtml(showCloze(f.mine)), renderCardHtml(showCloze(withPreview)), base === null ? "" : renderCardHtml(showCloze(base))]).then(([a, b, o]) => {
+      if (!live) return;
+      // 원본을 펼치면 원본과 다른 곳, 아니면 두 칸이 서로 다른 곳에 밑줄
+      if (base === null) {
+        const [mine, next] = underlineDiff(a, b);
+        setHtml({ base: "", mine, next });
+      } else setHtml({ base: o, mine: underlineDiff(o, a)[1], next: underlineDiff(o, b)[1] });
+    });
     return () => {
       live = false;
     };
-  }, [mine, next, preview]);
+  }, [f.mine, f.new, base, preview]);
   // 같은 이름에 내용만 다른 그림 (새 버전은 이름-<sha8> 로 저장한다, DU10)
-  const mineSrcs = srcs(mine);
-  const sameName = srcs(next).some((x) => mineSrcs.includes(x.replace(/-[0-9a-f]{8}(\.[^.]+)?$/, "$1")) && !mineSrcs.includes(x));
-  const side = (who: Pick) => {
+  const mineSrcs = srcs(f.mine);
+  const sameName = srcs(f.new).some((x) => mineSrcs.includes(x.replace(/-[0-9a-f]{8}(\.[^.]+)?$/, "$1")) && !mineSrcs.includes(x));
+  const side = (who: Pick | "base") => {
     const chosen = pick === who;
     const fallback = !pick && who === "mine";
-    return (
-      <div className={`du-side ${chosen ? "is-chosen" : fallback ? "is-default" : ""} ${full ? "is-full" : ""}`}>
-        <span className="du-side__head">
+    const head =
+      who === "base" ? (
+        <>
+          <span className="t-label-m">원본</span>
+          <span className="t-caption c-tertiary">지난번에 받은 버전</span>
+        </>
+      ) : (
+        <>
           <Kbd k={who === "mine" ? "1" : "2"} />
           <span className="t-label-m">{who === "mine" ? "내 것" : "새 버전"}</span>
           <span className="t-caption c-tertiary">{who === "mine" ? `${day(edited)}에 고침` : "이 파일"}</span>
+          {chosen && <Icon name="check" size={16} className="c-accent" />}
           {fallback && <Badge>고르지 않으면 이것</Badge>}
           {who === "new" && sameName && <span className="t-caption c-warn">이름은 같고 그림이 달라요</span>}
-        </span>
-        <div className="du-side__body t-body-l card-html" dangerouslySetInnerHTML={{ __html: html?.[who === "mine" ? 0 : 1] ?? "" }} />
+        </>
+      );
+    const body = <div className="du-side__body t-body-l card-html" dangerouslySetInnerHTML={{ __html: html?.[who === "new" ? "next" : who] ?? "" }} />;
+    const cls = `du-side ${who === "base" ? "du-side--base" : chosen ? "is-chosen" : fallback ? "is-default" : ""} ${full ? "is-full" : ""}`;
+    if (who === "base")
+      return (
+        <div className={cls}>
+          <span className="du-side__head">{head}</span>
+          {body}
+        </div>
+      );
+    // 칸을 눌러도 고른다 (세그먼트와 같다)
+    return (
+      <div className={cls} role="button" tabIndex={-1} aria-pressed={chosen} aria-label={`${f.name} ${who === "mine" ? "내 것" : "새 버전"}으로`} onClick={() => onPick(who)}>
+        <span className="du-side__head">{head}</span>
+        {body}
       </div>
     );
   };
-  const long = Math.max(mine.length, next.length) > 600;
+  const long = Math.max(f.mine.length, f.new.length, f.base?.length ?? 0) > 600;
   return (
-    <>
+    <div className={`du-fieldblock ${cursor ? "is-cursor" : ""}`}>
       <span className="du-field">
-        <span className="t-label-m">{name}</span>
-        <span className="t-caption c-tertiary">다른 부분에 밑줄을 그어요</span>
-        {long && <Button variant="ghost" size="M" label={full ? "접기" : "전체 보기"} onClick={() => setFull(!full)} />}
+        <span className="t-label-m">{f.name}</span>
+        <span className="t-caption c-tertiary">{base !== null ? "다른 부분에 밑줄 · 원본과 비교해요" : "다른 부분에 밑줄을 그어요"}</span>
+        <span className="du-field__right">
+          {long && <Button variant="ghost" size="M" label={full ? "접기" : "전체 보기"} onClick={() => setFull(!full)} />}
+          {f.base !== null ? (
+            <button type="button" className="du-basebtn t-label-m" aria-pressed={showBase} onClick={onBase}>
+              <Icon name="info" size={16} />
+              {showBase ? "원본 숨기기" : "원본 보기"}
+            </button>
+          ) : (
+            <span className="t-caption c-tertiary">원본 글이 없어요 · 예전에 가져온 노트예요</span>
+          )}
+          <span className="du-seg">
+            <Segment<string>
+              boxed
+              label={`${f.name} 고르기`}
+              options={[
+                { value: "mine", label: "내 것" },
+                { value: "new", label: "새 버전" },
+              ]}
+              value={pick ?? ""}
+              onChange={(v) => onPick(v as Pick)}
+            />
+          </span>
+        </span>
       </span>
-      <div className="du-compare">
+      <div className={`du-compare ${base !== null ? "du-compare--3" : ""}`}>
+        {base !== null && side("base")}
         {side("mine")}
         {side("new")}
       </div>
-    </>
+    </div>
   );
 }
 
 function ConflictReview({ summary, picks, onPick, onBack }: {
   summary: UpdateSummary;
-  picks: Map<number, Pick>;
-  onPick: (m: Map<number, Pick>) => void;
+  picks: Map<string, Pick>;
+  onPick: (m: Map<string, Pick>) => void;
   onBack: () => void;
 }) {
   const list = summary.conflicts;
   const [cursor, setCursor] = useState(0);
   const [open, setOpen] = useState<number | null>(0);
+  const [fieldAt, setFieldAt] = useState(0);
+  const [bases, setBases] = useState<Set<string>>(new Set());
   const rows = useRef<(HTMLDivElement | null)[]>([]);
   useEffect(() => {
     rows.current[cursor]?.scrollIntoView({ block: "nearest" });
   }, [cursor]);
-  const choose = (i: number, v: Pick) => {
-    onPick(new Map(picks).set(list[i].note_id, v));
-    // 고르면 다음 노트가 펼쳐진다
-    if (i + 1 < list.length) (setCursor(i + 1), setOpen(i + 1));
+  const done = (c: UpdateConflict, m: Map<string, Pick>) => c.fields.every((f) => m.has(fieldKey(c.note_id, f.slot)));
+  const moveTo = (i: number) => (setCursor(i), setOpen(i), setFieldAt(0));
+  const choose = (i: number, slot: number, v: Pick) => {
+    const next = new Map(picks).set(fieldKey(list[i].note_id, slot), v);
+    onPick(next);
+    // 그 노트의 필드를 다 고르면 다음 노트가 펼쳐진다. 아니면 아직 고르지 않은 필드로
+    if (done(list[i], next)) {
+      if (i + 1 < list.length) moveTo(i + 1);
+    } else setFieldAt(Math.max(0, list[i].fields.findIndex((f) => !next.has(fieldKey(list[i].note_id, f.slot)))));
   };
-  const all = (v: Pick) => onPick(new Map(list.map((c) => [c.note_id, v])));
+  const chooseNote = (i: number, v: Pick) => {
+    const next = new Map(picks);
+    list[i].fields.forEach((f) => next.set(fieldKey(list[i].note_id, f.slot), v));
+    onPick(next);
+    if (i + 1 < list.length) moveTo(i + 1);
+  };
+  const all = (v: Pick) => onPick(new Map(list.flatMap((c) => c.fields.map((f) => [fieldKey(c.note_id, f.slot), v] as const))));
+  const toggleBase = (key: string) =>
+    setBases((b) => {
+      const next = new Set(b);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  const curField = list[cursor]?.fields[fieldAt];
   useKey("Escape", onBack);
-  useKey("ArrowDown", () => setCursor((c) => Math.min(list.length - 1, c + 1)));
-  useKey("ArrowUp", () => setCursor((c) => Math.max(0, c - 1)));
+  useKey("ArrowDown", () => (setCursor((c) => Math.min(list.length - 1, c + 1)), setFieldAt(0)));
+  useKey("ArrowUp", () => (setCursor((c) => Math.max(0, c - 1)), setFieldAt(0)));
   useKey("Enter", () => setOpen((o) => (o === cursor ? null : cursor)));
-  useKey(["1", "2"], (_, i) => choose(cursor, i === 0 ? "mine" : "new"));
-  const picked = list.filter((c) => picks.has(c.note_id)).length;
+  useKey(["1", "2"], (_, i) => curField && choose(cursor, curField.slot, i === 0 ? "mine" : "new"));
+  useKey("o", () => curField?.base != null && open === cursor && toggleBase(fieldKey(list[cursor].note_id, curField.slot)));
+  // Tab: 펼친 노트 안에서 필드를 옮긴다. 끝 필드에서는 브라우저 초점 이동 그대로 (키보드로 버튼에 갈 수 있게)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || open !== cursor || e.defaultPrevented) return;
+      const count = list[cursor]?.fields.length ?? 0;
+      const to = fieldAt + (e.shiftKey ? -1 : 1);
+      if (to < 0 || to >= count) return;
+      e.preventDefault();
+      setFieldAt(to);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, cursor, fieldAt, list]);
+  const picked = list.filter((c) => done(c, picks)).length;
 
   return (
     <main className="import du-wide">
@@ -737,11 +831,15 @@ function ConflictReview({ summary, picks, onPick, onBack }: {
               rows.current[i] = el;
             }}
             c={c}
-            pick={picks.get(c.note_id)}
+            picks={picks}
+            bases={bases}
             cursor={cursor === i}
+            fieldAt={cursor === i ? fieldAt : -1}
             open={open === i}
-            onToggle={() => (setCursor(i), setOpen(open === i ? null : i))}
-            onPick={(v) => choose(i, v)}
+            onToggle={() => (setCursor(i), setFieldAt(0), setOpen(open === i ? null : i))}
+            onPick={(slot, v) => (setCursor(i), choose(i, slot, v))}
+            onNote={(v) => chooseNote(i, v)}
+            onBase={(slot) => toggleBase(fieldKey(c.note_id, slot))}
             preview={summary.media_preview}
           />
         ))}
@@ -755,6 +853,10 @@ function ConflictReview({ summary, picks, onPick, onBack }: {
         <span className="t-caption c-secondary">내 것</span>
         <Kbd k="2" />
         <span className="t-caption c-secondary">새 버전</span>
+        <Kbd k="Tab" />
+        <span className="t-caption c-secondary">필드 이동</span>
+        <Kbd k="O" />
+        <span className="t-caption c-secondary">원본 보기</span>
       </span>
       <div className="import__foot">
         <span className="t-caption c-secondary">{picked < list.length ? `고르지 않은 ${n(list.length - picked)}개는 내 것을 지켜요` : "모두 골랐어요"}</span>
@@ -764,17 +866,32 @@ function ConflictReview({ summary, picks, onPick, onBack }: {
   );
 }
 
-function ConflictRow({ c, pick, cursor, open, onToggle, onPick, ref, preview }: {
+function ConflictRow({ c, picks, bases, cursor, fieldAt, open, onToggle, onPick, onNote, onBase, ref, preview }: {
   c: UpdateConflict;
   preview: Record<string, string>;
-  pick: Pick | undefined;
+  picks: Map<string, Pick>;
+  bases: Set<string>;
   cursor: boolean;
+  fieldAt: number;
   open: boolean;
   onToggle: () => void;
-  onPick: (v: Pick) => void;
+  onPick: (slot: number, v: Pick) => void;
+  onNote: (v: Pick) => void;
+  onBase: (slot: number) => void;
   ref: (el: HTMLDivElement | null) => void;
 }) {
   const others = c.auto_new_fields;
+  const mine = c.fields.map((f) => picks.get(fieldKey(c.note_id, f.slot)));
+  const noBase = c.no_base || c.fields.every((f) => f.base === null);
+  const badge = mine.every((p) => !p) ? (
+    <Badge tone="warn">고르지 않음 · 내 것</Badge>
+  ) : mine.every((p) => p === "new") ? (
+    <Badge tone="accent">새 버전</Badge>
+  ) : mine.some((p) => p === "new") ? (
+    <Badge tone="accent">일부 새 버전</Badge>
+  ) : (
+    <Badge>내 것</Badge>
+  );
   return (
     <div ref={ref} className={`du-item ${cursor ? "is-cursor" : ""}`}>
       <button className="du-item__head" aria-expanded={open} onClick={onToggle}>
@@ -783,14 +900,25 @@ function ConflictRow({ c, pick, cursor, open, onToggle, onPick, ref, preview }: 
           <span className="t-body-m-strong du-ellipsis">{c.title.replace(/\{\{c\d+::.*?\}\}/g, "[...]") || "(첫 필드가 비어 있어요)"}</span>
           <span className="t-caption c-secondary du-ellipsis">
             {c.deck} · 충돌 필드: {c.fields.map((f) => f.name).join(", ")}
+            {noBase && " · 원본 글이 없어요 (예전에 가져온 노트)"}
           </span>
         </span>
-        {pick === "new" ? <Badge tone="accent">새 버전</Badge> : pick === "mine" ? <Badge>내 것</Badge> : <Badge tone="warn">고르지 않음 · 내 것</Badge>}
+        {badge}
       </button>
       {open && (
         <>
-          {c.fields.map((f) => (
-            <FieldCompare key={f.slot} name={f.name} mine={f.mine} next={f.new} pick={pick} edited={c.edited_at} preview={preview} />
+          {c.fields.map((f, i) => (
+            <FieldCompare
+              key={f.slot}
+              f={f}
+              pick={mine[i]}
+              showBase={bases.has(fieldKey(c.note_id, f.slot))}
+              cursor={fieldAt === i && c.fields.length > 1}
+              edited={c.edited_at}
+              preview={preview}
+              onPick={(v) => onPick(f.slot, v)}
+              onBase={() => onBase(f.slot)}
+            />
           ))}
           {(others.length > 0 || c.auto_mine > 0) && (
             <span className="du-other">
@@ -807,8 +935,9 @@ function ConflictRow({ c, pick, cursor, open, onToggle, onPick, ref, preview }: 
           )}
           {c.no_base && <span className="t-caption c-tertiary">예전에 가져온 노트라 비교할 원본이 없어 충돌로 봤어요</span>}
           <span className="du-actions">
-            <Button variant="secondary" size="M" label="내 것 유지" onClick={() => onPick("mine")} />
-            <Button variant="secondary" size="M" label="새 버전으로" onClick={() => onPick("new")} />
+            <span className="t-caption c-secondary">{c.fields.length > 1 ? "필드마다 고른 것은 그 필드에만 적용돼요 · " : ""}이 노트 모두:</span>
+            <Button variant="ghost" size="M" label="내 것" onClick={() => onNote("mine")} />
+            <Button variant="ghost" size="M" label="새 버전" onClick={() => onNote("new")} />
           </span>
         </>
       )}
@@ -891,7 +1020,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
   const [tpl, setTpl] = useState<{ q: string; a: string; ord: number } | null>(null);
   // 새 모양은 적용 전이라 새 필드 · 바뀐 필드 이름이 아직 없다 (빈 칸이 점처럼 그려진다). 미리보기에서만 그 자리에 새 필드는 이름, 바뀐 이름은 옛 이름의 값
   const needFill = who === "new" && t.new_fields.length + t.renamed_fields.length > 0;
-  const [fill, setFill] = useState<{ names: string[]; values: string[] } | null>(null);
+  const [fill, setFill] = useState<{ names: string[]; values: string[]; note?: number } | null>(null);
   useEffect(() => {
     if (!needFill) return;
     Promise.all([api.noteTypeDetail(t.note_type_id), api.noteTypeSamples(t.note_type_id)]).then(
@@ -904,7 +1033,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
           if (i >= 0 && !names.includes(b)) (names.push(b), values.push(values[i]));
         }
         for (const f of t.new_fields) if (!names.includes(f)) (names.push(f), values.push(f));
-        setFill({ names, values });
+        setFill({ names, values, note: samples[0]?.note_id });
       },
       () => setError(true),
     );
@@ -925,7 +1054,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
     let live = true;
     setError(false);
     api
-      .previewTemplate(t.note_type_id, tpl.q, tpl.a, tpl.ord, fill?.values ?? null, fill?.names)
+      .previewTemplate(t.note_type_id, tpl.q, tpl.a, tpl.ord, fill?.values ?? null, fill?.names, fill?.note)
       .then(async (p) => {
         const [front, back] = await Promise.all([renderCardHtml(p.front), renderCardHtml(p.back)]);
         if (live) setHtml({ front, back });
@@ -1187,12 +1316,13 @@ function report(s: UpdateSummary) {
 export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; info: AnkiPreview }) {
   const nav = useNav();
   const sync = useSyncStatus();
+  const [undoing, setUndoing] = useState(false);
   const [saved, setSaved] = useState<string>();
   const [error, setError] = useState<string>();
   const synced = !!sync?.connected && !!sync.enabled;
   const root = s.roots[0] ?? null;
   const openDeck = () => nav(root !== null ? { name: "deck", deckId: root } : { name: "home" });
-  useKey("Escape", openDeck);
+  useKey("Escape", openDeck, !undoing);
   const takeNew = s.conflicts.filter((c) => c.take_new).length;
   const tiles = [
     s.changed + s.merged > 0 && { label: "바꾼 노트", value: n(s.changed + s.merged), sub: [s.changed > 0 && `새 버전 ${n(s.changed)}`, s.merged > 0 && `합친 노트 ${n(s.merged)}`].filter(Boolean).join(" · ") },
@@ -1264,8 +1394,12 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
             <Icon name="download" size={20} className="c-success" />
             <span className="result__row-text">
               <span className="t-body-m-strong">업데이트 전 백업을 만들었어요</span>
-              <span className="t-body-s c-secondary">되돌리면 그 뒤의 학습도 함께 돌아가요.{synced ? "" : looks}</span>
+              <span className="t-body-s c-secondary">
+                {s.batch !== null ? "되돌리면 이 업데이트로 바뀐 것만 돌아가요 · 공부한 기록은 그대로예요." : "되돌리면 그 뒤의 학습도 함께 돌아가요."}
+                {synced ? "" : looks}
+              </span>
             </span>
+            {s.batch !== null && <Button variant="secondary" size="M" icon="rotate" label="이 업데이트 되돌리기" onClick={() => setUndoing(true)} />}
             <Button variant="ghost" size="M" label="백업으로 복구" onClick={() => nav({ name: "settings", focus: "restore", backup: s.backup!.split(/[\\/]/).pop() })} />
           </div>
         )}
@@ -1288,11 +1422,221 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
           </div>
         )}
       </div>
+      {undoing && s.batch !== null && <UndoConfirm batch={s.batch} onClose={() => setUndoing(false)} />}
       <div className="result__foot">
         <Button variant="ghost" size="M" icon="download" label={saved ?? "결과를 파일로 저장"} onClick={save_} />
         <span className="import__foot-right">
           {error && <span className="t-body-s c-danger">{error}</span>}
           {root !== null && <Button variant="secondary" label="학습 시작" onClick={() => nav({ name: "summary", deckIds: [root] })} />}
+          <Button icon="arrow-right" label="덱 열기" onClick={openDeck} />
+        </span>
+      </div>
+    </main>
+  );
+}
+
+// ---------------------------------------------------------------- DU2-u 이 업데이트 되돌리기 · DU2-u2 결과
+
+/** "노트 3개 · 카드 모양 1종" + 은/는 */
+const josa = (parts: (string | false)[]) => {
+  const s = parts.filter(Boolean).join(" · ");
+  return `${s}${eun(s)}`;
+};
+
+/** 보관한 새 노트 · 카드에 붙는 태그 (deck_update.rs ARCHIVE_TAG) */
+const ARCHIVE_TAG = "되돌린_업데이트";
+
+/** 확인 창: 줄마다 앞에 결과 (돌아가요 · 보관해요 · 남겨요). 지우는 것이 없어 주 버튼은 Primary */
+export function UndoConfirm({ batch, onClose }: { batch: number; onClose: () => void }) {
+  const nav = useNav();
+  const [u, setU] = useState<UndoSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  useKey("Escape", onClose, !busy, { modal: true });
+  useEffect(() => {
+    api.undoUpdate(batch, true).then(setU, (e) => setError(errorText(e)));
+  }, [batch]);
+  const run = async () => {
+    setBusy(true);
+    try {
+      nav({ name: "updateUndone", undo: await api.undoUpdate(batch, false) });
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  };
+  type Line = { icon: IconName; tone: string; text: string };
+  const lines = (u
+    ? [
+        u.reverted_notes + u.reverted_types > 0 && {
+          icon: "rotate" as const,
+          tone: "c-accent",
+          text: `돌아가요 · ${josa([u.reverted_notes > 0 && `바뀐 노트 ${n(u.reverted_notes)}개`, u.reverted_types > 0 && `카드 모양 ${n(u.reverted_types)}종`])} 업데이트 전 내용으로`,
+        },
+        u.archived_notes > 0 && {
+          icon: "layers" as const,
+          tone: "c-secondary",
+          text: `보관해요 · 공부하지 않은 새 노트 ${n(u.archived_notes)}개(카드 ${n(u.archived_note_cards)}장)는 학습에서 빼고 '${ARCHIVE_TAG}' 태그로 모아요. 카드 목록에서 보거나 지울 수 있어요`,
+        },
+        u.archived_cards > u.archived_note_cards && {
+          icon: "layers" as const,
+          tone: "c-secondary",
+          text: `보관해요 · 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장은 공부하지 않아 학습에서 빼요 (학습 중지)`,
+        },
+        u.kept_cards > 0 && {
+          icon: "check" as const,
+          tone: "c-success",
+          text: `남겨요 · 그 사이 공부한 새 카드 ${n(u.kept_cards)}장은 기록 · 일정과 함께 그대로`,
+        },
+        u.kept_structure > 0 && { icon: "check" as const, tone: "c-success", text: "남겨요 · 업데이트로 더한 필드 · 카드 종류는 그대로 둬요 (그 카드와 값이 남아 있어요)" },
+        u.edited_notes + u.edited_types > 0 && {
+          icon: "pencil" as const,
+          tone: "c-secondary",
+          text: `남겨요 · 그 뒤에 내가 고친 ${josa([u.edited_notes > 0 && `노트 ${n(u.edited_notes)}개`, u.edited_types > 0 && `노트 유형 ${n(u.edited_types)}개`])} 그대로`,
+        },
+      ]
+    : []
+  ).filter(Boolean) as Line[];
+  return (
+    <Modal title={u?.blocked ? "이 업데이트는 되돌릴 수 없어요" : "이 업데이트를 되돌릴까요?"} onClose={onClose} variant="confirm" icon="rotate" className="du-undo">
+      {u && !u.blocked && (
+        <>
+          <p className="t-body-m c-secondary">
+            {day(u.applied_at)}에 적용한 「{u.file_name}」 업데이트로 바뀐 것만 업데이트 전으로 돌려요. 공부한 기록은 지우지 않아요.
+          </p>
+          {lines.length > 0 ? (
+            <ul className="du-undo__lines">
+              {lines.map((x) => (
+                <li key={x.text} className="du-undo__line">
+                  <Icon name={x.icon} size={16} className={x.tone} />
+                  <span className="t-body-s">{x.text}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="t-body-s c-tertiary">돌릴 것이 없어요. 업데이트로 바뀐 것을 그 뒤에 모두 고쳤어요.</p>
+          )}
+          <p className="du-line t-caption c-tertiary">
+            <Icon name="download" size={14} className="c-success" />
+            되돌리기 전에 이 기기 백업을 먼저 만들어요
+          </p>
+        </>
+      )}
+      {u?.blocked && <p className="t-body-m c-secondary">{u.blocked}</p>}
+      {error && <p className="t-body-s c-danger">{error}</p>}
+      <div className="modal__actions">
+        <Button variant="ghost" size="M" label={u?.blocked ? "닫기" : "취소"} shortcut="Esc" onClick={onClose} />
+        {!u?.blocked && <Button size="M" icon="rotate" label="업데이트 되돌리기" busy={busy} busyLabel="되돌리는 중" disabled={!u || lines.length === 0} autoFocus onClick={run} />}
+      </div>
+    </Modal>
+  );
+}
+
+/** DU2-u2 되돌린 뒤 결과: 돌아간 것 · 보관한 것 · 남긴 것과 이유 */
+export function UndoResultScreen({ undo: u }: { undo: UndoSummary }) {
+  const nav = useNav();
+  const sync = useSyncStatus();
+  const root = u.roots[0] ?? null;
+  const openDeck = () => nav(root !== null ? { name: "deck", deckId: root } : { name: "home" });
+  useKey("Escape", openDeck);
+  const partial = u.kept_cards + u.edited_notes + u.edited_types > 0;
+  const tiles = [
+    u.reverted_notes > 0 && { label: "돌아간 노트", value: n(u.reverted_notes), sub: "업데이트 전 내용으로" },
+    u.archived_notes > 0 && { label: "보관한 새 노트", value: n(u.archived_notes), sub: `카드 ${n(u.archived_note_cards)}장 · 학습에서 빠짐` },
+    u.archived_notes === 0 && u.archived_cards > 0 && { label: "보관한 새 카드", value: n(u.archived_cards), sub: "학습에서 빠짐" },
+    u.kept_cards > 0 && { label: "남긴 새 카드", value: n(u.kept_cards), sub: "공부한 카드 · 기록 · 일정 그대로" },
+    u.edited_notes > 0 && { label: "그대로 둔 노트", value: n(u.edited_notes), sub: "그 뒤에 내가 고친 노트" },
+  ].filter(Boolean) as { label: string; value: string; sub: string }[];
+  return (
+    <main className="result">
+      <div className="result__head">
+        <span className="result__icon">
+          <Icon name="rotate" size={26} className="c-success" />
+        </span>
+        <span className="result__title">
+          <h1 className="t-title-l">{partial ? "업데이트를 되돌렸어요 · 일부는 남겼어요" : "업데이트를 되돌렸어요"}</h1>
+          <span className="t-body-s c-secondary">
+            {u.file_name} ({day(u.applied_at)} 적용) · 공부한 기록은 지우지 않았어요
+          </span>
+        </span>
+      </div>
+      {tiles.length > 0 && (
+        <div className="result__tiles">
+          {tiles.map((t) => (
+            <StatTile key={t.label} label={t.label} value={t.value} sub={t.sub} />
+          ))}
+        </div>
+      )}
+      <div className="result__list">
+        {u.kept_cards > 0 && (
+          <div className="result__row">
+            <Icon name="check" size={20} className="c-success" />
+            <span className="result__row-text">
+              <span className="t-body-m-strong">공부한 새 카드 {n(u.kept_cards)}장을 남겼어요</span>
+              <span className="t-body-s c-secondary">이유 · 공부한 기록과 다음 복습 일정을 지키려고요.</span>
+            </span>
+            <Button variant="ghost" size="M" label="카드 목록에서 보기" onClick={() => nav({ name: "cards", deckId: null, cardIds: u.kept_card_ids })} />
+          </div>
+        )}
+        {u.archived_cards > 0 && (
+          <div className="result__row">
+            <Icon name="layers" size={20} className="c-secondary" />
+            <span className="result__row-text">
+              <span className="t-body-m-strong">
+                {u.archived_notes > 0 ? `공부하지 않은 새 노트 ${n(u.archived_notes)}개는 보관했어요` : `공부하지 않은 새 카드 ${n(u.archived_cards)}장은 보관했어요`}
+              </span>
+              <span className="t-body-s c-secondary">
+                학습에 나오지 않고{u.archived_notes > 0 ? ` '${ARCHIVE_TAG}' 태그로 모아 뒀어요` : " 학습 중지로 두었어요"}.
+                {u.archived_notes > 0 && u.archived_cards > u.archived_note_cards ? ` 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장도 학습 중지로 두었어요.` : ""} 카드 목록에서 보거나 지울 수 있어요.
+              </span>
+            </span>
+            <Button variant="ghost" size="M" label="보관한 카드 보기" onClick={() => nav({ name: "cards", deckId: null, cardIds: u.archived_card_ids })} />
+          </div>
+        )}
+        {u.kept_structure > 0 && (
+          <div className="result__row">
+            <Icon name="check" size={20} className="c-success" />
+            <span className="result__row-text">
+              <span className="t-body-m-strong">업데이트로 더한 필드 · 카드 종류는 남겼어요</span>
+              <span className="t-body-s c-secondary">이유 · 남긴 카드와 노트 값이 쓰고 있어요. 노트 유형 편집에서 지울 수 있어요.</span>
+            </span>
+          </div>
+        )}
+        {u.edited_notes + u.edited_types > 0 && (
+          <div className="result__row">
+            <Icon name="pencil" size={20} className="c-secondary" />
+            <span className="result__row-text">
+              <span className="t-body-m-strong">
+                그 뒤에 고친 {josa([u.edited_notes > 0 && `노트 ${n(u.edited_notes)}개`, u.edited_types > 0 && `노트 유형 ${n(u.edited_types)}개`])} 그대로 뒀어요
+              </span>
+              <span className="t-body-s c-secondary">이유 · 업데이트 뒤에 내가 고친 내용이라서요. 업데이트 전 내용은 백업에 있어요.</span>
+            </span>
+            {u.edited_card_ids.length > 0 && (
+              <Button variant="ghost" size="M" label={`바뀐 ${n(u.edited_notes)}개 보기`} onClick={() => nav({ name: "cards", deckId: null, cardIds: u.edited_card_ids })} />
+            )}
+          </div>
+        )}
+        {u.backup && (
+          <div className="result__row">
+            <Icon name="download" size={20} className="c-success" />
+            <span className="result__row-text">
+              <span className="t-body-m-strong">되돌리기 전 백업을 만들었어요</span>
+              <span className="t-body-s c-secondary">되돌린 것까지 처음으로 돌리려면 설정 › 이 기기 백업에서 [백업으로 복구]</span>
+            </span>
+          </div>
+        )}
+        {sync?.connected && sync.enabled && (
+          <div className="result__row">
+            <Icon name="rotate" size={20} className="c-secondary" />
+            <span className="result__row-text">
+              <span className="t-body-m-strong">다른 기기에도 다음 동기화 때 반영돼요</span>
+            </span>
+          </div>
+        )}
+      </div>
+      <div className="result__foot">
+        <span />
+        <span className="import__foot-right">
           <Button icon="arrow-right" label="덱 열기" onClick={openDeck} />
         </span>
       </div>

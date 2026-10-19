@@ -12,6 +12,7 @@ import { DeckMenu, loadDeckChoices, type DeckChoice } from "./DeckPicker";
 import { ExamDialog } from "./Exam";
 import { OcclusionRow } from "./Occlusion";
 import { exam as examApi } from "../written";
+import { ChangeTypeDialog } from "./NoteTypeEdit";
 
 const PAGE = 100;
 /** C2-m 메뉴 순서. 숫자키 1/2/3 이 이 순서다 */
@@ -62,7 +63,8 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   const [impMenu, setImpMenu] = useState<number | null>(null);
   const [rowMenu, setRowMenu] = useState<number | null>(null);
   const [rowMove, setRowMove] = useState(false);
-  const [barMenu, setBarMenu] = useState<"imp" | "move" | null>(null);
+  const [barMenu, setBarMenu] = useState<"imp" | "move" | "more" | null>(null);
+  const [changing, setChanging] = useState<number[] | null>(null); // NT9 다른 유형으로 옮길 노트
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const anchor = useRef<number | null>(null); // Shift 클릭 범위의 시작 (목록 순서)
   const [editing, setEditing] = useState<CardRow | null>(null);
@@ -124,7 +126,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
     clearSelection();
     if (selecting) setTimeout(() => headCheck.current?.focus());
   };
-  const dialog = editing !== null || !!deleting || bulkDelete || newSub || !!examFor;
+  const dialog = editing !== null || !!deleting || bulkDelete || newSub || !!examFor || !!changing;
 
   // 선택 바가 토스트 자리를 쓰는 동안 토스트를 바 위로 올린다 (toast.css 의 --toast-lift)
   useEffect(() => {
@@ -500,6 +502,40 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
             <Icon name="trash" size={16} />
             삭제
           </button>
+          {/* NT9 [⋯] › 다른 유형으로 옮기기 (노트 단위: 고른 카드의 노트) */}
+          <span className="menu">
+            <button
+              className="cards__bar-btn t-label-m"
+              aria-label="더 보기"
+              aria-haspopup="menu"
+              aria-expanded={barMenu === "more"}
+              onClick={(e) => {
+                lastTrigger.current = e.currentTarget;
+                setBarMenu(barMenu === "more" ? null : "more");
+              }}
+            >
+              <Icon name="more" size={16} />
+            </button>
+            {barMenu === "more" && (
+              <div className="menu__list menu--panel cards__bar-menu" role="menu" onKeyDown={menuKeys} onClick={(e) => e.stopPropagation()}>
+                <button
+                  role="menuitem"
+                  className="menu__item t-body-m"
+                  autoFocus
+                  onClick={() => {
+                    closeMenus();
+                    setChanging([...new Set(picked.map((c) => c.note_id))]);
+                  }}
+                >
+                  <Icon name="layers" size={16} />
+                  <span className="menu__text">
+                    <span className="t-body-m">다른 유형으로 옮기기</span>
+                    <span className="t-caption c-tertiary">고른 카드의 노트 {n(new Set(picked.map((c) => c.note_id)).size)}개</span>
+                  </span>
+                </button>
+              </div>
+            )}
+          </span>
           <button className="cards__bar-clear t-label-s" onClick={clearSelection}>
             <Icon name="x" size={14} />
             선택 해제 Esc
@@ -779,6 +815,18 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
           notes={[...new Map(examFor.map((c) => [c.note_id, c.exam])).values()]}
           onClose={() => setExamFor(null)}
           onConfirm={markExam}
+        />
+      )}
+      {changing && (
+        <ChangeTypeDialog
+          noteIds={changing}
+          onClose={() => setChanging(null)}
+          onDone={(to) => {
+            const count = changing.length;
+            setChanging(null);
+            endSelection();
+            act(Promise.resolve().then(() => toast({ title: `노트 ${n(count)}개를 「${to}」${ro(to)} 옮겼어요`, text: "옮기기 전 백업은 설정 › 이 기기 백업에 있어요" })));
+          }}
         />
       )}
       {bulkDelete && (

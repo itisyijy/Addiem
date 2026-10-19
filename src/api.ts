@@ -246,6 +246,21 @@ export type NoteTypeRow = {
   made_here: boolean;
   made_by: string | null;
 };
+/** NT9 다른 유형으로 옮기기. fields: [원래 자리, 새 자리 | null], cards: [원래 ord, 새 ord | null] (null = 옮기지 않음 · 없앰) */
+export type ChangeTypeReq = { note_ids: number[]; to: number; fields: [number, number | null][]; cards: [number, number | null][] };
+export type ChangePlan = { from: number; to: number; notes: number; cards: number; card_ords: [number, number][]; fields: [number, number | null][]; card_map: [number, number | null][] };
+/** removed: [원래 ord, 카드 수, 기록 수] · lost: [필드 이름, 노트 수] · kept: [원래 ord, 새 ord, 카드 수] */
+export type ChangeImpact = {
+  notes: number;
+  cards: number;
+  removed: [number, number, number][];
+  lost: [string, number][];
+  kept: [number, number, number][];
+  unclozed: number;
+  made: number;
+  empty_fronts: number;
+  removed_notes: number;
+};
 /** K39 두 기기에서 고쳐 진 쪽 정의 (편집기 안내) */
 export type NoteTypeConflict = { what: string; at: number; winner: string; winner_device: string; loser: string; loser_device: string; seen: boolean };
 /** note_type_detail. fields 는 보이는 순서 (add_typed_note 의 values 순서) */
@@ -258,6 +273,8 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   layout_css: string;
   /** 정의의 지문. 저장할 때 넘기면 그 사이 (동기화로) 바뀐 유형은 저장하지 않는다 */
   version: string;
+  /** 숨긴 필드 (NT74 되살리기). name: 기본 이름 (가져온 유형의 Anki 이름), null 이면 묻는다. notes: 그 자리에 내용이 든 노트 */
+  hidden: { slot: number; name: string | null; notes: number }[];
 };
 /** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽). 쉬운 편집이 쓰는 줄은 늘 상자 (NT41) */
 export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };
@@ -391,13 +408,15 @@ export type UpdateHint = {
   suggested: boolean;
 };
 /** B2-k · B2-kt 고른 것. take_new: 충돌 필드를 새 버전으로 할 노트 id, new_looks: [노트 유형 id, ord | null(CSS)] */
-export type UpdateChoices = { take_new: number[]; new_looks: [number, number | null][] };
+/** take_new: 충돌 필드를 모두 새 버전으로 할 노트, take_new_fields: 필드마다 [노트 id, 자리] (DU54). 둘 중 어디 있어도 새 버전 */
+export type UpdateChoices = { take_new: number[]; take_new_fields?: [number, number][]; new_looks: [number, number | null][] };
 export type UpdateConflict = {
   note_id: number;
   title: string;
   /** 첫 카드의 덱 경로 ("A › B") */
   deck: string;
-  fields: { slot: number; name: string; mine: string; new: string }[];
+  /** base: 원본 글 (지난번에 받은 값, DU53). null 이면 "원본 글이 없어요" */
+  fields: { slot: number; name: string; mine: string; new: string; base: string | null; take_new: boolean }[];
   auto_new: number;
   auto_mine: number;
   auto_new_fields: string[];
@@ -472,7 +491,35 @@ export type UpdateSummary = {
   issues: ImportIssue[];
   backup: string | null;
   roots: number[];
+  /** 적용한 업데이트 (B3-u [이 업데이트 되돌리기]) */
+  batch: number | null;
 };
+/** DU2-u 이 업데이트 되돌리기 (undo_update). blocked 면 되돌릴 수 없는 이유 */
+export type UndoSummary = {
+  batch: number;
+  file_name: string;
+  applied_at: number;
+  changed: number;
+  merged: number;
+  reverted_notes: number;
+  reverted_types: number;
+  archived_notes: number;
+  archived_cards: number;
+  /** 그중 보관한 새 노트의 카드. 나머지는 이미 있던 노트에 생긴 새 카드 */
+  archived_note_cards: number;
+  archived_card_ids: number[];
+  kept_cards: number;
+  kept_card_ids: number[];
+  edited_notes: number;
+  edited_card_ids: number[];
+  edited_types: number;
+  blocked: string | null;
+  backup: string | null;
+  roots: number[];
+  kept_structure: number;
+};
+/** 설정 › 이 기기 백업: 업데이트 전 백업과 그 업데이트 */
+export type Undoable = { batch: number; file_name: string; applied_at: number; backup: string | null; blocked: string | null };
 /** apply_update 가 보내는 "update-progress" (B2-p) */
 export type UpdateProgress = { step: "backup" | "types" | "notes" | "cards" | "media" | "done"; done: number; total: number };
 /** import_anki 가 보내는 "import-progress" 이벤트 (B2-p) */
@@ -610,6 +657,9 @@ export const api = {
   /** [업데이트 적용]: 백업 → 한 트랜잭션. 진행은 "update-progress", 멈추기는 cancelImport */
   applyUpdate: async (path: string, choices: UpdateChoices) =>
     invoke<UpdateSummary>("apply_update", { path, deckIds: null, choices, voices: await voiceLangs() }),
+  /** DU2-u 이 업데이트 되돌리기. dryRun 이면 확인 창의 수만 (쓰지 않는다). 적용은 되돌리기 전 백업 → 한 트랜잭션 */
+  undoUpdate: (batch: number, dryRun: boolean) => invoke<UndoSummary>("undo_update", { batch, dryRun }),
+  undoableUpdates: () => invoke<Undoable[]>("undoable_updates"),
   /** B2-j 끌어놓은 .json 파일을 읽는다 */
   readJsonFile: (path: string) => invoke<string>("read_json_file", { path }),
   /** B2-c 끌어놓은 CSV 의 바이트 (인코딩은 화면이 고른다) */
@@ -635,14 +685,19 @@ export const api = {
   /** 그 덱(하위 덱 포함) 노트가 쓰는 유형 id, 많이 쓰는 것 먼저 */
   deckNoteTypes: (deckId: number) => invoke<number[]>("deck_note_types", { deckId }),
   /** values 는 보이는 순서. names 를 주면 편집 중인 필드 이름 (values 가 null 이면 이름 샘플) */
-  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[]) =>
-    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names }),
+  /** note: 값을 가져온 노트 ({{Tags}} {{Deck}} 같은 특수 필드를 그 노트 것으로) */
+  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[], note?: number) =>
+    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names, note }),
   // NT1–NT5 목록 · 편집기
   cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
   renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),
   deleteNoteType: (id: number) => invoke<void>("delete_note_type", { id }),
   /** first: 먼저 보일 노트 (E 에서 연 카드의 노트) */
   noteTypeSamples: (id: number, first?: number) => invoke<NoteTypeSample[]>("note_type_samples", { id, first }),
+    /** NT9 다른 유형으로 옮기기: 기본 대응 (to 가 null 이면 처음 보일 유형) */
+  changeTypePlan: (noteIds: number[], to: number | null) => invoke<ChangePlan>("change_type_plan", { noteIds, to }),
+  /** dryRun 이면 확인 창의 수만 (쓰지 않는다). 적용은 옮기기 전 백업 → 한 트랜잭션 */
+  changeNoteType: (req: ChangeTypeReq, dryRun: boolean) => invoke<ChangeImpact>("change_note_type", { req, dryRun }),
   /** HTML 전용이면 이유 문자열로 거부한다 ("뒷면에 조건문 {{#예문}}") */
   templateLayout: (qfmt: string, afmt: string) => invoke<Layout>("template_layout", { qfmt, afmt }),
   buildTemplateLayout: (layout: Layout) => invoke<{ qfmt: string; afmt: string }>("build_template_layout", { layout }),
