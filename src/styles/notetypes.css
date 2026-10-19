@@ -200,3 +200,6 @@
 .ntm__backup { display: flex; align-items: center; gap: 6px; }
 /* 이름 칸 아래 오류 줄은 접어 쓴다 (되살리기 이름 겹침 등) */
 .nte__field .nte__fname-edit .t-caption { white-space: normal; }
+/* NT9 카드 목록 선택 바 [⋯] 메뉴: "다른 유형으로 옮기기" 한 줄 */
+.menu__list.cards__bar-more { width: max-content; }
+.cards__bar-more .menu__text > .t-body-m { white-space: nowrap; }

@@ -314,7 +314,14 @@ function Licenses() {
 
 /** 복구한 뒤 다시 불러온 홈의 토스트 (값: 그 백업의 시각 글) */
 export const RESTORED_KEY = "neoanki.restored";
-const BACKUP_KIND: Record<LocalBackup["kind"], string> = { manual: "직접 만든 백업", update: "덱 업데이트 적용 전 자동 백업", restore: "복구 전 자동 백업" };
+const BACKUP_KIND: Record<LocalBackup["kind"], string> = {
+  manual: "직접 만든 백업",
+  update: "덱 업데이트 적용 전 자동 백업",
+  restore: "복구 전 자동 백업",
+  move: "노트 유형 옮기기 전 자동 백업",
+  undo: "업데이트 되돌리기 전 자동 백업",
+  notetype: "노트 유형 저장 전 자동 백업",
+};
 const size = (b: number) => (b < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(1)}MB`);
 
 /**

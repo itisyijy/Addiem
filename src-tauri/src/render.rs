@@ -14,7 +14,7 @@ pub struct Rendered {
 }
 
 /// Anki 특수 필드 {{Tags}} {{Deck}} {{Subdeck}} {{Type}} {{Card}} {{CardFlag}} 의 값. 필드 맵에 넣어(같은 이름 필드보다 이긴다, Anki 와 같다) 그린다.
-/// 학습 화면(card_view) · 노트 유형 미리보기만 넣는다: 다른 곳(목록 · 품질 · 서술형)은 지금처럼 빈 값. 깃발은 앱에 없어 늘 빈 값 (Anki 의 깃발 없는 카드).
+/// 학습 화면(card_view) · 노트 유형 미리보기 · 카드 목록(list_cards)만 넣는다: 다른 곳(품질 · 서술형)은 지금처럼 빈 값. 깃발은 앱에 없어 늘 빈 값 (Anki 의 깃발 없는 카드).
 /// 값은 실제 Anki 와 같다 (pylib 26.9.3 으로 확인, 코디네이터 QA): 태그는 공백으로 잇고 앞뒤 공백 없음, 덱은 전체 경로 "A::B", 하위 덱은 마지막 칸
 pub fn special_fields(tags: &str, deck_path: &[String], type_name: &str, card_name: &str) -> [(String, String); 6] {
     [
@@ -25,6 +25,18 @@ pub fn special_fields(tags: &str, deck_path: &[String], type_name: &str, card_na
         ("Card".into(), crate::occlusion::escape(card_name)),
         ("CardFlag".into(), String::new()),
     ]
+}
+
+/// {{hint:}} 펼치기 상자를 통째로 뺀다 (글자 한 줄로 쓰는 카드 목록). 이 파일이 만든 표기만 본다 (중첩 없음)
+pub fn drop_hints(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find("<details class=\"hint\"") {
+        out.push_str(&rest[..i]);
+        rest = rest[i..].find("</details>").map_or("", |j| &rest[i + j + "</details>".len()..]);
+    }
+    out.push_str(rest);
+    out
 }
 
 pub fn render_card(qfmt: &str, afmt: &str, fields: &HashMap<String, String>, ord: u32) -> Rendered {
@@ -331,6 +343,15 @@ mod tests {
     }
 
     #[test]
+    fn special_fields_reach_the_answer_through_front_side() {
+        // NT10: 답 면의 {{FrontSide}} 안 {{Tags}} · {{Deck}} · {{Card}} 도 값으로 (앞면을 그린 그 값)
+        let mut m = f(&[("Front", "Q"), ("Back", "A")]);
+        m.extend(special_fields(" a  b ", &["토익".into(), "Day 03".into()], "영단어", "Card 1"));
+        let r = render_card("{{Front}}<div>{{Tags}} · {{Deck}} · {{Card}}</div>", "{{FrontSide}}<hr id=answer>{{Back}}", &m, 0);
+        assert!(r.back.starts_with("Q<div>a b · 토익::Day 03 · Card 1</div><hr id=answer>"), "{}", r.back);
+    }
+
+    #[test]
     fn sound_tags_are_removed() {
         assert_eq!(strip_sound("발음 [sound:a.mp3] 끝"), "발음  끝");
         assert_eq!(strip_sound("[sound:a.mp3][sound:b.mp3]"), "");
@@ -431,6 +452,8 @@ mod tests {
         let fs = render_card("{{hint:Extra}}", "{{FrontSide}}", &f(&[("Extra", "a")]), 0);
         assert_eq!((fs.front.contains(" open"), fs.back.contains(" open")), (false, true), "답 면의 앞면 부분도 펼친 채");
         assert_eq!(strip_tags(&h.front), "Q Extra 메모");
+        assert_eq!(drop_hints(&fs.back), "", "카드 목록은 힌트 상자를 뺀다");
+        assert_eq!(drop_hints(&format!("{}<hr id=answer>A", h.front)), "Q<hr id=answer>A");
         assert_eq!(render_card("{{Front", "", &f(&[]), 0).front, "{{Front", "닫히지 않은 태그는 그대로 둔다");
         // type-in: 앞면은 비우고 뒷면은 정답 (J1)
         let t = render_card("{{Front}}{{type:Back}}", "{{FrontSide}}<hr id=answer>{{type:Back}}", &f(&[("Front", "Q"), ("Back", "A")]), 0);

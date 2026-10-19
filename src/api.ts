@@ -249,12 +249,13 @@ export type NoteTypeRow = {
 /** NT9 다른 유형으로 옮기기. fields: [원래 자리, 새 자리 | null], cards: [원래 ord, 새 ord | null] (null = 옮기지 않음 · 없앰) */
 export type ChangeTypeReq = { note_ids: number[]; to: number; fields: [number, number | null][]; cards: [number, number | null][] };
 export type ChangePlan = { from: number; to: number; notes: number; cards: number; card_ords: [number, number][]; fields: [number, number | null][]; card_map: [number, number | null][] };
-/** removed: [원래 ord, 카드 수, 기록 수] · lost: [필드 이름, 노트 수] · kept: [원래 ord, 새 ord, 카드 수] */
+/** removed: [원래 ord, 카드 수, 기록 수] · lost: [필드 이름 ("" = 숨긴 필드), 노트 수] · lost_notes: 그중 하나라도 내용이 있던 노트 · kept: [원래 ord, 새 ord, 카드 수] */
 export type ChangeImpact = {
   notes: number;
   cards: number;
   removed: [number, number, number][];
   lost: [string, number][];
+  lost_notes: number;
   kept: [number, number, number][];
   unclozed: number;
   made: number;
@@ -274,7 +275,8 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   /** 정의의 지문. 저장할 때 넘기면 그 사이 (동기화로) 바뀐 유형은 저장하지 않는다 */
   version: string;
   /** 숨긴 필드 (NT74 되살리기). name: 기본 이름 (가져온 유형의 Anki 이름), null 이면 묻는다. notes: 그 자리에 내용이 든 노트 */
-  hidden: { slot: number; name: string | null; notes: number }[];
+  /** sample: 남은 내용 한 토막 (이름 없는 필드 여럿을 구별) */
+  hidden: { slot: number; name: string | null; notes: number; sample: string | null }[];
 };
 /** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽). 쉬운 편집이 쓰는 줄은 늘 상자 (NT41) */
 export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };
@@ -397,7 +399,7 @@ export type AnkiPreview = {
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
 /** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
-export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" };
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" };
 
 export type UpdateHint = {
   notes: number;
@@ -717,7 +719,8 @@ export const api = {
   ttsLangs: () => invoke<string[]>("tts_langs"),
   ttsLicense: (which: "supertonic" | "onnxruntime") => invoke<string>("tts_license", { which }),
   mvpMetrics: () => invoke<MvpMetrics>("mvp_metrics"),
-  createBackup: () => invoke<string>("create_backup"),
+  /** kind "notetype": 노트 유형 저장 전 자동 백업 (목록에 그 이름으로). 없으면 직접 만든 백업 */
+  createBackup: (kind?: "notetype") => invoke<string>("create_backup", { kind: kind ?? null }),
   retryOpen: () => invoke<void>("retry_open"),
   /** 가장 최근 백업으로 되돌린다. 쓴 백업 파일 이름을 돌려준다 */
   /** name 이 없으면 가장 최근 백업. backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */

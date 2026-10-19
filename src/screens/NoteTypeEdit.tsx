@@ -9,7 +9,7 @@ import {
 import type { ChangeImpact, ChangePlan, NoteTypeRow } from "../api";
 import { useSyncStatus, when } from "../sync";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
-import { iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
+import { eun, iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, matchAction } from "../keys";
 import { useToast } from "../toast";
 import { plainText, renderCardHtml } from "../cardHtml";
@@ -159,7 +159,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   const [draft, setDraft] = useState<Draft>(initial);
   const [curKey, setCurKey] = useState(() => d.templates.find((t) => t.ord === ord)?.ord ?? d.templates[0]?.ord ?? 0);
   const [mode, setMode] = useState<"easy" | "html">("easy");
-  const [renaming, setRenaming] = useState<{ what: "field" | "tpl"; key: number; value: string } | null>(null);
+  // tried: 빈 이름으로 저장하려 했다 (그때만 빈 칸을 빨갛게, NT8)
+  const [renaming, setRenaming] = useState<{ what: "field" | "tpl"; key: number; value: string; tried?: boolean } | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [leaving, setLeaving] = useState<Route | null>(null);
   const [ask, setAsk] = useState<SaveImpact | null>(null);
@@ -435,7 +436,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     setSaving(true);
     try {
       // 지우는 저장은 이 기기 백업을 먼저 (디자인 NT8)
-      if (impact.templates.length || impact.fields.length) await api.createBackup();
+      if (impact.templates.length || impact.fields.length) await api.createBackup("notetype");
       await api.saveNoteType(d.id, editOf(), false, d.version);
       toast({ title: "노트 유형을 저장했어요", text: impact.made ? `카드 ${n(impact.made)}장을 새로 만들었어요` : undefined });
       nav(back, true);
@@ -749,15 +750,18 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               {editing ? (
                 <span className="nte__fname-edit">
                   <input
-                    className={`nte__fname-input t-body-m ${renameError ? "is-error" : ""}`}
+                    className={`nte__fname-input t-body-m ${renameError && (renaming.value.trim() || renaming.tried) ? "is-error" : ""}`}
                     autoFocus
                     aria-label="필드 이름"
+                    placeholder="필드 이름"
                     value={renaming.value}
-                    onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+                    onChange={(e) => setRenaming({ ...renaming, value: e.target.value, tried: false })}
                     onBlur={() => renameField(f.key, renaming.value)}
                     onKeyDown={(e) => {
                       e.stopPropagation();
-                      if (e.key === "Enter") renameField(f.key, renaming.value);
+                      // 빈 이름으로 Enter: 지우지 않고 오류를 보인다 (칸을 떠나면 그 필드를 넣지 않는다)
+                      if (e.key === "Enter" && !renaming.value.trim()) setRenaming({ ...renaming, tried: true });
+                      else if (e.key === "Enter") renameField(f.key, renaming.value);
                       if (e.key === "Escape") {
                         e.preventDefault();
                         if (!f.name) removeField(f.key);
@@ -765,7 +769,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                       }
                     }}
                   />
-                  {renameError && renaming.value.trim() && (
+                  {renameError && (renaming.value.trim() || renaming.tried) && (
                     <span className="t-caption c-danger">{restored(f) && renameError.endsWith("이미 있어요.") ? "같은 이름 필드가 있어요. 다른 이름으로 되살려 주세요" : renameError}</span>
                   )}
                 </span>
@@ -817,7 +821,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                   <div key={h.slot} className="nte__hidden-row">
                     <span className="nte__hidden-text">
                       <span className="t-body-m">{h.name ?? "이름 없는 필드"}</span>
-                      <span className="t-caption c-tertiary">{h.notes ? `노트 ${n(h.notes)}개에 남아 있어요` : "내용이 남은 노트가 없어요"}</span>
+                      <span className="t-caption c-tertiary">{h.notes ? `노트 ${n(h.notes)}개에 남아 있어요${h.sample ? ` · 예: '${h.sample}'` : ""}` : "내용이 남은 노트가 없어요"}</span>
                     </span>
                     <button type="button" className="nte__restore t-label-m" aria-label={`${h.name ?? "이름 없는 필드"} 되살리기`} onClick={() => restoreField(h)}>
                       <Icon name="rotate" size={16} />
@@ -1491,15 +1495,8 @@ export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number
     : [
         ...impact.removed.map(([ord, count]): Line => ({ icon: "trash", text: `「${fromTpl(ord)}」의 카드 ${n(count)}장을 지워요 · 되돌릴 수 없어요. 이 카드들의 복습 기록은 학습 통계에만 남아요.` })),
         ...(impact.removed_notes > 0 ? [{ icon: "trash" as const, text: `카드가 하나도 남지 않는 노트 ${n(impact.removed_notes)}개도 함께 지워요.` }] : []),
-        ...impact.lost.map(([raw, notes]): Line => {
-          const name = showFrom(raw);
-          return {
-          icon: "alert",
-          text: free
-            ? `옮기지 않는 칸이 있어요 · ${name} 칸은 옮기지 않아요. 옮기면 노트 ${n(notes)}개의 ${name} 칸에 쓴 내용은 지워져요.`
-            : `옮기지 못하는 칸이 있어요 · ${name} 칸은 「${toName}」에 없어요. 옮기면 노트 ${n(notes)}개의 ${name} 칸에 쓴 내용은 지워져요.`,
-          };
-        }),
+        // 옮기지 못하는 칸은 한 줄로: "발음 · 예문 칸과 숨긴 필드 1개는 「빈칸」에 없어요. … (노트 3개)"
+        ...(impact.lost.length > 0 ? [{ icon: "alert" as const, text: lostLine(impact, free, toName, showFrom) }] : []),
         ...(impact.unclozed > 0 ? [{ icon: "info" as const, text: "빈칸 표시는 글자로 바뀌어요." }] : []),
         ...(impact.empty_fronts > 0 ? [{ icon: "alert" as const, text: `옮기면 카드 ${n(impact.empty_fronts)}장의 앞면이 비어요 · 학습에 나오지 않고, 필드를 채우면 다시 나와요.` }] : []),
         ...(impact.made > 0 ? [{ icon: "plus" as const, text: `카드 ${n(impact.made)}장이 새로 생겨요.` }] : []),
@@ -1578,4 +1575,15 @@ export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number
       </div>
     </Modal>
   );
+}
+
+/** NT9 옮기지 못하는 칸 한 줄. free: 새 유형에 빈 칸이 남았다 (고르지 않아 옮기지 않는 것) */
+function lostLine(impact: ChangeImpact, free: boolean | undefined, toName: string, show: (n: string) => string) {
+  const named = impact.lost.filter(([raw]) => raw).map(([raw]) => show(raw));
+  const hidden = impact.lost.filter(([raw]) => !raw).length;
+  const what = [named.length > 0 && `${named.join(" · ")} 칸`, hidden > 0 && `숨긴 필드 ${n(hidden)}개`].filter(Boolean).join("과 ");
+  const last = hidden > 0 ? "개" : "칸";
+  return free
+    ? `옮기지 않는 칸이 있어요 · ${what}${eun(last)} 옮기지 않아요. 옮기면 그 칸에 쓴 내용은 지워져요 (노트 ${n(impact.lost_notes)}개)`
+    : `옮기지 못하는 칸이 있어요 · ${what}${eun(last)} 「${toName}」에 없어요. 옮기면 그 칸에 쓴 내용은 지워져요 (노트 ${n(impact.lost_notes)}개)`;
 }
