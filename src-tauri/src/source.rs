@@ -333,6 +333,9 @@ fn outline(segs: &[Segment], pages: i64) -> Outline {
     items.sort_by_key(|s| (s.page, s.ord, !is_heading(&s.signals), level(s)));
     items.dedup_by(|a, b| is_heading(&a.signals) && is_heading(&b.signals) && (a.page, a.ord, &a.text) == (b.page, b.ord, &b.text));
     let texts: Vec<&Segment> = items.iter().filter(|s| text(s)).copied().collect();
+    // 화면 단계는 가장 얕은 제목을 1단계로 당긴다 (구역 없는 PPTX 는 제목이 모두 2단계로 저장된다, QA L6).
+    // 구간 끝은 저장된 단계끼리 견주므로 구간 · 핵심 범위는 그대로다
+    let base = items.iter().filter(|s| is_heading(&s.signals)).map(|s| level(s)).min().unwrap_or(1) - 1;
     let mut out = Outline::default();
     let mut ranges: Vec<(usize, Vec<i64>)> = vec![]; // 핵심 범위 구간 번호 · 그 안 강조 구간
     for (i, h) in items.iter().enumerate() {
@@ -354,7 +357,7 @@ fn outline(segs: &[Segment], pages: i64) -> Outline {
         }
         out.sections.push(Section {
             id: h.id,
-            level: lv,
+            level: lv - base,
             title: title.to_string(),
             page: h.page,
             end_page: end_page.max(h.page),
@@ -2362,5 +2365,31 @@ mod tests {
         let mut got: Vec<i64> = st.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
         got.sort();
         assert_eq!(got, vec![a, f]);
+    }
+
+    #[test]
+    fn outline_levels_start_at_one() {
+        // 구역 없는 PPTX: 제목이 모두 2단계("## ")로 저장된다. 화면 단계만 1부터, 구간 · 끝 쪽 · 핵심 범위는 1단계로 저장한 것과 같다
+        let build = |marks: [&str; 3]| {
+            let (con, _) = outline_db(&[]);
+            add_seg(&con, 1, 0, "강조 하나", "highlight");
+            add_seg(&con, 2, 0, "요약 강조", "highlight");
+            add_seg(&con, 3, 0, "세부 강조", "bold");
+            add_seg(&con, 4, 0, "다른 강조", "red");
+            for (i, (page, title)) in [(1, "소개"), (2, "자료구조 요약"), (3, "세부")].into_iter().enumerate() {
+                add_seg(&con, page, -1, &format!("{} {title}", marks[i]), "heading");
+            }
+            add_seg(&con, 4, -1, &format!("{} 트리", marks[0]), "heading");
+            let o = outline_of(&con, 1).unwrap();
+            let rows: Vec<_> = o.sections.iter().map(|s| (s.level, s.title.clone(), s.page, s.end_page, s.segments, s.core.clone())).collect();
+            let mut core: Vec<(String, usize)> = segments_of(&con, 1).unwrap().into_iter().filter_map(|s| o.core.get(&s.id).map(|k| (s.text, *k))).collect();
+            core.sort();
+            (rows, core)
+        };
+        let deep = build(["##", "##", "###"]);
+        assert_eq!(deep, build(["#", "#", "##"]));
+        assert_eq!(deep.0.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 1, 2, 1]);
+        assert_eq!(deep.0[1], (1, "자료구조 요약".to_string(), 2, 3, 2, Some("제목에 '요약'".to_string())));
+        assert_eq!(deep.1, vec![("세부 강조".to_string(), 1), ("요약 강조".to_string(), 1)]);
     }
 }
