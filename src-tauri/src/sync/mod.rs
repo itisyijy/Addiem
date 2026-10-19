@@ -835,7 +835,7 @@ fn local_backup(sh: &Shared, suffix: &str) -> Result<Option<PathBuf>, SyncError>
         std::fs::rename(&path, &to).map_err(store::other)?;
         // 자동 백업 보관 (사용자 결정 2026-10-20, commands::prune_auto_backups)
         if let Some(dir) = to.parent() {
-            crate::commands::prune_auto_backups(dir, crate::db::now_ms());
+            crate::commands::prune_auto_backups(c, dir, crate::db::now_ms());
         }
         Ok(Some(to))
     })
