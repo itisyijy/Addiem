@@ -8,7 +8,7 @@ import { api, errorText, type CardRow } from "../api";
 import { Badge, Button, Checkbox, Icon, Segment as SegmentControl, type BadgeTone } from "../ui";
 import { AiConnect, useAiStatus } from "../ai";
 import { DraftSend } from "./Drafts";
-import { eul, n, useKey, useNav } from "../nav";
+import { eul, iga, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { readOutline, readPdf, renderPage } from "../pdf";
 import { Modal } from "./NewDeck";
@@ -147,6 +147,8 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const [outlineView, setOutlineView] = useState(false);
   const [outline, setOutline] = useState<Outline | null>(null);
   const [rereading, setRereading] = useState(false);
+  // 다시 읽었는데 제목이 그대로인 자료 id (출처 줄에 잠깐 알린다)
+  const [unchanged, setUnchanged] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     const list = await sourceApi.list(deckId);
@@ -334,7 +336,14 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     setRereading(true);
     setError(undefined);
     try {
-      setOutline(await sourceApi.saveOutline(current.id, current.kind === "pdf" ? await readOutline(current.id) : null));
+      const before = outline?.sections.map((x) => x.id).join();
+      const o = await sourceApi.saveOutline(current.id, current.kind === "pdf" ? await readOutline(current.id) : null);
+      setOutline(o);
+      // 같은 제목이면 행을 쓰지 않아 구간 id 가 그대로다 (source.rs save_headings)
+      if (o.sections.map((x) => x.id).join() === before) {
+        setUnchanged(current.id);
+        setTimeout(() => setUnchanged(null), 4000);
+      }
       loadSegs();
       reload();
       analyze();
@@ -458,9 +467,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                 : "슬라이드마다 그림과 표를 목록에서 골라요. PPTX는 슬라이드를 그림으로 그리지 않아서 끌어서 잡기는 없어요."
               : gapView
                 ? "강조 구간 중 연결된 카드가 없는 곳이에요. 이미 만든 카드가 있다면 연결해 주세요."
-                : outlineView
-                  ? "강의 PDF·슬라이드의 강조와 목차를 찾아 카드와 이어요. 목차 구간마다 핵심 범위인지도 살펴요."
-                  : "강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요."}
+                : "강의 PDF·슬라이드의 강조와 목차를 찾아 카드와 이어요. 목차 구간마다 핵심 범위인지도 살펴요."}
             {/* 다시 분석은 자동으로 하지 않는다. 지난 분석 뒤에 생긴 카드가 있을 때만 알린다 */}
             {stale > 0 && model?.ready && !progress && (
               <>
@@ -582,7 +589,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           )}
 
           {/* 그림·표 탭은 Figures 가 같은 자리에 목록을 그린다 */}
-          {current && outlineView && !objView && <OutlinePanel m={current} outline={outline} head={head} onPage={setPage} rereading={rereading} onReread={reread} />}
+          {current && outlineView && !objView && <OutlinePanel m={current} outline={outline} head={head} onPage={setPage} rereading={rereading} unchanged={unchanged === current.id} onReread={reread} />}
           <section className="panel src-list" aria-label="강조된 구간" hidden={objView || outlineView}>
             {head}
             {current && unopened(current) ? (
@@ -805,6 +812,7 @@ function OutlinePanel({
   head,
   onPage,
   rereading,
+  unchanged,
   onReread,
 }: {
   m: Material;
@@ -812,6 +820,8 @@ function OutlinePanel({
   head: ReactNode;
   onPage: (p: number) => void;
   rereading: boolean;
+  /** 방금 다시 읽었는데 바뀐 제목이 없다 */
+  unchanged: boolean;
   onReread: () => void;
 }) {
   const secs = outline?.sections ?? [];
@@ -822,7 +832,7 @@ function OutlinePanel({
     [
       OUTLINE_FROM[outline.source],
       outline.source !== "size" && day ? `${day.getMonth() + 1}월 ${day.getDate()}일` : "",
-      outline.wide ? "핵심 범위 없음 · 자료 대부분을 덮는 제목이에요" : cores ? `핵심 범위 ${n(cores)}곳` : "핵심 범위 없음",
+      outline.wide ? `핵심 범위 없음 · '${outline.wide}'${iga(outline.wide)} 자료의 절반 넘게 덮어서 쓰지 않았어요` : cores ? `핵심 범위 ${n(cores)}곳` : "핵심 범위 없음",
     ]
       .filter(Boolean)
       .join(" · ");
@@ -833,7 +843,7 @@ function OutlinePanel({
         <div className="src-outline__bar">
           <span className="src-outline__from t-caption c-tertiary">
             <Icon name="list" size={14} />
-            {secs.length ? from : "목차를 찾지 못했어요"}
+            {unchanged ? "다시 읽었어요 · 바뀐 제목 없음" : secs.length ? from : "목차를 찾지 못했어요"}
           </span>
           <Button variant="ghost" size="M" icon="rotate" label="목차 다시 읽기" busy={rereading} busyLabel="읽는 중…" onClick={onReread} />
         </div>

@@ -76,6 +76,8 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
   const outline = board.filter((d) => sourcesOf(d.source, d.reason).includes("outline")).length;
 
   let body: ReactNode;
+  // 결과(자료로 제안이 생김)는 반짝이, 나머지(받기 · 분석 전)는 내려받기 (Figma OT2)
+  let icon: "download" | "sparkles" = "download";
   if (dl || model.downloading) {
     const d = dl ?? { done: 0, total: model.bytes };
     body = (
@@ -114,6 +116,7 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
       </BannerText>
     );
   } else if (material > 0) {
+    icon = "sparkles";
     body = (
       <>
         <BannerText
@@ -147,7 +150,7 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
   return (
     <div className="src-banner" role="region" aria-label="자료 분석">
       <span className="src-banner__icon">
-        <Icon name="download" size={18} className="c-accent" />
+        <Icon name={icon} size={18} className="c-accent" />
       </span>
       {body}
       {error && <span className="t-caption c-danger src-banner__error">{error}</span>}
