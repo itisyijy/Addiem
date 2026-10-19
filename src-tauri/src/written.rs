@@ -447,14 +447,30 @@ pub async fn concept_check(app: tauri::AppHandle, card_id: i64, answer: String) 
     let job = crate::llm::begin();
     let started = std::time::Instant::now();
     let st = app.state::<AppState>();
-    let (question, model) = {
+    let (question, model, keywords) = {
         let con = st.db.lock().map_err(err)?;
         let info = card_info(&con, card_id)?;
-        (info.question, info.answer)
+        (info.question, info.answer, info.setting.keywords)
     };
-    let (dir, bin) = (st.data_dir.clone(), crate::llm::engine_bin(&app));
+    let (dir, bin, mine) = (st.data_dir.clone(), crate::llm::engine_bin(&app), answer.clone());
     let check = tauri::async_runtime::spawn_blocking(move || crate::llm::run(bin.as_deref(), &dir, job, &question, &model, &answer)).await.map_err(err)??;
-    Ok(check.map(|relations| Concept { verdict: crate::llm::verdict(&relations), relations, ms: started.elapsed().as_millis() as u64 }))
+    Ok(check.map(|mut relations| {
+        guard(&mut relations, &keywords, &mine);
+        Concept { verdict: crate::llm::verdict(&relations), relations, ms: started.elapsed().as_millis() as u64 }
+    }))
+}
+
+/// 8.3 가드 (디자인 J4 노트, DECISIONS J16): 핵심어 검사에서 빠진(✗) 핵심어가 든 관계는 모델 판정과 상관없이 "missing"(안 보여요).
+/// 낱말 찾기는 핵심어 검사와 같은 규칙 (띄어쓰기 · 대소문자 · 조사 무시, 동의어 포함)
+pub(crate) fn guard(relations: &mut [crate::llm::Relation], keywords: &[Keyword], mine: &str) {
+    let m = fold(mine);
+    let missed: Vec<&Keyword> = keywords.iter().filter(|k| !k.word.trim().is_empty() && locate(&m, k).is_empty()).collect();
+    for r in relations.iter_mut() {
+        let rel = fold(&r.rel);
+        if missed.iter().any(|k| !locate(&rel, k).is_empty()) {
+            r.verdict = "missing".into();
+        }
+    }
 }
 
 /// 서술형 카드가 나오면 (답을 쓰는 동안): 엔진을 띄워 모델을 읽고 관계 뽑기 · 판정 앞부분을 미리 한다. 쓸 수 없으면 아무것도 하지 않는다
@@ -674,6 +690,23 @@ mod tests {
         let ids: Vec<i64> = con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert!(card_info(&con, ids[0]).unwrap().written, "일반 카드는 덱을 따른다");
         assert!(!card_info(&con, ids[1]).unwrap().written);
+    }
+
+    /// 8.3 가드: 핵심어 검사에서 빠진 말이 든 관계는 "안 보여요" (d9: 맞아 보여요 1 · 안 보여요 2)
+    #[test]
+    fn concept_guard_marks_relations_with_missed_keywords() {
+        use crate::llm::Relation;
+        let ok = |rel: &str| Relation { rel: rel.into(), verdict: "ok".into() };
+        let mut rels = vec![ok("클라이언트의 SYN 요청"), ok("서버의 SYN-ACK 응답"), ok("클라이언트의 ACK 연결 성립")];
+        let k = [kw("SYN", &[]), kw("SYN-ACK", &[]), kw("ACK", &[])];
+        guard(&mut rels, &k, "클라이언트가 SYN을 보내고 서버가 응답한다.");
+        assert_eq!(rels.iter().map(|r| r.verdict.as_str()).collect::<Vec<_>>(), ["ok", "missing", "missing"]);
+        // 동의어로 쓴 핵심어는 빠진 것이 아니다 · 핵심어가 없으면 그대로
+        let mut rels = vec![Relation { rel: "다중공선성 → 회귀계수 불안정".into(), verdict: "reversed".into() }];
+        guard(&mut rels, &[kw("다중공선성", &["VIF"])], "vif 가 높으면 계수가 흔들린다");
+        assert_eq!(rels[0].verdict, "reversed");
+        guard(&mut rels, &[], "");
+        assert_eq!(rels[0].verdict, "reversed");
     }
 
     /// 8.3: 개념 관계 확인에 넘기는 질문은 앞면 글자 ({{type:}} 칸 · 태그 없이)
