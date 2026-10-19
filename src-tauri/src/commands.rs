@@ -2608,11 +2608,12 @@ pub fn heatmap(state: State<AppState>, deck_id: Option<i64>) -> Res<Vec<HeatDay>
         .collect())
 }
 
-/// E1 "백업 만들기". 만든 파일 경로를 돌려준다. kind "notetype" = 노트 유형 저장 전 자동 백업 (NT44 지우는 저장). 그 밖은 직접 만든 백업
+/// E1 "백업 만들기". 만든 파일 경로를 돌려준다. kind "notetype" = 노트 유형 저장 전 자동 백업 (NT44 지우는 저장), "deck" = 덱 삭제 전.
+/// 그 밖은 직접 만든 백업 ([백업 만들기]만)
 #[tauri::command]
 pub async fn create_backup(state: State<'_, AppState>, kind: Option<String>) -> Res<String> {
     let con = state.db.lock().map_err(err)?;
-    let tag = if kind.as_deref() == Some("notetype") { "notetype" } else { "" };
+    let tag = ["notetype", "deck"].into_iter().find(|k| kind.as_deref() == Some(*k)).unwrap_or("");
     write_backup_as(&con, &state.data_dir, tag).map(|p| p.display().to_string())
 }
 
@@ -2637,8 +2638,20 @@ pub struct LocalBackup {
 }
 
 /// 자동 백업의 이름 끝 (-update.zip …). update = 덱 업데이트 적용 전, restore = 복구 전, move = 노트 유형 옮기기 전,
-/// undo = 업데이트 되돌리기 전, notetype = 노트 유형 저장 전 (NT44). 화면 이름은 Settings.tsx BACKUP_KIND
-const BACKUP_KINDS: [&str; 5] = ["update", "restore", "move", "undo", "notetype"];
+/// undo = 업데이트 되돌리기 전, notetype = 노트 유형 저장 전 (NT44), deck = 덱 삭제 전, wipe = 모든 데이터 삭제 전.
+/// 동기화 기기 백업(sync/mod.rs local_backup)은 이름 앞이 neoanki-before-sync- (sync) · neoanki-before-restore- (restore). 화면 이름은 Settings.tsx BACKUP_KIND
+const BACKUP_KINDS: [&str; 7] = ["update", "restore", "move", "undo", "notetype", "deck", "wipe"];
+
+/// 백업 zip 이름 → 종류. 어느 것도 아니면 직접 만든 백업
+fn backup_kind(name: &str) -> &'static str {
+    if name.starts_with("neoanki-before-sync-") {
+        return "sync";
+    }
+    if name.starts_with("neoanki-before-restore-") {
+        return "restore";
+    }
+    BACKUP_KINDS.into_iter().find(|k| name.ends_with(&format!("-{k}.zip"))).unwrap_or("manual")
+}
 
 /// 이 기기 백업 zip 들, 최근 것부터
 #[tauri::command]
@@ -2651,7 +2664,7 @@ pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
             let m = e.metadata().ok()?;
             let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
             let name = e.file_name().to_string_lossy().into_owned();
-            let kind = BACKUP_KINDS.into_iter().find(|k| name.ends_with(&format!("-{k}.zip"))).unwrap_or("manual");
+            let kind = backup_kind(&name);
             Some(LocalBackup { name, at, bytes: m.len(), kind })
         })
         .collect();
@@ -2749,7 +2762,7 @@ pub fn set_cutoff_hour(state: State<AppState>, hour: i64) -> Res<()> {
 /// E1-b 모든 데이터 삭제. backup 이면 먼저 백업 파일을 만든다. 만든 백업 경로를 돌려준다
 #[tauri::command]
 pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::SyncState>, backup: bool) -> Res<Option<String>> {
-    let saved = if backup { Some(write_backup(&*state.db.lock().map_err(err)?, &state.data_dir)?.display().to_string()) } else { None };
+    let saved = if backup { Some(write_backup_as(&*state.db.lock().map_err(err)?, &state.data_dir, "wipe")?.display().to_string()) } else { None };
     // "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 Drive 동기화를 먼저 끊는다. [연결 끊기 · 남기기]와 같다:
     // 이 기기의 동기화 기록 · Google 로그인 토큰 · Drive 잠금 키를 지우고 Drive 데이터는 그대로 (K19 · Q2-10)
     crate::sync::disconnect(&sync, false).await?;
@@ -2777,6 +2790,21 @@ pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::S
 mod tests {
     use crate::db::{now_ms, study_day, study_day_end_ms};
     use rusqlite::{params, Connection};
+
+    #[test]
+    fn backup_kind_by_name() {
+        // "직접 만든 백업"은 [백업 만들기]만. 자동 백업은 이름 끝 (동기화 기기 백업은 이름 앞)
+        for (name, kind) in [
+            ("neoanki-20261020-101010.zip", "manual"),
+            ("neoanki-20261020-101010-deck.zip", "deck"),
+            ("neoanki-20261020-101010-wipe.zip", "wipe"),
+            ("neoanki-20261020-101010-notetype.zip", "notetype"),
+            ("neoanki-before-sync-20261020-101010.zip", "sync"),
+            ("neoanki-before-restore-20261020-101010.zip", "restore"),
+        ] {
+            assert_eq!(super::backup_kind(name), kind, "{name}");
+        }
+    }
 
     /// 덱 하나에 기본 카드 n장 (하루 신규 상한 limit). 카드 id
     fn deck_with_cards(con: &Connection, n: usize, limit: Option<i64>) -> Vec<i64> {

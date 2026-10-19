@@ -11,7 +11,7 @@ $repo = "C:\path\to\Neo-Anki-worktree"   # 합친 브랜치의 worktree (메인 
 
 - `--target` 로 CARGO_TARGET_DIR 를 고른다 (기본 `%TEMP%\na-qr-target`). `CARGO_BUILD_JOBS` 는 없으면 4.
 - `--work` 폴더는 **비우고** 시작한다. 결과: `report.md` (판정표), `checks_*.json` (판정 · 근거), `du_summary.json` · `rt_update_summary.json` (덱 업데이트 요약 원문), 만든 패키지 `v1_*.apkg` · `v2_modern.apkg` · `neo_export.apkg` · `anki_rt.apkg`, Neo 스크래치 DB `neo_*\`.
-- FAIL 이 하나라도 있으면 종료 코드 1. `NEXT` = 이 브랜치에 아직 없는 기능 (C 작업: 특수 필드 · `text:` · `hint:` · 덱 업데이트 2단계). C 를 합친 뒤 돌리면 특수 필드 탐침은 맞으면 저절로 PASS 가 된다.
+- FAIL 이 하나라도 있으면 종료 코드 1. 판정은 PASS · FAIL · INFO(설계상 다른 것, 판정 없음) 셋이다.
 - 단계만 따로: `make` · `anki` · `report` (`--work` 만), Rust 단계는 `cargo test --lib qa_real_anki::phase1 -- --ignored --exact --nocapture` (`NA_QR_WORK` 필요).
 
 ## venv
@@ -29,8 +29,8 @@ $repo = "C:\path\to\Neo-Anki-worktree"   # 합친 브랜치의 worktree (메인 
 | phase2 | Rust | `anki_rt.apkg` 를 같은 시작점 두 벌에: 새 노트만 더하기(기록 옮기기, I79) · 업데이트로 가져오기 |
 | report | | `report.md` |
 
-## C 를 합친 뒤
+## 고칠 때
 
-- 렌더는 `qa_real_anki.rs` 의 `neo_render` 한 곳만 부른다. `render_fields` 의 모양이 바뀌면 거기만 고친다.
+- 렌더는 `qa_real_anki.rs` 의 `neo_render` 한 곳만 부른다 (`render_fields_with` + `render::special_fields`, 학습 화면 card_view 와 같다). 모양이 바뀌면 거기만 고친다.
 - 특수 필드 탐침(`qa-tags` … `qa-text`)은 Anki 값과 같으면 PASS. 힌트는 값이 있고 · 처음엔 숨겨지고 · 눌러 여는 것이 있으면 같다고 본다 (문구 · id 는 달라도 된다).
-- 덱 업데이트 2단계(필드별 고르기 · 원본 보기 · 업데이트 되돌리기)는 명령이 생기면 phase1 에 검사를 더하고 `report()` 의 `DU-p2-*` 자리 줄을 지운다. `RT-native` 는 내보낼 때 기준(origin)이 생기면 PASS 가 되어야 한다.
+- 덱 업데이트 2단계는 phase1 에서 본다: `DU-p2-field` (복사본에서 충돌 둘 중 한 필드만 새 버전, 적용 = 사전 검사), `DU-p2-orig` (가져온 노트의 원본 글 `"v"` = Anki v1 값, 충돌 화면의 원본, 적용 뒤 기준 = v2), `DU-p2-undo` (적용한 DB 복사본에서 새 카드 하나를 공부한 뒤 `deck_update::undo`: 이미 있던 노트 · 카드 · 기록 = 적용 전 + 그 공부, 공부한 새 카드는 남고 나머지는 보관). Anki 복습 기록을 업데이트에 합치는 것은 미뤘다 (DU56).

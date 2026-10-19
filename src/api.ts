@@ -399,7 +399,7 @@ export type AnkiPreview = {
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
 /** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
-export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" };
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" };
 
 export type UpdateHint = {
   notes: number;
@@ -720,7 +720,7 @@ export const api = {
   ttsLicense: (which: "supertonic" | "onnxruntime") => invoke<string>("tts_license", { which }),
   mvpMetrics: () => invoke<MvpMetrics>("mvp_metrics"),
   /** kind "notetype": 노트 유형 저장 전 자동 백업 (목록에 그 이름으로). 없으면 직접 만든 백업 */
-  createBackup: (kind?: "notetype") => invoke<string>("create_backup", { kind: kind ?? null }),
+  createBackup: (kind?: "notetype" | "deck") => invoke<string>("create_backup", { kind: kind ?? null }),
   retryOpen: () => invoke<void>("retry_open"),
   /** 가장 최근 백업으로 되돌린다. 쓴 백업 파일 이름을 돌려준다 */
   /** name 이 없으면 가장 최근 백업. backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */

@@ -3,7 +3,7 @@
 //! 앱 함수를 그대로 쓴다: 가져오기 `run_import_anki`, 덱 업데이트 `deck_update::run · apply`, 내 편집 `save_note_fields` ·
 //! `notetype::save_css`, 평가 `answer_for_qa`(= answer_at), 내보내기 `export_for_qa`(= export).
 //! 판정은 <work>/checks_rust1.json · checks_rust2.json, Anki 와 비교할 Neo 상태는 neo_*.json (비교는 real_anki.py).
-//! 렌더는 `neo_render` 한 곳 (C 의 특수 필드 작업으로 render_fields 모양이 바뀌면 여기만 고친다).
+//! 렌더는 `neo_render` 한 곳 (render_fields 모양이 바뀌면 여기만 고친다).
 
 use crate::commands::{self, AppState};
 use crate::db::{self, now_ms, study_day};
@@ -39,13 +39,6 @@ impl Checks {
     fn add(&mut self, id: &str, area: &str, name: &str, ok: bool, ev: impl std::fmt::Display) {
         println!("[{}] {id} {name}: {ev}", if ok { "PASS" } else { "FAIL" });
         self.0.push(json!({ "id": id, "area": area, "name": name, "status": if ok { "PASS" } else { "FAIL" }, "evidence": ev.to_string() }));
-    }
-    /// 이 브랜치에 아직 없는 기능 (C 작업). 통과하면 PASS, 아니면 '다음 회차'
-    fn next(&mut self, id: &str, area: &str, name: &str, ok: bool, ev: impl std::fmt::Display) {
-        self.add(id, area, name, ok, ev);
-        if !ok {
-            self.0.last_mut().unwrap()["status"] = json!("NEXT");
-        }
     }
     fn save(&self, phase: &str) {
         write(&work().join(format!("checks_{phase}.json")), &Value::Array(self.0.clone()));
@@ -290,6 +283,18 @@ fn type_change<'a>(u: &'a Value, name: &str) -> &'a Value {
     u["types"].as_array().and_then(|a| a.iter().find(|t| t["name"] == name)).unwrap_or(&Value::Null)
 }
 
+/// 노트 원본 글 (note.origin 의 "v", DU53) 을 보이는 필드 이름으로. 없으면 None
+fn origin_values(con: &Connection, note: i64) -> HashMap<String, Option<String>> {
+    let (ntid, origin): (i64, Option<String>) = con.query_row("SELECT note_type_id, origin FROM note WHERE id = ?1", [note], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let v = origin.and_then(|o| serde_json::from_str::<Value>(&o).ok()).map(|o| o["v"].clone()).unwrap_or(Value::Null);
+    notetype::load(con, ntid).unwrap().visible().into_iter().map(|(sl, n)| (n, v.get(sl).and_then(Value::as_str).map(String::from))).collect()
+}
+
+/// 덱 업데이트 요약의 충돌 고르기: [노트 id, [[필드, 새 버전?]…]]
+fn picks(u: &Value) -> Value {
+    json!(u["conflicts"].as_array().map(|a| a.iter().map(|c| json!([c["note_id"], c["fields"].as_array().map(|f| f.iter().map(|x| json!([x["name"], x["take_new"]])).collect::<Vec<_>>())])).collect::<Vec<_>>()))
+}
+
 fn ntid_by_name(s: &AppState, name: &str) -> i64 {
     s.db.lock().unwrap().query_row("SELECT id FROM note_type WHERE name = ?1 AND anki_model_id IS NOT NULL", [name], |r| r.get(0)).unwrap()
 }
@@ -382,6 +387,48 @@ fn phase1() {
     let (cards0, logs0, n0) = (card_rows(&du), rows(&du, "SELECT * FROM review_log ORDER BY id"), counts(&du));
     let v2 = w.join("v2_modern.apkg");
     let none = deck_update::Choices::default();
+    // 되돌리기 비교의 기준 (DU-p2-undo): 적용 전 노트 · 가장 큰 id · Basic 카드 1 앞면
+    const NOTE_ROWS: &str = "SELECT id, fields, tags, coalesce(origin, '') FROM note ORDER BY id";
+    const BASIC_Q: &str = "SELECT t.qfmt FROM card_template t JOIN note_type nt ON nt.id = t.note_type_id WHERE nt.name = 'Basic' AND nt.anki_model_id IS NOT NULL AND t.ord = 0";
+    let (notes0, max_note0, max_card0, basic_q0) = (rows(&du, NOTE_ROWS), q::<i64>(&du, "SELECT max(id) FROM note"), q::<i64>(&du, "SELECT max(id) FROM card"), q::<String>(&du, BASIC_Q));
+    let basic2_id = du.db.lock().map(|con| note_id_in(&con, &g("basic2"))).unwrap();
+
+    // DU-p2-orig: 처음 가져올 때 남긴 원본 글("v")이 자리마다 Anki v1 값과 같다 (내 편집 뒤에도 원본은 그대로)
+    let orig_bad: Vec<String> = {
+        let con = du.db.lock().unwrap();
+        let mut bad = vec![];
+        for (guid, n) in ref1["notes"].as_object().unwrap() {
+            let Ok(id) = con.query_row("SELECT id FROM note WHERE anki_guid = ?1", [guid], |r| r.get::<_, i64>(0)) else { continue }; // 내가 지운 basic4
+            let got = origin_values(&con, id);
+            for pair in n["fields"].as_array().unwrap() {
+                let (name, want) = (pair[0].as_str().unwrap(), pair[1].as_str().unwrap());
+                if got.get(name).cloned().flatten().as_deref() != Some(want) {
+                    bad.push(format!("{guid} {name}: Anki {want:?} / 원본 {:?}", got.get(name)));
+                }
+            }
+        }
+        bad
+    };
+
+    // DU-p2-field: 복사본에서 rev1 Back 도 고쳐 충돌을 둘로 (basic2 Front · rev1 Back), basic2 Front 만 새 버전으로 고른다
+    let fld = copy_state(&du, &w.join("neo_du_field"));
+    edit(&fld, &g("rev1"), "Back", "뒤1(내 수정)");
+    let first = update(&fld, &v2, &none, true);
+    let front_slot = first.as_ref().ok().and_then(|d| {
+        let c = d["conflicts"].as_array()?.iter().find(|c| c["note_id"] == basic2_id)?;
+        c["fields"].as_array()?.iter().find(|f| f["name"] == "Front")?["slot"].as_u64()
+    });
+    let by_field = deck_update::Choices { take_new_fields: front_slot.map(|sl| vec![(basic2_id, sl as usize)]).unwrap_or_default(), ..Default::default() };
+    let (fd, fa) = (update(&fld, &v2, &by_field, true), update(&fld, &v2, &by_field, false));
+    let fvals = [field(&fld, &g("basic2"), "Front"), field(&fld, &g("basic2"), "Back"), field(&fld, &g("rev1"), "Front"), field(&fld, &g("rev1"), "Back")];
+    let (fd_p, fa_p) = (fd.as_ref().map(picks).unwrap_or_default(), fa.as_ref().map(picks).unwrap_or_default());
+    ck.add(
+        "DU-p2-field",
+        A2,
+        "필드별 고르기: 충돌 둘(basic2 Front · rev1 Back) 중 basic2 Front 만 새 버전 → 그 필드만 바뀌고 rev1 Back 은 내 것, 합친 rev1 Front 그대로, 적용 결과의 고르기 = 사전 검사",
+        front_slot.is_some() && fa.is_ok() && fa_p == fd_p && fa_p.as_array().is_some_and(|a| a.len() == 2) && fvals == ["바나나 🍌", "banana", "앞1(내 수정)", "뒤1(내 수정)"],
+        format!("Front 자리 {front_slot:?} · 값 (basic2 Front, Back, rev1 Front, Back) {fvals:?} · 고르기 사전 {fd_p} / 적용 {fa_p} · 적용 오류 {:?}", fa.err()),
+    );
     let dry = update(&du, &v2, &none, true);
     let take = deck_update::Choices { take_new: vec![du.db.lock().map(|con| note_id_in(&con, &g("basic2"))).unwrap()], new_looks: vec![], ..Default::default() };
     let dry_take = update(&du, &v2, &take, true);
@@ -401,6 +448,70 @@ fn phase1() {
         }
     };
     std::fs::write(w.join("du_summary.json"), serde_json::to_string_pretty(&u).unwrap()).unwrap();
+    let base_shown = dry["conflicts"].as_array().and_then(|a| a.iter().find(|c| c["note_id"] == basic2_id)).and_then(|c| c["fields"].as_array()?.iter().find(|f| f["name"] == "Front")).map(|f| f["base"].clone());
+    let after: Vec<Option<String>> = {
+        let con = du.db.lock().unwrap();
+        let (o1, o2) = (origin_values(&con, note_id_in(&con, &g("basic1"))), origin_values(&con, basic2_id));
+        vec![o1.get("Back").cloned().flatten(), o2.get("Front").cloned().flatten()]
+    };
+    ck.add(
+        "DU-p2-orig",
+        A2,
+        "원본 값(\"v\"): 가져온 노트마다 Anki v1 값과 같고, 충돌 화면의 원본 = v1 (basic2 Front \"바나나\"), 적용 뒤 기준은 v2 값 (basic1 Back · basic2 Front)",
+        orig_bad.is_empty() && base_shown == Some(json!("바나나")) && after == [Some("apple (fruit)".to_string()), Some("바나나 🍌".to_string())],
+        format!("v1 과 다른 자리 {orig_bad:?} · 충돌 화면 원본 {base_shown:?} · 적용 뒤 원본 (basic1 Back, basic2 Front) {after:?}"),
+    );
+
+    // DU-p2-undo: 적용한 DB 의 복사본에서 새 노트(basic_new) 카드를 공부한 뒤 이 업데이트 되돌리기 (사용자 결정 2026-10-19 ①)
+    let un = copy_state(&du, &w.join("neo_du_undo"));
+    let new_guid = guid_of(&read(&w.join("ref_v2.json"))["roles"], "basic_new");
+    let studied: i64 = q(&un, &format!("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = '{}' ORDER BY c.id LIMIT 1", new_guid.replace('\'', "''")));
+    {
+        let mut con = un.db.lock().unwrap();
+        let now = now_ms() + 5000;
+        con.execute("INSERT INTO study_session (started_at, study_day) VALUES (?1, ?2)", params![now, db::date_from_day(study_day(now))]).unwrap();
+        let sid = con.last_insert_rowid();
+        commands::answer_for_qa(&mut con, &un.fsrs, sid, studied, 3, now).unwrap();
+    }
+    let logs_studied = rows(&un, "SELECT * FROM review_log ORDER BY id");
+    let undone = u["batch"].as_i64().ok_or("batch 없음".to_string()).and_then(|b| deck_update::undo(&mut un.db.lock().unwrap(), b, false)).map(|r| serde_json::to_value(&r).unwrap());
+    let notes_back = rows(&un, &format!("SELECT id, fields, tags, coalesce(origin, '') FROM note WHERE id <= {max_note0} ORDER BY id"));
+    let cards_moved = changed_cards(&cards0, &card_rows(&un));
+    let logs_back = rows(&un, "SELECT * FROM review_log ORDER BY id");
+    let kept: (String, i64, String) =
+        un.db.lock().unwrap().query_row("SELECT c.state, c.reps, n.tags FROM card c JOIN note n ON n.id = c.note_id WHERE c.id = ?1", [studied], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    let not_archived: Vec<String> = rows(&un, &format!("SELECT id, state FROM card WHERE id > {max_card0} AND id <> {studied} AND state <> 'suspended'"));
+    let new_cards: i64 = q(&un, &format!("SELECT count(*) FROM card WHERE id > {max_card0} AND id <> {studied}"));
+    let tagged = rows(&un, &format!("SELECT anki_guid FROM note WHERE id > {max_note0} AND (' ' || tags || ' ') LIKE '% {} %'", deck_update::ARCHIVE_TAG));
+    let basic_q1: String = q(&un, BASIC_Q);
+    ck.add(
+        "DU-p2-undo",
+        A2,
+        "이 업데이트 되돌리기: 이미 있던 노트(값 · 태그 · 원본) · 카드 일정이 적용 전과 같고, 기록은 그대로 + 그 뒤 공부 1건, 공부한 새 카드(basic_new)는 남고 나머지 새 카드는 학습 중지 · 공부 안 한 새 노트는 태그, 카드 모양(Basic 앞면)도 돌아간다",
+        undone.is_ok()
+            && notes_back == notes0
+            && cards_moved.is_empty()
+            && logs_back == logs_studied
+            && logs_studied.len() == logs0.len() + 1
+            && logs_studied[..logs0.len()] == logs0[..]
+            && kept.0 != "new"
+            && kept.0 != "suspended"
+            && kept.1 > 0
+            && !kept.2.contains(deck_update::ARCHIVE_TAG)
+            && not_archived.is_empty()
+            && new_cards > 0
+            && !tagged.is_empty()
+            && !tagged.contains(&new_guid)
+            && basic_q1 == basic_q0,
+        format!(
+            "요약 {:?} · 노트 같음={} · 바뀐 카드 {cards_moved:?} · 기록 전 {} → 공부 뒤 {} → 되돌린 뒤 {} · 공부한 새 카드 {kept:?} · 보관 안 된 새 카드 {not_archived:?} (새 카드 {new_cards}장) · 태그 붙은 새 노트 {tagged:?} · Basic 앞면 {basic_q1:?} (전 {basic_q0:?})",
+            undone.as_ref().map(|r| json!({"reverted_notes": r["reverted_notes"], "reverted_types": r["reverted_types"], "archived_notes": r["archived_notes"], "archived_cards": r["archived_cards"], "kept_cards": r["kept_cards"], "edited_notes": r["edited_notes"]})),
+            notes_back == notes0,
+            logs0.len(),
+            logs_studied.len(),
+            logs_back.len()
+        ),
+    );
     let b = brief(&u);
     ck.add("DU0", A2, "apply_update 가 자동 백업 뒤 적용한다", u["backup"].as_str().is_some_and(|p| Path::new(p).exists()), format!("backup={}", u["backup"]));
     ck.add("DU20", A2, "사전 검사(dry) 요약 = 적용 결과 (DU20)", brief(&dry) == b, format!("dry={} apply={b}", brief(&dry)));
@@ -620,7 +731,7 @@ fn phase2() {
     // 앱에서 만든 노트를 Anki 에서 고쳐 돌아왔다: 기준(내보낼 때 origin) · 노트 유형 연결이 있으면 새 버전으로 들어와야 한다 (deck-update.md 8장 미룬 것, C 2단계)
     let nv: Vec<(String, String)> = s.db.lock().map(|con| named_fields(&con, native)).unwrap();
     let in_conflict = u["conflicts"].as_array().is_some_and(|c| c.iter().any(|c| c["note_id"] == native));
-    ck.next(
+    ck.add(
         "RT-native",
         A4,
         "앱에서 만든 노트를 Anki 에서 고쳐 업데이트로 가져오면 묻지 않고 새 버전으로 들어온다 (내보낼 때 기준, deck-update.md 8장 미룬 것)",

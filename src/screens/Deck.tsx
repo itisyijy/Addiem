@@ -1069,7 +1069,7 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
     if (!ok || busy) return;
     setBusy(true);
     try {
-      if (backup) await api.createBackup();
+      if (backup) await api.createBackup("deck");
       await api.deleteDeck(id);
       onDone();
     } catch (e) {
