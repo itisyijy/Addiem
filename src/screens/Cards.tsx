@@ -93,11 +93,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
     );
   }, [deckId]);
   useEffect(loadDeck, [loadDeck]);
-  // G1 진입 칩 "고칠 만한 카드 N" (숨긴 카드는 빼고 센다)
+  // G1 진입 칩 "고칠 만한 카드 N" (숨긴 카드는 빼고 센다). 편집 · 목록에서 바꾼 뒤에도 다시 센다
   const [fixable, setFixable] = useState(0);
-  useEffect(() => {
+  const loadFixable = useCallback(() => {
     if (deckId !== null && !buriedOnly) qualityApi.check(deckId).then((c) => setFixable(c.filter((x) => !x.hidden).length), () => {});
   }, [deckId, buriedOnly]);
+  useEffect(loadFixable, [loadFixable]);
 
   const load = useCallback(
     () => api.listCards(scope, query, limit, buriedOnly, only, weak).then(setList, (e) => setError(errorText(e))),
@@ -181,6 +182,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
     try {
       await work;
       setError(undefined);
+      loadFixable();
       await load();
     } catch (e) {
       setError(errorText(e));
@@ -804,11 +806,13 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
+            loadFixable();
             load();
           }}
           onDeleted={() => {
             setEditing(null);
             toast({ title: "카드를 지웠어요" });
+            loadFixable();
             load();
           }}
         />
