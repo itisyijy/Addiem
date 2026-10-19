@@ -1,6 +1,6 @@
 // NT2 쉬운 편집 · NT3 HTML (쉬운 편집 잠김) · NT4 앱 기본 유형 보기 · NT5 저장할 때 확인과 오류.
 // 초안을 화면에 들고 있다가 [저장]에서 한 트랜잭션으로 쓴다 (save_note_type). 먼저 dry-run 으로 확인 창의 수를 센다
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
   api, errorText,
   type Layout, type Look, type NoteTypeConflict, type NoteTypeDetail as Detail, type NoteTypeEdit as TypeEdit, type NoteTypeImpact as SaveImpact,
@@ -181,8 +181,10 @@ function useDeckOptions(): [DeckOpt[], () => void] {
 }
 
 /** NT11 넣을 덱 메뉴: 덱 찾기 · "노트를 넣는 덱"(기본) · 모든 덱(✓) · "+ 새 덱" (만들면 바로 이 카드 종류의 덱). DeckMenu 와 같은 모양 */
-function TemplateDeckMenu({ value, choices, onPick, onCreated, onClose }: {
+function TemplateDeckMenu({ value, gone, choices, onPick, onCreated, onClose }: {
   value: number | null;
+  /** 정한 덱을 지운 상태: "노트를 넣는 덱"에 ✓ 를 붙이지 않는다 (실제 값은 지운 덱) */
+  gone: boolean;
   choices: DeckOpt[];
   onPick: (id: number | null) => void;
   onCreated: (id: number) => void;
@@ -190,7 +192,22 @@ function TemplateDeckMenu({ value, choices, onPick, onCreated, onClose }: {
 }) {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
+  // 아래 공간이 모자라면 위로 (넓은 쪽), 그래도 모자라면 목록만 줄여 스크롤 (1180×640 · 800px 창)
+  const [place, setPlace] = useState<{ up: boolean; max?: number }>({ up: false });
   const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = box.current;
+    const anchor = el?.parentElement?.getBoundingClientRect();
+    const list = el?.querySelector<HTMLElement>(".deckmenu__list");
+    if (!el || !anchor || !list) return;
+    const h = el.getBoundingClientRect().height;
+    const below = window.innerHeight - anchor.bottom - 14;
+    const above = anchor.top - 14;
+    if (h <= below) return;
+    const up = above > below;
+    const room = up ? above : below;
+    setPlace({ up, max: h > room ? Math.max(96, room - (h - list.offsetHeight)) : undefined });
+  }, []);
   useOverlayScope();
   useEffect(() => {
     if (creating) return;
@@ -212,20 +229,20 @@ function TemplateDeckMenu({ value, choices, onPick, onCreated, onClose }: {
   const rows = choices.filter((c) => !q || c.label.toLowerCase().includes(q));
   return (
     <>
-      <div ref={box} className="deckmenu nte__deckmenu" role="dialog" aria-label="넣을 덱 고르기" hidden={creating} onKeyDown={(e) => e.stopPropagation()}>
+      <div ref={box} className={`deckmenu nte__deckmenu ${place.up ? "is-up" : ""}`} role="dialog" aria-label="넣을 덱 고르기" hidden={creating} onKeyDown={(e) => e.stopPropagation()}>
         <label className="deckmenu__search">
           <Icon name="search" size={14} className="c-tertiary" />
           <input className="t-body-s" placeholder="덱 찾기" value={query} autoFocus onChange={(e) => setQuery(e.target.value)} />
         </label>
-        <div className="deckmenu__list" role="listbox">
+        <div className="deckmenu__list" role="listbox" style={place.max ? { maxHeight: place.max } : undefined}>
           {!q && (
-            <button type="button" role="option" aria-selected={value === null} className="deckmenu__row" onClick={() => onPick(null)}>
+            <button type="button" role="option" aria-selected={value === null && !gone} className="deckmenu__row" onClick={() => onPick(null)}>
               <Icon name="layers" size={16} className="c-tertiary" />
               <span className="deckmenu__text">
                 <span className="t-body-m">노트를 넣는 덱</span>
                 <span className="t-caption c-tertiary">기본 · 카드를 추가할 때 고른 덱</span>
               </span>
-              {value === null && <Icon name="check" size={16} className="c-accent" />}
+              {value === null && !gone && <Icon name="check" size={16} className="c-accent" />}
             </button>
           )}
           {rows.map((c) => (
@@ -857,6 +874,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
           {deckMenu && (
             <TemplateDeckMenu
               value={cur.deck}
+              gone={cur.deck === null && !!cur.gone}
               choices={deckOptions}
               onPick={(id) => {
                 setTpl(cur.key, { deck: id, gone: null });
