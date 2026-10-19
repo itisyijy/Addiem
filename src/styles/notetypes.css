@@ -191,3 +191,19 @@
 .card-html details.hint > summary::before { content: "› 힌트 보기 · "; }
 .card-html details.hint[open] > summary::before { content: "⌄ 힌트 · "; }
 .card-html details.hint[open] > summary { margin-bottom: 4px; }
+/* NT9 다른 유형으로 옮기기 (Figma 271:18979): 옮길 유형 · 필드 대응 · 카드 종류 대응 · 잃는 것 주황 상자 */
+.modal.ntm { gap: 14px; width: 640px; }
+.ntm__type { display: grid; grid-template-columns: 96px minmax(0, 260px); align-items: center; gap: 12px; }
+.ntm__box { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 16px; background: var(--bg-subtle); }
+.ntm__head { display: flex; align-items: baseline; gap: 8px; }
+.ntm__row { display: grid; grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1.3fr); align-items: center; gap: 12px; }
+.ntm__row > .t-body-m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ntm__select { position: relative; display: flex; align-items: center; min-width: 0; height: 40px; padding: 0 12px 0 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-surface); }
+.ntm__select:focus-within { border: 2px solid var(--accent-default); padding: 0 11px 0 13px; }
+.ntm__select.is-none { border-color: var(--status-warn-fg); background: var(--status-warn-bg); }
+.ntm__select select { flex: 1; min-width: 0; appearance: none; border: 0; outline: none; background: none; color: var(--text-primary); cursor: pointer; }
+.ntm__lines { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 12px 16px; border-radius: 14px; background: var(--bg-subtle); list-style: none; }
+.ntm__lines.is-warn { background: var(--status-warn-bg); }
+.ntm__lines li { display: flex; align-items: flex-start; gap: 8px; }
+.ntm__lines li > .icon { flex-shrink: 0; margin-top: 2px; }
+.ntm__backup { display: flex; align-items: center; gap: 6px; }

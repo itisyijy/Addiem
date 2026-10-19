@@ -147,6 +147,7 @@ pub fn run() {
             notetype::delete_note_type, notetype::add_note_field, notetype::rename_note_field, notetype::reorder_note_fields,
             notetype::delete_note_field, notetype::add_card_template, notetype::delete_card_template, notetype::save_card_template,
             notetype::save_note_type_css, notetype::note_type_empty_fronts, notetype::preview_template, notetype::add_typed_note,
+            notetype::change_type_plan, notetype::change_note_type,
             notetype::template_layout, notetype::build_template_layout, notetype::suggest_card_kind,
             notetype::note_type_samples, notetype::save_note_type, notetype::rename_field_refs,
             // 8.4 기출 이력

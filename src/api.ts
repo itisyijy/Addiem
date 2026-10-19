@@ -246,6 +246,21 @@ export type NoteTypeRow = {
   made_here: boolean;
   made_by: string | null;
 };
+/** NT9 다른 유형으로 옮기기. fields: [원래 자리, 새 자리 | null], cards: [원래 ord, 새 ord | null] (null = 옮기지 않음 · 없앰) */
+export type ChangeTypeReq = { note_ids: number[]; to: number; fields: [number, number | null][]; cards: [number, number | null][] };
+export type ChangePlan = { from: number; to: number; notes: number; cards: number; card_ords: [number, number][]; fields: [number, number | null][]; card_map: [number, number | null][] };
+/** removed: [원래 ord, 카드 수, 기록 수] · lost: [필드 이름, 노트 수] · kept: [원래 ord, 새 ord, 카드 수] */
+export type ChangeImpact = {
+  notes: number;
+  cards: number;
+  removed: [number, number, number][];
+  lost: [string, number][];
+  kept: [number, number, number][];
+  unclozed: number;
+  made: number;
+  empty_fronts: number;
+  removed_notes: number;
+};
 /** K39 두 기기에서 고쳐 진 쪽 정의 (편집기 안내) */
 export type NoteTypeConflict = { what: string; at: number; winner: string; winner_device: string; loser: string; loser_device: string; seen: boolean };
 /** note_type_detail. fields 는 보이는 순서 (add_typed_note 의 values 순서) */
@@ -677,6 +692,10 @@ export const api = {
   deleteNoteType: (id: number) => invoke<void>("delete_note_type", { id }),
   /** first: 먼저 보일 노트 (E 에서 연 카드의 노트) */
   noteTypeSamples: (id: number, first?: number) => invoke<NoteTypeSample[]>("note_type_samples", { id, first }),
+    /** NT9 다른 유형으로 옮기기: 기본 대응 (to 가 null 이면 처음 보일 유형) */
+  changeTypePlan: (noteIds: number[], to: number | null) => invoke<ChangePlan>("change_type_plan", { noteIds, to }),
+  /** dryRun 이면 확인 창의 수만 (쓰지 않는다). 적용은 옮기기 전 백업 → 한 트랜잭션 */
+  changeNoteType: (req: ChangeTypeReq, dryRun: boolean) => invoke<ChangeImpact>("change_note_type", { req, dryRun }),
   /** HTML 전용이면 이유 문자열로 거부한다 ("뒷면에 조건문 {{#예문}}") */
   templateLayout: (qfmt: string, afmt: string) => invoke<Layout>("template_layout", { qfmt, afmt }),
   buildTemplateLayout: (layout: Layout) => invoke<{ qfmt: string; afmt: string }>("build_template_layout", { layout }),
