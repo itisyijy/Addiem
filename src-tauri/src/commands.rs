@@ -1158,7 +1158,27 @@ fn sound_only_hits(con: &Connection, query: &str, like: &str) -> Res<Vec<i64>> {
     Ok(out)
 }
 
-/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). buried_only 는 A2-b "접어둔 카드 보기"
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// 검색 글자에서 "tag:이름" 낱말을 뺀다 (태그, 나머지 글자). 태그 낱말이 없으면 글자는 입력 그대로 (띄어쓰기도)
+fn tag_terms(query: &str) -> (Vec<String>, String) {
+    let is_tag = |w: &str| w.len() > 4 && w.is_char_boundary(4) && w[..4].eq_ignore_ascii_case("tag:");
+    if !query.split_whitespace().any(is_tag) {
+        return (vec![], query.to_string());
+    }
+    let (tags, rest): (Vec<&str>, Vec<&str>) = query.split_whitespace().partition(|w| is_tag(w));
+    (tags.into_iter().map(|t| t[4..].to_string()).collect(), rest.join(" "))
+}
+
+/// 그 태그나 그 아래 태그(이름::…)가 있는 노트. 대소문자는 가리지 않는다 (Anki tag: 와 같다)
+fn tag_filter(tag: &str) -> String {
+    let t = like_escape(&tag.to_lowercase()).replace('\'', "''");
+    format!("AND ((' ' || lower(n.tags) || ' ') LIKE '% {t} %' ESCAPE '\\' OR (' ' || lower(n.tags)) LIKE '% {t}::%' ESCAPE '\\')")
+}
+
+/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기"
 #[tauri::command]
 pub fn list_cards(
     state: State<AppState>,
@@ -1185,12 +1205,15 @@ pub fn list_cards(
         ids
     };
     let ids = if ids.is_empty() { "-1".to_string() } else { ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",") };
+    // "tag:이름" 낱말은 태그로 거른다 (Q4 M2). 나머지 글자는 지금처럼 필드 원문에서 찾는다 (태그 낱말이 없으면 입력 그대로)
+    let (tags, query) = tag_terms(&query);
     // LIKE 의 와일드카드를 글자 그대로 찾게 한다
-    let q = query.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let q = like_escape(query.trim());
     let q = q.as_str();
     let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(&con, query.trim(), q)? };
     let filter = format!(
-        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {}",
+        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {} {}",
+        tags.iter().map(|t| tag_filter(t)).collect::<String>(),
         if buried_only.unwrap_or(false) { "AND c.buried_until IS NOT NULL" } else { "" },
         // C1-xr [카드 보기]: 이 카드들만
         card_ids.map_or(String::new(), |c| format!("AND c.id IN ({})", if c.is_empty() { "-1".into() } else { id_list(&c) })),
@@ -1359,6 +1382,44 @@ pub fn unbury_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     con.execute(&format!("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id IN ({})", id_list(&card_ids)), [])
         .map_err(err)?;
     Ok(())
+}
+
+/// C2 [학습 다시 하기]: 학습 중지를 푼다 (Q4 M2). 공부한 적 없으면 신규, 간격이 하루 이상이면 복습, 그 밖은 학습 중으로 (일정 값은 그대로).
+/// 되돌리기가 보관한 노트(deck_update::ARCHIVE_TAG)는 학습 중지 카드가 남지 않으면 그 태그도 뗀다. 푼 카드 수
+#[tauri::command]
+pub fn unsuspend_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<usize> {
+    let mut con = state.db.lock().map_err(err)?;
+    unsuspend(&mut con, &card_ids, now_ms())
+}
+
+pub(crate) fn unsuspend(con: &mut Connection, card_ids: &[i64], now: i64) -> Res<usize> {
+    if card_ids.is_empty() {
+        return Ok(0);
+    }
+    let ids = id_list(card_ids);
+    let tx = con.transaction().map_err(err)?;
+    let n = tx
+        .execute(
+            &format!(
+                "UPDATE card SET state = CASE WHEN reps = 0 AND last_reviewed_at IS NULL THEN 'new' WHEN interval_days >= 1 THEN 'review' ELSE 'learning' END,
+                        due_at = CASE WHEN reps = 0 AND last_reviewed_at IS NULL THEN due_at ELSE coalesce(due_at, ?1) END, updated_at = ?1
+                 WHERE id IN ({ids}) AND state = 'suspended'"
+            ),
+            [now],
+        )
+        .map_err(err)?;
+    let tag = crate::import::deck_update::ARCHIVE_TAG;
+    tx.execute(
+        &format!(
+            "UPDATE note SET tags = trim(replace(' ' || tags || ' ', ' ' || ?1 || ' ', ' ')), updated_at = ?2
+             WHERE id IN (SELECT note_id FROM card WHERE id IN ({ids})) AND (' ' || tags || ' ') LIKE '% ' || ?1 || ' %'
+               AND NOT EXISTS (SELECT 1 FROM card c WHERE c.note_id = note.id AND c.state = 'suspended')"
+        ),
+        params![tag, now],
+    )
+    .map_err(err)?;
+    tx.commit().map_err(err)?;
+    Ok(n)
 }
 
 /// 카드를 지운다. 노트에 남은 카드가 없으면 노트도 지운다. 복습 기록은 남는다 (review_log.card_id 가 NULL 이 된다)
@@ -2404,8 +2465,36 @@ pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag:
     let _ = std::fs::remove_file(&db_copy);
     if result.is_err() {
         let _ = std::fs::remove_file(&out);
+    } else if !tag.is_empty() {
+        prune_auto_backups(&dir, now_ms());
     }
     result.map(|_| out)
+}
+
+/// 사용자 결정 2026-10-20: 자동 백업은 가장 최근 AUTO_KEEP 개 + AUTO_DAYS 일 안에 만든 것만 남긴다
+const AUTO_KEEP: usize = 10;
+const AUTO_DAYS: i64 = 7;
+
+/// 새 자동 백업을 만들 때 오래된 자동 백업을 지운다. 지운 이름을 돌려준다.
+/// auto_backup 이 알아본 이름(앱이 만드는 꼴과 꼭 맞는 것)만 본다: 직접 만든 백업 · 사용자가 넣은 파일 · 모르는 이름은 건드리지 않는다
+pub(crate) fn prune_auto_backups(dir: &std::path::Path, now: i64) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut autos: Vec<(i64, std::path::PathBuf, String)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            auto_backup(&name).map(|(_, at)| (at, e.path(), name))
+        })
+        .collect();
+    autos.sort_by_key(|a| std::cmp::Reverse(a.0));
+    let mut gone = vec![];
+    for (i, (at, path, name)) in autos.into_iter().enumerate() {
+        if i >= AUTO_KEEP && now - at > AUTO_DAYS * db::DAY_MS && std::fs::remove_file(&path).is_ok() {
+            gone.push(name);
+        }
+    }
+    gone
 }
 
 #[tauri::command]
@@ -2642,15 +2731,27 @@ pub struct LocalBackup {
 /// 동기화 기기 백업(sync/mod.rs local_backup)은 이름 앞이 neoanki-before-sync- (sync) · neoanki-before-restore- (restore). 화면 이름은 Settings.tsx BACKUP_KIND
 const BACKUP_KINDS: [&str; 7] = ["update", "restore", "move", "undo", "notetype", "deck", "wipe"];
 
-/// 백업 zip 이름 → 종류. 어느 것도 아니면 직접 만든 백업
+/// 자동 백업이면 (종류, 만든 시각 ms). 앱이 만드는 이름과 꼴이 꼭 맞을 때만: neoanki-<YYYYmmdd-HHMMSS>-<종류>.zip (write_backup_as),
+/// neoanki-before-sync-<시각>.zip · neoanki-before-restore-<시각>.zip (sync/mod.rs local_backup). 그 밖은 None (직접 만든 백업으로 본다)
+fn auto_backup(name: &str) -> Option<(&'static str, i64)> {
+    use chrono::TimeZone;
+    let s = name.strip_prefix("neoanki-")?.strip_suffix(".zip")?;
+    let (kind, stamp) = if let Some(t) = s.strip_prefix("before-sync-") {
+        ("sync", t)
+    } else if let Some(t) = s.strip_prefix("before-restore-") {
+        ("restore", t)
+    } else {
+        let (stamp, k) = s.split_at_checked(15)?;
+        let k = k.strip_prefix('-')?;
+        (BACKUP_KINDS.into_iter().find(|x| *x == k)?, stamp)
+    };
+    let at = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d-%H%M%S").ok()?;
+    Some((kind, chrono::Local.from_local_datetime(&at).earliest()?.timestamp_millis()))
+}
+
+/// 백업 zip 이름 → 종류. 자동 백업이 아니면 직접 만든 백업
 fn backup_kind(name: &str) -> &'static str {
-    if name.starts_with("neoanki-before-sync-") {
-        return "sync";
-    }
-    if name.starts_with("neoanki-before-restore-") {
-        return "restore";
-    }
-    BACKUP_KINDS.into_iter().find(|k| name.ends_with(&format!("-{k}.zip"))).unwrap_or("manual")
+    auto_backup(name).map_or("manual", |x| x.0)
 }
 
 /// 이 기기 백업 zip 들, 최근 것부터
@@ -2792,6 +2893,48 @@ mod tests {
     use rusqlite::{params, Connection};
 
     #[test]
+    fn old_automatic_backups_are_pruned_but_never_manual_ones() {
+        // 사용자 결정 2026-10-20: 자동 백업은 최근 10개 + 7일 안의 것만. 직접 만든 백업 · 모르는 파일은 지우지 않는다
+        let dir = std::env::temp_dir().join(format!("na-prune-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = now_ms();
+        let at = |ago: i64| chrono::DateTime::from_timestamp_millis(now - ago).unwrap().with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S").to_string();
+        let day = crate::db::DAY_MS;
+        let kinds = ["update", "move", "undo", "notetype", "deck", "wipe", "restore"];
+        let mut autos = vec![];
+        for (i, days) in [1, 2].into_iter().chain(10..22).enumerate() {
+            autos.push(format!("neoanki-{}-{}.zip", at(days * day), kinds[i % kinds.len()]));
+        }
+        autos.push(format!("neoanki-before-sync-{}.zip", at(30 * day)));
+        let keep = [
+            format!("neoanki-{}.zip", at(40 * day)), // 직접 만든 백업 (오래됐어도)
+            format!("neoanki-before-restore-{}.sqlite", at(40 * day)),
+            "neoanki-old-update.zip".into(),
+            "my-update.zip".into(),
+            format!("neoanki-{}-mine.zip", at(40 * day)),
+            format!("neoanki-{}-update.zip.part", at(40 * day)),
+        ];
+        for n in autos.iter().chain(&keep) {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        // 최근 10개(1 · 2 · 10..17일) 다음은 모두 7일이 넘었다
+        assert_eq!(sorted(super::prune_auto_backups(&dir, now)), sorted(autos[10..].to_vec()));
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일은 남는다: {left:?}");
+        assert!(super::prune_auto_backups(&dir, now).is_empty(), "다시 불러도 지울 것이 없다");
+        // 7일 안의 자동 백업은 10개가 넘어도 남긴다: 오늘 12개를 더하면 7일 넘은 10..17일 것만 지운다
+        for i in 0..12 {
+            std::fs::write(dir.join(format!("neoanki-{}-update.zip", at(i * 60_000))), b"x").unwrap();
+        }
+        assert_eq!(sorted(super::prune_auto_backups(&dir, now)), sorted(autos[2..10].to_vec()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn backup_kind_by_name() {
         // "직접 만든 백업"은 [백업 만들기]만. 자동 백업은 이름 끝 (동기화 기기 백업은 이름 앞)
         for (name, kind) in [
@@ -2801,6 +2944,9 @@ mod tests {
             ("neoanki-20261020-101010-notetype.zip", "notetype"),
             ("neoanki-before-sync-20261020-101010.zip", "sync"),
             ("neoanki-before-restore-20261020-101010.zip", "restore"),
+            ("neoanki-20261020-101010-mine.zip", "manual"),
+            ("my-update.zip", "manual"),
+            ("neoanki-old-update.zip", "manual"),
         ] {
             assert_eq!(super::backup_kind(name), kind, "{name}");
         }
@@ -2816,6 +2962,28 @@ mod tests {
             super::insert_note(con, &card, "", None).unwrap();
         }
         con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn tag_search_and_unsuspend() {
+        // Q4 M2: C2 검색의 "tag:" 낱말은 태그로 (그 아래 태그도, 일부 글자는 아님), 나머지 글자는 그대로
+        assert_eq!(super::tag_terms("a  b"), (vec![], "a  b".to_string()), "태그 낱말이 없으면 입력 그대로");
+        assert_eq!(super::tag_terms("tag:X 사과 TAG:y::z"), (vec!["X".to_string(), "y::z".to_string()], "사과".to_string()));
+        let mut con = crate::db::open_in_memory().unwrap();
+        let cards = deck_with_cards(&con, 3, None);
+        for (c, tags) in cards.iter().zip(["되돌린_업데이트 과목::1장", "과목", ""]) {
+            con.execute("UPDATE note SET tags = ?2 WHERE id = (SELECT note_id FROM card WHERE id = ?1)", params![c, tags]).unwrap();
+        }
+        let hits = |t: &str| -> i64 { con.query_row(&format!("SELECT count(*) FROM note n WHERE 1 {}", super::tag_filter(t)), [], |r| r.get(0)).unwrap() };
+        assert_eq!([hits("되돌린_업데이트"), hits("과목"), hits("과"), hits("과목::1장"), hits("x' OR 1=1 --")], [1, 2, 0, 1, 0]);
+        // 학습 다시 하기: 공부한 적 없으면 신규, 간격이 하루 이상이면 복습. 보관 태그는 학습 중지 카드가 남지 않으면 뗀다
+        con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [cards[0]]).unwrap();
+        con.execute("UPDATE card SET state = 'suspended', reps = 2, interval_days = 3, last_reviewed_at = 1, due_at = 5 WHERE id = ?1", [cards[1]]).unwrap();
+        assert_eq!(super::unsuspend(&mut con, &cards, 9).unwrap(), 2);
+        let states: Vec<String> = con.prepare("SELECT state || ':' || coalesce(due_at, -1) FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(states[..2], ["new:-1".to_string(), "review:5".to_string()]);
+        let tags: String = con.query_row("SELECT tags FROM note WHERE id = (SELECT note_id FROM card WHERE id = ?1)", [cards[0]], |r| r.get(0)).unwrap();
+        assert_eq!(tags, "과목::1장");
     }
 
     /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)

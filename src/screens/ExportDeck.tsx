@@ -286,7 +286,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
           </div>
           <div className="export__note">
             <Icon name="info" size={16} className="c-tertiary" />
-            <span className="t-body-s c-secondary">이 파일을 Neo-Anki로 다시 가져오면 이미 있는 노트는 건너뛰어요. 백업은 설정 &gt; 백업을 쓰세요.</span>
+            <span className="t-body-s c-secondary">Anki에서 고친 뒤 이 파일을 Neo-Anki로 다시 가져오면 덱 업데이트로 알아봐요 · 고친 노트만 바뀌고 이 기기의 복습 기록과 일정은 그대로예요. 백업은 설정 &gt; 백업을 쓰세요.</span>
           </div>
           {info.recall_cards > 0 && (
             <div className="export__note">

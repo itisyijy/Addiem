@@ -348,7 +348,8 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
         } else {
             let map: HashMap<String, String> = names.into_iter().zip(fields.iter().cloned()).filter(|(k, _)| !k.is_empty()).collect();
             let shown = render_card(&q, &a.unwrap_or_default(), &map, ord as u32);
-            (shown.front, crate::commands::answer_part(&shown.back).to_string())
+            // 힌트 상자({{hint:}})는 칸 글자에 이름 · 내용이 섞이므로 뺀다 (카드 목록과 같다, Q4 L6)
+            (crate::render::drop_hints(&shown.front), crate::render::drop_hints(crate::commands::answer_part(&shown.back)))
         };
         let text = |s: String| if plain_text { strip_tags(&s) } else { s };
         let level: Option<i64> = r.get(6).map_err(err)?;
@@ -2077,6 +2078,9 @@ mod tests {
         let r = update(&a, &back, true);
         assert_eq!((r.changed, r.mine_kept, r.conflicts.len(), r.same, r.no_base, r.other_type, r.new_notes), (1, 1, 1, 1, 0, 0, 0));
         assert!(r.types.is_empty(), "앱 기본 유형은 바뀌는 것이 없다");
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["hint"]["known_decks"], serde_json::json!(["내 덱"]), "같은 Anki 덱 id 가 없어도 이미 있는 노트의 덱 이름 (Q4 L4)");
+        assert_eq!((v["conflicts"][0]["native_kind"].as_str(), v["conflicts"][0]["fields"][0]["name"].as_str()), (Some("basic"), Some("Back")), "화면이 칸 이름(답변)으로 바꾼다");
         update(&a, &back, false);
         let con = a.db.lock().unwrap();
         let backs = strings(&con, "SELECT json_extract(fields, '$[1]') FROM note ORDER BY id");

@@ -104,12 +104,13 @@ function Screen({ route }: { route: Route }) {
     case "cards":
       return (
         <Cards
-          key={`${route.deckId}-${route.buriedOnly}-${route.cardIds}-${route.weakOnly}`}
+          key={`${route.deckId}-${route.buriedOnly}-${route.cardIds}-${route.weakOnly}-${route.query ?? ""}`}
           deckId={route.deckId}
           buriedOnly={route.buriedOnly}
           cardIds={route.cardIds}
           weakOnly={route.weakOnly}
           edit={route.edit}
+          query={route.query}
         />
       );
     case "import":

@@ -203,3 +203,9 @@
 /* NT9 카드 목록 선택 바 [⋯] 메뉴: "다른 유형으로 옮기기" 한 줄 */
 .menu__list.cards__bar-more { width: max-content; }
 .cards__bar-more .menu__text > .t-body-m { white-space: nowrap; }
+/* 미리보기 머리 줄: 노트 이름이 길어도 1180 창에서 넘치지 않게 고르기 단추가 줄고 말줄임 (Q4 L2) */
+.nte__panel-head > .menu { display: flex; flex: 0 1 auto; min-width: 0; }
+.nte__panel-head .nte__pill { min-width: 0; }
+.nte__panel-head .nte__pill-text { min-width: 0; }
+/* NT9 옮기기 창: 낮은 창(1180×640)에서 첫 화면에 버튼이 잘리지 않게 창 아래에 붙인다 (Q4 L6) */
+.modal.ntm > .modal__actions { position: sticky; bottom: -28px; z-index: 1; margin: 0 -32px -28px; padding: 14px 32px 28px; border-top: 1px solid var(--border-default); background: var(--bg-surface); }
