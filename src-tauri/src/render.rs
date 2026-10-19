@@ -14,11 +14,12 @@ pub struct Rendered {
 }
 
 /// Anki 특수 필드 {{Tags}} {{Deck}} {{Subdeck}} {{Type}} {{Card}} {{CardFlag}} 의 값. 필드 맵에 넣어(같은 이름 필드보다 이긴다, Anki 와 같다) 그린다.
-/// 학습 화면(card_view) · 노트 유형 미리보기만 넣는다: 다른 곳(목록 · 품질 · 서술형)은 지금처럼 빈 값. 깃발은 앱에 없어 늘 빈 값 (Anki 의 깃발 없는 카드)
+/// 학습 화면(card_view) · 노트 유형 미리보기만 넣는다: 다른 곳(목록 · 품질 · 서술형)은 지금처럼 빈 값. 깃발은 앱에 없어 늘 빈 값 (Anki 의 깃발 없는 카드).
+/// 보이는 모양은 디자인 NT10: 태그는 " · " 로 잇고 덱은 하위 덱까지 " › " 경로 (Anki 는 공백 · "A::B")
 pub fn special_fields(tags: &str, deck_path: &[String], type_name: &str, card_name: &str) -> [(String, String); 6] {
     [
-        ("Tags".into(), crate::occlusion::escape(tags.trim())),
-        ("Deck".into(), crate::occlusion::escape(&deck_path.join("::"))),
+        ("Tags".into(), crate::occlusion::escape(&tags.split_whitespace().collect::<Vec<_>>().join(" · "))),
+        ("Deck".into(), crate::occlusion::escape(&deck_path.join(" › "))),
         ("Subdeck".into(), crate::occlusion::escape(deck_path.last().map_or("", String::as_str))),
         ("Type".into(), crate::occlusion::escape(type_name)),
         ("Card".into(), crate::occlusion::escape(card_name)),
@@ -146,9 +147,10 @@ fn tag_value(tag: &str, fields: &HashMap<String, String>, ord: u32, is_back: boo
             };
             // text: 서식을 뺀 글자 (Anki 와 같다). 푼 글자는 다시 이스케이프해 "&lt;b&gt;" 가 태그가 되지 않게
             let value = if has("text") { crate::occlusion::escape(&strip_tags(&value)) } else { value };
-            // hint: Anki 는 스크립트 링크, 여기는 스크립트 없는 네이티브 펼치기 (cardHtml.ts 살균이 details · summary 를 받는다). 이름은 필드 이름, 빈 값이면 없음
+            // hint: Anki 는 스크립트 링크, 여기는 스크립트 없는 네이티브 펼치기 (cardHtml.ts 살균이 details · summary · open 을 받는다).
+            // 이름은 필드 이름 ("힌트 보기 · " 는 CSS, 디자인 NT10), 답 면은 펼친 채, 빈 값이면 없음
             let value = if has("hint") && !value.trim().is_empty() {
-                format!("<details class=\"hint\"><summary>{}</summary>{value}</details>", crate::occlusion::escape(field.trim()))
+                format!("<details class=\"hint\"{}><summary>{}</summary>{value}</details>", if is_back { " open" } else { "" }, crate::occlusion::escape(field.trim()))
             } else if has("hint") {
                 String::new()
             } else {
@@ -424,6 +426,7 @@ mod tests {
         assert_eq!(h.front, "Q<details class=\"hint\"><summary>Extra</summary><i>메모</i></details>");
         assert_eq!(render_card("{{hint:Extra}}", "", &f(&[("Extra", " ")]), 0).front, "");
         assert_eq!(render_card("{{hint:text:Extra}}", "", &f(&[("Extra", "<b>a</b>")]), 0).front, "<details class=\"hint\"><summary>Extra</summary>a</details>");
+        assert_eq!(render_card("", "{{hint:Extra}}", &f(&[("Extra", "a")]), 0).back, "<details class=\"hint\" open><summary>Extra</summary>a</details>", "답 면은 펼친 채");
         assert_eq!(strip_tags(&h.front), "Q Extra 메모");
         assert_eq!(render_card("{{Front", "", &f(&[]), 0).front, "{{Front", "닫히지 않은 태그는 그대로 둔다");
         // type-in: 앞면은 비우고 뒷면은 정답 (J1)

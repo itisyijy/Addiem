@@ -18,7 +18,7 @@ const ALLOWED_TAGS = [
 export function sanitize(html: string): string {
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
-    ALLOWED_ATTR: ["src", "alt", "class", "style", "color", "colspan", "rowspan", "data-media", "data-c", "data-hint", "data-snd", "data-tts", "data-text", "data-speed"],
+    ALLOWED_ATTR: ["src", "alt", "class", "style", "color", "colspan", "rowspan", "data-media", "data-c", "data-hint", "data-snd", "data-tts", "data-text", "data-speed", "open"],
     ALLOWED_URI_REGEXP: /^(?:data:image\/[a-z+.-]+;base64,|[^:/?#\\]+$)/i,
   });
 }

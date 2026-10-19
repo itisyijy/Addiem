@@ -258,6 +258,8 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   layout_css: string;
   /** 정의의 지문. 저장할 때 넘기면 그 사이 (동기화로) 바뀐 유형은 저장하지 않는다 */
   version: string;
+  /** 숨긴 필드 (NT74 되살리기). name: 기본 이름 (가져온 유형의 Anki 이름), null 이면 묻는다. notes: 그 자리에 내용이 든 노트 */
+  hidden: { slot: number; name: string | null; notes: number }[];
 };
 /** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽). 쉬운 편집이 쓰는 줄은 늘 상자 (NT41) */
 export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };

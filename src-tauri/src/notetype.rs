@@ -675,6 +675,47 @@ pub(crate) fn delete_field(con: &Connection, id: i64, slot: usize) -> Res<()> {
     save_slots(con, &nt)
 }
 
+/// 숨긴 자리를 되살린다: 이름만 다시 붙인다 (값은 노트에 그대로, 자리 id 도 그대로라 동기화는 이름 바꾸기와 같다).
+/// 보이는 순서는 field_order 에 남은 옛 자리, 없으면 끝 (visible)
+pub(crate) fn restore_field(con: &Connection, id: i64, slot: usize, name: &str) -> Res<()> {
+    let mut nt = load(con, id)?;
+    nt.editable()?;
+    if nt.slots.get(slot).is_none_or(|n| !n.is_empty()) {
+        return Err("되살릴 필드를 찾을 수 없어요.".into());
+    }
+    nt.slots[slot] = field_name(&nt, name, None)?;
+    save_slots(con, &nt)
+}
+
+/// 숨긴 필드 하나 (편집기 "숨긴 필드" · 되살리기)
+#[derive(Serialize, Debug, PartialEq)]
+pub struct HiddenSlot {
+    slot: usize,
+    /// 되살릴 때의 기본 이름: 가져온 유형은 원본의 Anki 이름 (note_type.origin.f). 없거나 겹치면 None = 화면이 묻는다
+    name: Option<String>,
+    /// 그 자리에 내용이 있는 노트
+    notes: i64,
+}
+
+pub(crate) fn hidden_slots(con: &Connection, nt: &Nt) -> Res<Vec<HiddenSlot>> {
+    let slots: Vec<usize> = (0..nt.slots.len()).filter(|s| nt.slots[*s].is_empty()).collect();
+    if slots.is_empty() || nt.native_kind.is_some() {
+        return Ok(vec![]);
+    }
+    let origin: Option<String> = con.query_row("SELECT origin FROM note_type WHERE id = ?1", [nt.id], |r| r.get(0)).map_err(err)?;
+    let anki: Vec<(String, Option<usize>)> =
+        origin.and_then(|o| serde_json::from_str::<serde_json::Value>(&o).ok()).and_then(|v| serde_json::from_value(v["f"].clone()).ok()).unwrap_or_default();
+    let notes = notes_of(con, nt.id)?;
+    Ok(slots
+        .into_iter()
+        .map(|slot| HiddenSlot {
+            slot,
+            name: anki.iter().find(|(_, s)| *s == Some(slot)).map(|(n, _)| n.clone()).filter(|n| field_name(nt, n, None).is_ok()),
+            notes: notes.iter().filter(|(_, v)| v.get(slot).is_some_and(|x| !blank_field(x))).count() as i64,
+        })
+        .collect())
+}
+
 #[derive(Serialize, Debug, PartialEq)]
 pub struct TemplateAdded {
     pub(crate) ord: u32,
@@ -995,7 +1036,8 @@ pub(crate) fn apply_edit(con: &Connection, id: i64, edit: &TypeEdit) -> Res<Save
         if let Some(s) = f.slot
             && nt.slots.get(s).is_some_and(|n| n != f.name.trim())
         {
-            rename_field(con, id, s, &f.name)?;
+            // 숨긴 자리를 초안에 다시 넣었으면 되살리기 (NT74)
+            if nt.slots[s].is_empty() { restore_field(con, id, s, &f.name)? } else { rename_field(con, id, s, &f.name)? }
         }
     }
     let mut order = vec![];
@@ -1625,11 +1667,14 @@ pub struct Detail {
     layout_css: &'static str,
     /// 연 때의 정의 (save_note_type 이 확인한다, Q2-07)
     version: String,
+    /// 숨긴 필드 (되살리기, NT74). 앱 기본 유형은 없다
+    hidden: Vec<HiddenSlot>,
 }
 
 pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
     let nt = load(con, id)?;
     Ok(Detail {
+        hidden: hidden_slots(con, &nt)?,
         row: TypeRow { fields: None, templates: None, ..row(con, &nt)? },
         css: nt.css.clone(),
         fields: nt.visible().into_iter().map(|(slot, name)| FieldView { slot, name }).collect(),
@@ -2061,6 +2106,40 @@ mod tests {
     }
 
     #[test]
+    fn hidden_field_comes_back_with_its_values() {
+        let (con, deck) = setup();
+        let nt = anki_clone(&con, "basic", Some("단어"));
+        add_field(&con, nt, "메모").unwrap();
+        note(&con, deck, nt, &["apple", "사과", "비밀"]);
+        note(&con, deck, nt, &["pear", "배", ""]);
+        reorder_fields(&con, nt, &[2, 0, 1]).unwrap();
+        delete_field(&con, nt, 2).unwrap();
+        let t = load(&con, nt).unwrap();
+        assert_eq!(hidden_slots(&con, &t).unwrap(), [HiddenSlot { slot: 2, name: None, notes: 1 }], "앱에서 만든 유형은 이름을 묻는다");
+        assert!(restore_field(&con, nt, 2, "front").is_err(), "보이는 필드와 겹치는 이름");
+        assert!(restore_field(&con, nt, 0, "x").is_err(), "숨긴 자리가 아니다");
+        // 가져온 유형은 원본의 Anki 이름이 기본 (겹치면 묻는다)
+        con.execute(r#"UPDATE note_type SET origin = '{"f":[["Front",0],["Back",1],["Memo",2]],"t":[],"c":""}' WHERE id = ?1"#, [nt]).unwrap();
+        assert_eq!(hidden_slots(&con, &t).unwrap()[0].name.as_deref(), Some("Memo"));
+        con.execute(r#"UPDATE note_type SET origin = '{"f":[["Front",0],["Back",1],["back",2]],"t":[],"c":""}' WHERE id = ?1"#, [nt]).unwrap();
+        assert_eq!(hidden_slots(&con, &t).unwrap()[0].name, None);
+        // 편집기 초안에 숨긴 자리를 다시 넣고 저장: 이름만 붙고 값 · 옛 순서 자리가 그대로 돌아온다
+        let fe = |slot: Option<usize>, name: &str| FieldEdit { slot, name: name.into() };
+        let tpl = &t.templates[0];
+        let edit = TypeEdit {
+            fields: vec![fe(Some(2), "메모"), fe(Some(0), "Front"), fe(Some(1), "Back")],
+            templates: vec![TemplateEdit { ord: Some(0), name: None, qfmt: tpl.qfmt.clone(), afmt: tpl.afmt.clone() }],
+            css: t.css.clone(),
+        };
+        let out = apply_edit(&con, nt, &edit).unwrap();
+        assert!(out.fields.is_empty() && out.templates.is_empty() && out.empty_fronts == 0);
+        let t = load(&con, nt).unwrap();
+        assert_eq!((t.slots.clone(), t.visible().iter().map(|(s, _)| *s).collect::<Vec<_>>()), (s(&["Front", "Back", "메모"]), vec![2, 0, 1]));
+        assert_eq!(q(&con, "SELECT fields FROM note ORDER BY id LIMIT 1"), [r#"["apple","사과","비밀"]"#]);
+        assert!(hidden_slots(&con, &t).unwrap().is_empty());
+    }
+
+    #[test]
     fn empty_fronts_are_found_without_rendering() {
         let (con, deck) = setup();
         let nt = anki_clone(&con, "reversed", None);
@@ -2373,7 +2452,7 @@ mod tests {
         con.execute("UPDATE note SET tags = '기출::2023 <x>' WHERE id = ?1", [n]).unwrap();
         con.execute("UPDATE card SET deck_id = ?2 WHERE note_id = ?1", [n, sub]).unwrap();
         let p = preview(&con, nt, tpl, "", 0, None, None, Some(n)).unwrap();
-        assert_eq!(p.front, format!("기출::2023 &lt;x&gt;|덱::하위|하위|{name}|Cloze||t"));
+        assert_eq!(p.front, format!("기출::2023 · &lt;x&gt;|덱 › 하위|하위|{name}|Cloze||t"));
         let p = preview(&con, nt, tpl, "", 0, None, Some(&s(&["Text"])), None).unwrap();
         assert_eq!(p.front, format!("(태그)|(덱)|(덱)|{name}|Cloze||t"), "노트가 없으면 이름 샘플");
         // 다른 곳(목록 · 품질 · 서술형)의 render_fields 는 지금처럼 빈 값

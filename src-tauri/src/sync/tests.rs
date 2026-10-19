@@ -1604,6 +1604,50 @@ fn field_renamed_while_note_edited_elsewhere() {
 }
 
 #[test]
+fn hidden_field_restored_while_note_edited_elsewhere() {
+    // NT74: A 가 숨긴 필드를 되살리는 사이 B 가 노트를 고쳤다. 되살리기는 그 자리 이름만 다시 붙이는 것이라 (자리 id 그대로) 이름 바꾸기와 같이 합쳐진다
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    nt::add_field(&a.con(), id, "메모").unwrap();
+    edit_note(&a, &note, &["질문", "답", "메모 값"]);
+    nt::delete_field(&a.con(), id, 2).unwrap();
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(type_of(&b, &note).visible().len(), 2, "B 에서도 숨겨졌다");
+    let t = db::now_ms();
+    a.at(t + 1000, || nt::restore_field(&a.con(), id, 2, "메모").unwrap());
+    b.at(t + 2000, || edit_note(&b, &note, &["질문", "B 의 답", "메모 값"]));
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        let t = type_of(d, &note);
+        assert_eq!(t.slots, ["Front", "Back", "메모"]);
+        let map = t.field_map(&serde_json::from_str::<Vec<String>>(&d.fields(&note)).unwrap());
+        assert_eq!((map["Back"].as_str(), map["메모"].as_str()), ("B 의 답", "메모 값"), "숨긴 동안의 값이 그대로 돌아온다");
+    }
+    // 한계 (NT74): 되살린 뒤 올리기 전에 다른 기기가 같은 유형의 다른 필드 이름을 나중에 바꾸면, 같은 자리 id 끼리는 나중 쪽 이름 배열이 이겨
+    // 되살린 이름이 다시 "" (숨김)이 된다. 값은 노트에 남아 다시 되살릴 수 있다
+    nt::delete_field(&a.con(), id, 2).unwrap();
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    let b_id = b.id("note_type", &a.uid("note_type", id)).unwrap();
+    let t = db::now_ms();
+    a.at(t + 1000, || nt::restore_field(&a.con(), id, 2, "메모").unwrap());
+    b.at(t + 2000, || nt::rename_field(&b.con(), b_id, 0, "질문칸").unwrap());
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(type_of(&a, &note).slots, ["질문칸", "Back", ""]);
+    assert_eq!(a.fields(&note), json!(["질문", "B 의 답", "메모 값"]).to_string());
+}
+
+#[test]
 fn template_added_while_note_edited_elsewhere() {
     let env = Env::new();
     let (a, b, _) = pair(&env);

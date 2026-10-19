@@ -262,6 +262,16 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
       return { ...x, fields };
     });
   const removeField = (key: number) => setDraft((x) => ({ ...x, fields: x.fields.filter((f) => f.key !== key) }));
+  // NT74 숨긴 필드 되살리기: 그 자리를 초안 끝에 다시 넣는다 (저장하면 이름만 붙고 값은 그대로). 기본 이름이 없거나 겹치면 이름부터
+  const hiddenLeft = d.hidden.filter((h) => !draft.fields.some((f) => f.slot === h.slot));
+  const [hiddenOpen, setHiddenOpen] = useState(true);
+  const restored = (f: DField) => f.slot !== null && d.hidden.some((h) => h.slot === f.slot);
+  const restoreField = (h: Detail["hidden"][number]) => {
+    const key = seq.current--;
+    const ok = h.name !== null && !fieldNameError(h.name, names);
+    setDraft((x) => ({ ...x, fields: [...x.fields, { key, slot: h.slot, name: ok ? (h.name ?? "") : "" }] }));
+    if (!ok) setRenaming({ what: "field", key, value: h.name ?? "" });
+  };
 
   // ---------------------------------------------------------------- 쉬운 편집 줄
 
@@ -683,7 +693,10 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     return (
       <section className="nte__panel nte__fields" aria-label="필드">
         <div className="nte__panel-head">
-          <span className="t-label-m">필드 {n(names.filter(Boolean).length)}</span>
+          <span className="t-label-m">
+            필드 {n(names.filter(Boolean).length)}
+            {!readOnly && hiddenLeft.length > 0 && ` · 숨긴 필드 ${n(hiddenLeft.length)}`}
+          </span>
           {!readOnly && (
             <button className="nte__add t-label-m c-accent" onClick={addField}>
               <Icon name="plus" size={14} />
@@ -750,7 +763,9 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                       }
                     }}
                   />
-                  {renameError && renaming.value.trim() && <span className="t-caption c-danger">{renameError}</span>}
+                  {renameError && renaming.value.trim() && (
+                    <span className="t-caption c-danger">{restored(f) && renameError.endsWith("이미 있어요.") ? "같은 이름 필드가 있어요. 다른 이름으로 되살려 주세요" : renameError}</span>
+                  )}
                 </span>
               ) : (
                 <button
@@ -765,6 +780,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               )}
               {!editing && <span className="t-caption c-tertiary">{use}</span>}
               {!editing && show(f.name) !== f.name && <span className="nte__dbname t-mono-key c-tertiary" title="템플릿 · Anki 에 쓰는 필드 이름">{f.name}</span>}
+              {!editing && restored(f) && !use && <span className="nte__restored t-caption c-accent">되살렸어요 · 카드 모양에 넣으려면 앞면 · 뒷면으로 끌어 오세요</span>}
               {!readOnly && !editing && (
                 <span className="nte__trash-wrap">
                   <button
@@ -787,6 +803,31 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             </div>
           );
         })}
+        {!readOnly && hiddenLeft.length > 0 && (
+          <div className="nte__hidden">
+            <button type="button" className="nte__hidden-head t-label-m" aria-expanded={hiddenOpen} onClick={() => setHiddenOpen((o) => !o)}>
+              <Icon name={hiddenOpen ? "chevron-down" : "chevron-right"} size={14} />
+              숨긴 필드 {n(hiddenLeft.length)}
+            </button>
+            {hiddenOpen && (
+              <>
+                {hiddenLeft.map((h) => (
+                  <div key={h.slot} className="nte__hidden-row">
+                    <span className="nte__hidden-text">
+                      <span className="t-body-m">{h.name ?? "이름 없는 필드"}</span>
+                      <span className="t-caption c-tertiary">{h.notes ? `노트 ${n(h.notes)}개에 남아 있어요` : "내용이 남은 노트가 없어요"}</span>
+                    </span>
+                    <button type="button" className="nte__restore t-label-m" aria-label={`${h.name ?? "이름 없는 필드"} 되살리기`} onClick={() => restoreField(h)}>
+                      <Icon name="rotate" size={16} />
+                      되살리기
+                    </button>
+                  </div>
+                ))}
+                <p className="t-caption c-tertiary">지운 필드는 내용을 지우지 않고 숨겨 둬요. 되살리면 필드 끝에 다시 붙고, 카드 모양에는 직접 넣어야 보여요.</p>
+              </>
+            )}
+          </div>
+        )}
         <p className="t-caption c-tertiary">
           {readOnly
             ? "필드 이름과 순서도 복제한 뒤에 바꿀 수 있어요."
@@ -1264,7 +1305,7 @@ function SaveConfirm({ impact, labels, busy, onBack, onSave }: {
       icon: "trash",
       tone: "warn",
       title: `"${f.name}" 필드를 지워요`,
-      text: `${f.notes ? `노트 ${n(f.notes)}개에 든 "${f.name}" 내용은 지우지 않고 숨겨요.` : `"${f.name}"에 내용이 든 노트는 없어요.`} 카드 추가 · 편집 칸과 내보내기에서 빠져요.`,
+      text: `${f.notes ? `노트 ${n(f.notes)}개에 든 "${f.name}" 내용은 지우지 않고 숨겨요.` : `"${f.name}"에 내용이 든 노트는 없어요.`} 카드 추가 · 편집 칸과 내보내기에서 빠지고, 숨긴 필드에서 되살릴 수 있어요.`,
     });
   if (impact.made)
     items.push({ icon: "plus", tone: "info", title: `카드 ${n(impact.made)}장이 새로 생겨요`, text: "앞면이 비지 않는 노트마다 새 카드 종류의 카드가 한 장씩 생겨요." });
