@@ -20,6 +20,26 @@ export type Compare = {
   correct_misses: [number, number][];
 };
 
+/** 8.3 개념 관계 하나. verdict: ok 맞음 · missing 빠짐 · reversed 거꾸로 · negated 부정 · wrong 틀림 (llm.rs) */
+export type Relation = { rel: string; verdict: "ok" | "missing" | "reversed" | "negated" | "wrong" };
+/** 8.3 개념 관계 확인 결과. suggest: 핵심어 추천과 합친 추천 (written.rs merge) */
+export type Concept = { relations: Relation[]; verdict: "correct" | "partial" | "missing" | "wrong"; suggest: 1 | 2 | 3 | null; ms: number };
+/** 8.3 로컬 모델 상태. free: 남은 공간 (모르면 null), need: 받기 전에 비워 둘 공간 */
+export type LlmStatus = {
+  ready: boolean;
+  downloading: boolean;
+  bytes: number;
+  free: number | null;
+  need: number;
+  name: string;
+  license: string;
+  source: string;
+  /** CPU 의 AVX2 지원 · 앱 빌드의 AVX2 사용 · 지난 생성의 토큰당 시간 (왜 느린지 보여 준다) */
+  avx2_cpu: boolean;
+  avx2_build: boolean;
+  ms_per_token: number | null;
+};
+
 export type WrittenNote = {
   capable: boolean;
   native: boolean;
@@ -82,6 +102,21 @@ export const written = {
     invoke<number>("add_written_card", { card }),
   /** G3 토스트 둘째 줄의 이유 ("답이 10항목이라"). 카드 모양 문제가 없으면 null */
   splitSignal: (cardId: number) => invoke<string | null>("split_signal", { cardId }),
+  /** 8.3 개념 관계 확인 (로컬 모델, 백그라운드). 형식이 틀리면 null. 새 확인 · stopConcept 이 앞의 것을 멈춘다 */
+  concept: (cardId: number, answer: string) => invoke<Concept | null>("concept_check", { cardId, answer }),
+  /** 서술형 카드가 나오면 (답을 쓰는 동안): 모델을 읽어 두고 관계 뽑기 · 판정 앞부분을 미리 한다. 모델이 없으면 아무것도 하지 않는다 */
+  prepareConcept: (cardId: number) => invoke<void>("concept_prepare", { cardId }),
+  stopConcept: () => invoke<void>("llm_stop"),
+};
+
+/** 8.3 개념 관계 확인 모델 (llm.rs). 받기 진행은 "llm-progress" 이벤트 */
+export const llm = {
+  status: () => invoke<LlmStatus>("llm_status"),
+  download: () => invoke<void>("llm_download"),
+  cancel: () => invoke<void>("llm_cancel"),
+  remove: () => invoke<void>("llm_delete"),
+  /** 학습 화면을 떠나면 메모리를 돌려준다 */
+  release: () => invoke<void>("llm_release"),
 };
 
 /** 8.4 기출 (exam.rs). target "note" 면 노트 id, "segment" 면 자료 구간 id */

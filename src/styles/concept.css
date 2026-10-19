@@ -1,0 +1,23 @@
+/* 8.3 개념 관계 확인 (screens/ConceptCheck.tsx). 비교 화면의 결과 자리 · 설정 > 데이터 행 · 받기 확인 창 */
+
+/* ---------------------------------------------------------------- J2 비교 화면 */
+.concept { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border-radius: 16px; background: var(--bg-canvas); }
+.concept__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.concept__head > .t-caption { margin-left: auto; }
+.concept__list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.concept__rel { display: flex; align-items: baseline; gap: 10px; }
+.concept__rel > .t-body-s { word-break: keep-all; overflow-wrap: anywhere; }
+.concept__verdict { display: inline-flex; flex: none; align-items: center; gap: 3px; min-width: 64px; padding: 2px 8px; border-radius: 999px; }
+.concept__rel.is-ok .concept__verdict { background: var(--status-success-bg); color: var(--status-success-fg); }
+.concept__rel.is-miss .concept__verdict { background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.concept__rel.is-bad .concept__verdict { background: var(--status-danger-bg); color: var(--status-danger-fg); }
+/* 기다림 · 안내 · 실패는 한 줄 (비교 칸보다 눈에 덜 띄게) */
+.concept--wait, .concept--tip { flex-direction: row; align-items: center; gap: 8px; padding: 8px 14px; }
+.concept--wait > .t-label-s, .concept--tip > span:not(.icon) { flex: 1; }
+.concept__x { display: inline-flex; padding: 2px; color: inherit; }
+
+/* ---------------------------------------------------------------- 설정 > 데이터 · 받기 확인 */
+.llm-progress { display: block; width: 100%; max-width: 360px; height: 4px; margin-top: 6px; border-radius: 999px; background: var(--border-default); overflow: hidden; }
+.llm-progress__fill { display: block; height: 100%; background: var(--accent-default); transition: width 0.2s; }
+.llm-facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 20px; align-items: baseline; margin: 4px 0 12px; }
+.llm-facts dd { margin: 0; overflow-wrap: anywhere; }

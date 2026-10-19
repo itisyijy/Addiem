@@ -149,7 +149,7 @@ pub struct Compare {
     keywords: Vec<KeywordHit>,
     hits: usize,
     /// 1 Again · 2 Hard · 3 Good. 키워드가 없으면 없다
-    suggest: Option<u8>,
+    pub(crate) suggest: Option<u8>,
     /// 내 답에서 맞은 핵심어 (초록 밑줄)
     mine_hits: Vec<(usize, usize)>,
     /// 정답에서 맞은 핵심어 (초록 밑줄) · 빠진 핵심어 (빨간 굵은 글씨)
@@ -312,11 +312,12 @@ fn type_field(qfmt: &str) -> Option<String> {
     Some(rest[..rest.find("}}")?].rsplit(':').next()?.trim().to_string())
 }
 
-/// 카드의 서술형 여부 · 정답 글자 (줄 단위) · 노트 설정
+/// 카드의 서술형 여부 · 정답 글자 (줄 단위) · 노트 설정 · 질문 글자 (8.3 개념 관계 확인이 쓴다)
 struct CardInfo {
     written: bool,
     answer: String,
     setting: Setting,
+    question: String,
 }
 
 fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
@@ -335,6 +336,7 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
         )
         .map_err(err)?;
     let setting = load_setting(con, note_id)?;
+    let rendered = commands::render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), ord);
     let typed = q.as_deref().and_then(type_field);
     // type-in 이면 그 필드가 정답이다. 아니면 뒷면에서 답 부분 (앞면을 뺀 것)
     let html = match &typed {
@@ -343,7 +345,7 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
             // AU6 소리 표기는 정답 글자가 아니다
             names.get(&nt).and_then(|(_, n)| n.iter().position(|x| x == f)).and_then(|i| values.get(i)).map(|v| render::strip_sound(v)).unwrap_or_default()
         }
-        None => commands::answer_part(&commands::render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), ord).back).to_string(),
+        None => commands::answer_part(&rendered.back).to_string(),
     };
     // ---- C4 덱 기본값 (덱 담당): 노트 스위치 > 덱 "써서 답하기"(가장 가까운 위 덱까지) > {{type:}} 템플릿
     let deck_writes = || -> Res<bool> {
@@ -358,7 +360,7 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
             None => deck_writes()? || typed.is_some(),
         };
     // ---- 여기까지
-    Ok(CardInfo { written, answer: quality::html_lines(&html).join("\n"), setting })
+    Ok(CardInfo { written, answer: quality::html_lines(&html).join("\n"), setting, question: render::strip_tags(&rendered.front) })
 }
 
 /// R2 채점 보조가 보내는 모범 답안 (J2 비교 화면 오른쪽 칸과 같은 글자)
@@ -425,6 +427,67 @@ pub fn compare_written(state: State<AppState>, card_id: i64, answer: String) -> 
     save_answer(&con, card_id, &answer)?;
     let info = card_info(&con, card_id)?;
     Ok(compare(&answer, &info.answer, &info.setting.keywords))
+}
+
+// ------------------------------------------------------------------ 8.3 개념 관계 확인 (로컬 모델, 선택)
+
+/// 개념 관계 판정을 핵심어 추천에 합치는 규칙 (후보): 관계가 거꾸로 · 부정 · 틀림이면 Again, 아니면 핵심어 추천 그대로.
+/// 빠진 관계는 보지 않는다 (빠진 것은 핵심어 검사의 몫이고, 작은 모델은 바꿔 말한 답을 빠짐으로 자주 본다). 판정이 없으면 핵심어 추천 그대로
+pub(crate) fn merge(rules: Option<u8>, concept: Option<crate::llm::Verdict>) -> Option<u8> {
+    match concept {
+        Some(crate::llm::Verdict::Wrong) => Some(1),
+        _ => rules,
+    }
+}
+
+/// 합친 추천을 화면에 낼까. 개발셋에서 로컬 모델의 판별력이 낮아(DECISIONS J) 지금은 결과를 보여 주기만 하고 추천은 핵심어 그대로 둔다.
+/// ponytail: 사용자 결정 대기라 상수 하나로 둔다. 보류셋 · 더 나은 모델로 정밀도가 확인되면 true
+const MERGE_INTO_SUGGESTION: bool = false;
+
+#[derive(Serialize)]
+pub struct Concept {
+    relations: Vec<crate::llm::Relation>,
+    verdict: crate::llm::Verdict,
+    /// 화면에 낼 추천 (1 Again · 2 Hard · 3 Good). MERGE_INTO_SUGGESTION 이 꺼져 있으면 핵심어 추천 그대로
+    suggest: Option<u8>,
+    ms: u64,
+}
+
+/// 비교 화면이 뜬 뒤 백그라운드로. 모델 출력 형식이 틀리면 없다 (화면은 핵심어 추천 그대로).
+/// 새 확인 · llm_stop · 평가하면 앞의 확인은 멈춘다 (오류 "확인을 멈췄어요.")
+#[tauri::command]
+pub async fn concept_check(app: tauri::AppHandle, card_id: i64, answer: String) -> Res<Option<Concept>> {
+    use tauri::Manager;
+    let job = crate::llm::begin();
+    let started = std::time::Instant::now();
+    let st = app.state::<AppState>();
+    let (question, model, rules) = {
+        let con = st.db.lock().map_err(err)?;
+        let info = card_info(&con, card_id)?;
+        let rules = compare(&answer, &info.answer, &info.setting.keywords).suggest;
+        (info.question, info.answer, rules)
+    };
+    let dir = st.data_dir.clone();
+    let check = tauri::async_runtime::spawn_blocking(move || crate::llm::run(&dir, job, &question, &model, &answer)).await.map_err(err)??;
+    let suggest = |v| if MERGE_INTO_SUGGESTION { merge(rules, Some(v)) } else { rules };
+    Ok(check.map(|c| Concept { suggest: suggest(c.verdict), verdict: c.verdict, relations: c.relations, ms: started.elapsed().as_millis() as u64 }))
+}
+
+/// 서술형 카드가 나오면 (답을 쓰는 동안): 모델을 읽어 두고 모범 답안의 관계를 미리 뽑는다. 모델이 없으면 아무것도 하지 않는다
+#[tauri::command]
+pub async fn concept_prepare(app: tauri::AppHandle, card_id: i64) -> Res<()> {
+    use tauri::Manager;
+    let st = app.state::<AppState>();
+    if !crate::llm::ready(&st.data_dir) {
+        return Ok(());
+    }
+    let (question, model) = {
+        let con = st.db.lock().map_err(err)?;
+        let info = card_info(&con, card_id)?;
+        (info.question, info.answer)
+    };
+    let dir = st.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::llm::prepare(&dir, &question, &model)).await.map_err(err)?
 }
 
 // ------------------------------------------------------------------ 명령: 카드 만들기 · 편집 (J3)
@@ -624,6 +687,36 @@ mod tests {
         let ids: Vec<i64> = con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert!(card_info(&con, ids[0]).unwrap().written, "일반 카드는 덱을 따른다");
         assert!(!card_info(&con, ids[1]).unwrap().written);
+    }
+
+    /// 8.3: 모델 결과가 없으면 추천은 지금과 같고, 합치는 규칙은 거꾸로 · 부정 · 틀림만 낮춘다
+    #[test]
+    fn concept_merge_keeps_rules_without_a_wrong_relation() {
+        use crate::llm::Verdict::*;
+        let all = [None, Some(1), Some(2), Some(3)];
+        assert_eq!(all.map(|r| merge(r, None)), all, "모델이 없거나 실패하면 핵심어 추천 그대로");
+        for v in [Correct, Partial, Missing] {
+            assert_eq!(all.map(|r| merge(r, Some(v))), all, "{v:?} 는 핵심어 추천 그대로");
+        }
+        assert_eq!(all.map(|r| merge(r, Some(Wrong))), [Some(1); 4], "거꾸로 · 부정 · 틀림은 Again");
+    }
+
+    /// 8.3: 개념 관계 확인에 넘기는 질문은 앞면 글자 ({{type:}} 칸 · 태그 없이)
+    #[test]
+    fn concept_question_is_the_front_text() {
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let ntid = crate::db::native_type_id(&con, "written").unwrap();
+        con.execute(
+            "INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 0, 0)",
+            params![ntid, serde_json::to_string(&["수요가 <b>늘면</b>?", "가격이 오른다", ""]).unwrap()],
+        )
+        .unwrap();
+        con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, 0, 0, 0)", params![con.last_insert_rowid(), deck]).unwrap();
+        let info = card_info(&con, con.last_insert_rowid()).unwrap();
+        assert_eq!(info.answer, "가격이 오른다");
+        assert!(info.question.contains("수요가 늘면?") && !info.question.contains('<') && !info.question.contains("{{"), "{}", info.question);
     }
 
     #[test]
