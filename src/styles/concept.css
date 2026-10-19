@@ -16,7 +16,8 @@
 .concept__row { display: contents; }
 .concept__row > .t-body-s { word-break: keep-all; overflow-wrap: anywhere; }
 /* 기다림 · 안내 · 실패는 같은 자리의 한 줄 (끝나면 요약으로 바뀌어 카드 높이가 크게 변하지 않는다) */
-.concept--line { flex-direction: row; align-items: center; gap: 8px; box-sizing: border-box; height: 38px; padding-block: 0; }
+/* 36px: 비교 블록(두 줄 답) 아래 16px 틈과 합쳐 1280×800 카드 칸(358px)을 넘지 않는다 (QA Q5 L3: 38px 은 1px 넘쳐 스크롤바가 보였다) */
+.concept--line { flex-direction: row; align-items: center; gap: 8px; box-sizing: border-box; height: 36px; padding-block: 0; }
 .concept--line > .concept__head { flex: 1; flex-wrap: nowrap; min-width: 0; }
 .concept__grow { flex: 1; }
 .concept__x { display: inline-flex; padding: 2px; color: inherit; }
