@@ -812,13 +812,14 @@ mod tests {
 
     /// 8.3 측정: 엔진(보조 실행 파일)을 실제로 띄워 앱과 같은 차례로 (카드가 나오면 미리 하기 → 비교 뒤 판정).
     /// `NEOANKI_EVAL83=<jsonl> NEOANKI_LLM_BIN=<neoanki-llm.exe> NEOANKI_LLM_DIR=<model.gguf · tokenizer.json 폴더> cargo test --lib eval83 -- --ignored --nocapture`
-    /// (`NEOANKI_EVAL_LIMIT=n` 앞 n개, `NEOANKI_EVAL_DUMP=<파일>` 자리마다 로그 확률을 JSON 줄로 남긴다).
-    /// 규칙만(핵심어 = 모범 답안 제안 칩 6개, 항목에 "keywords" 가 있으면 그것) · 모델 판정 · 합침(merge 후보)을 case 별로 낸다.
+    /// (`NEOANKI_EVAL_LIMIT=n` 앞 n개, `NEOANKI_EVAL_DUMP=<파일>` 자리마다 로그 확률을 JSON 줄로 남긴다,
+    /// `NEOANKI_EVAL_FROM_DUMP=<파일>` 엔진 없이 남긴 관계 · 로그 확률로 판정 규칙 · 가드만 다시 잰다).
+    /// 규칙만(핵심어 = 모범 답안 제안 칩 6개, 항목에 "keywords" 가 있으면 그것) · 모델 판정 · 모델 + 가드(written::guard, 앱과 같음) · 합침(merge 후보, 가드 뒤)을 case 별로 낸다.
     /// 추천 3 Good = correct, 2 Hard = partial, 1 Again = wrong, 없음 = none 으로 견준다
     #[test]
     #[ignore]
     fn eval83() {
-        use crate::written::{Keyword, compare, suggest_from};
+        use crate::written::{Keyword, compare, guard, suggest_from};
         // 합침 후보 (화면은 쓰지 않는다, J6): 관계가 거꾸로 · 부정 · 틀림이면 Again, 아니면 핵심어 추천 그대로
         let merge = |rules: Option<u8>, v: Option<Verdict>| if v == Some(Verdict::Wrong) { Some(1) } else { rules };
         use std::collections::BTreeMap;
@@ -826,6 +827,15 @@ mod tests {
         let items: Vec<Value> = std::fs::read_to_string(&path).unwrap().lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect();
         let items = &items[..std::env::var("NEOANKI_EVAL_LIMIT").ok().and_then(|n| n.parse().ok()).unwrap_or(items.len()).min(items.len())];
         let mut dump = std::env::var("NEOANKI_EVAL_DUMP").ok().map(|p| std::fs::File::create(p).unwrap());
+        // 남긴 덤프 (id → 관계 · 로그 확률)
+        let saved: BTreeMap<String, (Vec<String>, Vec<Vec<f32>>)> = std::env::var("NEOANKI_EVAL_FROM_DUMP")
+            .map(|p| {
+                std::fs::read_to_string(p).unwrap().lines().filter(|l| !l.trim().is_empty()).map(|l| {
+                    let v: Value = serde_json::from_str(l).unwrap();
+                    (v["id"].as_str().unwrap().to_string(), (serde_json::from_value(v["rels"].clone()).unwrap(), serde_json::from_value(v["lp"].clone()).unwrap()))
+                }).collect()
+            })
+            .unwrap_or_default();
         let mut engine = match (std::env::var("NEOANKI_LLM_BIN"), std::env::var("NEOANKI_LLM_DIR")) {
             (Ok(bin), Ok(dir)) => {
                 let t = Instant::now();
@@ -847,10 +857,11 @@ mod tests {
             Some(Verdict::Wrong | Verdict::Missing) => "wrong",
             None => "none",
         };
-        // case → [개수, 규칙 맞음, 모델 맞음, 합침 맞음], 그리고 (방식, 정답, 예측) 혼동 행렬
-        let mut by_case: BTreeMap<String, [usize; 4]> = BTreeMap::new();
+        // case → [개수, 규칙 맞음, 모델 맞음, 가드 맞음, 합침 맞음], 그리고 (방식, 정답, 예측) 혼동 행렬
+        let mut by_case: BTreeMap<String, [usize; 5]> = BTreeMap::new();
         let mut confusion: BTreeMap<(&str, String, String), usize> = BTreeMap::new();
-        let (mut judge_ms, mut prep_ms, mut flagged) = (vec![], vec![], [0usize; 2]);
+        // 정답 · 부분 수, 그중 "틀린 관계 있음"으로 짚은 수 (가드 전 · 후)
+        let (mut judge_ms, mut prep_ms, mut flagged) = (vec![], vec![], [0usize; 3]);
         for it in items {
             let s = |k: &str| it[k].as_str().unwrap_or_default().to_string();
             let (case, gold, q, model, answer) = (s("case"), s("label"), s("question"), s("model"), s("answer"));
@@ -859,52 +870,62 @@ mod tests {
                 None => suggest_from(&model, &[], 6).into_iter().map(|w| Keyword { word: w, synonyms: vec![], source: "suggested".into() }).collect(),
             };
             let rules = compare(&answer, &model, &keywords).suggest;
-            let (concept, detail) = match engine.as_mut() {
-                Some(e) => {
-                    let t = Instant::now();
-                    warm(e, &q, &model, &|| false).unwrap();
-                    let prep = t.elapsed().as_millis();
-                    let t = Instant::now();
-                    let d = check_detail(e, &q, &model, &answer, &|| false).unwrap();
-                    let judge = t.elapsed().as_millis();
-                    prep_ms.push(prep);
-                    judge_ms.push(judge);
-                    let g = e.log.last().copied().unwrap_or_default();
-                    let mut line = format!("미리 {prep}ms · 비교 뒤 {judge}ms(입력 {}토큰) ", g.prompt);
-                    line += &d.as_ref().map(|d| d.relations.iter().map(|r| format!("{}={}", r.rel, r.verdict)).collect::<Vec<_>>().join(" | ")).unwrap_or("형식 틀림".into());
-                    if let (Some(f), Some(d)) = (dump.as_mut(), d.as_ref()) {
-                        let rels: Vec<&str> = d.relations.iter().map(|r| r.rel.as_str()).collect();
-                        writeln!(f, "{}", json!({ "id": s("id"), "case": case, "label": gold, "rules": label(rules), "rels": rels, "lp": d.lp })).unwrap();
-                    }
-                    (d.map(|d| verdict(&d.relations)), line)
+            let (rels, detail): (Option<Vec<Relation>>, String) = if let Some((rels, lp)) = saved.get(&s("id")) {
+                let r: Vec<Relation> = rels.iter().zip(lp).map(|(rel, l)| Relation { rel: rel.clone(), verdict: VERDICTS[decide(l)].to_string() }).collect();
+                (Some(r), "덤프에서 ".into())
+            } else if let Some(e) = engine.as_mut() {
+                let t = Instant::now();
+                warm(e, &q, &model, &|| false).unwrap();
+                let prep = t.elapsed().as_millis();
+                let t = Instant::now();
+                let d = check_detail(e, &q, &model, &answer, &|| false).unwrap();
+                let judge = t.elapsed().as_millis();
+                prep_ms.push(prep);
+                judge_ms.push(judge);
+                let g = e.log.last().copied().unwrap_or_default();
+                if let (Some(f), Some(d)) = (dump.as_mut(), d.as_ref()) {
+                    let rels: Vec<&str> = d.relations.iter().map(|r| r.rel.as_str()).collect();
+                    writeln!(f, "{}", json!({ "id": s("id"), "case": case, "label": gold, "rules": label(rules), "rels": rels, "lp": d.lp })).unwrap();
                 }
-                None => (None, String::new()),
+                (d.map(|d| d.relations), format!("미리 {prep}ms · 비교 뒤 {judge}ms(입력 {}토큰) ", g.prompt))
+            } else {
+                (None, String::new())
             };
-            if concept == Some(Verdict::Wrong) && gold != "wrong" {
+            let concept = rels.as_ref().map(|r| verdict(r));
+            let guarded_rels = rels.map(|mut r| {
+                guard(&mut r, &keywords, &answer);
+                r
+            });
+            let guarded = guarded_rels.as_ref().map(|r| verdict(r));
+            let detail = detail + &guarded_rels.as_ref().map(|r| r.iter().map(|r| format!("{}={}", r.rel, r.verdict)).collect::<Vec<_>>().join(" | ")).unwrap_or("형식 틀림".into());
+            if gold != "wrong" {
                 flagged[0] += 1;
+                flagged[1] += (concept == Some(Verdict::Wrong)) as usize;
+                flagged[2] += (guarded == Some(Verdict::Wrong)) as usize;
             }
-            flagged[1] += (gold != "wrong") as usize;
-            let merged = merge(rules, concept);
+            let merged = merge(rules, guarded);
             let e = by_case.entry(case.clone()).or_default();
             e[0] += 1;
             e[1] += (label(rules) == gold) as usize;
             e[2] += (v_label(concept) == gold) as usize;
-            e[3] += (label(merged) == gold) as usize;
+            e[3] += (v_label(guarded) == gold) as usize;
+            e[4] += (label(merged) == gold) as usize;
             *confusion.entry(("규칙", gold.clone(), label(rules).into())).or_default() += 1;
             *confusion.entry(("모델", gold.clone(), v_label(concept).into())).or_default() += 1;
+            *confusion.entry(("가드", gold.clone(), v_label(guarded).into())).or_default() += 1;
             *confusion.entry(("합침", gold.clone(), label(merged).into())).or_default() += 1;
-            let raw = concept.map_or("none".into(), |v| format!("{v:?}").to_lowercase());
-            println!("{} {case:10} 정답 {gold:7} 규칙 {:7} 모델 {raw:7} 합침 {:7} · {detail}", s("id"), label(rules), label(merged));
+            let raw = |v: Option<Verdict>| v.map_or("none".into(), |v| format!("{v:?}").to_lowercase());
+            println!("{} {case:10} 정답 {gold:7} 규칙 {:7} 모델 {:7} 가드 {:7} 합침 {:7} · {detail}", s("id"), label(rules), raw(concept), raw(guarded), label(merged));
         }
-        println!("\ncase        개수  규칙  모델  합침");
-        let mut tot = [0; 4];
+        println!("\ncase        개수  규칙  모델  가드  합침");
+        let mut tot = [0; 5];
         for (case, v) in &by_case {
-            println!("{case:10} {:>5} {:>5} {:>5} {:>5}", v[0], v[1], v[2], v[3]);
-            (0..4).for_each(|i| tot[i] += v[i]);
+            println!("{case:10} {:>5} {:>5} {:>5} {:>5} {:>5}", v[0], v[1], v[2], v[3], v[4]);
+            (0..5).for_each(|i| tot[i] += v[i]);
         }
         let pct = |x: usize| x as f64 * 100.0 / tot[0] as f64;
-        println!("정확도      {:>5} {:>4.1}% {:>4.1}% {:>4.1}%", tot[0], pct(tot[1]), pct(tot[2]), pct(tot[3]));
-        println!("정답 · 부분을 \"틀린 관계 있음\"으로 짚음: {}/{}", flagged[0], flagged[1]);
+        println!("정확도      {:>5} {:>4.1}% {:>4.1}% {:>4.1}% {:>4.1}%", tot[0], pct(tot[1]), pct(tot[2]), pct(tot[3]), pct(tot[4]));
+        println!("정답 · 부분을 \"틀린 관계 있음\"으로 짚음: 가드 전 {}/{} · 가드 뒤 {}/{}", flagged[1], flagged[0], flagged[2], flagged[0]);
         println!("\n혼동 행렬 (방식 · 정답 → 예측: 수)");
         for ((how, gold, pred), n) in &confusion {
             println!("{how} {gold:7} → {pred:7}: {n}");

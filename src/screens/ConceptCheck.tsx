@@ -6,6 +6,7 @@ import "../styles/concept.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { errorText } from "../api";
+import { useToast } from "../toast";
 import { Badge, Button, Icon, Spinner, type IconName } from "../ui";
 import { Modal } from "./NewDeck";
 import { llm, written as writtenApi, type Concept, type LlmStatus, type Relation } from "../written";
@@ -109,7 +110,11 @@ function LlmRow() {
             개념 관계 확인 모델 · 실험 기능 {!ok && <Badge>이 PC에서는 쓸 수 없어요</Badge>}
           </span>
           <span className="t-body-s c-secondary">{sub}</span>
-          {error && <span className="t-body-s c-danger">{error}</span>}
+          {error && (
+            <span className="t-body-s c-danger" title={error}>
+              {error.replace(/\s*\([^()]*\)$/, "")}
+            </span>
+          )}
         </span>
         {!ok ? (
           s.ready && <Button variant="ghost" size="M" icon="trash" label={`지우기 · ${gb(s.bytes)} 비우기`} onClick={() => setAsking("delete")} />
@@ -181,15 +186,20 @@ function GetModel({ s, onClose, onGet }: { s: LlmStatus; onClose: () => void; on
 
 // ---------------------------------------------------------------- J2 비교 화면 (J4)
 
-/** 판정 칩: 단정하지 않는 말 + 연한 색 (빨강은 핵심어 검사에만). 요약 줄의 순서도 이대로 */
+/** 판정 칩 (펼친 목록): 단정하지 않는 말 + 연한 색 (빨강은 핵심어 검사에만) */
 const CHIP: Record<Relation["verdict"], { label: string; icon: IconName; tone: string }> = {
   ok: { label: "맞아 보여요", icon: "check", tone: "is-ok" },
   reversed: { label: "거꾸로 같아요", icon: "rotate", tone: "is-warn" },
   negated: { label: "반대 같아요", icon: "rotate", tone: "is-warn" },
-  wrong: { label: "달라 보여요", icon: "alert", tone: "is-warn" },
+  wrong: { label: "달라 보여요", icon: "info", tone: "is-warn" },
   missing: { label: "안 보여요", icon: "x", tone: "is-none" },
 };
-const ORDER: Relation["verdict"][] = ["ok", "reversed", "negated", "wrong", "missing"];
+/** 요약 줄: 노랑 셋(거꾸로 · 반대 · 달라)은 "다르게 보여요" 하나로 센다 (J4 재검토) */
+const SUMMARY: { label: string; tone: string; of: Relation["verdict"][] }[] = [
+  { label: "맞아 보여요", tone: "is-ok", of: ["ok"] },
+  { label: "다르게 보여요", tone: "is-warn", of: ["reversed", "negated", "wrong"] },
+  { label: "안 보여요", tone: "is-none", of: ["missing"] },
+];
 
 /** 받지 않았을 때의 안내를 숨겼다 (이 기기에서만) */
 const TIP_HIDDEN = "neo.conceptTipHidden";
@@ -209,7 +219,9 @@ type Phase = "idle" | "busy" | "done" | "bad" | "error";
  */
 export function useConcept({ cardId, typed, on, writing }: { cardId: number | null; typed: string; on: boolean; writing: boolean }) {
   const s = useLlm();
-  const ready = !!s && s.ready && usable(s);
+  const notify = useToast();
+  // 이번 학습에서 껐으면(엔진이 다시 띄워도 멈춤) 더 부르지 않는다. 알림은 토스트 한 번 (카드 안 줄 없음)
+  const ready = !!s && s.ready && usable(s) && !s.off;
   const [phase, setPhase] = useState<Phase>("idle");
   const [result, setResult] = useState<Concept | null>(null);
   const [fail, setFail] = useState("");
@@ -220,13 +232,14 @@ export function useConcept({ cardId, typed, on, writing }: { cardId: number | nu
   const seq = useRef(0);
   const box = useRef<HTMLElement | null>(null);
   const setBox = (el: HTMLElement | null) => void (box.current = el);
-  // 낮은 창(800)에서는 비교 블록 아래 한 줄이 카드 안 스크롤 밑으로 숨는다: 나오거나 바뀌면 보이는 만큼만 내린다 (J4: 평가 버튼과 같이 보이게)
-  // 학습 화면이 카드 높이를 다시 재고 난 뒤에 (한 박자 늦게)
+  // 접힌 한 줄은 "확인하는 중" 줄과 높이가 같아 카드를 움직이지 않는다. 펼칠 때만 펼친 만큼 보이게 내린다
+  // (학습 화면이 카드 높이를 다시 재고 난 뒤에, 한 박자 늦게)
   useEffect(() => {
-    if (phase === "idle") return;
+    if (!open) return;
     const t = setTimeout(() => box.current?.scrollIntoView({ block: "nearest" }), 120);
     return () => clearTimeout(t);
-  }, [phase, open]);
+  }, [open]);
+  const offToast = useRef(false);
 
   // 서술형 카드가 나오면 답을 쓰는 동안 미리 (엔진 띄우기 · 모델 읽기 · 관계 뽑기 · 판정 앞부분). 학습 화면을 떠나면 엔진을 끝낸다
   useEffect(() => {
@@ -249,9 +262,17 @@ export function useConcept({ cardId, typed, on, writing }: { cardId: number | nu
       },
       (e) => {
         if (seq.current !== my) return;
-        setFail(errorText(e));
-        setPhase("error");
-        refreshLlm(); // 이번 학습에서 껐는지
+        refreshLlm().then((st) => {
+          if (seq.current !== my) return;
+          if (!st?.off) {
+            setFail(errorText(e));
+            return setPhase("error");
+          }
+          setPhase("idle");
+          if (offToast.current) return;
+          offToast.current = true;
+          notify({ title: "개념 관계 확인을 이번 학습에서는 껐어요", text: "다음 학습에서 다시 켜져요. 핵심어 검사와 평가는 그대로예요.", icon: "info" });
+        });
       },
     );
     // typed 는 비교할 때 정해진다
@@ -296,7 +317,7 @@ export function useConcept({ cardId, typed, on, writing }: { cardId: number | nu
   const tip = on && !!s && usable(s) && !s.ready && !hidden && cardId !== null && (tipCard.current ?? cardId) === cardId;
   if (tip) tipCard.current = cardId;
   const ref = <Badge>참고용 · 틀릴 수 있어요</Badge>;
-  const counts = result ? ORDER.map((v) => [v, result.relations.filter((r) => r.verdict === v).length] as const).filter(([, n]) => n > 0) : [];
+  const counts = result ? SUMMARY.map((g) => [g, result.relations.filter((r) => g.of.includes(r.verdict)).length] as const).filter(([, n]) => n > 0) : [];
 
   const slot = !on ? null : tip ? (
     <p className="concept concept--line t-caption c-tertiary">
@@ -320,32 +341,32 @@ export function useConcept({ cardId, typed, on, writing }: { cardId: number | nu
       <span className="concept__grow">
         개념 관계를 확인하지 못했어요 · {phase === "bad" ? "모범 답안에서 관계를 찾지 못했어요." : fail} 핵심어 검사와 평가는 그대로예요.
       </span>
-      {!s?.off && (
-        <button type="button" className="ai-link t-label-s" onClick={run}>
-          다시 확인
-        </button>
-      )}
+      <button type="button" className="ai-link t-label-s" onClick={run}>
+        다시 확인
+      </button>
     </p>
   ) : phase === "done" && result ? (
-    <section className={`concept ${open ? "is-open" : ""}`} aria-label="개념 관계 (참고용)" ref={setBox}>
+    <section className={`concept ${open ? "is-open" : "concept--line"}`} aria-label="개념 관계 (참고용)" ref={setBox}>
       <div className="concept__head">
-        <Icon name="list" size={16} className="c-secondary" />
-        <span className="t-label-m">개념 관계</span>
+        <Icon name="list" size={14} className="c-secondary" />
+        <span className="t-label-s">개념 관계</span>
         {ref}
         {!open &&
-          counts.map(([v, n]) => (
-            <span key={v} className={`concept__chip t-label-s ${CHIP[v].tone}`}>
-              {CHIP[v].label} {n}
+          counts.map(([g, n]) => (
+            <span key={g.label} className={`concept__chip t-label-s ${g.tone}`}>
+              {g.label} {n}
             </span>
           ))}
-        <button type="button" className="concept__toggle ai-link t-label-m" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <button type="button" className="concept__toggle ai-link t-label-s" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           {open ? "접기" : "자세히"}
           <Icon name="chevron-down" size={14} className={open ? "concept__up" : ""} />
         </button>
       </div>
       {open && (
         <>
-          <p className="t-caption c-secondary">이 기기의 작은 모델이 모범 답안의 관계를 내 답에서 찾아본 결과예요. 자주 틀려서 평가 추천에는 쓰지 않아요.</p>
+          <p className="t-caption c-secondary">
+            이 기기의 작은 모델이 모범 답안의 관계를 내 답에서 찾아본 결과예요. 자주 틀려서 평가 추천에는 쓰지 않아요. 핵심어 검사에서 빠진 말이 든 관계는 &lsquo;안 보여요&rsquo;로 둬요.
+          </p>
           <div className="concept__grid">
             <span className="t-caption c-tertiary">내 답에서</span>
             <span className="t-caption c-tertiary">모범 답안의 관계</span>
