@@ -377,14 +377,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const gradeOk = useRef(false);
   const [srcSeg, setSrcSeg] = useState<number | null>(null);
   const grade = useGrade({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, confirmed: gradeOk, openSegment: setSrcSeg });
-  // 8.3 개념 관계 확인 (로컬 모델이 있을 때 비교 화면에서 저절로)
-  const concept = useConcept({
-    cardId: card?.view.id ?? null,
-    typed,
-    on: phase === "a" && !!compare,
-    writing: phase === "q" && !!card?.written?.written,
-    rules: compare?.suggest ?? null,
-  });
+  // 8.3 개념 관계 확인 (로컬 모델을 받았고 이 PC 에서 쓸 수 있을 때 비교 화면에서 저절로, 참고용)
+  const concept = useConcept({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, writing: phase === "q" && !!card?.written?.written });
 
   const finish = useCallback(
     async (completed: boolean) => {
@@ -865,10 +859,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const position = Math.min(done + 1, total);
   const remaining = Math.max(0, total - position);
   // J2 평가 추천 (되돌린 직후에는 되돌리기 안내가 먼저). R2: 핵심어 검사와 ChatGPT 추천을 한 줄로 합친다. 다르면 테두리 없이 둘 다 알린다
-  // 8.3 개념 관계 확인 결과가 있으면 그 합친 추천 (written.rs merge). 없으면 핵심어 추천 그대로.
-  // 지금은 합치기가 꺼져 있어(MERGE_INTO_SUGGESTION, DECISIONS J6) 결과가 있어도 핵심어 추천과 같고 아래 changed 줄들은 쓰이지 않는다
-  const kwSuggest = undone === null ? (concept.rating !== undefined ? concept.rating : (compare?.suggest ?? null)) : null;
-  const kwName = concept.changed ? "핵심어 · 개념 관계" : "핵심어";
+  const kwSuggest = undone === null ? (compare?.suggest ?? null) : null;
   const gptSuggest = undone === null ? grade.rating : null;
   const suggest = special
     ? undone === null
@@ -883,8 +874,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const both = kwSuggest !== null && gptSuggest !== null;
   const recLine = both
     ? kwSuggest === gptSuggest
-      ? `${RATING_NAME[kwSuggest]} 추천 · ${concept.changed ? concept.tip : `핵심어 검사 ${missing.length ? `${n(missing.length)}/${n(compare!.keywords.length)} 빠짐` : "모두 씀"}`} · ChatGPT 검토도 ${RATING_NAME[gptSuggest]} · 직접 평가해 주세요`
-      : `${kwName} 검사는 ${RATING_NAME[kwSuggest]} · ChatGPT 검토는 ${RATING_NAME[gptSuggest]} · 직접 평가해 주세요`
+      ? `${RATING_NAME[kwSuggest]} 추천 · 핵심어 검사 ${missing.length ? `${n(missing.length)}/${n(compare!.keywords.length)} 빠짐` : "모두 씀"} · ChatGPT 검토도 ${RATING_NAME[gptSuggest]} · 직접 평가해 주세요`
+      : `핵심어 검사는 ${RATING_NAME[kwSuggest]} · ChatGPT 검토는 ${RATING_NAME[gptSuggest]} · 직접 평가해 주세요`
     : gptSuggest !== null
       ? `${RATING_NAME[gptSuggest]} 추천 · ChatGPT 검토 · 직접 평가해 주세요`
       : null;
@@ -1211,13 +1202,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                   <span className="study__tip study__tip--warn">
                     <Icon name="info" size={16} />
                     <span className="t-label-s">
-                      {concept.changed
-                        ? `${compare?.suggest == null ? "개념 관계 기준 " : ""}${RATING_NAME[suggest]} 추천 · ${concept.tip}.`
-                        : `핵심어 기준 ${RATING_NAME[suggest]} 추천 · ${
-                            missing.length
-                              ? `핵심어 ${n(missing.length)}개가 빠졌어요 (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " 등" : ""}).`
-                              : "핵심어를 모두 썼어요."
-                          }`}{" "}
+                      핵심어 기준 {RATING_NAME[suggest]} 추천 ·{" "}
+                      {missing.length
+                        ? `핵심어 ${n(missing.length)}개가 빠졌어요 (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? " 등" : ""}).`
+                        : "핵심어를 모두 썼어요."}{" "}
                       답의 의미를 확인하고 직접 평가해 주세요.
                     </span>
                   </span>
@@ -1265,9 +1253,9 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                           ? "방금 고른 평가"
                           : undefined
                         : r === suggest
-                          ? `추천 · ${both ? `${kwName} · ChatGPT` : gptSuggest !== null ? "ChatGPT" : concept.changed ? "개념 관계" : HINT[r]}`
+                          ? `추천 · ${both ? "핵심어 · ChatGPT" : gptSuggest !== null ? "ChatGPT" : HINT[r]}`
                           : both && (r === kwSuggest || r === gptSuggest)
-                            ? `추천 · ${r === kwSuggest ? kwName : "ChatGPT"}`
+                            ? `추천 · ${r === kwSuggest ? "핵심어" : "ChatGPT"}`
                             : hints
                             ? HINT[r]
                             : undefined

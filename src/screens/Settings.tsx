@@ -15,7 +15,7 @@ import { DeleteDeckConfirm } from "./Deck";
 import { NO_AUTOPLAY, SKIP_SUMMARY, TTS_AUTOPLAY, pref, setPref } from "./Study";
 import { getThemePref, setThemePref, type ThemePref } from "../theme";
 import { ModelRow } from "./Sources";
-import { LlmRow } from "./ConceptCheck";
+import { WrittenSection } from "./ConceptCheck";
 import { DriveSection, useSyncStatus } from "../sync";
 import { AiSection, useAiStatus } from "../ai";
 import { NoteTypesEntry } from "./NoteTypes";
@@ -242,10 +242,11 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
 
       <KeysTable />
 
+      <WrittenSection /> {/* 8.3 서술형 채점: 개념 관계 확인 모델 (받기 · 지우기 · 이 PC 에서 쓸 수 있는지, screens/ConceptCheck.tsx) */}
+
       <section className="prefs__section">
         <p className="prefs__label t-label-s c-tertiary">데이터</p>
         <ModelRow /> {/* I3 분석 모델 (받았을 때만, screens/Sources.tsx) */}
-        <LlmRow /> {/* 8.3 개념 관계 확인 모델 (받기 · 지우기, screens/ConceptCheck.tsx) */}
         <div className="prefs__row">
           <span className="prefs__text">
             <span className="t-body-m-strong">모든 데이터 삭제</span>

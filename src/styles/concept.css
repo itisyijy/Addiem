@@ -1,23 +1,26 @@
-/* 8.3 개념 관계 확인 (screens/ConceptCheck.tsx). 비교 화면의 결과 자리 · 설정 > 데이터 행 · 받기 확인 창 */
+/* 8.3 개념 관계 확인 (screens/ConceptCheck.tsx). 비교 블록 아래 한 줄 (Figma J4) · 설정 › 서술형 채점 (J5) · 받기 확인 창 (J6) */
 
-/* ---------------------------------------------------------------- J2 비교 화면 */
-.concept { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border-radius: 16px; background: var(--bg-canvas); }
+/* ---------------------------------------------------------------- J4 비교 화면: 한 줄 요약 · 그 자리에서 펼침 */
+.concept { display: flex; flex-direction: column; gap: 10px; padding: 10px 16px; border-radius: 14px; background: var(--bg-subtle); }
+/* 카드 안 스크롤로 보이게 내릴 때 아래 "아래에 더 있어요" 띠에 가리지 않게 */
+.concept { scroll-margin-bottom: 44px; }
+.concept.is-open { padding: 14px 16px; }
 .concept__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.concept__head > .t-caption { margin-left: auto; }
-.concept__list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.concept__rel { display: flex; align-items: baseline; gap: 10px; }
-.concept__rel > .t-body-s { word-break: keep-all; overflow-wrap: anywhere; }
-.concept__verdict { display: inline-flex; flex: none; align-items: center; gap: 3px; min-width: 64px; padding: 2px 8px; border-radius: 999px; }
-.concept__rel.is-ok .concept__verdict { background: var(--status-success-bg); color: var(--status-success-fg); }
-.concept__rel.is-miss .concept__verdict { background: var(--status-warn-bg); color: var(--status-warn-fg); }
-.concept__rel.is-bad .concept__verdict { background: var(--status-danger-bg); color: var(--status-danger-fg); }
-/* 기다림 · 안내 · 실패는 한 줄 (비교 칸보다 눈에 덜 띄게) */
-.concept--wait, .concept--tip { flex-direction: row; align-items: center; gap: 8px; padding: 8px 14px; }
-.concept--wait > .t-label-s, .concept--tip > span:not(.icon) { flex: 1; }
+.concept__toggle { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+.concept__up { transform: rotate(180deg); }
+/* 판정 칩: 연한 색만 (빨강은 핵심어 검사에만) */
+.concept__chip { display: inline-flex; flex: none; align-items: center; gap: 3px; padding: 2px 8px; border-radius: 999px; background: var(--bg-canvas); color: var(--text-secondary); }
+.concept__chip.is-ok { background: var(--status-success-bg); color: var(--status-success-fg); }
+.concept__chip.is-warn { background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.concept__grid { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 8px 20px; }
+.concept__row { display: contents; }
+.concept__row > .t-body-s { word-break: keep-all; overflow-wrap: anywhere; }
+/* 기다림 · 안내 · 실패는 같은 자리의 한 줄 (끝나면 요약으로 바뀌어 카드 높이가 크게 변하지 않는다) */
+.concept--line { flex-direction: row; align-items: center; gap: 8px; }
+.concept__grow { flex: 1; }
 .concept__x { display: inline-flex; padding: 2px; color: inherit; }
 
-/* ---------------------------------------------------------------- 설정 > 데이터 · 받기 확인 */
-.llm-progress { display: block; width: 100%; max-width: 360px; height: 4px; margin-top: 6px; border-radius: 999px; background: var(--border-default); overflow: hidden; }
-.llm-progress__fill { display: block; height: 100%; background: var(--accent-default); transition: width 0.2s; }
-.llm-facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 20px; align-items: baseline; margin: 4px 0 12px; }
+/* ---------------------------------------------------------------- J5 설정 · J6 받기 확인 */
+.llm-row__title { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.llm-facts { display: grid; grid-template-columns: max-content 1fr; gap: 10px 24px; align-items: baseline; margin: 4px 0 14px; }
 .llm-facts dd { margin: 0; overflow-wrap: anywhere; }

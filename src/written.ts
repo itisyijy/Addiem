@@ -22,9 +22,10 @@ export type Compare = {
 
 /** 8.3 개념 관계 하나. verdict: ok 맞음 · missing 빠짐 · reversed 거꾸로 · negated 부정 · wrong 틀림 (llm.rs) */
 export type Relation = { rel: string; verdict: "ok" | "missing" | "reversed" | "negated" | "wrong" };
-/** 8.3 개념 관계 확인 결과. suggest: 핵심어 추천과 합친 추천 (written.rs merge) */
-export type Concept = { relations: Relation[]; verdict: "correct" | "partial" | "missing" | "wrong"; suggest: 1 | 2 | 3 | null; ms: number };
-/** 8.3 로컬 모델 상태. free: 남은 공간 (모르면 null), need: 받기 전에 비워 둘 공간 */
+/** 8.3 개념 관계 확인 결과 (참고용, 평가 추천에는 쓰지 않는다). verdict 는 관계 판정에서 규칙으로 낸 전체 판정 */
+export type Concept = { relations: Relation[]; verdict: "correct" | "partial" | "missing" | "wrong"; ms: number };
+/** 8.3 로컬 모델 상태 (llm.rs LlmStatus). free: 남은 공간 (모르면 null), need: 받기 전에 비워 둘 공간.
+ * cpu_ok · engine: 이 PC 에서 쓸 수 있는가 (CPU AVX2 · 엔진 파일), off: 엔진이 다시 띄워도 멈춰 이번 학습에서 껐다, last_ms: 지난 확인 한 번 */
 export type LlmStatus = {
   ready: boolean;
   downloading: boolean;
@@ -32,12 +33,13 @@ export type LlmStatus = {
   free: number | null;
   need: number;
   name: string;
+  short: string;
   license: string;
   source: string;
-  /** CPU 의 AVX2 지원 · 앱 빌드의 AVX2 사용 · 지난 생성의 토큰당 시간 (왜 느린지 보여 준다) */
-  avx2_cpu: boolean;
-  avx2_build: boolean;
-  ms_per_token: number | null;
+  cpu_ok: boolean;
+  engine: boolean;
+  off: boolean;
+  last_ms: number | null;
 };
 
 export type WrittenNote = {
