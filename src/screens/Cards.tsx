@@ -38,7 +38,7 @@ const key = (path: string[]) => path.join("\u0000");
 /** 목록 범위. deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
 type Scope = Pick<DeckDetail, "name" | "path" | "total" | "subdecks">;
 
-export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, edit }: {
+export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, edit, query: start }: {
   deckId: number | null;
   buriedOnly?: boolean;
   /** 이 카드들만 본다 (C1-xr [카드 보기]: 내보내며 미디어가 빠진 카드) */
@@ -47,6 +47,8 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   weakOnly?: boolean;
   /** 노트 유형 편집기에서 돌아왔다: 이 카드의 편집 창(E)을 다시 연다 (NT53) */
   edit?: number;
+  /** 처음 검색 글자 (되돌리기 결과 [보관한 카드 보기] 의 "tag:되돌린_업데이트") */
+  query?: string;
 }) {
   const nav = useNav();
   const toast = useToast();
@@ -56,7 +58,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   const [scope, setScope] = useState<number | null>(deckId);
   const [only, setOnly] = useState(cardIds ?? null);
   const [weak, setWeak] = useState(weakOnly); // C1-w [약한 챕터 카드 보기]
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(start ?? "");
   const [limit, setLimit] = useState(PAGE);
   const [list, setList] = useState<CardList | null>(null);
   const [scopeMenu, setScopeMenu] = useState(false);
@@ -223,6 +225,13 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
       () => api.unburyCards(ids),
     );
   };
+  /** 학습 중지 풀기 (Q4 M2: 되돌리기가 보관한 카드 · 가져온 학습 중지 카드) */
+  const unsuspend = (cards: CardRow[]) => {
+    const ids = cards.filter((c) => c.state === "suspended").map((c) => c.id);
+    closeMenus();
+    endSelection();
+    act(api.unsuspendCards(ids).then((k) => toast({ title: k > 1 ? `${n(k)}장을 학습에 다시 넣었어요` : "학습에 다시 넣었어요", text: "다음에 시작하는 학습부터 포함돼요" })));
+  };
   const unbury = (c: CardRow) => {
     closeMenus();
     act(api.unburyCards([c.id]).then(() => toast({ title: "접어두기를 풀었어요", text: "다음에 시작하는 학습부터 다시 포함돼요" })));
@@ -329,7 +338,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
           <Icon name="search" size={18} className="c-tertiary" />
           <input
             className="t-body-m"
-            placeholder="질문이나 답변으로 검색"
+            placeholder="질문이나 답변으로 검색 · tag:태그"
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -533,6 +542,15 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                     <span className="t-caption c-tertiary">고른 카드의 노트 {n(new Set(picked.map((c) => c.note_id)).size)}개</span>
                   </span>
                 </button>
+                {picked.some((c) => c.state === "suspended") && (
+                  <button role="menuitem" className="menu__item t-body-m" onClick={() => unsuspend(picked)}>
+                    <Icon name="play" size={16} scaled />
+                    <span className="menu__text">
+                      <span className="t-body-m">학습 다시 하기</span>
+                      <span className="t-caption c-tertiary">학습 중지 카드 {n(picked.filter((c) => c.state === "suspended").length)}장</span>
+                    </span>
+                  </button>
+                )}
               </div>
             )}
           </span>
@@ -711,6 +729,15 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                             />
                           )}
                         </div>
+                      )}
+                      {c.state === "suspended" && (
+                        <button role="menuitem" className="menu__item menu__item--top" onMouseEnter={() => setRowMove(false)} onClick={() => unsuspend([c])}>
+                          <Icon name="play" size={16} scaled />
+                          <span className="menu__text">
+                            <span className="t-body-m">학습 다시 하기</span>
+                            <span className="t-caption c-tertiary">학습 중지를 풀어요 · 다음 학습부터 포함</span>
+                          </span>
+                        </button>
                       )}
                       {c.buried ? (
                         <button role="menuitem" className="menu__item menu__item--top" onMouseEnter={() => setRowMove(false)} onClick={() => unbury(c)}>

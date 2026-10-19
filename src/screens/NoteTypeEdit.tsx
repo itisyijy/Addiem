@@ -266,6 +266,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     });
   const removeField = (key: number) => setDraft((x) => ({ ...x, fields: x.fields.filter((f) => f.key !== key) }));
   // NT74 숨긴 필드 되살리기: 그 자리를 초안 끝에 다시 넣는다 (저장하면 이름만 붙고 값은 그대로). 기본 이름이 없거나 겹치면 이름부터
+  // (겹치면 그 이름을 채운 채 열어 "같은 이름 필드가 있어요"를 바로 보인다, Q4 L3)
+  const clashes = (h: Detail["hidden"][number]) => h.name !== null && !!fieldNameError(h.name, names);
   const hiddenLeft = d.hidden.filter((h) => !draft.fields.some((f) => f.slot === h.slot));
   const [hiddenOpen, setHiddenOpen] = useState(true);
   const restored = (f: DField) => f.slot !== null && d.hidden.some((h) => h.slot === f.slot);
@@ -822,6 +824,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                     <span className="nte__hidden-text">
                       <span className="t-body-m">{h.name ?? "이름 없는 필드"}</span>
                       <span className="t-caption c-tertiary">{h.notes ? `노트 ${n(h.notes)}개에 남아 있어요${h.sample ? ` · 예: '${h.sample}'` : ""}` : "내용이 남은 노트가 없어요"}</span>
+                      {clashes(h) && <span className="t-caption c-warn">같은 이름 필드가 있어 다른 이름으로 되살려요</span>}
                     </span>
                     <button type="button" className="nte__restore t-label-m" aria-label={`${h.name ?? "이름 없는 필드"} 되살리기`} onClick={() => restoreField(h)}>
                       <Icon name="rotate" size={16} />
@@ -1500,7 +1503,7 @@ export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number
         ...(impact.unclozed > 0 ? [{ icon: "info" as const, text: "빈칸 표시는 글자로 바뀌어요." }] : []),
         ...(impact.empty_fronts > 0 ? [{ icon: "alert" as const, text: `옮기면 카드 ${n(impact.empty_fronts)}장의 앞면이 비어요 · 학습에 나오지 않고, 필드를 채우면 다시 나와요.` }] : []),
         ...(impact.made > 0 ? [{ icon: "plus" as const, text: `카드 ${n(impact.made)}장이 새로 생겨요.` }] : []),
-        ...(lose ? impact.kept.map(([a, b]): Line => ({ icon: "check", text: `${fromTpl(a)}의 복습 기록 · 일정은 「${toTpl(b)}」 카드로 이어져요.` })) : [{ icon: "check" as const, text: `카드 ${n(impact.cards)}장 · 복습 기록이 모두 이어져요.` }]),
+        ...(lose ? impact.kept.map(([a, b]): Line => ({ icon: "check", text: `「${fromTpl(a)}」의 복습 기록 · 일정은 「${toTpl(b)}」 카드로 이어져요.` })) : [{ icon: "check" as const, text: `카드 ${n(impact.cards)}장 · 복습 기록이 모두 이어져요.` }]),
       ];
   const run = async () => {
     if (!plan || busy) return;

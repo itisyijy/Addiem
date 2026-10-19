@@ -881,7 +881,7 @@ export function AddCard({ deckId }: { deckId: number }) {
                       : ""}
           </p>
           {kind === "typed" && typed ? (
-            <TypedPreview type={typed} values={typedValues} />
+            <TypedPreview type={typed} values={typedValues} deck={target} />
           ) : kind === "occlusion" ? (
             pic &&
             ordinalsOf(shapes)
@@ -1089,7 +1089,7 @@ function TypeMenu({ open, setOpen, types, deckTypes, current, onPick, onEdit, on
  * 학습 화면과 같은 길: render.rs(preview_template) → 살균 · 소리 칩 · 그림(renderCardHtml) → 수식(withMath), 노트 CSS 는 미리보기 안에 가둔다 (scopeCss).
  * 다크 테마의 덱 카드 면도 학습 화면과 같다 (deckFace). values 는 저장할 HTML (보이는 필드 순서)
  */
-function TypedPreview({ type, values }: { type: NoteTypeDetail; values: string[] }) {
+function TypedPreview({ type, values, deck }: { type: NoteTypeDetail; values: string[]; deck: number }) {
   const [cards, setCards] = useState<{ label: string; html: string }[]>([]);
   const key = JSON.stringify(values);
   useEffect(() => {
@@ -1107,7 +1107,7 @@ function TypedPreview({ type, values }: { type: NoteTypeDetail; values: string[]
       try {
         const out = await Promise.all(
           shown.slice(0, 4).map(async ({ tpl, ord, label }) => {
-            const p = await api.previewTemplate(type.id, tpl.qfmt, tpl.afmt, ord, values);
+            const p = await api.previewTemplate(type.id, tpl.qfmt, tpl.afmt, ord, values, undefined, undefined, deck);
             return { label, html: withMath(await renderCardHtml(p.front)) };
           }),
         );

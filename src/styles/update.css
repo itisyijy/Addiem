@@ -89,6 +89,9 @@ u.du-diff { text-decoration: underline; text-underline-offset: 3px; }
 .restore__list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow: auto; }
 .restore__list .import__option { padding: 12px 14px; }
 .restore__list .import__option.is-on { padding: 11px 13px; }
+/* 낮은 창(1180×640)에서도 버튼까지 보이게 (Q4 M1): 위 여백을 줄이고 창 높이 안에서 백업 목록이 줄어 스크롤. 되돌리기 확인 창도 같다 */
+.modal.restore, .modal.du-undo { top: clamp(24px, calc(100vh - 720px), 220px); max-height: calc(100vh - 48px); overflow: auto; }
+.modal.restore .restore__list { flex: 0 1 auto; min-height: 96px; }
 
 /* DU2-u 이 업데이트 되돌리기 (Figma 274:19232) · DU2-u2 결과 (276:20499) */
 .modal.du-undo { gap: 14px; width: 560px; }

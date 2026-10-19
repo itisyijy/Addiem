@@ -425,6 +425,9 @@ export type UpdateConflict = {
   edited_at: number;
   take_new: boolean;
   no_base: boolean;
+  /** 앱 기본 유형이면 그 종류 · 자리 이름 (화면 칸 이름으로 바꿔 보인다, NT51) */
+  native_kind: string | null;
+  slot_names: string[];
 };
 export type LookConflict = {
   /** null 이면 CSS (front 에 CSS) */
@@ -624,6 +627,8 @@ export const api = {
   /** 학습 밖 접어두기 (C2-r · C2-b). 3일 뒤 다시 */
   buryCards: (cardIds: number[]) => invoke<void>("bury_cards", { cardIds }),
   unburyCards: (cardIds: number[]) => invoke<void>("unbury_cards", { cardIds }),
+  /** 학습 중지 풀기 (C2 [학습 다시 하기]). 푼 카드 수 */
+  unsuspendCards: (cardIds: number[]) => invoke<number>("unsuspend_cards", { cardIds }),
   /** E2-h 최근 26주 하루별 평가한 카드 수. 0 인 날은 빠진다 */
   heatmap: (deckId: number | null) => invoke<HeatDay[]>("heatmap", { deckId }),
   saveDeckConfig: (config: DeckConfig) => invoke<void>("save_deck_config", { config }),
@@ -688,8 +693,9 @@ export const api = {
   deckNoteTypes: (deckId: number) => invoke<number[]>("deck_note_types", { deckId }),
   /** values 는 보이는 순서. names 를 주면 편집 중인 필드 이름 (values 가 null 이면 이름 샘플) */
   /** note: 값을 가져온 노트 ({{Tags}} {{Deck}} 같은 특수 필드를 그 노트 것으로) */
-  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[], note?: number) =>
-    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names, note }),
+  /** deck: 노트가 없을 때 {{Deck}} 에 쓸 덱 (C3 카드 추가) */
+  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[], note?: number, deck?: number) =>
+    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names, note, deck }),
   // NT1–NT5 목록 · 편집기
   cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
   renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),

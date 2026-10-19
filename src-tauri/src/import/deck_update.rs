@@ -285,6 +285,9 @@ pub struct ConflictNote {
     take_new: bool,
     /// 원본이 없어 어림으로 충돌로 본 노트 (DU18)
     no_base: bool,
+    /// 앱 기본 유형이면 그 종류와 자리 이름: 화면이 카드 추가 · 편집과 같은 칸 이름으로 보인다 (NT51, Back → 답변)
+    native_kind: Option<String>,
+    slot_names: Vec<String>,
 }
 
 /// B2-kt 카드 모양 충돌 하나 (둘 다 바꿨다)
@@ -379,7 +382,7 @@ pub struct UpdateSummary {
     pub(crate) same: usize,
     /// 비교할 원본이 없어 어림으로 판정한 노트 (DU18)
     pub(crate) no_base: usize,
-    /// 노트 유형이 달라 고치지 못한 노트 (만든 사람이 노트 유형을 바꿨다)
+    /// 노트 유형이 달라 고치지 못한 노트 (만든 사람이 바꿨거나 내가 다른 유형으로 옮겼다. 누가 바꿨는지는 모른다)
     pub(crate) other_type: usize,
     pub(crate) new_notes: usize,
     pub(crate) new_note_cards: usize,
@@ -464,17 +467,23 @@ struct TypeMap {
 
 /// 같은 guid 비율 · 같은 Anki 덱 id (DU15)
 fn hint(con: &Connection, guids: &[&str], decks: &BTreeSet<i64>) -> Res<UpdateHint> {
-    let mut st = con.prepare_cached("SELECT EXISTS (SELECT 1 FROM note WHERE anki_guid = ?1)").map_err(err)?;
+    let mut st = con.prepare_cached("SELECT (SELECT c.deck_id FROM card c WHERE c.note_id = n.id ORDER BY c.id LIMIT 1) FROM note n WHERE n.anki_guid = ?1 LIMIT 1").map_err(err)?;
     let mut existing = 0;
+    let mut their_decks: HashSet<i64> = HashSet::new();
     for g in guids {
-        existing += st.query_row([g], |r| r.get::<_, bool>(0)).map_err(err)? as usize;
+        if let Some(d) = st.query_row([g], |r| r.get::<_, Option<i64>>(0)).optional().map_err(err)? {
+            existing += 1;
+            their_decks.extend(d);
+        }
     }
-    // 그 덱들의 최상위 덱 이름 (요약 · 결과의 덱 "…")
+    let same_deck = known_decks(con, decks)?;
+    let suggested = existing > 0 && (existing * 2 >= guids.len() || !same_deck.is_empty());
+    // 그 덱들의 최상위 덱 이름 (요약 · 결과의 덱 "…"). 같은 Anki 덱 id 가 없으면(내 덱을 내보냈다 다시 가져옴, Q4 L4) 이미 있는 노트의 덱
     let mut known: Vec<String> = vec![];
-    for id in roots_of(con, &known_decks(con, decks)?)? {
+    for id in roots_of(con, if same_deck.is_empty() { &their_decks } else { &same_deck })? {
         known.push(con.query_row("SELECT name FROM deck WHERE id = ?1", [id], |r| r.get(0)).map_err(err)?);
     }
-    Ok(UpdateHint { notes: guids.len(), existing_notes: existing, suggested: existing > 0 && (existing * 2 >= guids.len() || !known.is_empty()), known_decks: known })
+    Ok(UpdateHint { notes: guids.len(), existing_notes: existing, suggested, known_decks: known })
 }
 
 /// 이번 패키지 덱(Anki 덱 id)으로 가져온 우리 덱
@@ -1331,6 +1340,8 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
                 edited_at: o.updated_at,
                 take_new,
                 no_base: base.is_none(),
+                native_kind: nt.native_kind.clone(),
+                slot_names: names.to_vec(),
             });
         }
         (true, true, true) => s.merged += 1,

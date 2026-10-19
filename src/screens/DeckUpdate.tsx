@@ -23,6 +23,7 @@ import { Badge, Button, Icon, Kbd, Segment, Spinner, StatTile, type IconName } f
 import { eul, eun, lockNav, n, ro, useKey, useNav } from "../nav";
 import { useSyncStatus } from "../sync";
 import { IssueList } from "./Import";
+import { nativeLabels } from "./AddCard";
 import "../styles/update.css";
 
 const day = (ms: number) => new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric" }).format(ms);
@@ -221,6 +222,19 @@ function toChoices(picks: Map<string, Pick>, looks: Map<string, Pick>, s: Update
   return { take_new: [], take_new_fields, new_looks };
 }
 
+/** 앱 기본 유형의 충돌 필드는 카드 추가 · 편집과 같은 칸 이름으로 (NT51: Back 대신 답변, Q4 L4). 고르기는 자리(slot)로 하므로 이름만 바꾼다 */
+function labeled(s: UpdateSummary): UpdateSummary {
+  return {
+    ...s,
+    conflicts: s.conflicts.map((c) => {
+      const labels = c.native_kind ? nativeLabels(c.native_kind) : undefined;
+      if (!labels) return c;
+      const show = (name: string) => labels[c.slot_names.indexOf(name)] ?? name;
+      return { ...c, fields: c.fields.map((f) => ({ ...f, name: labels[f.slot] ?? f.name })), auto_new_fields: c.auto_new_fields.map(show) };
+    }),
+  };
+}
+
 /** 충돌 노트를 고른 쪽으로 센다 (엔진이 돌려준 필드마다 take_new). 요약 · 결과 · 결과 파일이 같은 수를 쓴다:
  *  모든 충돌 필드가 새 버전 = 새 버전, 일부만 = 일부, 하나도 없으면 내 것 */
 function conflictPicks(conflicts: UpdateSummary["conflicts"]) {
@@ -235,7 +249,7 @@ type Step = "summary" | "conflicts" | "looks" | "apply";
 
 export function DeckUpdate({ path, info, summary: first }: { path: string; info: AnkiPreview; summary: UpdateSummary; pulled: boolean }) {
   const nav = useNav();
-  const [summary, setSummary] = useState(first);
+  const [summary, setSummary] = useState(() => labeled(first));
   const [step, setStep] = useState<Step>("summary");
   const [picks, setPicks] = useState<Map<string, Pick>>(new Map());
   const [looks, setLooks] = useState<Map<string, Pick>>(new Map());
@@ -249,7 +263,7 @@ export function DeckUpdate({ path, info, summary: first }: { path: string; info:
     setStep("summary");
     setBusy(true);
     try {
-      setSummary(await api.inspectUpdate(path, c));
+      setSummary(labeled(await api.inspectUpdate(path, c)));
       setError(undefined);
     } catch (e) {
       setError(errorText(e));
@@ -479,7 +493,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
       ? [{ key: "nobase", icon: "info" as IconName, title: "비교할 원본이 없는 노트", desc: "예전에 가져온 노트예요. 가져온 뒤 고치지 않았으면 새 버전으로, 고쳤으면 충돌로 보고 내 것을 지켜요", right: `${n(noBase)}개` }]
       : []),
     ...(s.other_type > 0
-      ? [{ key: "other", icon: "alert" as IconName, title: "노트 유형이 달라 고치지 못한 노트", desc: "만든 사람이 노트 유형을 바꿨어요. 이 노트는 그대로 둬요", right: `${n(s.other_type)}개` }]
+      ? [{ key: "other", icon: "alert" as IconName, title: "노트 유형이 달라 고치지 못한 노트", desc: "이 기기와 새 버전의 노트 유형이 달라요 · 이 노트는 그대로 둬요", right: `${n(s.other_type)}개` }]
       : []),
   ];
 
@@ -527,7 +541,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
         {s.reviews_skipped > 0 && (
           <span className="du-line">
             <Icon name="info" size={16} className="c-secondary" />
-            <span className="t-body-s c-secondary">가져오지 않는 복습 기록 {n(s.reviews_skipped)}건 · 이 파일의 복습 기록은 만든 사람 것이에요</span>
+            <span className="t-body-s c-secondary">가져오지 않는 복습 기록 {n(s.reviews_skipped)}건 · 이 기기의 복습 기록과 일정은 그대로예요</span>
           </span>
         )}
       </div>
@@ -1483,7 +1497,7 @@ export function UndoConfirm({ batch, onClose }: { batch: number; onClose: () => 
         u.archived_notes > 0 && {
           icon: "layers" as const,
           tone: "c-secondary",
-          text: `보관해요 · 공부하지 않은 새 노트 ${n(u.archived_notes)}개(카드 ${n(u.archived_note_cards)}장)는 학습에서 빼고 '${ARCHIVE_TAG}' 태그로 모아요. 카드 목록에서 보거나 지울 수 있어요`,
+          text: `보관해요 · 공부하지 않은 새 노트 ${n(u.archived_notes)}개(카드 ${n(u.archived_note_cards)}장)는 학습에서 빼고 '${ARCHIVE_TAG}' 태그로 모아요. 카드 목록에서 tag:${ARCHIVE_TAG} 로 찾아 학습을 다시 하거나 지울 수 있어요`,
         },
         u.archived_cards > u.archived_note_cards && {
           icon: "layers" as const,
@@ -1594,10 +1608,16 @@ export function UndoResultScreen({ undo: u }: { undo: UndoSummary }) {
               </span>
               <span className="t-body-s c-secondary">
                 학습에 나오지 않고{u.archived_notes > 0 ? ` '${ARCHIVE_TAG}' 태그로 모아 뒀어요` : " 학습 중지로 두었어요"}.
-                {u.archived_notes > 0 && u.archived_cards > u.archived_note_cards ? ` 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장도 학습 중지로 두었어요.` : ""} 카드 목록에서 보거나 지울 수 있어요.
+                {u.archived_notes > 0 && u.archived_cards > u.archived_note_cards ? ` 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장도 학습 중지로 두었어요.` : ""} 카드 목록에서 {u.archived_notes > 0 ? `tag:${ARCHIVE_TAG} 로 찾아 ` : ""}학습을 다시 하거나 지울 수 있어요.
               </span>
             </span>
-            <Button variant="ghost" size="M" label="보관한 카드 보기" onClick={() => nav({ name: "cards", deckId: null, cardIds: u.archived_card_ids })} />
+            {/* 다 보관한 새 노트의 카드뿐이면 나중에도 찾는 그 검색으로 (Q4 M2). 이미 있던 노트의 새 카드는 태그가 없어 카드로 */}
+            <Button
+              variant="ghost"
+              size="M"
+              label="보관한 카드 보기"
+              onClick={() => nav(u.archived_cards === u.archived_note_cards ? { name: "cards", deckId: null, query: `tag:${ARCHIVE_TAG}` } : { name: "cards", deckId: null, cardIds: u.archived_card_ids })}
+            />
           </div>
         )}
         {u.kept_structure > 0 && (

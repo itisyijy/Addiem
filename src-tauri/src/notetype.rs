@@ -691,7 +691,8 @@ pub(crate) fn restore_field(con: &Connection, id: i64, slot: usize, name: &str) 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct HiddenSlot {
     slot: usize,
-    /// 되살릴 때의 기본 이름: 가져온 유형은 원본의 Anki 이름 (note_type.origin.f). 없거나 겹치면 None = 화면이 묻는다
+    /// 되살릴 때의 기본 이름: 가져온 유형은 원본의 Anki 이름 (note_type.origin.f). 없으면 None = 화면이 묻는다.
+    /// 보이는 필드와 겹쳐도 그 이름을 준다: 화면이 처음부터 겹친다고 알리고 다른 이름을 묻는다 (Q4 L3)
     name: Option<String>,
     /// 그 자리에 내용이 있는 노트
     notes: i64,
@@ -712,7 +713,7 @@ pub(crate) fn hidden_slots(con: &Connection, nt: &Nt) -> Res<Vec<HiddenSlot>> {
         .into_iter()
         .map(|slot| HiddenSlot {
             slot,
-            name: anki.iter().find(|(_, s)| *s == Some(slot)).map(|(n, _)| n.clone()).filter(|n| field_name(nt, n, None).is_ok()),
+            name: anki.iter().find(|(_, s)| *s == Some(slot)).map(|(n, _)| n.clone()),
             notes: notes.iter().filter(|(_, v)| v.get(slot).is_some_and(|x| !blank_field(x))).count() as i64,
             sample: notes.iter().filter_map(|(_, v)| v.get(slot)).map(|x| render::strip_tags(x)).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ")).find(|t| !t.is_empty()).map(|t| {
                 let cut: String = t.chars().take(20).collect();
@@ -888,7 +889,18 @@ pub struct Preview {
 /// (빈칸으로 쓰는 필드는 "{{c1::이름}}"). names 를 주면 편집 중인 필드 이름 (이름을 바꾸거나 더한 초안): values 는 그 순서, 없으면 이름 샘플
 #[allow(clippy::too_many_arguments)]
 /// note: 값을 가져온 노트 (특수 필드 {{Tags}} {{Deck}} 를 그 노트 것으로). 없으면 "(태그)" · "(덱)" 같은 이름 샘플
-pub(crate) fn preview(con: &Connection, id: i64, qfmt: &str, afmt: &str, ord: u32, values: Option<&[String]>, names: Option<&[String]>, note: Option<i64>) -> Res<Preview> {
+/// deck: 노트가 없을 때 {{Deck}} · {{Subdeck}} 에 쓸 덱 (C3 카드 추가: 넣을 덱, Q4 L6)
+pub(crate) fn preview(
+    con: &Connection,
+    id: i64,
+    qfmt: &str,
+    afmt: &str,
+    ord: u32,
+    values: Option<&[String]>,
+    names: Option<&[String]>,
+    note: Option<i64>,
+    deck: Option<i64>,
+) -> Res<Preview> {
     let nt = load(con, id)?;
     let cz = cloze_refs(qfmt);
     let sample = |n: &String| if cz.contains(n) { format!("{{{{c1::{n}}}}}") } else { format!("({n})") };
@@ -928,7 +940,12 @@ pub(crate) fn preview(con: &Connection, id: i64, qfmt: &str, afmt: &str, ord: u3
             let by_id = decks.iter().map(|d| (d.id, d)).collect();
             render::special_fields(&tags, &deck.map(|d| crate::commands::path_of(d, &by_id)).unwrap_or_default(), &nt.name, card)
         }
-        None => render::special_fields("(태그)", &["(덱)".to_string()], &nt.name, card),
+        None => {
+            let decks = crate::commands::load_decks(con)?;
+            let by_id = decks.iter().map(|d| (d.id, d)).collect();
+            let path = deck.map(|d| crate::commands::path_of(d, &by_id)).filter(|p| !p.is_empty()).unwrap_or_else(|| vec!["(덱)".to_string()]);
+            render::special_fields("(태그)", &path, &nt.name, card)
+        }
     };
     map.extend(special);
     let r = render::render_card(qfmt, afmt, &map, ord);
@@ -2113,8 +2130,9 @@ pub fn preview_template(
     values: Option<Vec<String>>,
     names: Option<Vec<String>>,
     note: Option<i64>,
+    deck: Option<i64>,
 ) -> Res<Preview> {
-    preview(&*state.db.lock().map_err(err)?, id, &qfmt, &afmt, ord, values.as_deref(), names.as_deref(), note)
+    preview(&*state.db.lock().map_err(err)?, id, &qfmt, &afmt, ord, values.as_deref(), names.as_deref(), note, deck)
 }
 
 #[tauri::command]
@@ -2489,11 +2507,11 @@ mod tests {
         assert_eq!(h[0].sample.as_deref(), Some("비밀"), "이름 없는 필드를 구별하는 남은 내용");
         assert!(restore_field(&con, nt, 2, "front").is_err(), "보이는 필드와 겹치는 이름");
         assert!(restore_field(&con, nt, 0, "x").is_err(), "숨긴 자리가 아니다");
-        // 가져온 유형은 원본의 Anki 이름이 기본 (겹치면 묻는다)
+        // 가져온 유형은 원본의 Anki 이름이 기본
         con.execute(r#"UPDATE note_type SET origin = '{"f":[["Front",0],["Back",1],["Memo",2]],"t":[],"c":""}' WHERE id = ?1"#, [nt]).unwrap();
         assert_eq!(hidden_slots(&con, &t).unwrap()[0].name.as_deref(), Some("Memo"));
         con.execute(r#"UPDATE note_type SET origin = '{"f":[["Front",0],["Back",1],["back",2]],"t":[],"c":""}' WHERE id = ?1"#, [nt]).unwrap();
-        assert_eq!(hidden_slots(&con, &t).unwrap()[0].name, None);
+        assert_eq!(hidden_slots(&con, &t).unwrap()[0].name.as_deref(), Some("back"), "겹쳐도 원래 이름 (화면이 겹친다고 알리고 묻는다)");
         // 편집기 초안에 숨긴 자리를 다시 넣고 저장: 이름만 붙고 값 · 옛 순서 자리가 그대로 돌아온다
         let fe = |slot: Option<usize>, name: &str| FieldEdit { slot, name: name.into() };
         let tpl = &t.templates[0];
@@ -2543,11 +2561,11 @@ mod tests {
         let (con, deck) = setup();
         let nt = anki_clone(&con, "basic", None);
         let names = s(&["앞", "새 필드"]);
-        let p = preview(&con, nt, "{{앞}}<br>{{새 필드}}", "", 0, None, Some(&names), None).unwrap();
+        let p = preview(&con, nt, "{{앞}}<br>{{새 필드}}", "", 0, None, Some(&names), None, None).unwrap();
         assert_eq!(p.front, "(앞)<br>(새 필드)");
-        let p = preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값", ""])), Some(&names), None).unwrap();
+        let p = preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값", ""])), Some(&names), None, None).unwrap();
         assert_eq!(p.front, "값");
-        assert!(preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값"])), Some(&names), None).is_err());
+        assert!(preview(&con, nt, "{{앞}}", "", 0, Some(&s(&["값"])), Some(&names), None, None).is_err());
         note(&con, deck, nt, &["q1", "a1"]);
         note(&con, deck, nt, &["q2", "a2"]);
         let got = samples(&con, nt, 1, None).unwrap();
@@ -2794,11 +2812,11 @@ mod tests {
     fn preview_and_deck_type() {
         let (con, deck) = setup();
         let nt = anki_clone(&con, "cloze", None);
-        let p = preview(&con, nt, "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", 0, None, None, None).unwrap();
+        let p = preview(&con, nt, "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}", 0, None, None, None, None).unwrap();
         assert!(p.front.contains("class=\"cloze\"") && p.back.contains("(Back Extra)"), "{p:?}");
-        let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"])), None, None).unwrap();
+        let p = preview(&con, nt, "{{Back Extra}}", "", 0, Some(&s(&["t", "덧붙임"])), None, None, None).unwrap();
         assert_eq!(p.front, "덧붙임");
-        assert!(preview(&con, nt, "", "", 0, Some(&s(&["t"])), None, None).is_err());
+        assert!(preview(&con, nt, "", "", 0, Some(&s(&["t"])), None, None, None).is_err());
         assert!(deck_types(&con, deck).unwrap().is_empty());
         note(&con, deck, nt, &["{{c1::a}}", ""]);
         con.execute("INSERT INTO deck (name, parent_id, created_at, updated_at) VALUES ('하위', ?1, 0, 0)", [deck]).unwrap();
@@ -2814,7 +2832,7 @@ mod tests {
         assert_eq!(rows.iter().find(|r| r.id == basic).unwrap().decks, ["하위"]);
         assert!(rows.iter().find(|r| r.id == nt).is_some_and(|r| r.user_made && r.decks == ["덱"]));
         // 미리보기 기본값: 가장 최근 노트 (이 유형의)
-        let p = preview(&con, nt, "{{cloze:Text}}", "", 0, None, None, None).unwrap();
+        let p = preview(&con, nt, "{{cloze:Text}}", "", 0, None, None, None, None).unwrap();
         assert!(p.front.starts_with("<span class=\"cloze\">["), "{p:?}");
         // 특수 필드: 그 노트의 태그 · 덱 경로 · 하위 덱 · 유형 · 카드 종류 이름. 깃발은 없다
         let name: String = con.query_row("SELECT name FROM note_type WHERE id = ?1", [nt], |r| r.get(0)).unwrap();
@@ -2822,10 +2840,12 @@ mod tests {
         let n: i64 = con.query_row("SELECT max(id) FROM note WHERE note_type_id = ?1", [nt], |r| r.get(0)).unwrap();
         con.execute("UPDATE note SET tags = '기출::2023 <x>' WHERE id = ?1", [n]).unwrap();
         con.execute("UPDATE card SET deck_id = ?2 WHERE note_id = ?1", [n, sub]).unwrap();
-        let p = preview(&con, nt, tpl, "{{FrontSide}}<hr id=answer>", 0, None, None, Some(n)).unwrap();
+        let p = preview(&con, nt, tpl, "{{FrontSide}}<hr id=answer>", 0, None, None, Some(n), None).unwrap();
         assert_eq!(p.back, format!("{}<hr id=answer>", p.front), "NT10 답 면의 {{FrontSide}} 안 특수 필드도 값으로");
         assert_eq!(p.front, format!("기출::2023 &lt;x&gt;|덱::하위|하위|{name}|Cloze||t"));
-        let p = preview(&con, nt, tpl, "", 0, None, Some(&s(&["Text"])), None).unwrap();
+        let p = preview(&con, nt, tpl, "", 0, None, Some(&s(&["Text"])), None, Some(sub)).unwrap();
+        assert_eq!(p.front, format!("(태그)|덱::하위|하위|{name}|Cloze||t"), "카드 추가: 노트가 없으면 넣을 덱 (Q4 L6)");
+        let p = preview(&con, nt, tpl, "", 0, None, Some(&s(&["Text"])), None, None).unwrap();
         assert_eq!(p.front, format!("(태그)|(덱)|(덱)|{name}|Cloze||t"), "노트가 없으면 이름 샘플");
         // render_fields(품질 · 서술형)는 지금처럼 빈 값 (학습 화면 · 목록은 render_fields_with)
         let names = crate::commands::note_field_names(&con).unwrap();

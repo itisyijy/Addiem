@@ -17,7 +17,7 @@ export type Route =
   | { name: "importResult"; result: ImportResult } // B3
   | { name: "importance"; deckId: number; next?: number[] } // B4. next: 가져오기 뒤 이어서 볼 최상위 덱
   | { name: "deck"; deckId: number } // C1
-  | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean; edit?: number } // C2. deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w). edit: 노트 유형 편집기에서 돌아왔다 (그 카드의 편집 창을 다시 연다, NT53)
+  | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean; edit?: number; query?: string } // C2. query: 처음 검색 글자 ("tag:…"). deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w). edit: 노트 유형 편집기에서 돌아왔다 (그 카드의 편집 창을 다시 연다, NT53)
   | { name: "addCard"; deckId: number } // C3
   | { name: "deckSettings"; deckId: number } // C4
   | { name: "sources"; deckId: number; materialId?: number; segmentId?: number; link?: boolean; gaps?: boolean } // I1 자료. I2 패널에서 오면 그 구간 (link: 카드 잇기 칸을 연 채로). gaps: R1-a 빠진 범위로

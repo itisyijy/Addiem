@@ -92,6 +92,7 @@ pub fn run() {
             commands::set_deck_weak,
             commands::dismiss_weak,
             commands::unbury_cards,
+            commands::unsuspend_cards,
             commands::heatmap,
             commands::note_edit,
             commands::update_note,

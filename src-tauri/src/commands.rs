@@ -1158,7 +1158,27 @@ fn sound_only_hits(con: &Connection, query: &str, like: &str) -> Res<Vec<i64>> {
     Ok(out)
 }
 
-/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). buried_only 는 A2-b "접어둔 카드 보기"
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// 검색 글자에서 "tag:이름" 낱말을 뺀다 (태그, 나머지 글자). 태그 낱말이 없으면 글자는 입력 그대로 (띄어쓰기도)
+fn tag_terms(query: &str) -> (Vec<String>, String) {
+    let is_tag = |w: &str| w.len() > 4 && w.is_char_boundary(4) && w[..4].eq_ignore_ascii_case("tag:");
+    if !query.split_whitespace().any(is_tag) {
+        return (vec![], query.to_string());
+    }
+    let (tags, rest): (Vec<&str>, Vec<&str>) = query.split_whitespace().partition(|w| is_tag(w));
+    (tags.into_iter().map(|t| t[4..].to_string()).collect(), rest.join(" "))
+}
+
+/// 그 태그나 그 아래 태그(이름::…)가 있는 노트. 대소문자는 가리지 않는다 (Anki tag: 와 같다)
+fn tag_filter(tag: &str) -> String {
+    let t = like_escape(&tag.to_lowercase()).replace('\'', "''");
+    format!("AND ((' ' || lower(n.tags) || ' ') LIKE '% {t} %' ESCAPE '\\' OR (' ' || lower(n.tags)) LIKE '% {t}::%' ESCAPE '\\')")
+}
+
+/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기"
 #[tauri::command]
 pub fn list_cards(
     state: State<AppState>,
@@ -1185,12 +1205,15 @@ pub fn list_cards(
         ids
     };
     let ids = if ids.is_empty() { "-1".to_string() } else { ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",") };
+    // "tag:이름" 낱말은 태그로 거른다 (Q4 M2). 나머지 글자는 지금처럼 필드 원문에서 찾는다 (태그 낱말이 없으면 입력 그대로)
+    let (tags, query) = tag_terms(&query);
     // LIKE 의 와일드카드를 글자 그대로 찾게 한다
-    let q = query.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let q = like_escape(query.trim());
     let q = q.as_str();
     let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(&con, query.trim(), q)? };
     let filter = format!(
-        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {}",
+        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {} {}",
+        tags.iter().map(|t| tag_filter(t)).collect::<String>(),
         if buried_only.unwrap_or(false) { "AND c.buried_until IS NOT NULL" } else { "" },
         // C1-xr [카드 보기]: 이 카드들만
         card_ids.map_or(String::new(), |c| format!("AND c.id IN ({})", if c.is_empty() { "-1".into() } else { id_list(&c) })),
@@ -1359,6 +1382,44 @@ pub fn unbury_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     con.execute(&format!("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id IN ({})", id_list(&card_ids)), [])
         .map_err(err)?;
     Ok(())
+}
+
+/// C2 [학습 다시 하기]: 학습 중지를 푼다 (Q4 M2). 공부한 적 없으면 신규, 간격이 하루 이상이면 복습, 그 밖은 학습 중으로 (일정 값은 그대로).
+/// 되돌리기가 보관한 노트(deck_update::ARCHIVE_TAG)는 학습 중지 카드가 남지 않으면 그 태그도 뗀다. 푼 카드 수
+#[tauri::command]
+pub fn unsuspend_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<usize> {
+    let mut con = state.db.lock().map_err(err)?;
+    unsuspend(&mut con, &card_ids, now_ms())
+}
+
+pub(crate) fn unsuspend(con: &mut Connection, card_ids: &[i64], now: i64) -> Res<usize> {
+    if card_ids.is_empty() {
+        return Ok(0);
+    }
+    let ids = id_list(card_ids);
+    let tx = con.transaction().map_err(err)?;
+    let n = tx
+        .execute(
+            &format!(
+                "UPDATE card SET state = CASE WHEN reps = 0 AND last_reviewed_at IS NULL THEN 'new' WHEN interval_days >= 1 THEN 'review' ELSE 'learning' END,
+                        due_at = CASE WHEN reps = 0 AND last_reviewed_at IS NULL THEN due_at ELSE coalesce(due_at, ?1) END, updated_at = ?1
+                 WHERE id IN ({ids}) AND state = 'suspended'"
+            ),
+            [now],
+        )
+        .map_err(err)?;
+    let tag = crate::import::deck_update::ARCHIVE_TAG;
+    tx.execute(
+        &format!(
+            "UPDATE note SET tags = trim(replace(' ' || tags || ' ', ' ' || ?1 || ' ', ' ')), updated_at = ?2
+             WHERE id IN (SELECT note_id FROM card WHERE id IN ({ids})) AND (' ' || tags || ' ') LIKE '% ' || ?1 || ' %'
+               AND NOT EXISTS (SELECT 1 FROM card c WHERE c.note_id = note.id AND c.state = 'suspended')"
+        ),
+        params![tag, now],
+    )
+    .map_err(err)?;
+    tx.commit().map_err(err)?;
+    Ok(n)
 }
 
 /// 카드를 지운다. 노트에 남은 카드가 없으면 노트도 지운다. 복습 기록은 남는다 (review_log.card_id 가 NULL 이 된다)
@@ -2426,7 +2487,7 @@ pub(crate) fn prune_auto_backups(dir: &std::path::Path, now: i64) -> Vec<String>
             auto_backup(&name).map(|(_, at)| (at, e.path(), name))
         })
         .collect();
-    autos.sort_by(|a, b| b.0.cmp(&a.0));
+    autos.sort_by_key(|a| std::cmp::Reverse(a.0));
     let mut gone = vec![];
     for (i, (at, path, name)) in autos.into_iter().enumerate() {
         if i >= AUTO_KEEP && now - at > AUTO_DAYS * db::DAY_MS && std::fs::remove_file(&path).is_ok() {
@@ -2901,6 +2962,28 @@ mod tests {
             super::insert_note(con, &card, "", None).unwrap();
         }
         con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn tag_search_and_unsuspend() {
+        // Q4 M2: C2 검색의 "tag:" 낱말은 태그로 (그 아래 태그도, 일부 글자는 아님), 나머지 글자는 그대로
+        assert_eq!(super::tag_terms("a  b"), (vec![], "a  b".to_string()), "태그 낱말이 없으면 입력 그대로");
+        assert_eq!(super::tag_terms("tag:X 사과 TAG:y::z"), (vec!["X".to_string(), "y::z".to_string()], "사과".to_string()));
+        let mut con = crate::db::open_in_memory().unwrap();
+        let cards = deck_with_cards(&con, 3, None);
+        for (c, tags) in cards.iter().zip(["되돌린_업데이트 과목::1장", "과목", ""]) {
+            con.execute("UPDATE note SET tags = ?2 WHERE id = (SELECT note_id FROM card WHERE id = ?1)", params![c, tags]).unwrap();
+        }
+        let hits = |t: &str| -> i64 { con.query_row(&format!("SELECT count(*) FROM note n WHERE 1 {}", super::tag_filter(t)), [], |r| r.get(0)).unwrap() };
+        assert_eq!([hits("되돌린_업데이트"), hits("과목"), hits("과"), hits("과목::1장"), hits("x' OR 1=1 --")], [1, 2, 0, 1, 0]);
+        // 학습 다시 하기: 공부한 적 없으면 신규, 간격이 하루 이상이면 복습. 보관 태그는 학습 중지 카드가 남지 않으면 뗀다
+        con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [cards[0]]).unwrap();
+        con.execute("UPDATE card SET state = 'suspended', reps = 2, interval_days = 3, last_reviewed_at = 1, due_at = 5 WHERE id = ?1", [cards[1]]).unwrap();
+        assert_eq!(super::unsuspend(&mut con, &cards, 9).unwrap(), 2);
+        let states: Vec<String> = con.prepare("SELECT state || ':' || coalesce(due_at, -1) FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(states[..2], ["new:-1".to_string(), "review:5".to_string()]);
+        let tags: String = con.query_row("SELECT tags FROM note WHERE id = (SELECT note_id FROM card WHERE id = ?1)", [cards[0]], |r| r.get(0)).unwrap();
+        assert_eq!(tags, "과목::1장");
     }
 
     /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)

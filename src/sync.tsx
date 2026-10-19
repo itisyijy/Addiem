@@ -373,7 +373,7 @@ export function SyncHost({ studying }: { studying: boolean }) {
       shown.current = s.conflict_seq;
       toast({
         title: "다른 기기와 맞췄어요",
-        text: `카드 ${n(s.conflicts)}장은 두 기기에서 고쳐서 나중에 고친 쪽 내용으로 맞췄어요`,
+        text: `카드 ${n(s.conflicts)}장은 두 기기에서 고쳐서 한쪽 내용으로 맞췄어요 (보통 나중에 고친 쪽, 노트 유형을 옮겼으면 옮긴 쪽)`,
         icon: "cloud-check",
         ms: 5000,
         action: { label: "보기", onClick: () => setFlow({ kind: "conflicts" }) },
@@ -998,7 +998,10 @@ function ConflictsModal({ onClose }: { onClose: () => void }) {
           // 저절로 맞춘 그대로인 카드만 있으면 규칙을, 직접 고른(또는 다른 기기에서 고른) 카드가 있으면 그 말을 빼고
           list?.some((c) => c.picked || !c.versions.some((v) => v.current && v.winner))
             ? "내용이 다른 카드예요. 지금 내용은 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
-            : "나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+            : list?.some((c) => c.versions.some((v) => !v.usable))
+              ? // K41: 노트 유형을 옮긴 쪽 내용으로 맞춘 카드가 있다 (나중에 고친 쪽이 아닐 수 있고, 그 버전은 바꿀 수 없다)
+                "한쪽 내용을 지금 내용으로 썼어요. 노트 유형이 바뀐 카드는 옮긴 쪽 내용이에요. 복습 기록은 양쪽 모두 남았어요."
+              : "나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
         }
         onClose={onClose}
       />
