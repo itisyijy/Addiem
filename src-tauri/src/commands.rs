@@ -2466,7 +2466,7 @@ pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag:
     if result.is_err() {
         let _ = std::fs::remove_file(&out);
     } else if !tag.is_empty() {
-        prune_auto_backups(&dir, now_ms());
+        prune_auto_backups(con, &dir, now_ms());
     }
     result.map(|_| out)
 }
@@ -2476,8 +2476,10 @@ const AUTO_KEEP: usize = 10;
 const AUTO_DAYS: i64 = 7;
 
 /// 새 자동 백업을 만들 때 오래된 자동 백업을 지운다. 지운 이름을 돌려준다.
-/// auto_backup 이 알아본 이름(앱이 만드는 꼴과 꼭 맞는 것)만 본다: 직접 만든 백업 · 사용자가 넣은 파일 · 모르는 이름은 건드리지 않는다
-pub(crate) fn prune_auto_backups(dir: &std::path::Path, now: i64) -> Vec<String> {
+/// auto_backup 이 알아본 이름(앱이 만드는 꼴과 꼭 맞는 것)만 본다: 직접 만든 백업 · 사용자가 넣은 파일 · 모르는 이름은 건드리지 않는다.
+/// 지운 백업이 그 업데이트 전 백업이면 그 업데이트의 되돌리기 기록(update_journal)도 지운다: 설정의 되돌리기 진입점은 그 백업이 남아 있는 동안만이고,
+/// 기기 DB 가 끝없이 커지지 않게 (코디네이터 결정 2026-10-20)
+pub(crate) fn prune_auto_backups(con: &Connection, dir: &std::path::Path, now: i64) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
     let mut autos: Vec<(i64, std::path::PathBuf, String)> = entries
         .filter_map(Result::ok)
@@ -2493,6 +2495,14 @@ pub(crate) fn prune_auto_backups(dir: &std::path::Path, now: i64) -> Vec<String>
         if i >= AUTO_KEEP && now - at > AUTO_DAYS * db::DAY_MS && std::fs::remove_file(&path).is_ok() {
             gone.push(name);
         }
+    }
+    if !gone.is_empty() {
+        // 정리가 실패해도 백업은 이미 만들었다 (다음 정리에서 다시 본다)
+        let _ = con.execute(
+            "DELETE FROM update_journal WHERE batch_id IN (
+               SELECT batch_id FROM update_journal WHERE kind = 'meta' AND json_extract(after, '$.backup') IN (SELECT value FROM json_each(?1)))",
+            [serde_json::to_string(&gone).unwrap_or_default()],
+        );
     }
     gone
 }
@@ -2898,6 +2908,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("na-prune-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let now = now_ms();
+        let con = crate::db::open_in_memory().unwrap();
         let at = |ago: i64| chrono::DateTime::from_timestamp_millis(now - ago).unwrap().with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S").to_string();
         let day = crate::db::DAY_MS;
         let kinds = ["update", "move", "undo", "notetype", "deck", "wipe", "restore"];
@@ -2921,16 +2932,25 @@ mod tests {
             v.sort();
             v
         };
+        // 되돌리기 기록: 지울 백업(autos[12]) 전의 업데이트 1 · 남길 백업(autos[0]) 전의 업데이트 2
+        for (batch, backup) in [(1, &autos[12]), (2, &autos[0])] {
+            con.execute("INSERT INTO import_batch (id, source_kind, source_name, started_at, status) VALUES (?1, 'apkg', 'v2.apkg', 0, 'ok')", [batch]).unwrap();
+            con.execute("INSERT INTO update_journal (batch_id, kind, uid, after) VALUES (?1, 'meta', '', json_object('backup', ?2))", params![batch, backup]).unwrap();
+            con.execute("INSERT INTO update_journal (batch_id, kind, uid, before, after) VALUES (?1, 'note', 'n1', '{}', '{}')", [batch]).unwrap();
+        }
         // 최근 10개(1 · 2 · 10..17일) 다음은 모두 7일이 넘었다
-        assert_eq!(sorted(super::prune_auto_backups(&dir, now)), sorted(autos[10..].to_vec()));
+        assert_eq!(sorted(super::prune_auto_backups(&con, &dir, now)), sorted(autos[10..].to_vec()));
+        let journal: Vec<String> = con.prepare("SELECT batch_id || kind FROM update_journal ORDER BY 1").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(journal, ["2meta", "2note"], "백업이 정리된 업데이트의 되돌리기 기록도 지운다 (가져온 기록 import_batch 는 남긴다)");
+        assert_eq!(con.query_row("SELECT count(*) FROM import_batch", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
         let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일은 남는다: {left:?}");
-        assert!(super::prune_auto_backups(&dir, now).is_empty(), "다시 불러도 지울 것이 없다");
+        assert!(super::prune_auto_backups(&con, &dir, now).is_empty(), "다시 불러도 지울 것이 없다");
         // 7일 안의 자동 백업은 10개가 넘어도 남긴다: 오늘 12개를 더하면 7일 넘은 10..17일 것만 지운다
         for i in 0..12 {
             std::fs::write(dir.join(format!("neoanki-{}-update.zip", at(i * 60_000))), b"x").unwrap();
         }
-        assert_eq!(sorted(super::prune_auto_backups(&dir, now)), sorted(autos[2..10].to_vec()));
+        assert_eq!(sorted(super::prune_auto_backups(&con, &dir, now)), sorted(autos[2..10].to_vec()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

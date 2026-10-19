@@ -1546,6 +1546,29 @@ mod tests {
     }
 
     #[test]
+    fn csv_cells_leave_hint_boxes_out() {
+        // Q4 L6: {{hint:}} 는 화면에서 펼치기 상자라 CSV 칸에 이름 · 내용이 섞이지 않게 뺀다 (카드 목록과 같다)
+        use crate::notetype as nt;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-csvhint-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('특수', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let id = nt::anki_clone(&con, "basic", Some("힌트 유형"));
+        nt::add_field(&con, id, "Hint").unwrap();
+        nt::save_template(&con, id, 0, None, "{{Front}} {{hint:Hint}}", "{{FrontSide}}<hr id=answer>{{Back}}{{hint:Hint}}").unwrap();
+        con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 1, 1)", params![id, json!(["특수1", "뒷면", "힌트1"]).to_string()]).unwrap();
+        let n = con.last_insert_rowid();
+        con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, 0, 0, 0)", params![n, root]).unwrap();
+        for plain in [true, false] {
+            let (text, ..) = csv_text(&con, root, &["front".to_string(), "back".to_string()], plain).unwrap();
+            let line = text.split("\r\n").nth(1).unwrap_or_default().to_string();
+            assert!(!line.contains("힌트1") && !line.contains("Hint") && !line.contains("details"), "plain={plain}: {line}");
+            assert!(line.contains("특수1") && line.contains("뒷면"), "plain={plain}: {line}");
+        }
+    }
+
+    #[test]
     fn reimport_after_deleting_a_card_type_and_a_field() {
         // Q2-08: 같은 모델 id 로 다시 가져올 때 이 앱에서 지운 카드 종류의 카드는 같은 순번의 다른 카드 종류에 붙지 않고 빠진다.
         // 그 카드의 복습 기록은 카드 없이 통계에만 남고, 결과에 한 줄로 알린다.
