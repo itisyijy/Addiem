@@ -19,6 +19,8 @@ import { DriveSection, useSyncStatus } from "../sync";
 import { AiSection, useAiStatus } from "../ai";
 import { NoteTypesEntry } from "./NoteTypes";
 import { LAST_TYPE } from "./AddCard";
+import type { Undoable } from "../api";
+import { UndoConfirm } from "./DeckUpdate";
 
 const HOURS = [0, 1, 2, 3, 4, 5, 6];
 const THEMES: [ThemePref, string][] = [
@@ -325,6 +327,12 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const drive = useSyncStatus();
+  // DU2-u 설정 쪽 진입점: 업데이트 전 백업을 고르면 그 업데이트만 되돌리는 띠 (백업으로 복구는 DB 전체)
+  const [updates, setUpdates] = useState<Undoable[]>([]);
+  const [undo, setUndo] = useState<number | null>(null);
+  useEffect(() => {
+    api.undoableUpdates().then(setUpdates, () => {});
+  }, []);
   useEffect(() => {
     api.localBackups().then(
       (l) => {
@@ -351,6 +359,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
       setBusy(false);
     }
   };
+  const update = updates.find((x) => x.backup === pick && !x.blocked);
+  if (undo !== null) return <UndoConfirm batch={undo} onClose={() => setUndo(null)} />;
   return (
     <Modal title="백업으로 복구할까요?" onClose={onClose} variant="confirm" icon="rotate" className="restore">
       <p className="t-body-m c-secondary">지금 데이터가 이 백업 때로 바뀌어요 · 이 백업 뒤에 한 학습은 빠져요. 복구하기 전에 지금 상태를 백업해 두니 다시 되돌릴 수 있어요.</p>
@@ -370,6 +380,15 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
               </span>
             </label>
           ))}
+        </div>
+      )}
+      {update && (
+        <div className="du-undo-strip">
+          <Icon name="rotate" size={16} className="c-accent" />
+          <span className="t-body-s">
+            「{update.file_name}」 업데이트 전 백업이에요 · 그 업데이트로 바뀐 것만 되돌리면 그 뒤의 학습과 수정은 그대로예요
+          </span>
+          <Button variant="secondary" size="M" label="이 업데이트 되돌리기" onClick={() => setUndo(update.batch)} />
         </div>
       )}
       {drive?.connected && (

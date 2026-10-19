@@ -89,3 +89,11 @@ u.du-diff { text-decoration: underline; text-underline-offset: 3px; }
 .restore__list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow: auto; }
 .restore__list .import__option { padding: 12px 14px; }
 .restore__list .import__option.is-on { padding: 11px 13px; }
+
+/* DU2-u 이 업데이트 되돌리기 (Figma 274:19232) · DU2-u2 결과 (276:20499) */
+.modal.du-undo { gap: 14px; width: 560px; }
+.du-undo__lines { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px 16px; border-radius: 14px; background: var(--bg-subtle); list-style: none; }
+.du-undo__line { display: flex; align-items: flex-start; gap: 8px; }
+.du-undo__line > .icon { flex-shrink: 0; margin-top: 2px; }
+.du-undo-strip { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--accent-subtle); }
+.du-undo-strip > .t-body-s { flex: 1; min-width: 0; }

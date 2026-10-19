@@ -476,7 +476,33 @@ export type UpdateSummary = {
   issues: ImportIssue[];
   backup: string | null;
   roots: number[];
+  /** 적용한 업데이트 (B3-u [이 업데이트 되돌리기]) */
+  batch: number | null;
 };
+/** DU2-u 이 업데이트 되돌리기 (undo_update). blocked 면 되돌릴 수 없는 이유 */
+export type UndoSummary = {
+  batch: number;
+  file_name: string;
+  applied_at: number;
+  changed: number;
+  merged: number;
+  reverted_notes: number;
+  reverted_types: number;
+  archived_notes: number;
+  archived_cards: number;
+  archived_card_ids: number[];
+  kept_cards: number;
+  kept_card_ids: number[];
+  edited_notes: number;
+  edited_card_ids: number[];
+  edited_types: number;
+  blocked: string | null;
+  backup: string | null;
+  roots: number[];
+  kept_structure: number;
+};
+/** 설정 › 이 기기 백업: 업데이트 전 백업과 그 업데이트 */
+export type Undoable = { batch: number; file_name: string; applied_at: number; backup: string | null; blocked: string | null };
 /** apply_update 가 보내는 "update-progress" (B2-p) */
 export type UpdateProgress = { step: "backup" | "types" | "notes" | "cards" | "media" | "done"; done: number; total: number };
 /** import_anki 가 보내는 "import-progress" 이벤트 (B2-p) */
@@ -614,6 +640,9 @@ export const api = {
   /** [업데이트 적용]: 백업 → 한 트랜잭션. 진행은 "update-progress", 멈추기는 cancelImport */
   applyUpdate: async (path: string, choices: UpdateChoices) =>
     invoke<UpdateSummary>("apply_update", { path, deckIds: null, choices, voices: await voiceLangs() }),
+  /** DU2-u 이 업데이트 되돌리기. dryRun 이면 확인 창의 수만 (쓰지 않는다). 적용은 되돌리기 전 백업 → 한 트랜잭션 */
+  undoUpdate: (batch: number, dryRun: boolean) => invoke<UndoSummary>("undo_update", { batch, dryRun }),
+  undoableUpdates: () => invoke<Undoable[]>("undoable_updates"),
   /** B2-j 끌어놓은 .json 파일을 읽는다 */
   readJsonFile: (path: string) => invoke<string>("read_json_file", { path }),
   /** B2-c 끌어놓은 CSV 의 바이트 (인코딩은 화면이 고른다) */

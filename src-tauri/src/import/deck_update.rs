@@ -397,6 +397,8 @@ pub struct UpdateSummary {
     pub(crate) backup: Option<String>,
     /// 업데이트한 덱 · 새 노트가 들어간 덱의 최상위 덱 (결과의 [덱 열기])
     pub(crate) roots: Vec<i64>,
+    /// 적용했으면 그 업데이트 (B3-u [이 업데이트 되돌리기], undo_update)
+    pub(crate) batch: Option<i64>,
 }
 
 // ------------------------------------------------------------------ 읽기
@@ -952,6 +954,10 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     s.hint = hint(&tx, &notes.iter().map(|n| n.guid.as_str()).collect::<Vec<_>>(), &deck_ids)?;
     tx.execute("INSERT INTO import_batch (source_kind, source_name, started_at) VALUES ('apkg', ?1, ?2)", params![file_name, now]).map_err(err)?;
     let batch = tx.last_insert_rowid();
+    // 되돌리기 기록 (DU57): 이보다 큰 id 는 이번에 만든 노트 · 카드다
+    let (max_note, max_card): (i64, i64) = tx
+        .query_row("SELECT (SELECT coalesce(max(id), 0) FROM note), (SELECT coalesce(max(id), 0) FROM card)", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(err)?;
 
     // 미디어: 고른 노트가 쓰는 것과, 쓰는 노트타입의 템플릿 · CSS 가 쓰는 "_" 파일(글꼴 등). 이름 바꾸기가 들어온 값(N)을 정한다
     let used_types: BTreeSet<i64> = notes.iter().map(|n| n.mid).filter(|m| pkg.types.contains_key(m)).collect();
@@ -976,7 +982,14 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
         let t = &pkg.types[aid];
         let (map, change) = match type_of_model(&tx, *aid)? {
             Some((id, true)) => (native_map(&tx, id, t)?, TypeChange { note_type_id: id, ..Default::default() }),
-            Some((id, false)) => update_type(&tx, id, t, req.choices, &mut s.issues)?,
+            Some((id, false)) => {
+                let before = type_row(&tx, id)?;
+                let out = update_type(&tx, id, t, req.choices, &mut s.issues)?;
+                if !dry {
+                    journal(&tx, batch, "type", &before, &type_row(&tx, id)?)?;
+                }
+                out
+            }
             None => {
                 let id = insert_type(&tx, *aid, t, now)?;
                 let map = TypeMap {
@@ -1065,7 +1078,11 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
             Some(o) if o.ntid != tm.ntid => s.other_type += 1,
             Some(o) => {
                 lost.into_iter().for_each(|f| *dropped.entry(f).or_default() += 1);
+                let before = if dry { serde_json::Value::Null } else { note_row(&tx, o.id)? };
                 let made = update_note(&tx, nt, &names, &fronts, &o, &inc, &tags, req.choices, now, &mut s)?;
+                if !dry {
+                    journal(&tx, batch, "note", &before, &note_row(&tx, o.id)?)?;
+                }
                 if let Some(c) = type_at.get(&tm.ntid).map(|i| &mut s.types[*i]) {
                     c.new_template_cards += made.iter().filter(|o| tm.new_ords.contains(o)).count();
                 }
@@ -1196,6 +1213,10 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     }
     s.types.retain(|t| !t.is_empty());
     s.kept_looks = s.types.iter().filter(|t| t.looks.iter().any(|l| !l.take_new)).count();
+    if !dry {
+        journal_created(&tx, batch, max_note, max_card, &s)?;
+        s.batch = Some(batch);
+    }
     tx.execute(
         "UPDATE import_batch SET finished_at = ?2, status = 'ok', note_count = ?3, card_count = ?4, media_count = ?5 WHERE id = ?1",
         params![batch, now_ms(), s.new_notes as i64, (s.new_note_cards + s.new_cards) as i64, s.media_new as i64],
@@ -1427,6 +1448,289 @@ pub(crate) fn apply(con: &mut Connection, data_dir: &Path, req: &Req) -> Res<Upd
         }
     }
     let mut s = result?;
+    s.backup = Some(backup.display().to_string());
+    // 되돌리기 머리에 적용 전 백업 (설정 › 이 기기 백업의 그 줄에 [이 업데이트 되돌리기])
+    let name = backup.file_name().map(|n| n.to_string_lossy().into_owned());
+    con.execute("UPDATE update_journal SET after = json_set(after, '$.backup', ?2) WHERE batch_id = ?1 AND kind = 'meta'", params![s.batch, name]).map_err(err)?;
+    Ok(s)
+}
+
+// ------------------------------------------------------------------ 업데이트 되돌리기 (DU57 · DU58)
+
+/// 사용자 결정 2026-10-19 ①: 업데이트 뒤 공부한 새 카드(그 노트 포함)는 되돌리기가 건드리지 않는다 (기록 · 일정 보존).
+/// 공부하지 않은 새 노트 · 카드는 지우지 않고 보관한다 (학습 중지 + ARCHIVE_TAG). 바꾸려면 이 두 곳
+const KEEP_STUDIED: bool = true;
+pub(crate) const ARCHIVE_TAG: &str = "되돌린_업데이트";
+/// 공부한 카드 (별칭 c): 기록이 있거나 학습을 시작했다
+const STUDIED: &str = "(EXISTS (SELECT 1 FROM review_log l WHERE l.card_id = c.id) OR c.reps > 0 OR c.state IN ('learning', 'review', 'relearning'))";
+
+/// 되돌리기가 비교 · 되돌리는 노트 열
+fn note_row(tx: &Connection, id: i64) -> Res<serde_json::Value> {
+    tx.query_row("SELECT uid, fields, tags, exam_hits, exam_names, origin FROM note WHERE id = ?1", [id], |r| {
+        Ok(serde_json::json!({
+            "uid": r.get::<_, String>(0)?, "fields": r.get::<_, String>(1)?, "tags": r.get::<_, String>(2)?,
+            "exam_hits": r.get::<_, Option<i64>>(3)?, "exam_names": r.get::<_, Option<String>>(4)?, "origin": r.get::<_, Option<String>>(5)?,
+        }))
+    })
+    .map_err(err)
+}
+
+/// 되돌리기가 비교 · 되돌리는 노트 유형 열 (필드 이름은 템플릿 참조를 지금 이름으로 옮길 때만 쓴다)
+fn type_row(tx: &Connection, id: i64) -> Res<serde_json::Value> {
+    let (uid, fields, css, origin): (String, String, String, Option<String>) =
+        tx.query_row("SELECT uid, fields, css, origin FROM note_type WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?;
+    let mut st = tx.prepare("SELECT ord, qfmt, afmt FROM card_template WHERE note_type_id = ?1 ORDER BY ord").map_err(err)?;
+    let templates: Vec<(u32, String, String)> = st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    Ok(serde_json::json!({ "uid": uid, "fields": fields, "css": css, "origin": origin, "templates": templates }))
+}
+
+/// 바뀐 행의 전후를 남긴다 (같으면 남기지 않는다)
+fn journal(tx: &Connection, batch: i64, kind: &str, before: &serde_json::Value, after: &serde_json::Value) -> Res<()> {
+    if before == after {
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO update_journal (batch_id, kind, uid, before, after) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![batch, kind, after["uid"].as_str().or(before["uid"].as_str()).unwrap_or_default(), before.to_string(), after.to_string()],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+/// 적용 끝에: 새 노트 · 이미 있던 노트의 새 카드, 머리 (요약 수 · 파일)
+fn journal_created(tx: &Connection, batch: i64, max_note: i64, max_card: i64, s: &UpdateSummary) -> Res<()> {
+    tx.execute("INSERT OR IGNORE INTO update_journal (batch_id, kind, uid) SELECT ?1, 'note_new', uid FROM note WHERE id > ?2", params![batch, max_note]).map_err(err)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO update_journal (batch_id, kind, uid) SELECT ?1, 'card_new', uid FROM card WHERE id > ?2 AND note_id <= ?3",
+        params![batch, max_card, max_note],
+    )
+    .map_err(err)?;
+    let structure: usize = s.types.iter().map(|t| t.new_fields.len() + t.new_templates.len()).sum();
+    let meta = serde_json::json!({ "file": s.file_name, "changed": s.changed, "merged": s.merged, "conflicts": s.conflicts.len(), "roots": s.roots, "structure": structure });
+    tx.execute("INSERT OR REPLACE INTO update_journal (batch_id, kind, uid, after) VALUES (?1, 'meta', '', ?2)", params![batch, meta.to_string()]).map_err(err)?;
+    Ok(())
+}
+
+/// DU2-u 확인 창 · DU2-u2 결과
+#[derive(Serialize, Default)]
+pub struct UndoSummary {
+    batch: i64,
+    file_name: String,
+    /// 업데이트를 적용한 시각
+    applied_at: i64,
+    /// 적용 때의 수 ("바뀐 노트 137개(새 버전 128 · 합친 9)")
+    changed: usize,
+    merged: usize,
+    /// 업데이트 전 내용으로 돌아가는 노트
+    reverted_notes: usize,
+    /// 업데이트 전 모양으로 돌아가는 노트 유형 (카드 종류 앞 · 뒷면 · CSS)
+    reverted_types: usize,
+    /// 공부하지 않아 보관하는 새 노트 (그 카드 전부) · 보관하는 카드 (새 노트의 카드 + 이미 있던 노트에 생긴 카드)
+    archived_notes: usize,
+    archived_cards: usize,
+    archived_card_ids: Vec<i64>,
+    /// 그 사이 공부해 남기는 새 카드 (기록 · 일정 그대로)
+    kept_cards: usize,
+    kept_card_ids: Vec<i64>,
+    /// 그 뒤에 고친 (또는 지운) 노트라 그대로 두는 노트 · 그 카드
+    edited_notes: usize,
+    edited_card_ids: Vec<i64>,
+    /// 그 뒤에 고친 노트 유형 (모양을 되돌리지 않는다)
+    edited_types: usize,
+    /// 되돌릴 수 없으면 이유 (이미 되돌림 · 그 뒤 같은 노트를 다시 업데이트함 · 기록 없음)
+    blocked: Option<String>,
+    /// 되돌리기 전에 만든 백업
+    backup: Option<String>,
+    /// 업데이트한 덱의 최상위 덱 ([덱 열기])
+    roots: Vec<i64>,
+    /// 업데이트로 더한 필드 · 카드 종류 수 (되돌리지 않고 남긴다)
+    kept_structure: usize,
+}
+
+const NO_JOURNAL: &str = "이 업데이트는 되돌릴 기록이 없어요. 설정 › 이 기기 백업의 [백업으로 복구]를 써 주세요.";
+const UNDONE: &str = "이미 되돌린 업데이트예요.";
+const LATER: &str = "그 뒤에 같은 덱을 다시 업데이트해서 마지막 업데이트만 되돌릴 수 있어요. 이 업데이트는 [백업으로 복구]로 돌려요.";
+
+/// 되돌리기. dry 면 같은 일을 해 보고 되돌린다 (확인 창의 수). 되돌림은 보통 편집이다 (동기화로 다른 기기에도 간다)
+pub(crate) fn undo(con: &mut Connection, batch: i64, dry: bool) -> Res<UndoSummary> {
+    let tx = con.transaction().map_err(err)?;
+    let (file_name, applied_at, status): (String, i64, String) = tx
+        .query_row("SELECT source_name, started_at, status FROM import_batch WHERE id = ?1", [batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()
+        .map_err(err)?
+        .ok_or("업데이트 기록을 찾을 수 없어요.")?;
+    let mut s = UndoSummary { batch, file_name, applied_at, ..Default::default() };
+    let meta: Option<String> = tx.query_row("SELECT after FROM update_journal WHERE batch_id = ?1 AND kind = 'meta'", [batch], |r| r.get(0)).optional().map_err(err)?;
+    let Some(meta) = meta.and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok()) else {
+        s.blocked = Some(NO_JOURNAL.into());
+        return Ok(s);
+    };
+    let num = |k: &str| meta[k].as_u64().unwrap_or_default() as usize;
+    (s.changed, s.merged, s.kept_structure) = (num("changed"), num("merged"), num("structure"));
+    s.roots = serde_json::from_value(meta["roots"].clone()).unwrap_or_default();
+    let later: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM update_journal j JOIN import_batch b ON b.id = j.batch_id
+             WHERE j.batch_id > ?1 AND b.status <> 'rolled_back' AND j.kind <> 'meta' AND j.uid IN (SELECT uid FROM update_journal WHERE batch_id = ?1 AND kind <> 'meta'))",
+            [batch],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
+    s.blocked = if status == "rolled_back" { Some(UNDONE.into()) } else if later { Some(LATER.into()) } else { None };
+    if s.blocked.is_some() {
+        return Ok(s);
+    }
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = tx
+        .prepare("SELECT kind, uid, before, after FROM update_journal WHERE batch_id = ?1 AND kind <> 'meta' ORDER BY kind, uid")
+        .and_then(|mut st| st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect())
+        .map_err(err)?;
+    let now = now_ms();
+    let json = |x: &Option<String>| x.as_deref().and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()).unwrap_or_default();
+    let id_of = |t: &str, uid: &str| tx.query_row(&format!("SELECT id FROM {t} WHERE uid = ?1"), [uid], |r| r.get::<_, i64>(0)).optional().map_err(err);
+    let cards_of = |note: i64, studied: bool| -> Res<Vec<i64>> {
+        tx.prepare_cached(&format!("SELECT c.id FROM card c WHERE c.note_id = ?1 AND {}{STUDIED} ORDER BY c.id", if studied { "" } else { "NOT " }))
+            .and_then(|mut st| st.query_map([note], |r| r.get(0))?.collect())
+            .map_err(err)
+    };
+    let studied = |card: i64| -> Res<bool> {
+        tx.query_row(&format!("SELECT {STUDIED} FROM card c WHERE c.id = ?1"), [card], |r| r.get(0)).map_err(err)
+    };
+    // 보관: 학습 중지 (신규 카드만. 이미 학습 중지면 그대로)
+    let archive = |card: i64| tx.execute("UPDATE card SET state = 'suspended', updated_at = ?2 WHERE id = ?1 AND state = 'new'", params![card, now]).map_err(err);
+    for (kind, uid, before, after) in &rows {
+        match kind.as_str() {
+            "note" => {
+                let Some(id) = id_of("note", uid)? else {
+                    s.edited_notes += 1; // 그 뒤에 지웠다
+                    continue;
+                };
+                if note_row(&tx, id)? != json(after) {
+                    s.edited_notes += 1;
+                    s.edited_card_ids.extend(cards_of(id, true)?.into_iter().chain(cards_of(id, false)?));
+                    continue;
+                }
+                let (b, a) = (json(before), json(after));
+                // 원본만 바뀐 노트(내용은 그대로)는 세지 않고 고친 시각도 그대로: "돌아간 노트"는 내용이 돌아간 노트
+                let content = |v: &serde_json::Value| (v["fields"].clone(), v["tags"].clone(), v["exam_hits"].clone(), v["exam_names"].clone());
+                let changed = content(&b) != content(&a);
+                tx.execute(
+                    "UPDATE note SET fields = ?2, tags = ?3, exam_hits = ?4, exam_names = ?5, origin = ?6, updated_at = CASE WHEN ?8 THEN ?7 ELSE updated_at END WHERE id = ?1",
+                    params![id, b["fields"].as_str(), b["tags"].as_str(), b["exam_hits"].as_i64(), b["exam_names"].as_str(), b["origin"].as_str(), now, changed],
+                )
+                .map_err(err)?;
+                s.reverted_notes += changed as usize;
+            }
+            "note_new" => {
+                let Some(id) = id_of("note", uid)? else { continue };
+                let (kept, rest) = (cards_of(id, true)?, cards_of(id, false)?);
+                if KEEP_STUDIED && !kept.is_empty() {
+                    s.kept_cards += kept.len();
+                    s.kept_card_ids.extend(kept);
+                } else {
+                    s.archived_notes += 1;
+                    tx.execute(
+                        "UPDATE note SET tags = trim(tags || ' ' || ?2), updated_at = ?3 WHERE id = ?1 AND (' ' || tags || ' ') NOT LIKE '% ' || ?2 || ' %'",
+                        params![id, ARCHIVE_TAG, now],
+                    )
+                    .map_err(err)?;
+                }
+                // 공부한 카드가 있는 노트도 공부하지 않은 카드는 보관한다
+                for c in if KEEP_STUDIED { rest } else { cards_of(id, true)?.into_iter().chain(rest).collect() } {
+                    archive(c)?;
+                    s.archived_cards += 1;
+                    s.archived_card_ids.push(c);
+                }
+            }
+            "card_new" => {
+                let Some(id) = id_of("card", uid)? else { continue };
+                if KEEP_STUDIED && studied(id)? {
+                    s.kept_cards += 1;
+                    s.kept_card_ids.push(id);
+                } else {
+                    archive(id)?;
+                    s.archived_cards += 1;
+                    s.archived_card_ids.push(id);
+                }
+            }
+            "type" => {
+                let Some(id) = id_of("note_type", uid)? else { continue };
+                if type_row(&tx, id)? != json(after) {
+                    s.edited_types += 1;
+                    continue;
+                }
+                // 모양 · 원본만 되돌린다. 더한 필드 · 카드 종류 · 이름은 남긴다 (그 카드 · 값이 남아 있다). 옛 템플릿의 필드 이름은 지금 이름으로
+                let b = json(before);
+                let nt = notetype::load(&tx, id)?;
+                let old: Vec<String> = serde_json::from_str(b["fields"].as_str().unwrap_or("[]")).unwrap_or_default();
+                let names: HashMap<String, String> =
+                    old.iter().zip(&nt.slots).filter(|(o, n)| !o.is_empty() && !n.is_empty() && o != n).map(|(o, n)| (o.clone(), n.clone())).collect();
+                let tpls: Vec<(u32, String, String)> = serde_json::from_value(b["templates"].clone()).unwrap_or_default();
+                for (ord, q, a) in tpls {
+                    let (q, a) = (notetype::rename_all_refs(&q, &names), notetype::rename_all_refs(&a, &names));
+                    tx.execute(
+                        "UPDATE card_template SET qfmt = ?3, afmt = ?4, updated_at = ?5 WHERE note_type_id = ?1 AND ord = ?2 AND (qfmt <> ?3 OR afmt <> ?4)",
+                        params![id, ord, q, a, now],
+                    )
+                    .map_err(err)?;
+                }
+                tx.execute(
+                    "UPDATE note_type SET css = ?2, origin = ?3, updated_at = ?4 WHERE id = ?1",
+                    params![id, b["css"].as_str().unwrap_or_default(), b["origin"].as_str(), now],
+                )
+                .map_err(err)?;
+                s.reverted_types += 1;
+            }
+            _ => {}
+        }
+    }
+    tx.execute("UPDATE import_batch SET status = 'rolled_back' WHERE id = ?1", [batch]).map_err(err)?;
+    if dry {
+        tx.rollback().map_err(err)?;
+    } else {
+        tx.commit().map_err(err)?;
+    }
+    Ok(s)
+}
+
+/// 설정 › 이 기기 백업의 [이 업데이트 되돌리기] (DU2-u): 그 백업을 만든 업데이트
+#[derive(Serialize)]
+pub struct Undoable {
+    batch: i64,
+    file_name: String,
+    applied_at: i64,
+    /// 적용 전 백업 파일 이름 (local_backups 의 name)
+    backup: Option<String>,
+    blocked: Option<String>,
+}
+
+#[tauri::command]
+pub fn undoable_updates(state: State<'_, AppState>) -> Res<Vec<Undoable>> {
+    let mut con = state.db.lock().map_err(err)?;
+    let rows: Vec<(i64, Option<String>)> = con
+        .prepare("SELECT b.id, json_extract(j.after, '$.backup') FROM import_batch b JOIN update_journal j ON j.batch_id = b.id AND j.kind = 'meta' ORDER BY b.id DESC LIMIT 50")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .map_err(err)?;
+    let mut out = vec![];
+    for (batch, backup) in rows {
+        let s = undo(&mut con, batch, true)?;
+        out.push(Undoable { batch, file_name: s.file_name, applied_at: s.applied_at, backup, blocked: s.blocked });
+    }
+    Ok(out)
+}
+
+/// [이 업데이트 되돌리기] (DU2-u). dry_run 이면 확인 창의 수만. 적용은 되돌리기 전 백업(-restore) → 한 트랜잭션
+#[tauri::command]
+pub fn undo_update(state: State<'_, AppState>, batch: i64, dry_run: bool) -> Res<UndoSummary> {
+    let mut con = state.db.lock().map_err(err)?;
+    if dry_run {
+        return undo(&mut con, batch, true);
+    }
+    let first = undo(&mut con, batch, true)?;
+    if let Some(why) = first.blocked {
+        return Err(why);
+    }
+    let backup = crate::commands::write_backup_as(&con, &state.data_dir, "restore").map_err(|e| format!("되돌리기 전 백업을 만들지 못해 되돌리지 않았어요. {e}"))?;
+    let mut s = undo(&mut con, batch, false)?;
     s.backup = Some(backup.display().to_string());
     Ok(s)
 }
@@ -1968,6 +2272,77 @@ mod tests {
             let want: Vec<&str> = if g == "g1" { vec!["Q 새", "A 새", "X 새"] } else { vec!["Q3", "A3 새", ""] };
             assert_eq!((0..3).map(|i| o.value(i)).collect::<Vec<_>>(), want.into_iter().map(Some).collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn update_undo_reverts_and_keeps_what_was_studied_or_edited() {
+        // DU57 · DU58 (사용자 결정 2026-10-19 ①): 이 업데이트 되돌리기. 업데이트가 바꾼 노트 · 모양은 되돌리고, 그 뒤에 고친 노트와 공부한 새 카드는 그대로,
+        // 공부하지 않은 새 노트 · 카드는 지우지 않고 보관 (학습 중지 + 태그)
+        let t = tmp("undo");
+        let s = state(&t.0.join("data"));
+        let (p1, p2, p3) = (t.0.join("v1.apkg"), t.0.join("v2.apkg"), t.0.join("v3.apkg"));
+        let b1 = |id, g, f: &str, b: &str| note(id, g, 7, &[f, b], &[(1, 0)]);
+        let b2 = |id, g, f: &str, b: &str| note(id, g, 7, &[f, "", b], &[(1, 0), (1, 1)]);
+        testpkg::write(&p1, &[basic(false)], &[(1, "D")], &[b1(1, "g1", "Q1", "A1"), b1(2, "g2", "Q2", "A2"), b1(3, "g3", "Q3", "A3")], &[]);
+        import(&s, &p1);
+        let v2 = [b2(1, "g1", "Q1", "A1 v2"), b2(2, "g2", "Q2", "A2 v2"), b2(3, "g3", "Q3", "A3"), b2(4, "g4", "Q4", "A4"), b2(5, "g5", "Q5", "A5")];
+        testpkg::write(&p2, &[basic(true)], &[(1, "D")], &v2, &[]);
+        let r = update(&s, &p2, &Choices::default(), false);
+        let batch = r.batch.expect("적용한 업데이트");
+        assert_eq!((r.changed, r.new_notes), (2, 2));
+        // 그 뒤: g2 를 내가 고치고, 새 노트 g4 의 Card 1 과 이미 있던 g3 의 새 Card 2 를 공부했다
+        edit(&s, "g2", 1, "A2 (내 수정)");
+        {
+            let con = s.db.lock().unwrap();
+            for (g, ord) in [("g4", 0), ("g3", 1)] {
+                con.execute(
+                    "UPDATE card SET state = 'review', reps = 1, due_at = 99, stability = 3.0 WHERE template_ord = ?2 AND note_id = (SELECT id FROM note WHERE anki_guid = ?1)",
+                    params![g, ord],
+                )
+                .unwrap();
+                con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) SELECT id, 5, 3 FROM card WHERE state = 'review' AND template_ord = ?2 AND note_id = (SELECT id FROM note WHERE anki_guid = ?1)", params![g, ord]).unwrap();
+            }
+        }
+        let studied = || q::<String>(&s, "SELECT group_concat(id || state || reps || due_at, ',') FROM card WHERE state = 'review'");
+        let studied_before = studied();
+        let u = |dry: bool| undo(&mut s.db.lock().unwrap(), batch, dry).unwrap();
+        let untouched = dump(&s);
+        let dry = u(true);
+        assert_eq!(dump(&s), untouched, "확인 창의 수는 쓰지 않는다");
+        assert_eq!((dry.changed, dry.reverted_notes, dry.edited_notes, dry.reverted_types, dry.blocked.as_deref()), (2, 1, 1, 1, None), "g1 이 돌아가고 g2 는 내가 고쳐 그대로");
+        assert_eq!((dry.kept_cards, dry.archived_notes, dry.archived_cards), (2, 1, 5), "공부한 g4 Card 1 · g3 Card 2 를 남기고, g5 두 장 · g4 Card 2 · g1 · g2 의 새 Card 2 를 보관");
+        assert_eq!(dry.edited_card_ids.len(), 2);
+        let r = u(false);
+        assert_eq!((r.reverted_notes, r.archived_cards), (1, 5));
+        assert_eq!(fields(&s, "g1"), ["Q1", "A1"], "업데이트 전 내용");
+        assert_eq!(fields(&s, "g2")[1], "A2 (내 수정)", "그 뒤에 고친 노트는 그대로");
+        assert_eq!(studied(), studied_before, "공부한 카드의 일정 · 상태 그대로");
+        assert_eq!(q::<i64>(&s, "SELECT count(*) FROM review_log"), 2, "기록은 지우지 않는다");
+        assert_eq!(
+            q::<String>(&s, "SELECT group_concat(x, ',') FROM (SELECT n.anki_guid || c.template_ord || c.state AS x FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid IN ('g4', 'g5') ORDER BY 1)"),
+            "g40review,g41suspended,g50suspended,g51suspended"
+        );
+        assert_eq!(q::<String>(&s, "SELECT group_concat(anki_guid) FROM note WHERE tags LIKE '%되돌린_업데이트%'"), "g5", "다 보관한 새 노트만 태그");
+        // 모양은 되돌리고 더한 필드 · 카드 종류는 남긴다 (공부한 카드가 쓴다)
+        let ntid: i64 = q(&s, "SELECT id FROM note_type WHERE anki_model_id = 7");
+        let nt = notetype::load(&s.db.lock().unwrap(), ntid).unwrap();
+        assert_eq!((nt.templates[0].qfmt.as_str(), nt.templates.len(), nt.slots.len()), ("{{Front}}", 2, 3));
+        assert_eq!(nt.css, ".card { color: black; }");
+        // 원본도 업데이트 전으로: 같은 파일을 다시 적용하면 다시 바뀐다
+        let o: NoteOrigin = serde_json::from_str(&q::<String>(&s, "SELECT origin FROM note WHERE anki_guid = 'g1'")).unwrap();
+        assert_eq!(o.f, [h("Q1"), h("A1")]);
+        assert_eq!(u(true).blocked.as_deref(), Some(UNDONE));
+        let again = update(&s, &p2, &Choices::default(), false);
+        assert_eq!(fields(&s, "g1"), ["Q1", "A1 v2", ""]);
+        assert_eq!(again.changed, 1);
+        // 그 뒤에 같은 노트를 다시 업데이트했으면 앞의 것은 되돌리지 않는다 (마지막 것만)
+        testpkg::write(&p3, &[basic(true)], &[(1, "D")], &[b2(1, "g1", "Q1", "A1 v3")], &[]);
+        let v3 = update(&s, &p3, &Choices::default(), false);
+        assert_eq!(undo(&mut s.db.lock().unwrap(), again.batch.unwrap(), true).unwrap().blocked.as_deref(), Some(LATER));
+        assert!(undo(&mut s.db.lock().unwrap(), v3.batch.unwrap(), true).unwrap().blocked.is_none());
+        // 기록이 없는 (이 기능 전) 업데이트
+        let old: i64 = q(&s, "SELECT min(id) FROM import_batch");
+        assert_eq!(undo(&mut s.db.lock().unwrap(), old, true).unwrap().blocked.as_deref(), Some(NO_JOURNAL));
     }
 
     #[test]

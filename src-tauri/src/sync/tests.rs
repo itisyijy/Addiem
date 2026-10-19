@@ -2177,3 +2177,45 @@ fn native_type_export_mark_follows_without_a_second_type() {
         assert_eq!(found.map(|(id, native)| (d.uid("note_type", id), native)), Some((a.uid("note_type", basic), true)));
     }
 }
+
+#[test]
+fn update_undo_syncs_as_ordinary_edits() {
+    // DU57: 되돌리기는 보통 편집이라 다른 기기에도 간다. 다른 기기에서 공부한 새 카드(받은 뒤)는 남는다
+    use crate::import::deck_update::testpkg::{self, Model, note};
+    use crate::import::deck_update::{self, Choices, Req};
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let b = Dev::new("데스크톱");
+    let pkg = |name: &str, notes: &[testpkg::Note]| {
+        let model = Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")], css: "" };
+        let p = a.dir.join(name);
+        testpkg::write(&p, &[model], &[(1, "공유덱")], notes, &[]);
+        p
+    };
+    let run = |d: &Dev, p: &std::path::Path| {
+        let choices = Choices::default();
+        deck_update::run(&mut d.con(), &d.dir, &Req { path: p, selected: None, choices: &choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false }, false, &mut vec![]).unwrap()
+    };
+    run(&a, &pkg("v1.apkg", &[note(1, "g1", 7, &["Q1", "A1"], &[(1, 0)])]));
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    engine::join(&b.db, &env.cx(&b), Join::Take, json!({})).unwrap();
+    let t = db::now_ms();
+    let v2 = pkg("v2.apkg", &[note(1, "g1", 7, &["Q1", "A1 v2"], &[(1, 0)]), note(2, "g2", 7, &["Q2", "A2"], &[(1, 0)]), note(3, "g3", 7, &["Q3", "A3"], &[(1, 0)])]);
+    let r = a.at(t + 1000, || run(&a, &v2));
+    env.sync(&a);
+    env.sync(&b);
+    // B 가 받은 새 노트 g2 를 공부했다
+    b.edit_at(t + 2000, "UPDATE card SET state = 'review', reps = 1, due_at = 7 WHERE note_id = (SELECT id FROM note WHERE anki_guid = 'g2')", params![]);
+    env.sync(&b);
+    env.sync(&a);
+    let u = a.at(t + 3000, || deck_update::undo(&mut a.con(), r.batch.unwrap(), false).unwrap());
+    let u = serde_json::to_value(&u).unwrap();
+    assert_eq!((&u["reverted_notes"], &u["kept_cards"], &u["archived_notes"]), (&json!(1), &json!(1), &json!(1)));
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    let g = |guid: &str| b.con().query_row("SELECT json_extract(n.fields, '$[1]') || c.state FROM note n JOIN card c ON c.note_id = n.id WHERE n.anki_guid = ?1", [guid], |r| r.get::<_, String>(0)).unwrap();
+    assert_eq!((g("g1"), g("g2"), g("g3")), ("A1new".to_string(), "A2review".to_string(), "A3suspended".to_string()), "B 에도: 되돌린 내용 · 공부한 카드 그대로 · 보관");
+    assert_eq!(b.n("SELECT count(*) FROM update_journal"), 0, "되돌리기 기록은 기기 안에만");
+}
