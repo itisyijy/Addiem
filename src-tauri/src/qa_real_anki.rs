@@ -295,6 +295,22 @@ fn picks(u: &Value) -> Value {
     json!(u["conflicts"].as_array().map(|a| a.iter().map(|c| json!([c["note_id"], c["fields"].as_array().map(|f| f.iter().map(|x| json!([x["name"], x["take_new"]])).collect::<Vec<_>>())])).collect::<Vec<_>>()))
 }
 
+/// 사용자 정의 유형(QA 특수필드)의 그 카드 종류에 정한 덱 경로 ("A::B"). 없으면 None
+fn template_deck_path(s: &AppState, tpl: &str) -> Option<String> {
+    s.db.lock()
+        .unwrap()
+        .query_row(
+            "WITH RECURSIVE up(id, name, parent_id, depth) AS (
+               SELECT d.id, d.name, d.parent_id, 0 FROM deck d WHERE d.id = (
+                 SELECT t.deck_id FROM card_template t JOIN note_type nt ON nt.id = t.note_type_id WHERE nt.name = 'QA 특수필드' AND t.name = ?1)
+               UNION ALL SELECT d.id, d.name, d.parent_id, up.depth + 1 FROM deck d JOIN up ON d.id = up.parent_id)
+             SELECT group_concat(name, '::') FROM (SELECT name FROM up ORDER BY depth DESC)",
+            [tpl],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
 fn ntid_by_name(s: &AppState, name: &str) -> i64 {
     s.db.lock().unwrap().query_row("SELECT id FROM note_type WHERE name = ?1 AND anki_model_id IS NOT NULL", [name], |r| r.get(0)).unwrap()
 }
@@ -330,6 +346,9 @@ fn phase1() {
             }
         }
         write(&w.join(format!("neo_v1_{variant}.json")), &snapshot(&s, ROOT));
+        // NT76 카드 종류의 덱 (Anki deck override: 신형은 템플릿 config target_deck_id, 구형은 tmpls[].did): 이번 패키지의 그 덱으로
+        let td = template_deck_path(&s, "카드B");
+        ck.add(&format!("TD-import-{variant}"), A1, "카드 종류의 덱(deck override): QA 특수필드 카드B 는 늘 2장 (Anki 템플릿 did → 가져온 우리 덱)", td.as_deref() == Some("QA원본::2장"), format!("카드B 덱 {td:?}"));
         let io: i64 = q(&s, "SELECT count(*) FROM note_type WHERE name = 'Image Occlusion' AND anki_model_id IS NOT NULL AND is_supported = 1");
         ck.add(&format!("I-io-{variant}"), A1, "가져온 그림 가리기(IO) 유형을 지원 유형으로 알아본다", io == 1, format!("가져온 IO 유형 중 is_supported {io}개"));
         if variant == "modern" {
@@ -620,6 +639,27 @@ fn phase1() {
     );
     let n1 = counts(&du);
     ck.add("DU-dup", A2, "업데이트 뒤 같은 guid 두 벌 · 같은 기록 두 번 없음", n1.3 == 0 && n1.4 == 0, format!("전 {n0:?} 후 {n1:?}"));
+
+    // NT76: 앱에서 1장에 새 노트를 더해도 카드B 는 그 카드 종류의 덱(2장). 내보내기 · 왕복에 섞이지 않게 복사본에서
+    {
+        let td = copy_state(&du, &w.join("neo_td"));
+        let con = td.db.lock().unwrap();
+        let ntid: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'QA 특수필드' AND anki_model_id IS NOT NULL", [], |r| r.get(0)).unwrap();
+        let d1: i64 = con.query_row("SELECT d.id FROM deck d JOIN deck p ON p.id = d.parent_id WHERE d.name = '1장' AND p.name = ?1", [ROOT], |r| r.get(0)).unwrap();
+        let nt = notetype::load(&con, ntid).unwrap();
+        let values: Vec<String> = nt.visible().into_iter().map(|(_, n)| match n.as_str() { "Front" => "덱 지정".into(), "Extra" => "예문".into(), _ => String::new() }).collect();
+        let r = notetype::add_note(&con, &notetype::TypedNote { deck_id: d1, note_type_id: ntid, values, importance: None });
+        drop(con);
+        let placed = rows(&td, "SELECT t.name || '>' || d.name FROM card c JOIN note n ON n.id = c.note_id JOIN card_template t ON t.note_type_id = n.note_type_id AND t.ord = c.template_ord JOIN deck d ON d.id = c.deck_id WHERE n.id = (SELECT max(id) FROM note) ORDER BY 1");
+        // (v2 가 더한 카드C 는 덱을 정하지 않아 노트를 넣은 1장)
+        ck.add(
+            "TD-new",
+            A2,
+            "카드 종류의 덱: 앱에서 1장에 더한 QA 특수필드 노트의 카드B 는 2장, 나머지(카드A · 카드C)는 1장",
+            r.is_ok() && placed == ["카드A>1장", "카드B>2장", "카드C>1장"],
+            format!("{r:?} · 카드 {placed:?}"),
+        );
+    }
 
     // ---- 3 내보내기: 업데이트까지 한 DB 를 기록과 함께 .apkg 로 (비교는 real_anki.py anki). 앱에서 만든 노트 하나도 함께 (왕복 기준 확인)
     let rid: i64 = q(&du, &format!("SELECT id FROM deck WHERE name = '{ROOT}' AND parent_id IS NULL"));

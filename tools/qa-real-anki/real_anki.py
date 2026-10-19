@@ -142,6 +142,7 @@ def make(work):
     mm.add_template(m, t)
     t = mm.new_template("카드B")
     t["qfmt"], t["afmt"] = "{{#Extra}}{{Extra}} <span class=qa-card>{{Card}}</span>{{/Extra}}", "{{FrontSide}}<hr id=answer>{{Front}}"
+    t["did"] = d["d2"]  # 카드 종류의 덱 (deck override, NT76): 카드B 는 노트를 어디 넣든 2장으로
     mm.add_template(m, t)
     m["css"] = ".card { font-family: serif; }\n.qa-meta { color: gray; }\n"
     mm.add(m)
@@ -460,6 +461,42 @@ def anki_side(work):
     check("E3-control", area, "Anki 가 기본 유형과 이름이 겹치는 유형에 '+' 를 붙이는 것은 Anki 자신의 패키지에서도 같다 (Neo 탓이 아님)",
           any(t.endswith("+") for t in ctl_names), f"Neo 패키지 → {got_names} · Anki v1 패키지 → {ctl_names}")
     compare_snap("E", area, got, neo, "Neo 내보내기 → Anki", export=True, plus=True)
+    # NT76 카드 종류의 덱 (deck override). (1) Neo 패키지 안에서 카드B 의 did = 그 패키지의 2장 덱 id
+    with zipfile.ZipFile(os.path.join(work, "neo_export.apkg")) as z:
+        raw = z.read("collection.anki2")
+    pkg_col = os.path.join(adir, "neo_export_col.anki2")
+    with open(pkg_col, "wb") as f:
+        f.write(raw)
+    import sqlite3
+    with sqlite3.connect(pkg_col) as db:
+        models_json, decks_json = db.execute("select models, decks from col").fetchone()
+    pkg_decks = {v["name"]: int(k) for k, v in json.loads(decks_json).items()}
+    pm = next((m for m in json.loads(models_json).values() if m["name"] == CUSTOM), {})
+    pdid = next((t.get("did") for t in pm.get("tmpls", []) if t["name"] == "카드B"), None)
+    check("E-tdid", area, "카드 종류의 덱(deck override): Neo 가 내보낸 카드B 의 did = 그 패키지의 2장 덱 id (다른 카드 종류는 null)",
+          pdid is not None and pdid == pkg_decks.get(f"{neo['root']}::2장") and all(t.get("did") is None for t in pm.get("tmpls", []) if t["name"] != "카드B"),
+          f"카드B did={pdid} · 패키지 2장 {pkg_decks.get(neo['root'] + '::2장')} · 템플릿 did {[(t['name'], t.get('did')) for t in pm.get('tmpls', [])]}")
+    # (2) 원래 Anki 컬렉션(덱 id 가 같다)으로 돌아가 가져오면 Anki 가 그 덱에 새 카드를 넣는다. 왕복(4)에 섞이지 않게 사본에서
+    tp = os.path.join(adir, "tdid.anki2")
+    for x in [tp, tp.replace(".anki2", ".media")]:
+        shutil.rmtree(x, ignore_errors=True) if os.path.isdir(x) else (os.path.exists(x) and os.remove(x))
+    shutil.copyfile(os.path.join(adir, "src.anki2"), tp)
+    tc = Collection(tp)
+    tc.import_anki_package(ImportAnkiPackageRequest(package_path=os.path.join(work, "neo_export.apkg"), options=ImportAnkiPackageOptions(with_scheduling=True)))
+    tm = next((m for m in tc.models.all() if m["name"].rstrip("+") == CUSTOM), None)
+    placed = None
+    if tm:
+        nn = tc.new_note(tm)
+        nn["Front"], nn["Back"], nn["Extra"] = "덱 지정 확인", "td", "예문"
+        tc.add_note(nn, tc.decks.id_for_name(f"{neo['root']}::1장"))
+        placed = sorted((c.ord, tc.decks.name(c.did)) for c in nn.cards())
+    check("E-tdid-anki", area, "원래 Anki 컬렉션에 Neo 패키지를 가져온 뒤 1장에 새 노트를 더하면 Anki 도 카드B 를 2장에 넣는다",
+          placed is not None and any(o == 1 and dn.endswith("::2장") for o, dn in placed) and any(o == 0 and dn.endswith("::1장") for o, dn in placed),
+          f"새 노트의 카드 {placed}")
+    tc.close()
+    # (3) 참고: 새 컬렉션에 가져오면 Anki 가 덱 id 를 새로 매기고 템플릿 did 는 그대로 둔다 (Anki 자신의 패키지도 같다 → 기본 덱)
+    check("E-tdid-fresh", area, "새 컬렉션으로 가져오면 Anki 는 덱 id 만 새로 매기고 카드 종류의 did 는 고치지 않는다 (Anki 패키지도 같다, Neo 와 상관없음)", True,
+          "Anki 26.9.3 동작: 패키지 덱은 새 id, notetype 템플릿 did 는 패키지 값 그대로", info=True)
 
     # ---- 4 왕복: Anki 에서 고치고 공부한 뒤 내보내기
     roles = load(os.path.join(work, "ref_v1.json"))["roles"]
