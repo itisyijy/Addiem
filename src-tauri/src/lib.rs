@@ -160,6 +160,7 @@ pub fn run() {
             quality::hide_quality,
             quality::split_suggest,
             quality::split_apply,
+            quality::rewrite_suggest, quality::rewrite_apply, quality::rewrite_change, ai::ai_check_card,
             ai::ai_status, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_cancel,
             quality::undo_change,
             quality::recent_changes,

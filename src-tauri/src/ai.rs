@@ -7,6 +7,8 @@
 //! - 보내는 것: 사용자가 누른 카드 한 장의 질문 글자와 답 항목 글자뿐 (Q8 오답 보기 제안은 편집 중인 질문 · 정답 · 보기 글자, recall.rs). 덱 이름 · 복습 기록 · 자료 · 그림은 보내지 않는다
 //! - 결과는 quality::SplitProposal 과 같은 모양의 제안이다. 카드를 바꾸는 것은 여전히 사용자가 승인한 split_apply 뿐
 //!
+//! - 8.2 [AI로 확인](ai_check_card): 그 카드의 질문 · 답 글자(+ 확인 목록에서 남긴 연결 자료 구간)만 보내고, 판단 · 근거 · 고친 안을 받는다. 바꾸는 것은 승인한 quality::rewrite_apply 뿐
+//!
 //! Claude · Gemini 구독 로그인은 넣지 않는다: 제3자 앱이 소비자 구독으로 로그인하는 것을 허용하지 않는다 (DECISIONS I73)
 
 use crate::commands::AppState;
@@ -1033,6 +1035,167 @@ fn parse_cited(text: &str, sent: &[rag::Sent]) -> Result<Vec<rag::Sent>, AiError
     Ok(out)
 }
 
+// ---------------------------------------------------------------- 8.2 AI로 확인 (질문과 답이 맞는지 · 고친 안 제안)
+
+/// 보내는 것: 그 카드의 질문 글자와 답 글자 (quality::rewrite_of 의 필드 글자. HTML · 그림 · [sound:] 를 뺐다) +
+/// 이 카드에 연결된 자료 구간 중 확인 목록에서 남긴 것 (R3 와 같은 rag::linked_segments, 비슷한 구간은 찾지 않는다). 없으면 카드 글자만 (I74 범위).
+/// 받는 것: 판단 · 근거 한 줄 · 고친 안(근거가 부족하면 없음) · 고친 안이 기댄 구간 번호. 고친 안은 제안일 뿐이고 카드를 바꾸는 것은
+/// 사용자가 [이대로 고치기]로 승인한 quality::rewrite_apply 뿐이다. 모델이 글을 쓰는 AI 고쳐 쓰기 길은 이 명령 하나다 (CQ, 사용자 결정 2026-10-19)
+const CHECK_INSTRUCTIONS: &str = "암기 카드 한 장의 질문과 답이 서로 맞는지 확인해요. 사용자가 보낸 질문과 답을 보고:
+- matches: 답이 질문이 묻는 것(개수 · 때 · 차이 · 이유 · 순서 · 대상)에 맞게 답하면 true, 어긋나면 false.
+- reason: 그렇게 본 근거 한 문장. 질문과 같은 언어로.
+- fix: 어긋나면 서로 맞게 고친 {\"question\": 질문, \"answer\": 답}. 원래 글자를 되도록 그대로 두고 꼭 필요한 곳만 고치세요. 줄은 줄바꿈으로 나누고 HTML 이나 서식 기호는 쓰지 마세요.
+- 카드와 자료 구간에 없는 새 사실을 넣지 마세요. 고칠 근거가 부족하면 fix 를 null 로 두고 reason 에 무엇이 부족한지 쓰세요. 맞으면 fix 는 null.
+- checks: 어긋나는데 fix 가 null 이면 사용자가 직접 확인할 것을 물음으로 2~3개. 아니면 빈 배열.
+- segments: 고친 안이 기댄 자료 구간 번호. 없으면 빈 배열.
+- 답은 {\"matches\": true 또는 false, \"reason\": 근거, \"fix\": {\"question\": 질문, \"answer\": 답} 또는 null, \"checks\": [물음, …], \"segments\": [번호, …]} 모양의 JSON 하나만.";
+
+const MAX_REASON_CHARS: usize = 300;
+const MAX_ANSWER_CHARS: usize = 2000;
+/// 근거가 부족할 때 "확인해 주세요" 물음 (CQ3-n)
+const MAX_CHECKS: usize = 3;
+
+/// 고친 안 (줄바꿈으로 줄을 나눈다)
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CardFix {
+    question: String,
+    answer: String,
+}
+
+/// [AI로 확인] 결과. fix 가 없고 matches 가 false 면 "수정안을 만들지 않았어요 · 근거가 부족해요" + checks (CQ3-n)
+#[derive(Serialize, Debug)]
+pub struct CardCheck {
+    matches: bool,
+    reason: String,
+    fix: Option<CardFix>,
+    /// 사용자가 직접 확인할 물음 (고친 안이 없을 때만)
+    checks: Vec<String>,
+    /// 함께 보낸 자료 구간 · 고친 안이 기댄 구간 (근거 칩)
+    sent: Vec<rag::Sent>,
+    evidence: Vec<rag::Sent>,
+}
+
+/// 보내는 글자 전부
+fn check_input(question: &str, answer: &str, sent: &[rag::Sent]) -> String {
+    let mut s = format!("질문: {question}\n답:\n{answer}\n");
+    if !sent.is_empty() {
+        s.push_str(&format!("자료 구간:\n{}", rag::segments_input(sent)));
+    }
+    s
+}
+
+fn check_schema() -> J {
+    let fix = object(json!({ "question": { "type": "string" }, "answer": { "type": "string" } }));
+    object(json!({
+        "matches": { "type": "boolean" },
+        "reason": { "type": "string" },
+        "fix": { "anyOf": [fix, { "type": "null" }] },
+        "checks": { "type": "array", "items": { "type": "string" } },
+        "segments": { "type": "array", "items": { "type": "integer" } },
+    }))
+}
+
+/// 카드 글자로 받지 않는 표시: HTML 태그 · 빈칸 문법({{c1::…}}) · 굵게 표시(**)
+fn markup(t: &str) -> bool {
+    t.contains("{{") || t.contains("**") || t.char_indices().any(|(i, c)| c == '<' && t[i + 1..].starts_with(|n: char| n.is_ascii_alphabetic() || n == '/' || n == '!'))
+}
+
+/// 모델 출력 → 확인 결과. 근거가 비거나 길면, 고친 안이 비거나 길거나 표시(markup)가 있으면, 보내지 않은 구간 번호면 BadOutput (일부도 쓰지 않는다).
+/// 맞다고 하거나 보낸 글과 같으면 고친 안은 없다
+fn parse_check(text: &str, question: &str, answer: &str, sent: &[rag::Sent]) -> Result<CardCheck, AiError> {
+    let bad = |m: &str| AiError::BadOutput(m.to_string());
+    let v = parse_json(text)?;
+    let matches = v["matches"].as_bool().ok_or_else(|| bad("matches 가 없어요"))?;
+    let reason = v["reason"].as_str().unwrap_or("").trim().to_string();
+    if reason.is_empty() || reason.chars().count() > MAX_REASON_CHARS {
+        return Err(bad("근거가 비었거나 너무 길어요"));
+    }
+    let fixed = |key: &str, max: usize| {
+        let t = quality::tidy(v["fix"][key].as_str().unwrap_or(""));
+        if t.is_empty() || t.chars().count() > max {
+            return Err(bad("고친 질문이나 답이 비었거나 너무 길어요"));
+        }
+        if markup(&t) {
+            return Err(bad("고친 글에 HTML 이나 서식 기호가 있어요"));
+        }
+        Ok(t)
+    };
+    let fix = if matches || v["fix"].is_null() {
+        None
+    } else {
+        Some(CardFix { question: fixed("question", MAX_FRONT_CHARS)?, answer: fixed("answer", MAX_ANSWER_CHARS)? })
+    };
+    let fix = fix.filter(|f| f.question != quality::tidy(question) || f.answer != quality::tidy(answer));
+    let mut checks = vec![];
+    for c in v["checks"].as_array().into_iter().flatten().take(MAX_CHECKS) {
+        let c = c.as_str().map(str::trim).filter(|c| !c.is_empty() && c.chars().count() <= MAX_FRONT_CHARS && !markup(c));
+        checks.push(c.ok_or_else(|| bad("확인할 물음이 비었거나 너무 길어요"))?.to_string());
+    }
+    if matches || fix.is_some() {
+        checks.clear();
+    }
+    let mut evidence: Vec<rag::Sent> = vec![];
+    for n in v["segments"].as_array().into_iter().flatten() {
+        let id = rag::segment_at(sent, n).ok_or_else(|| bad("보내지 않은 구간 번호예요"))?;
+        if fix.is_some() && !evidence.iter().any(|s| s.id == id) {
+            evidence.extend(sent.iter().find(|s| s.id == id).cloned());
+        }
+    }
+    Ok(CardCheck { matches, reason, fix, checks, sent: sent.to_vec(), evidence })
+}
+
+/// 개발용 가짜 결과 (CQ3 의 세 상태): 규칙에 걸린 카드에 연결 구간이 있으면 첫 구간을 근거로 답 끝에 한 줄을 더한 고친 안,
+/// 구간이 없으면 근거가 부족해 고친 안 없음 + 확인할 물음, 규칙에 걸리지 않은 카드는 맞다고
+fn fake_check(question: &str, answer: &str, rule: Option<&str>, segments: usize) -> String {
+    match rule {
+        Some(why) if segments > 0 => json!({
+            "matches": false,
+            "reason": format!("{why} (개발용 가짜 응답)"),
+            "fix": { "question": question, "answer": format!("{answer}\n가짜 응답이 자료 구간 1을 보고 더한 줄") },
+            "checks": [],
+            "segments": [1],
+        }),
+        Some(why) => json!({
+            "matches": false,
+            "reason": format!("{why}. 연결된 자료가 없어 고칠 근거가 부족해요 (개발용 가짜 응답)"),
+            "fix": null,
+            "checks": [format!("이 카드가 묻는 것이 \"{question}\"가 맞나요?"), "답이 다른 카드의 답과 섞였는지 봐 주세요."],
+            "segments": [],
+        }),
+        None => json!({ "matches": true, "reason": "질문이 묻는 것에 맞게 답했어요 (개발용 가짜 응답)", "fix": null, "checks": [], "segments": [] }),
+    }
+    .to_string()
+}
+
+/// 보내는 글 · 지시 · 함께 보낸 구간 · 원래 질문과 답 (DB 를 읽기만 한다)
+fn check_prepare(con: &Connection, card_id: i64, segment_ids: &[i64]) -> Result<(quality::Rewrite, Vec<rag::Sent>, String), AiError> {
+    let r = quality::rewrite_of(con, card_id).map_err(AiError::Other)?;
+    let picks: Vec<(i64, &str)> = rag::linked_segments(con, card_id).map_err(AiError::Other)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
+    let sent = rag::sent_of(con, &picks).map_err(AiError::Other)?;
+    let input = check_input(&r.question, &r.answer, &sent);
+    if input.chars().count() > MAX_INPUT_CHARS {
+        return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 직접 고쳐 주세요.".into()));
+    }
+    Ok((r, sent, input))
+}
+
+/// 8.2 [AI로 확인]: 카드 한 장(+ 남긴 연결 구간)을 ChatGPT 로 보내 질문과 답이 맞는지 보고, 어긋나면 근거와 고친 안을 받는다.
+/// 아무것도 바꾸지 않는다 (승인은 quality::rewrite_apply, how = "ai")
+#[tauri::command]
+pub async fn ai_check_card(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) -> Result<CardCheck, AiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (r, sent, input) = with_db(&app, |c| check_prepare(c, card_id, &segment_ids))?;
+        let schema = check_schema();
+        let rule = Some(r.why.as_str()).filter(|w| !w.is_empty());
+        let text = generate(&app, &|m, f| request_body(m, CHECK_INSTRUCTIONS, &input, f.then_some(("card_check", &schema))), || {
+            fake_check(&r.question, &r.answer, rule, sent.len())
+        })?;
+        parse_check(&text, &r.question, &r.answer, &sent)
+    })
+    .await
+    .map_err(|e| AiError::Other(e.to_string()))?
+}
+
 /// 보내고 스트림을 끝까지 읽는다. 200 이면 sent() (이번 달 보낸 카드). 취소되면 읽기를 멈춘다 (Truncated)
 /// ponytail: 첫 바이트가 오기 전의 취소는 응답이 올 때까지(최대 2분) 스레드가 기다린다. 화면은 바로 놓아 준다
 fn agent_stream(st: &AiState, run: u64, token: &str, body: &J, sent: &mut dyn FnMut()) -> Result<Outcome, Reject> {
@@ -1380,5 +1543,111 @@ mod tests {
         assert_eq!(sent_this_month(&con), 2);
         set_meta(&con, META_SENT, Some("2000-01 9")).unwrap();
         assert_eq!(sent_this_month(&con), 0, "지난달 수는 세지 않는다");
+    }
+
+    fn seg(id: i64) -> rag::Sent {
+        rag::Sent { id, material_id: 1, material: "4장 슬라이드.pptx".into(), kind: "pptx".into(), page: 12, signals: vec![], text: format!("구간 {id}"), how: "manual".into() }
+    }
+
+    #[test]
+    fn card_check_output_is_validated() {
+        let sent = vec![seg(31), seg(32)];
+        let (q, a) = ("TCP와 UDP의 차이를 설명하시오.", "80");
+        let check = |t: &str| parse_check(t, q, a, &sent);
+        let good = r#"{"matches":false,"reason":"차이를 묻는데 포트 번호예요","fix":{"question":"TCP와 UDP의 차이를 설명하시오.","answer":"TCP 연결형\nUDP 비연결형"},"checks":["x"],"segments":[2,2]}"#;
+        let c = check(good).unwrap();
+        assert_eq!(c.fix, Some(CardFix { question: q.into(), answer: "TCP 연결형\nUDP 비연결형".into() }));
+        assert_eq!(c.evidence.iter().map(|s| s.id).collect::<Vec<_>>(), [32], "인용한 구간만 한 번씩");
+        assert!(c.checks.is_empty(), "고친 안이 있으면 확인할 물음은 없다");
+        assert_eq!(c.sent.len(), 2);
+        assert!(check(&format!("```json\n{good}\n```")).is_ok(), "코드 블록으로 감싸도");
+        // 맞다고 하면 고친 안 · 물음 · 근거는 버린다
+        let c = check(r#"{"matches":true,"reason":"맞아요","fix":{"question":"x","answer":"y"},"checks":["?"],"segments":[1]}"#).unwrap();
+        assert!(c.matches && c.fix.is_none() && c.checks.is_empty() && c.evidence.is_empty());
+        // 근거가 부족하면 고친 안 없이 확인할 물음만 (억지로 만들지 않는다)
+        let c = check(r#"{"matches":false,"reason":"자료에 답이 없어요","fix":null,"checks":["묻는 것이 맞나요?","다른 카드와 섞였나요?"],"segments":[]}"#).unwrap();
+        assert!(!c.matches && c.fix.is_none());
+        assert_eq!(c.checks, ["묻는 것이 맞나요?", "다른 카드와 섞였나요?"]);
+        // 보낸 글과 같은 고친 안은 고친 안이 아니다
+        assert!(check(r#"{"matches":false,"reason":"r","fix":{"question":"TCP와 UDP의 차이를 설명하시오.","answer":" 80 "},"checks":[],"segments":[]}"#).unwrap().fix.is_none());
+        let bad = |t: &str| matches!(check(t), Err(AiError::BadOutput(_)));
+        assert!(bad(r#"{"matches":false,"reason":" ","fix":null,"checks":[],"segments":[]}"#), "빈 근거");
+        assert!(bad(&format!(r#"{{"matches":false,"reason":"{}","fix":null,"checks":[],"segments":[]}}"#, "가".repeat(MAX_REASON_CHARS + 1))), "긴 근거");
+        assert!(bad(r#"{"reason":"r","fix":null,"checks":[],"segments":[]}"#), "matches 가 없다");
+        for fix in [r#"{"question":"","answer":"a"}"#, r#"{"question":"q","answer":"<b>a</b>"}"#, r#"{"question":"{{c1::q}}","answer":"a"}"#, r#"{"question":"q","answer":"**a**"}"#] {
+            assert!(bad(&format!(r#"{{"matches":false,"reason":"r","fix":{fix},"checks":[],"segments":[]}}"#)), "{fix}");
+        }
+        assert!(bad(&format!(r#"{{"matches":false,"reason":"r","fix":{{"question":"q","answer":"{}"}},"checks":[],"segments":[]}}"#, "가".repeat(MAX_ANSWER_CHARS + 1))), "긴 답");
+        assert!(bad(r#"{"matches":false,"reason":"r","fix":{"question":"q","answer":"a"},"checks":[],"segments":[3]}"#), "보내지 않은 구간");
+        assert!(bad(r#"{"matches":false,"reason":"r","fix":null,"checks":[""],"segments":[]}"#), "빈 물음");
+        assert!(bad("고치면 이래요: {"), "JSON 이 아니다");
+        assert!(!markup("a < b 그리고 3<5"), "부등호는 글자다");
+        let schema = check_schema();
+        let required: Vec<&str> = schema["required"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        for k in ["matches", "reason", "fix", "checks", "segments"] {
+            assert!(required.contains(&k), "{k}");
+        }
+        assert_eq!(schema["properties"]["fix"]["anyOf"][1], json!({ "type": "null" }), "고친 안 없음(null)을 받는다");
+    }
+
+    #[test]
+    fn fake_check_gives_the_three_states() {
+        let st = AiState::new();
+        let text = fake_text(&st, 0, "ok", || fake_check("Q?", "80", Some("근거"), 1)).unwrap();
+        let c = parse_check(&text, "Q?", "80", &[seg(5)]).unwrap();
+        assert!(c.fix.is_some() && c.evidence.len() == 1, "연결 구간이 있으면 그 구간을 근거로 고친 안");
+        let c = parse_check(&fake_check("Q?", "80", Some("근거"), 0), "Q?", "80", &[]).unwrap();
+        assert!(c.fix.is_none() && c.checks.len() == 2, "구간이 없으면 근거 부족");
+        assert!(parse_check(&fake_check("Q?", "80", None, 0), "Q?", "80", &[]).unwrap().matches);
+        let text = fake_text(&st, 0, "malformed", || unreachable!()).unwrap();
+        assert!(matches!(parse_check(&text, "Q?", "80", &[]), Err(AiError::BadOutput(_))));
+    }
+
+    #[test]
+    fn card_check_sends_plain_text_and_changes_nothing() {
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, '비밀 덱 이름', 0, 0)", []).unwrap();
+        let card = crate::commands::NewCard {
+            deck_id: 1,
+            kind: "basic".into(),
+            front: "<b>TCP</b>와 UDP의 차이를 설명하시오. <img src=\"secret.png\">".into(),
+            back: "<div>80 [sound:port.mp3]</div>".into(),
+            importance: None,
+        };
+        crate::commands::insert_note(&con, &card, "", None).unwrap();
+        let id: i64 = con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap();
+        con.execute_batch(&format!(
+            "INSERT INTO review_log (card_id, reviewed_at, rating) VALUES ({id}, 1, 1);
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, status, created_at, updated_at) VALUES (1, 1, '4장.pptx', 'sources/1.pptx', 'pptx', 'ready', 0, 0);
+             INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight) VALUES (11, 1, 12, 0, 'TCP: 연결 지향 / UDP: 비연결', 'bold', 1), (12, 1, 13, 0, '연결 안 된 구간', 'bold', 1);
+             INSERT INTO source_link (segment_id, card_id, method, created_at) VALUES (11, {id}, 'manual', 0);"
+        ))
+        .unwrap();
+        let snapshot = |con: &Connection| {
+            con.query_row("SELECT n.fields, n.updated_at, (SELECT count(*) FROM card_change) FROM note n JOIN card c ON c.note_id = n.id WHERE c.id = ?1", [id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })
+            .unwrap()
+        };
+        let before = snapshot(&con);
+        // 구간을 모두 뺐으면 카드 글자만
+        let (_, sent, input) = check_prepare(&con, id, &[]).unwrap();
+        assert!(sent.is_empty());
+        assert_eq!(input, "질문: TCP와 UDP의 차이를 설명하시오.\n답:\n80\n");
+        for leak in ["<", "secret.png", "sound", "port.mp3", "비밀 덱"] {
+            assert!(!input.contains(leak), "{leak}");
+        }
+        // 확인 목록에서 남긴 연결 구간만 (연결되지 않은 12 는 보내지 않는다)
+        let (r, sent, input) = check_prepare(&con, id, &[11, 12]).unwrap();
+        assert_eq!(sent.iter().map(|s| s.id).collect::<Vec<_>>(), [11]);
+        assert!(input.ends_with("자료 구간:\n[1] TCP: 연결 지향 / UDP: 비연결\n"), "{input}");
+        assert!(!input.contains("연결 안 된 구간"));
+        let schema = check_schema();
+        let body = request_body("m", CHECK_INSTRUCTIONS, &input, Some(("card_check", &schema)));
+        assert_eq!((body["store"].as_bool(), body["stream"].as_bool()), (Some(false), Some(true)));
+        // 고친 안을 받아도 카드는 그대로다: 바꾸는 길은 사용자가 승인한 quality::rewrite_apply 뿐
+        let c = parse_check(&fake_check(&r.question, &r.answer, Some("x"), sent.len()), &r.question, &r.answer, &sent).unwrap();
+        assert!(c.fix.is_some());
+        assert_eq!(snapshot(&con), before, "필드 · 수정 시각 · 변경 기록 그대로");
     }
 }
