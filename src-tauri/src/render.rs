@@ -15,11 +15,11 @@ pub struct Rendered {
 
 /// Anki 특수 필드 {{Tags}} {{Deck}} {{Subdeck}} {{Type}} {{Card}} {{CardFlag}} 의 값. 필드 맵에 넣어(같은 이름 필드보다 이긴다, Anki 와 같다) 그린다.
 /// 학습 화면(card_view) · 노트 유형 미리보기만 넣는다: 다른 곳(목록 · 품질 · 서술형)은 지금처럼 빈 값. 깃발은 앱에 없어 늘 빈 값 (Anki 의 깃발 없는 카드).
-/// 보이는 모양은 디자인 NT10: 태그는 " · " 로 잇고 덱은 하위 덱까지 " › " 경로 (Anki 는 공백 · "A::B")
+/// 값은 실제 Anki 와 같다 (pylib 26.9.3 으로 확인, 코디네이터 QA): 태그는 공백으로 잇고 앞뒤 공백 없음, 덱은 전체 경로 "A::B", 하위 덱은 마지막 칸
 pub fn special_fields(tags: &str, deck_path: &[String], type_name: &str, card_name: &str) -> [(String, String); 6] {
     [
-        ("Tags".into(), crate::occlusion::escape(&tags.split_whitespace().collect::<Vec<_>>().join(" · "))),
-        ("Deck".into(), crate::occlusion::escape(&deck_path.join(" › "))),
+        ("Tags".into(), crate::occlusion::escape(&tags.split_whitespace().collect::<Vec<_>>().join(" "))),
+        ("Deck".into(), crate::occlusion::escape(&deck_path.join("::"))),
         ("Subdeck".into(), crate::occlusion::escape(deck_path.last().map_or("", String::as_str))),
         ("Type".into(), crate::occlusion::escape(type_name)),
         ("Card".into(), crate::occlusion::escape(card_name)),
@@ -145,8 +145,8 @@ fn tag_value(tag: &str, fields: &HashMap<String, String>, ord: u32, is_back: boo
             } else {
                 value
             };
-            // text: 서식을 뺀 글자 (Anki 와 같다). 푼 글자는 다시 이스케이프해 "&lt;b&gt;" 가 태그가 되지 않게
-            let value = if has("text") { crate::occlusion::escape(&strip_tags(&value)) } else { value };
+            // text: 서식을 뺀 글자, 엔티티는 푼다 (Anki 와 같다: `<b>굵은</b> &amp; 뒷면` → `굵은 & 뒷면`). 결과는 화면이 살균한다
+            let value = if has("text") { strip_tags(&value) } else { value };
             // hint: Anki 는 스크립트 링크, 여기는 스크립트 없는 네이티브 펼치기 (cardHtml.ts 살균이 details · summary · open 을 받는다).
             // 이름은 필드 이름 ("힌트 보기 · " 는 CSS, 디자인 NT10), 답 면은 펼친 채, 빈 값이면 없음
             let value = if has("hint") && !value.trim().is_empty() {
@@ -419,8 +419,8 @@ mod tests {
     #[test]
     fn filters_and_missing_fields() {
         assert_eq!(render_card("{{text:Front}}|{{Nope}}", "", &f(&[("Front", "Q")]), 0).front, "Q|");
-        // text: 은 서식을 뺀 글자 (푼 &lt; 는 다시 이스케이프)
-        assert_eq!(render_card("{{text:Front}}", "", &f(&[("Front", "<b>굵게</b><br>&lt;i&gt; &amp;")]), 0).front, "굵게 &lt;i&gt; &amp;");
+        // text: 은 서식을 뺀 글자, 엔티티는 푼다 (실제 Anki 와 같다)
+        assert_eq!(render_card("{{text:Back}}", "", &f(&[("Back", "<b>굵은</b> &amp; 뒷면")]), 0).front, "굵은 & 뒷면");
         // hint: 은 스크립트 없는 펼치기, 빈 값이면 없음. 빈칸과 함께 쓰면 빈칸을 먼저 푼다
         let h = render_card("{{Front}}{{hint:Extra}}", "", &f(&[("Front", "Q"), ("Extra", "<i>메모</i>")]), 0);
         assert_eq!(h.front, "Q<details class=\"hint\"><summary>Extra</summary><i>메모</i></details>");

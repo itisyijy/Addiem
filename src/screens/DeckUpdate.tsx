@@ -1437,6 +1437,12 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
 
 // ---------------------------------------------------------------- DU2-u 이 업데이트 되돌리기 · DU2-u2 결과
 
+/** "노트 3개 · 카드 모양 1종" + 은/는 */
+const josa = (parts: (string | false)[]) => {
+  const s = parts.filter(Boolean).join(" · ");
+  return `${s}${eun(s)}`;
+};
+
 /** 보관한 새 노트 · 카드에 붙는 태그 (deck_update.rs ARCHIVE_TAG) */
 const ARCHIVE_TAG = "되돌린_업데이트";
 
@@ -1465,15 +1471,17 @@ export function UndoConfirm({ batch, onClose }: { batch: number; onClose: () => 
         u.reverted_notes + u.reverted_types > 0 && {
           icon: "rotate" as const,
           tone: "c-accent",
-          text: `돌아가요 · ${[u.reverted_notes > 0 && `바뀐 노트 ${n(u.reverted_notes)}개`, u.reverted_types > 0 && `카드 모양 ${n(u.reverted_types)}종`].filter(Boolean).join(" · ")}는 업데이트 전 내용으로`,
+          text: `돌아가요 · ${josa([u.reverted_notes > 0 && `바뀐 노트 ${n(u.reverted_notes)}개`, u.reverted_types > 0 && `카드 모양 ${n(u.reverted_types)}종`])} 업데이트 전 내용으로`,
         },
-        u.archived_cards > 0 && {
+        u.archived_notes > 0 && {
           icon: "layers" as const,
           tone: "c-secondary",
-          text:
-            u.archived_notes > 0
-              ? `보관해요 · 공부하지 않은 새 노트 ${n(u.archived_notes)}개(카드 ${n(u.archived_cards)}장)는 학습에서 빼고 '${ARCHIVE_TAG}' 태그로 모아요. 카드 목록에서 보거나 지울 수 있어요`
-              : `보관해요 · 공부하지 않은 새 카드 ${n(u.archived_cards)}장은 학습에서 빼요. 카드 목록에서 보거나 지울 수 있어요`,
+          text: `보관해요 · 공부하지 않은 새 노트 ${n(u.archived_notes)}개(카드 ${n(u.archived_note_cards)}장)는 학습에서 빼고 '${ARCHIVE_TAG}' 태그로 모아요. 카드 목록에서 보거나 지울 수 있어요`,
+        },
+        u.archived_cards > u.archived_note_cards && {
+          icon: "layers" as const,
+          tone: "c-secondary",
+          text: `보관해요 · 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장은 공부하지 않아 학습에서 빼요 (학습 중지)`,
         },
         u.kept_cards > 0 && {
           icon: "check" as const,
@@ -1484,7 +1492,7 @@ export function UndoConfirm({ batch, onClose }: { batch: number; onClose: () => 
         u.edited_notes + u.edited_types > 0 && {
           icon: "pencil" as const,
           tone: "c-secondary",
-          text: `남겨요 · 그 뒤에 내가 고친 ${[u.edited_notes > 0 && `노트 ${n(u.edited_notes)}개`, u.edited_types > 0 && `노트 유형 ${n(u.edited_types)}개`].filter(Boolean).join(" · ")}는 그대로`,
+          text: `남겨요 · 그 뒤에 내가 고친 ${josa([u.edited_notes > 0 && `노트 ${n(u.edited_notes)}개`, u.edited_types > 0 && `노트 유형 ${n(u.edited_types)}개`])} 그대로`,
         },
       ]
     : []
@@ -1534,7 +1542,7 @@ export function UndoResultScreen({ undo: u }: { undo: UndoSummary }) {
   const partial = u.kept_cards + u.edited_notes + u.edited_types > 0;
   const tiles = [
     u.reverted_notes > 0 && { label: "돌아간 노트", value: n(u.reverted_notes), sub: "업데이트 전 내용으로" },
-    u.archived_notes > 0 && { label: "보관한 새 노트", value: n(u.archived_notes), sub: `카드 ${n(u.archived_cards)}장 · 학습에서 빠짐` },
+    u.archived_notes > 0 && { label: "보관한 새 노트", value: n(u.archived_notes), sub: `카드 ${n(u.archived_note_cards)}장 · 학습에서 빠짐` },
     u.archived_notes === 0 && u.archived_cards > 0 && { label: "보관한 새 카드", value: n(u.archived_cards), sub: "학습에서 빠짐" },
     u.kept_cards > 0 && { label: "남긴 새 카드", value: n(u.kept_cards), sub: "공부한 카드 · 기록 · 일정 그대로" },
     u.edited_notes > 0 && { label: "그대로 둔 노트", value: n(u.edited_notes), sub: "그 뒤에 내가 고친 노트" },
@@ -1578,7 +1586,8 @@ export function UndoResultScreen({ undo: u }: { undo: UndoSummary }) {
                 {u.archived_notes > 0 ? `공부하지 않은 새 노트 ${n(u.archived_notes)}개는 보관했어요` : `공부하지 않은 새 카드 ${n(u.archived_cards)}장은 보관했어요`}
               </span>
               <span className="t-body-s c-secondary">
-                학습에 나오지 않고{u.archived_notes > 0 ? ` '${ARCHIVE_TAG}' 태그로 모아 뒀어요` : " 학습 중지로 두었어요"}. 카드 목록에서 보거나 지울 수 있어요.
+                학습에 나오지 않고{u.archived_notes > 0 ? ` '${ARCHIVE_TAG}' 태그로 모아 뒀어요` : " 학습 중지로 두었어요"}.
+                {u.archived_notes > 0 && u.archived_cards > u.archived_note_cards ? ` 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장도 학습 중지로 두었어요.` : ""} 카드 목록에서 보거나 지울 수 있어요.
               </span>
             </span>
             <Button variant="ghost" size="M" label="보관한 카드 보기" onClick={() => nav({ name: "cards", deckId: null, cardIds: u.archived_card_ids })} />
@@ -1598,7 +1607,7 @@ export function UndoResultScreen({ undo: u }: { undo: UndoSummary }) {
             <Icon name="pencil" size={20} className="c-secondary" />
             <span className="result__row-text">
               <span className="t-body-m-strong">
-                그 뒤에 고친 {[u.edited_notes > 0 && `노트 ${n(u.edited_notes)}개`, u.edited_types > 0 && `노트 유형 ${n(u.edited_types)}개`].filter(Boolean).join(" · ")}는 그대로 뒀어요
+                그 뒤에 고친 {josa([u.edited_notes > 0 && `노트 ${n(u.edited_notes)}개`, u.edited_types > 0 && `노트 유형 ${n(u.edited_types)}개`])} 그대로 뒀어요
               </span>
               <span className="t-body-s c-secondary">이유 · 업데이트 뒤에 내가 고친 내용이라서요. 업데이트 전 내용은 백업에 있어요.</span>
             </span>

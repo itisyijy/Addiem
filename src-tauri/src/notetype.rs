@@ -2813,7 +2813,7 @@ mod tests {
         con.execute("UPDATE note SET tags = '기출::2023 <x>' WHERE id = ?1", [n]).unwrap();
         con.execute("UPDATE card SET deck_id = ?2 WHERE note_id = ?1", [n, sub]).unwrap();
         let p = preview(&con, nt, tpl, "", 0, None, None, Some(n)).unwrap();
-        assert_eq!(p.front, format!("기출::2023 · &lt;x&gt;|덱 › 하위|하위|{name}|Cloze||t"));
+        assert_eq!(p.front, format!("기출::2023 &lt;x&gt;|덱::하위|하위|{name}|Cloze||t"));
         let p = preview(&con, nt, tpl, "", 0, None, Some(&s(&["Text"])), None).unwrap();
         assert_eq!(p.front, format!("(태그)|(덱)|(덱)|{name}|Cloze||t"), "노트가 없으면 이름 샘플");
         // 다른 곳(목록 · 품질 · 서술형)의 render_fields 는 지금처럼 빈 값

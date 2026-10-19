@@ -505,6 +505,8 @@ export type UndoSummary = {
   reverted_types: number;
   archived_notes: number;
   archived_cards: number;
+  /** 그중 보관한 새 노트의 카드. 나머지는 이미 있던 노트에 생긴 새 카드 */
+  archived_note_cards: number;
   archived_card_ids: number[];
   kept_cards: number;
   kept_card_ids: number[];

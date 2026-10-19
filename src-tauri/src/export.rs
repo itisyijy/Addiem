@@ -2187,4 +2187,35 @@ mod tests {
         export(&con, &a.data_dir, deck, &tmp.0.join("again.apkg"), false, &QUIET).unwrap();
         assert_eq!(strings(&con, &format!("SELECT origin FROM note_type WHERE id = {ntid}")), o);
     }
+
+    #[test]
+    fn types_without_a_model_id_are_found_again_by_the_exported_id() {
+        // 코디네이터 QA (실제 Anki): 모델 id 가 남지 않는 유형(앱 기본 · 모델 id 없는 사용자 유형)을 내보냈다 다시 가져오면 새 유형이 생겼다.
+        // 내보낸 id 를 origin "m" 에 남기고 가져오기 · 업데이트가 모델 id 다음에 그것으로 찾는다
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55m-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let out = tmp.0.join("덱.apkg");
+        let (deck, mine) = {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('덱', 0, 0)", []).unwrap();
+            let deck = con.last_insert_rowid();
+            let mine = crate::notetype::anki_clone(&con, "basic", Some("내 유형"));
+            con.execute("UPDATE note_type SET anki_model_id = NULL WHERE id = ?1", [mine]).unwrap(); // 모델 id 가 없는 예전 사용자 유형
+            crate::notetype::add_note(&con, &crate::notetype::TypedNote { deck_id: deck, note_type_id: mine, values: vec!["Q".into(), "A".into()], importance: None }).unwrap();
+            insert_note(&con, &NewCard { deck_id: deck, kind: "basic".into(), front: "기본".into(), back: "답".into(), importance: None }, "", None).unwrap();
+            export(&con, &a.data_dir, deck, &out, false, &QUIET).unwrap();
+            let o: Value = serde_json::from_str(&con.query_row("SELECT origin FROM note_type WHERE id = ?1", [mine], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+            assert!(o["m"].as_array().is_some_and(|m| m.len() == 1) && o["f"].is_array(), "정의와 내보낸 id: {o}");
+            (deck, mine)
+        };
+        let types = || strings(&a.db.lock().unwrap(), "SELECT count(*) || '' FROM note_type");
+        let before = types();
+        // 새 노트만 더하기 (기록 옮기기) · 업데이트 모두 같은 유형으로
+        crate::import::run_import_anki(&|_, _, _| {}, &a, out.to_str().unwrap(), true, &mut vec![]).unwrap();
+        assert_eq!(types(), before, "새 유형이 생기지 않는다");
+        let r = update(&a, &out, false);
+        assert_eq!((r.other_type, r.same, r.new_notes), (0, 2, 0));
+        assert_eq!(types(), before);
+        let _ = (deck, mine);
+    }
 }

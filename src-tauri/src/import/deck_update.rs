@@ -76,6 +76,14 @@ struct TypeOrigin {
     f: Vec<(String, Option<usize>)>,
     t: Vec<TplOrigin>,
     c: String,
+    /// 이 유형으로 내보낸 Anki 모델 id (anki_model_id 가 없거나 다른 id 로 나갔을 때, DU55). 다시 가져올 때 이것으로 찾는다
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    m: Vec<i64>,
+}
+
+/// note_type.origin 의 "m" (f 가 없는 원본에서도 읽는다)
+fn exported_ids(origin: Option<&str>) -> Vec<i64> {
+    origin.and_then(|o| serde_json::from_str::<serde_json::Value>(o).ok()).and_then(|v| serde_json::from_value(v["m"].clone()).ok()).unwrap_or_default()
 }
 
 /// 처음 가져온 유형: 우리 자리 = Anki 순서, 우리 ord = Anki ord
@@ -84,6 +92,7 @@ pub(super) fn new_type_origin(t: &AType) -> String {
         f: t.fields.iter().enumerate().map(|(i, n)| (n.clone(), Some(i))).collect(),
         t: t.templates.iter().map(|(o, n, q, a)| TplOrigin { o: *o, n: n.clone(), our: Some(*o), q: h(q), a: h(a) }).collect(),
         c: h(&t.css),
+        m: vec![],
     };
     serde_json::to_string(&origin).unwrap_or_default()
 }
@@ -97,39 +106,49 @@ const EXPORTED_IDS: usize = 8;
 /// 앱 기본 유형은 고칠 수 없어 내보낸 모델 id 만 `"m"` 에 (다시 가져올 때 이것으로 찾는다, anki_model_id 는 동기화 자연 키라 건드리지 않는다).
 /// 가져온 유형(만든 사람의 원본)은 어떤 경우에도 덮지 않는다
 pub(crate) fn exported_type_origin(con: &Connection, ntid: i64, model: &serde_json::Value, slots: &[usize], our_ord: impl Fn(u32) -> u32) -> Res<()> {
-    let (native, user_made, origin): (bool, bool, Option<String>) = con
-        .query_row("SELECT native_kind IS NOT NULL, user_made = 1, origin FROM note_type WHERE id = ?1", [ntid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let (native, user_made, model_id, origin): (bool, bool, Option<i64>, Option<String>) = con
+        .query_row("SELECT native_kind IS NOT NULL, user_made = 1, anki_model_id, origin FROM note_type WHERE id = ?1", [ntid], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
         .map_err(err)?;
     let mid = model["id"].as_i64().unwrap_or_default();
-    if native {
-        let mut m: Vec<i64> = origin.as_deref().and_then(|o| serde_json::from_str::<serde_json::Value>(o).ok()).and_then(|v| serde_json::from_value(v["m"].clone()).ok()).unwrap_or_default();
+    let mut v: serde_json::Value = origin.as_deref().and_then(|o| serde_json::from_str(o).ok()).filter(serde_json::Value::is_object).unwrap_or_else(|| serde_json::json!({}));
+    let mut changed = false;
+    // 사용자 유형은 만든 사람이 없다: 원본이 없으면 내보낸 정의 (앱 기본 유형은 고칠 수 없어 정의를 두지 않는다)
+    if !native && user_made && origin.is_none() {
+        let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        let names: Vec<String> = model["flds"].as_array().into_iter().flatten().map(|f| s(&f["name"])).collect();
+        let o = TypeOrigin {
+            f: names.into_iter().enumerate().map(|(j, n)| (n, slots.get(j).copied())).collect(),
+            t: model["tmpls"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|x| {
+                    let ord = x["ord"].as_u64().unwrap_or_default() as u32;
+                    TplOrigin { o: ord, n: s(&x["name"]), our: Some(our_ord(ord)), q: h(&s(&x["qfmt"])), a: h(&s(&x["afmt"])) }
+                })
+                .collect(),
+            c: h(&s(&model["css"])),
+            m: vec![],
+        };
+        v = serde_json::to_value(&o).map_err(err)?;
+        changed = true;
+    }
+    // 모델 id 가 이 유형에 남지 않으면(앱 기본 유형 · 모델 id 없는 예전 유형 · 겹쳐 다른 id 로 나감) 내보낸 id 를 "m" 에 (코디네이터 QA: 다시 가져오면 새 유형이 생겼다)
+    if model_id != Some(mid) {
+        let mut m = exported_ids(origin.as_deref());
         if !m.contains(&mid) {
             m.push(mid);
             let cut = m.len().saturating_sub(EXPORTED_IDS);
             m.drain(..cut);
-            con.execute("UPDATE note_type SET origin = ?2 WHERE id = ?1", params![ntid, serde_json::json!({ "m": m }).to_string()]).map_err(err)?;
+            v["m"] = serde_json::json!(m);
+            changed = true;
         }
-        return Ok(());
     }
-    if !user_made || origin.is_some() {
-        return Ok(());
+    if changed {
+        con.execute("UPDATE note_type SET origin = ?2 WHERE id = ?1", params![ntid, v.to_string()]).map_err(err)?;
     }
-    let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
-    let names: Vec<String> = model["flds"].as_array().into_iter().flatten().map(|f| s(&f["name"])).collect();
-    let o = TypeOrigin {
-        f: names.into_iter().enumerate().map(|(j, n)| (n, slots.get(j).copied())).collect(),
-        t: model["tmpls"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|x| {
-                let ord = x["ord"].as_u64().unwrap_or_default() as u32;
-                TplOrigin { o: ord, n: s(&x["name"]), our: Some(our_ord(ord)), q: h(&s(&x["qfmt"])), a: h(&s(&x["afmt"])) }
-            })
-            .collect(),
-        c: h(&s(&model["css"])),
-    };
-    con.execute("UPDATE note_type SET origin = ?2 WHERE id = ?1 AND origin IS NULL", params![ntid, serde_json::to_string(&o).map_err(err)?]).map_err(err)?;
     Ok(())
 }
 
@@ -144,21 +163,20 @@ pub(crate) fn exported_note_origin(con: &Connection, note_id: i64, fields: &[Str
     Ok(())
 }
 
-/// Anki 모델 id 로 우리 유형: 같은 모델 id, 없으면 그 id 로 내보낸 앱 기본 유형 (DU55 "m")
+/// Anki 모델 id 로 우리 유형: 같은 모델 id, 없으면 그 id 로 내보낸 유형 (DU55 "m"). (유형 id, 앱 기본 유형인가)
 pub(crate) fn type_of_model(con: &Connection, aid: i64) -> Res<Option<(i64, bool)>> {
     let found = con.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [aid], |r| r.get(0)).optional().map_err(err)?;
     if let Some(id) = found {
         return Ok(Some((id, false)));
     }
     con.query_row(
-        "SELECT nt.id FROM note_type nt, json_each(CASE WHEN json_valid(nt.origin) THEN nt.origin ELSE '{}' END, '$.m') m
-         WHERE nt.native_kind IS NOT NULL AND m.value = ?1 ORDER BY nt.id LIMIT 1",
+        "SELECT nt.id, nt.native_kind IS NOT NULL FROM note_type nt, json_each(CASE WHEN json_valid(nt.origin) THEN nt.origin ELSE '{}' END, '$.m') m
+         WHERE m.value = ?1 ORDER BY nt.id LIMIT 1",
         [aid],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
     .map_err(err)
-    .map(|o| o.map(|id| (id, true)))
 }
 
 // ------------------------------------------------------------------ 판정 (순수 함수)
@@ -712,8 +730,9 @@ fn fields_3way(tx: &Connection, before: &Nt, b: &TypeOrigin, t: &AType, c: &mut 
 /// 다른 모양은 충돌로 본다 (기본 내 모양)
 fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &mut Vec<Issue>) -> Res<(TypeMap, TypeChange)> {
     let before = notetype::load(tx, id)?;
-    let base: Option<TypeOrigin> =
-        tx.query_row("SELECT origin FROM note_type WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0)).map_err(err)?.and_then(|j| serde_json::from_str(&j).ok());
+    let raw: Option<String> = tx.query_row("SELECT origin FROM note_type WHERE id = ?1", [id], |r| r.get(0)).map_err(err)?;
+    let base: Option<TypeOrigin> = raw.as_deref().and_then(|j| serde_json::from_str(j).ok());
+    let exported = exported_ids(raw.as_deref());
     let mut c = TypeChange { note_type_id: id, name: before.name.clone(), no_base: base.is_none(), ..Default::default() };
     let slots = match &base {
         None => {
@@ -878,6 +897,7 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
         f: t.fields.iter().cloned().zip(slots.iter().copied()).collect(),
         t: t.templates.iter().zip(&ours_of).map(|((o, n, q, a), our)| TplOrigin { o: *o, n: n.clone(), our: *our, q: h(q), a: h(a) }).collect(),
         c: h(&t.css),
+        m: exported,
     };
     tx.execute("UPDATE note_type SET origin = ?2 WHERE id = ?1 AND origin IS NOT ?2", params![id, serde_json::to_string(&origin).map_err(err)?]).map_err(err)?;
     let ords = if cloze { HashMap::new() } else { t.templates.iter().zip(&ours_of).filter_map(|(x, o)| o.map(|o| (x.0, o))).collect() };
@@ -1528,6 +1548,8 @@ pub struct UndoSummary {
     /// 공부하지 않아 보관하는 새 노트 (그 카드 전부) · 보관하는 카드 (새 노트의 카드 + 이미 있던 노트에 생긴 카드)
     archived_notes: usize,
     archived_cards: usize,
+    /// 그중 보관한 새 노트의 카드 (나머지는 이미 있던 노트 · 공부한 새 노트에 생긴 새 카드)
+    archived_note_cards: usize,
     archived_card_ids: Vec<i64>,
     /// 그 사이 공부해 남기는 새 카드 (기록 · 일정 그대로)
     kept_cards: usize,
@@ -1628,6 +1650,7 @@ pub(crate) fn undo(con: &mut Connection, batch: i64, dry: bool) -> Res<UndoSumma
                     s.kept_card_ids.extend(kept);
                 } else {
                     s.archived_notes += 1;
+                    s.archived_note_cards += rest.len() + if KEEP_STUDIED { 0 } else { kept.len() };
                     tx.execute(
                         "UPDATE note SET tags = trim(tags || ' ' || ?2), updated_at = ?3 WHERE id = ?1 AND (' ' || tags || ' ') NOT LIKE '% ' || ?2 || ' %'",
                         params![id, ARCHIVE_TAG, now],
