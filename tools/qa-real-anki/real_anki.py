@@ -11,9 +11,9 @@ import argparse, hashlib, html, json, os, re, shutil, struct, subprocess, sys, z
 CHECKS = []
 
 
-def check(cid, area, name, ok, evidence, next_round=False, info=False):
-    """ok: True/False. next_round: 이 브랜치에 아직 없는 기능 (C 작업) 이라 실패여도 '다음 회차'. info: 판정 없이 알림 (설계상 다른 것)"""
-    status = "INFO" if info else "PASS" if ok else ("NEXT" if next_round else "FAIL")
+def check(cid, area, name, ok, evidence, info=False):
+    """ok: True/False. info: 판정 없이 알림 (설계상 다른 것)"""
+    status = "INFO" if info else "PASS" if ok else "FAIL"
     CHECKS.append({"id": cid, "area": area, "name": name, "status": status, "evidence": evidence})
 
 
@@ -49,8 +49,6 @@ SPECIAL_A = "{{FrontSide}}<hr id=answer>{{Back}}<span class=qa-text>{{text:Back}
 CUSTOM = "QA 특수필드"
 ROOT = "QA원본"
 PROBES = ["qa-tags", "qa-deck", "qa-sub", "qa-card", "qa-type", "qa-hint", "qa-text"]
-# 8.1 남은 일 (C 작업: 특수 필드 · text: · hint:). 이 브랜치에서 다르면 '다음 회차'
-NEXT_PROBES = set(PROBES)
 
 
 # ------------------------------------------------------------------ Anki 쪽 읽기
@@ -339,8 +337,7 @@ def compare_renders(cid, area, ref_r, neo_r, label, notes):
         rows = probes.get(p, [])
         bad = [r for r in rows if not probe_ok(p, r[2], r[3], r[4])]
         check(f"{cid}-{p}", area, f"{label}: {p} 칸 (Anki 값과 같나)", bool(rows) and not bad,
-              f"{len(rows)}면 중 다름 {len(bad)}: " + json.dumps([{"key": r[0], "anki": norm_text(r[2])[:60], "neo": r[3]} for r in bad[:3]], ensure_ascii=False),
-              next_round=p in NEXT_PROBES)
+              f"{len(rows)}면 중 다름 {len(bad)}: " + json.dumps([{"key": r[0], "anki": norm_text(r[2])[:60], "neo": r[3]} for r in bad[:3]], ensure_ascii=False))
     return diffs
 
 
@@ -505,15 +502,11 @@ def report(work):
             rows += load(p)
         else:
             rows.append({"id": phase, "area": "-", "name": f"{phase} 단계 결과 없음 (앞 단계 실패?)", "status": "FAIL", "evidence": p})
-    # 덱 업데이트 2단계 (C 작업): 이 브랜치에 명령이 없어 아직 검사를 쓰지 못한 것. C 합친 뒤 qa_real_anki.rs phase1 에 더한다
-    for cid, name in [("DU-p2-field", "필드별 고르기 (충돌 노트의 필드마다 내 것 / 새 버전)"), ("DU-p2-orig", "원본 값 보기 (해시 → 값 사본)"),
-                      ("DU-p2-undo", "업데이트 단위 되돌리기 (DU16): 되돌린 뒤 상태가 적용 전과 같고 그 뒤 학습 기록은 남는다")]:
-        rows.append({"id": cid, "area": "2 덱 업데이트", "name": name, "status": "NEXT", "evidence": "이 브랜치에 명령 없음 (C 합친 뒤 검사를 더한다)"})
     out = ["| 영역 | id | 확인 | 결과 | 근거 |", "|---|---|---|---|---|"]
     for r in rows:
         ev = r["evidence"].replace("|", "\\|").replace("\n", " ")
-        out.append(f"| {r['area']} | {r['id']} | {r['name']} | {'다음 회차 (C 합친 뒤)' if r['status'] == 'NEXT' else r['status']} | {ev[:400]} |")
-    counts = {s: sum(1 for r in rows if r["status"] == s) for s in ["PASS", "FAIL", "NEXT", "INFO"]}
+        out.append(f"| {r['area']} | {r['id']} | {r['name']} | {r['status']} | {ev[:400]} |")
+    counts = {s: sum(1 for r in rows if r["status"] == s) for s in ["PASS", "FAIL", "INFO"]}
     out.append("")
     out.append(f"합계: {counts}")
     text = "\n".join(out)
