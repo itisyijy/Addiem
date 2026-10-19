@@ -48,6 +48,8 @@
   pointer-events: none;
 }
 .study__scroll::-webkit-scrollbar { width: 4px; }
+/* 넘치지 않는 카드(1px 이내 반올림, measure)는 스크롤바를 그리지 않고 굴러가지도 않는다. 자리(scrollbar-gutter)는 그대로라 글 폭이 같다 (QA Q5 L3) */
+.study__card:not(.is-overflow) .study__scroll { overflow-y: hidden; }
 .study__scroll::-webkit-scrollbar-track { margin: 16px 0 48px; border-radius: 2px; background: var(--bg-subtle); }
 .study__scroll::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background: var(--border-strong); }
 .study__scroll::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }

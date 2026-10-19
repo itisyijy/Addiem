@@ -107,7 +107,9 @@ export const written = {
   /** 8.3 개념 관계 확인 (로컬 모델, 백그라운드). 형식이 틀리면 null. 새 확인 · stopConcept 이 앞의 것을 멈춘다 */
   concept: (cardId: number, answer: string) => invoke<Concept | null>("concept_check", { cardId, answer }),
   /** 서술형 카드가 나오면 (답을 쓰는 동안): 모델을 읽어 두고 관계 뽑기 · 판정 앞부분을 미리 한다. 모델이 없으면 아무것도 하지 않는다 */
-  prepareConcept: (cardId: number) => invoke<void>("concept_prepare", { cardId }),
+  prepareConcept: (cardId: number, token: number) => invoke<void>("concept_prepare", { cardId, token }),
+  /** 그 표의 미리 하기를 멈춘다 (카드를 떠날 때, 엔진 잠금을 놓게) */
+  stopPrepare: (token: number) => invoke<void>("llm_stop_prepare", { token }),
   stopConcept: () => invoke<void>("llm_stop"),
 };
 
