@@ -135,6 +135,8 @@
   max-height: calc(100vh - 420px);
   overflow-y: auto;
 }
+/* 낮은 창(1180×640)에서도 손보는 칸이 눌리지 않게: 줄어들지 않고 카드가 스크롤된다 (QA M1) */
+.rewrite__card > * { flex-shrink: 0; }
 .rewrite__card--before { background: var(--bg-subtle); }
 /* 2px 테두리. 안쪽 여백을 줄여 글자 자리를 맞춘다 */
 .rewrite__card--after { padding: 16px; border: 2px solid var(--accent-default); background: var(--bg-surface); cursor: text; }
@@ -149,6 +151,7 @@
 .rewrite__nl { color: var(--accent-default); text-decoration: none; }
 .rewrite__input { margin-left: 0; }
 .rewrite__actions { display: inline-flex; gap: 8px; }
+.rewrite__locked { color: var(--status-warn-fg); }
 .rewrite__warn {
   display: flex;
   align-items: flex-start;

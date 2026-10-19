@@ -322,22 +322,32 @@ fn answer_count(answer: &[String]) -> Option<usize> {
     }
 }
 
-/// 수를 묻는 질문이면 묻는 말 ("연도" | "몇"). "몇몇"은 수를 묻지 않는다
+/// 수를 묻는 질문이면 질문에 실제로 있는 그 말 ("몇" · "연도" · "how many" …, 근거 줄에 그대로 인용한다). "몇몇"은 수를 묻지 않는다
 fn asks_number(q: &str) -> Option<&'static str> {
     let l = q.to_lowercase();
-    if ["연도는", "연도를", "년도는", "년도를", "what year", "which year"].iter().any(|w| l.contains(w)) {
+    if ["연도는", "연도를", "년도는", "년도를"].iter().any(|w| l.contains(w)) {
         return Some("연도");
     }
-    let many = l.match_indices('몇').any(|(i, _)| !l[i..].starts_with("몇몇") && !l[..i].ends_with('몇'));
-    (many || l.contains("how many") || l.contains("how much")).then_some("몇")
+    if let Some(w) = ["what year", "which year", "how many", "how much"].into_iter().find(|w| l.contains(w)) {
+        return Some(w);
+    }
+    l.match_indices('몇').any(|(i, _)| !l[i..].starts_with("몇몇") && !l[..i].ends_with('몇')).then_some("몇")
 }
+
+/// 영어 수 낱말 ("seven", "twenty-one", "a dozen")
+const EN_NUMBERS: [&str; 33] = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million", "billion", "dozen",
+];
 
 /// 풀어 써야 하는 물음 (CQ1 "질문이 묻는 꼴"). 앞의 것부터 본다. 방법 · 뜻은 낱말 하나로도 답이 되어 넣지 않는다
 const FORMS: [(&str, &str); 8] = [("차이", "차이"), ("이유", "이유"), ("왜 ", "왜"), ("순서", "순서"), ("차례", "차례"), ("과정", "과정"), ("절차", "절차"), ("장단점", "장단점")];
 
-/// 답에 수가 있는가 (숫자 · 한자 수 · "일곱", "세 가지" 같은 수 낱말)
+/// 답에 수가 있는가 (숫자 · 한자 수 · "일곱", "세 가지" · "seven" 같은 수 낱말)
 fn has_number(s: &str) -> bool {
+    let lower = s.to_lowercase();
     s.chars().any(|c| c.is_ascii_digit() || is_circled(c) || "〇一二三四五六七八九十百千万".contains(c))
+        || lower.split(|c: char| !c.is_ascii_alphabetic()).any(|w| EN_NUMBERS.contains(&w))
         || s.split_whitespace().any(|w| {
             NUMERALS.iter().any(|n| {
                 w.strip_prefix(n).is_some_and(|r| r.is_empty() || r.starts_with(|c: char| PARTICLES.contains(c)) || UNITS.iter().any(|u| r.starts_with(u)))
@@ -1106,6 +1116,8 @@ pub struct Rewrite {
     pub(crate) why: String,
     /// 그림 · 소리 · 서식이 있어 글자로 덮을 수 없는 칸 [질문, 답]
     pub(crate) locked: [bool; 2],
+    /// [전후 보기]: 고친 뒤 그 칸을 또 고쳤다 (new_* 는 지금 값)
+    edited_since: bool,
 }
 
 /// 고쳐 쓰기 제안. 질문 · 답이 필드 하나씩인 일반 카드만 (빈칸 · 그림 가리기 · 목록 · 선택형은 카드 편집에서)
@@ -1117,7 +1129,7 @@ pub(crate) fn rewrite_of(con: &Connection, card_id: i64) -> Res<Rewrite> {
     let format = if locked[1] { None } else { format_lines(&html_lines(&t.fields[a])) };
     let new_answer = format.map_or_else(|| answer.clone(), |(l, ..)| l.join("\n"));
     let why = fix_flags(&t).iter().filter_map(|f| f.reason.clone()).collect::<Vec<_>>().join(" · ");
-    Ok(Rewrite { card_id, new_question: question.clone(), question, answer, new_answer, why, locked })
+    Ok(Rewrite { card_id, new_question: question.clone(), question, answer, new_answer, why, locked, edited_since: false })
 }
 
 #[tauri::command]
@@ -1226,7 +1238,7 @@ pub fn rewrite_apply(state: State<AppState>, card_id: i64, question: String, ans
     apply_rewrite(&mut con, card_id, &question, &answer, &how)
 }
 
-/// [전후 보기]: 고친 변경의 전후 (Rewrite 모양, 고치지 않은 칸은 지금 글자). 굵게는 **…**
+/// [전후 보기]: 고친 변경의 전후 (Rewrite 모양). 오른쪽은 지금 카드: 고친 뒤 그 칸을 또 고쳤으면 지금 값과 edited_since. 굵게는 **…**
 pub(crate) fn change_view(con: &Connection, change_id: i64) -> Res<Rewrite> {
     let (card_id, payload): (Option<i64>, String) = con
         .query_row("SELECT card_id, payload FROM card_change WHERE id = ?1 AND kind = 'rewrite'", [change_id], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -1240,15 +1252,14 @@ pub(crate) fn change_view(con: &Connection, change_id: i64) -> Res<Rewrite> {
         .map_err(err)?
         .ok_or("고친 카드가 지워졌어요.")?;
     let fields: Vec<String> = serde_json::from_str(&stored).map_err(err)?;
+    let now = |slot: usize| fields.get(slot).map_or("", String::as_str);
     let side = |slot: usize| match p.slots.iter().position(|s| *s == slot) {
-        Some(i) => (rich_text(&p.prev[i]), rich_text(&p.next[i])),
-        None => {
-            let now = rich_text(fields.get(slot).map_or("", String::as_str));
-            (now.clone(), now)
-        }
+        Some(i) => (rich_text(&p.prev[i]), rich_text(now(slot))),
+        None => (rich_text(now(slot)), rich_text(now(slot))),
     };
+    let edited_since = p.slots.iter().zip(&p.next).any(|(s, v)| now(*s) != v);
     let ((question, new_question), (answer, new_answer)) = (side(p.qa[0]), side(p.qa[1]));
-    Ok(Rewrite { card_id: card_id.unwrap_or(0), question, answer, new_question, new_answer, why: String::new(), locked: [true, true] })
+    Ok(Rewrite { card_id: card_id.unwrap_or(0), question, answer, new_question, new_answer, why: String::new(), locked: [true, true], edited_since })
 }
 
 #[tauri::command]
@@ -1420,6 +1431,9 @@ mod tests {
         assert_eq!(mm("조선의 건국 연도는?", "1392년"), None);
         assert_eq!(mm("몇몇 학자가 주장한 이론은?", "진화론"), None, "'몇몇'은 수를 묻지 않는다");
         assert_eq!(mm("OSI 모형은 몇 계층인가?", "물리, 데이터 링크, 네트워크"), None, "목록으로 답했다");
+        assert_eq!(mm("How many layers does the OSI model have?", "seven"), None, "영어 수 낱말 (QA L2)");
+        assert_eq!(mm("How many layers does the OSI model have?", "twenty-one"), None);
+        assert_eq!(mm("How many layers does the OSI model have?", "from physical to application"), Some("질문은 \"how many\"를 묻는데 답에 수가 없어요".into()), "질문에 있는 말을 인용한다");
     }
 
     #[test]
@@ -1521,6 +1535,7 @@ mod tests {
         assert_eq!((kind.as_str(), summary.as_str()), ("rewrite", "OSI 7계층을 위에서부터 쓰시오."));
         let v = change_view(&con, change).unwrap();
         assert_eq!((v.answer.as_str(), v.new_answer.as_str(), v.question.as_str()), ("1. 응용 2. 표현 3. 세션", "1. 응용\n2. 표현\n3. 세션", "OSI 7계층을 위에서부터 쓰시오."));
+        assert!(!v.edited_since);
         assert!(rewrite_of(&con, card).unwrap().why.is_empty(), "고친 뒤에는 서식 제안이 없다");
 
         assert_eq!(undo_at(&mut con, change, false), Ok(true));
@@ -1543,6 +1558,8 @@ mod tests {
         // 그 뒤에 카드 편집(다른 기기 동기화도 같다)에서 또 고쳤다
         commands::save_note_fields(&con, note_id, &["HTTP 의 기본 포트 번호는?".into(), "80".into()]).unwrap();
         assert_eq!(undo_at(&mut con, change, false), Ok(false), "확인 없이 덮지 않는다");
+        let v = change_view(&con, change).unwrap();
+        assert_eq!((v.new_question.as_str(), v.edited_since), ("HTTP 의 기본 포트 번호는?", true), "전후 보기 오른쪽은 지금 값 (QA L1)");
         assert_eq!(fields_of(&con, card)[0], "HTTP 의 기본 포트 번호는?", "그대로 둔다");
         assert!(undo(&mut con, change).is_err());
         let undone: Option<i64> = con.query_row("SELECT undone_at FROM card_change WHERE id = ?1", [change], |r| r.get(0)).unwrap();

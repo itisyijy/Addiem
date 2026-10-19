@@ -766,12 +766,16 @@ export type Rewrite = {
   new_answer: string;
   why: string;
   locked: [boolean, boolean];
+  /** [전후 보기]: 고친 뒤 그 칸을 또 고쳤다 (new_* 는 지금 값) */
+  edited_since: boolean;
 };
 /** [AI로 확인] 결과. fix 가 없고 matches 가 false 면 근거가 부족해 고친 안을 만들지 않았다 (checks = 직접 확인할 물음) */
 export type CardCheck = {
   matches: boolean;
   reason: string;
   fix: { question: string; answer: string } | null;
+  /** 고친 안이 잠긴 칸(그림 · 소리 · 서식)을 바꿔서 그 칸은 버렸다 */
+  kept_locked: boolean;
   checks: string[];
   sent: Sent[];
   evidence: Sent[];
