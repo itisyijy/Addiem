@@ -81,6 +81,9 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         // 동기화 대상 표의 NULL 허용 열이라 다른 기기도 같은 기준으로 판정한다 (DU2, 옛 앱은 모르는 열을 건너뛴다)
         ("note", "origin", "TEXT"),
         ("note_type", "origin", "TEXT"),
+        // NT76 카드 종류마다 덱 (Anki 의 deck override, 템플릿 did): 이 카드 종류의 새 카드를 늘 넣을 덱. NULL = 노트를 넣는 덱 (C3-r).
+        // 동기화 표의 열이라 다른 기기도 같은 덱에 넣는다 (덱 uid 로 간다). 덱을 지우면 NULL (K42)
+        ("card_template", "deck_id", "INTEGER REFERENCES deck(id) ON DELETE SET NULL"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),

@@ -19,13 +19,14 @@ import { splitBack } from "./Study";
 import { DiscardModal, Modal } from "./NewDeck";
 import { CloneDialog, typeLabel } from "./NoteTypes";
 import { nativeLabels } from "./AddCard";
+import { deckPathLabel, loadDeckChoices } from "./DeckPicker";
 import { menuKeys } from "./Deck";
 import "../styles/notetypes.css";
 import "../styles/study.css";
 
 type Side = "front" | "back";
 type DField = { key: number; slot: number | null; name: string };
-type DTpl = { key: number; ord: number | null; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null };
+type DTpl = { key: number; ord: number | null; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null; deck: number | null };
 type Draft = { fields: DField[]; tpls: DTpl[]; css: string };
 
 const SIDE_LABEL: Record<Side, string> = { front: "앞면", back: "뒷면" };
@@ -126,11 +127,31 @@ const keptBoth = (c: NoteTypeConflict) => c.what.startsWith("같은 자리에");
 
 const initDraft = (d: Detail): Draft => ({
   fields: d.fields.map((f) => ({ key: f.slot, slot: f.slot, name: f.name })),
-  tpls: d.templates.map((t) => ({ key: t.ord, ord: t.ord, name: t.name, qfmt: t.qfmt, afmt: t.afmt, layout: t.layout, reason: t.reason })),
+  tpls: d.templates.map((t) => ({ key: t.ord, ord: t.ord, name: t.name, qfmt: t.qfmt, afmt: t.afmt, layout: t.layout, reason: t.reason, deck: t.deck })),
   css: d.css,
 });
 const draftKey = (x: Draft) =>
-  JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt]), x.css]);
+  JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt, t.deck]), x.css]);
+
+/** 모든 덱 (최상위 덱마다 그 아래까지) [id, "덱 › 하위 덱"]. NT76 카드 종류의 덱 고르기 */
+function useDeckOptions() {
+  const [opts, setOpts] = useState<[number, string][]>([]);
+  useEffect(() => {
+    let live = true;
+    api.home().then(async (h) => {
+      const out: [number, string][] = [];
+      for (const r of [...h.decks, ...h.idle_decks]) {
+        const list = await loadDeckChoices(r.id).catch(() => []);
+        out.push(...list.map((c): [number, string] => [c.id, deckPathLabel(list[0], c)]));
+      }
+      if (live) setOpts(out);
+    }, () => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return opts;
+}
 
 function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?: number; back: Route; reload: () => void }) {
   const nav = useNav();
@@ -178,6 +199,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   latest.current = draft;
   const dirty = draftKey(draft) !== draftKey(initial);
   const cur = draft.tpls.find((t) => t.key === curKey) ?? draft.tpls[0];
+  const deckOptions = useDeckOptions();
   const curIndex = draft.tpls.indexOf(cur);
   const effMode = cur?.layout ? mode : "html";
   const names = draft.fields.map((f) => f.name);
@@ -390,7 +412,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     const layout: Layout = { front: [{ kind: "field", name: other }], back: [{ kind: "front_side" }, { kind: "field", name: f0 }] };
     const b = await api.buildTemplateLayout(layout);
     const key = seq.current--;
-    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null }] }));
+    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null, deck: null }] }));
     setCurKey(key);
   };
   const removeTpl = (key: number) => {
@@ -443,7 +465,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
 
   const editOf = (): TypeEdit => ({
     fields: draft.fields.filter((f) => f.name).map((f) => ({ slot: f.slot, name: f.name })),
-    templates: draft.tpls.map((t) => ({ ord: t.ord, name: t.name.trim() || null, qfmt: t.qfmt, afmt: t.afmt })),
+    templates: draft.tpls.map((t) => ({ ord: t.ord, name: t.name.trim() || null, qfmt: t.qfmt, afmt: t.afmt, deck: t.deck })),
     css: draft.css,
   });
   const commit = async (impact: SaveImpact) => {
@@ -615,6 +637,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               </p>
             )}
             {kinds()}
+            {kindDeck()}
             <div className="nte__cols">
               {fields()}
               <div className="nte__mid">{effMode === "easy" ? easy() : htmlPanes()}</div>
@@ -701,6 +724,21 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
         <span className="t-caption c-tertiary">
           {readOnly ? "앱 기본 유형에는 카드 종류를 더할 수 없어요" : d.cloze ? "빈칸 유형은 빈칸 번호마다 카드가 한 장씩 생겨요" : "카드 종류마다 노트 하나에서 카드가 한 장씩 생겨요"}
         </span>
+      </div>
+    );
+  }
+
+  /** NT76 카드 종류마다 덱 (Anki 의 deck override). 기본은 노트를 넣는 덱. 디자인 프레임 전 기존 부품(MapSelect)으로 */
+  function kindDeck() {
+    if (readOnly || !cur) return null;
+    const name = tplTitle(cur, draft.tpls.indexOf(cur), d.cloze, show);
+    return (
+      <div className="nte__kind-deck">
+        <Icon name="layers" size={16} className="c-tertiary" />
+        <span className="t-label-m">{d.cloze ? "이 유형의 카드는" : "이 카드 종류는"} 늘</span>
+        <MapSelect plain value={cur.deck} options={deckOptions} none="노트를 넣는 덱" label={`${name}의 새 카드를 넣을 덱`} onChange={(v) => setTpl(cur.key, { deck: v })} />
+        <span className="t-label-m">에 넣기</span>
+        <span className="t-caption c-tertiary">{cur.deck === null ? "카드를 추가할 때 고른 덱에 들어가요" : "새로 생기는 카드만 · 이미 있는 카드는 옮기지 않아요"}</span>
       </div>
     );
   }
@@ -1420,9 +1458,17 @@ function ConflictList({ list, onClose }: { list: NoteTypeConflict[]; onClose: ()
 const DRAWN_KINDS = ["io", "list", "choice"];
 
 /** 대응 고르기 칸. 옮기지 않음 · 없앰이면 주황 */
-function MapSelect({ value, options, none, label, onChange }: { value: number | null; options: [number, string][]; none: string; label: string; onChange: (v: number | null) => void }) {
+/** plain: "없음"도 보통 모양 (옮기기 창의 "옮기지 않음" 주황 강조를 쓰지 않는다) */
+function MapSelect({ value, options, none, label, onChange, plain = false }: {
+  value: number | null;
+  options: [number, string][];
+  none: string;
+  label: string;
+  onChange: (v: number | null) => void;
+  plain?: boolean;
+}) {
   return (
-    <span className={`ntm__select ${value === null ? "is-none" : ""}`}>
+    <span className={`ntm__select ${value === null && !plain ? "is-none" : ""}`}>
       <select className="t-body-m" aria-label={label} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}>
         {options.map(([v, l]) => (
           <option key={v} value={v}>

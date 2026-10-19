@@ -1020,7 +1020,10 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
                 out
             }
             None => {
-                let id = insert_type(&tx, *aid, t, now)?;
+                // 새 유형의 카드 종류 덱(NT76): 같은 Anki 덱 id 로 가져온 우리 덱이 이미 있을 때만
+                let id = insert_type(&tx, *aid, t, now, &|did| {
+                    tx.query_row("SELECT id FROM deck WHERE anki_deck_id = ?1 AND archived_at IS NULL ORDER BY id LIMIT 1", [did], |r| r.get(0)).optional().map_err(err)
+                })?;
                 let map = TypeMap {
                     ntid: id,
                     slots: (0..t.fields.len()).map(Some).collect(),
@@ -1392,8 +1395,8 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
         let n = tx
             .execute(
                 "INSERT OR IGNORE INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at)
-                 SELECT note_id, deck_id, ?2, importance, importance_source, ?3, ?3 FROM card WHERE note_id = ?1 ORDER BY id LIMIT 1",
-                params![o.id, ord, now],
+                 SELECT note_id, coalesce(?4, deck_id), ?2, importance, importance_source, ?3, ?3 FROM card WHERE note_id = ?1 ORDER BY id LIMIT 1",
+                params![o.id, ord, now, notetype::template_deck(tx, nt.id, ord)?],
             )
             .map_err(err)?;
         if n > 0 {
@@ -2255,6 +2258,32 @@ mod tests {
         assert_eq!(r.merged, 1, "g1: 내가 더한 태그 c 와 만든 사람의 태그 변경을 합친다");
         assert_eq!(q::<String>(&s, "SELECT tags || ' ' || exam_hits FROM note WHERE anki_guid = 'g1'"), "a 기출::2023 c d 기출::2024 2", "출처 태그는 들이지 않는다");
         assert_eq!(q::<String>(&s, "SELECT tags || ' ' || exam_hits FROM note WHERE anki_guid = 'g2'"), "기출::2023 기출::2024 0", "사용자가 고친 기출 표시는 지킨다");
+    }
+
+    #[test]
+    fn new_cards_of_an_update_follow_the_card_type_deck() {
+        // NT76: 업데이트로 이미 있는 노트에 생기는 카드(앞면이 채워진 카드 종류)는 그 카드 종류에 정한 덱, 없으면 노트의 첫 카드 덱
+        let t = tmp("tdeck");
+        let s = state(&t.0.join("data"));
+        let (p1, p2) = (t.0.join("v1.apkg"), t.0.join("v2.apkg"));
+        let m = || Model { id: 20, name: "Two", fields: vec!["Front", "Back", "Extra"], templates: vec![("Card 1", "{{Front}}", AFMT), ("Card 2", "{{Extra}}", AFMT)], css: "" };
+        testpkg::write(&p1, &[m()], &[(1, "D")], &[note(1, "g1", 20, &["Q", "A", ""], &[(1, 0)]), note(2, "g2", 20, &["Q2", "A2", ""], &[(1, 0)])], &[]);
+        import(&s, &p1);
+        let (ty, deck): (i64, i64) = (q(&s, "SELECT id FROM note_type WHERE name = 'Two'"), q(&s, "SELECT id FROM deck WHERE name = 'D'"));
+        let other = {
+            let con = s.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('예문', 0, 0)", []).unwrap();
+            let id = con.last_insert_rowid();
+            notetype::set_template_deck(&con, ty, 1, Some(id)).unwrap();
+            id
+        };
+        testpkg::write(&p2, &[m()], &[(1, "D")], &[note(1, "g1", 20, &["Q", "A", "예문 있음"], &[(1, 0), (1, 1)]), note(2, "g2", 20, &["Q2", "A2", ""], &[(1, 0)])], &[]);
+        update(&s, &p2, &Choices::default(), false);
+        let rows: Vec<String> = {
+            let con = s.db.lock().unwrap();
+            con.prepare("SELECT n.anki_guid || c.template_ord || ':' || c.deck_id FROM card c JOIN note n ON n.id = c.note_id ORDER BY 1").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(rows, [format!("g10:{deck}"), format!("g11:{other}"), format!("g20:{deck}")]);
     }
 
     #[test]

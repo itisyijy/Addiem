@@ -2379,3 +2379,58 @@ fn card_made_in_the_old_type_elsewhere_does_not_stay() {
         }
     }
 }
+
+#[test]
+fn card_type_deck_follows_to_the_other_device() {
+    // K42 · NT76: A 가 카드 종류에 덱을 정하면 B 에서 만든 새 노트의 그 카드도 그 덱 (덱 uid 로 간다).
+    // 이미 있는 카드는 옮기지 않는다. 그 덱을 지우면 두 기기 모두 카드 종류의 덱이 빈다 (FK SET NULL)
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (ta, note) = user_type(&env, &a, &b);
+    let rev = a.deck("뒤집기", None);
+    {
+        let con = a.con();
+        let ord = nt::add_template(&con, ta, Some("뒤집기"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap().ord;
+        nt::set_template_deck(&con, ta, ord, Some(rev)).unwrap();
+    }
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    let decks = |d: &Dev, note: &str| -> Vec<String> {
+        d.con()
+            .prepare("SELECT c.template_ord || ':' || dk.name FROM card c JOIN deck dk ON dk.id = c.deck_id JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 ORDER BY c.template_ord")
+            .unwrap()
+            .query_map([note], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let tb = type_of(&b, &note).id;
+    assert_eq!(type_of(&b, &note).templates[1].deck, b.id("deck", &a.uid("deck", rev)), "B 의 카드 종류도 같은 덱");
+    let ord = type_of(&b, &note).templates[1].ord;
+    let new = typed_note(&b, tb, &["새 질문", "새 답"]);
+    for d in [&b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(decks(d, &new), ["0:2과목".to_string(), format!("{ord}:뒤집기")], "B 에서 만든 새 카드");
+        assert_eq!(decks(d, &note), ["0:2과목".to_string(), format!("{ord}:2과목")], "덱을 정하기 전에 생긴 카드는 그대로");
+    }
+    // B 가 그 덱을 지운다 (카드째)
+    {
+        let id = b.id("deck", &a.uid("deck", rev)).unwrap();
+        let con = b.con();
+        con.execute("DELETE FROM card WHERE deck_id = ?1", [id]).unwrap();
+        con.execute("DELETE FROM deck WHERE id = ?1", [id]).unwrap();
+    }
+    for d in [&b, &a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(type_of(d, &note).templates[1].deck, None, "지운 덱은 비운다");
+    }
+}

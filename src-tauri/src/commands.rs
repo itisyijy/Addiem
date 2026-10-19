@@ -1046,6 +1046,8 @@ pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String])
         rows.collect::<Result<_, _>>().map_err(err)?
     };
     let deck_id = existing.first().map(|e| e.2).ok_or("카드를 찾을 수 없어요.")?;
+    // 새 빈칸 번호의 카드: 그 유형의 카드 종류에 정한 덱(NT76), 없으면 노트의 첫 카드 덱
+    let deck_id = notetype::template_deck(tx, nt.id, 0)?.unwrap_or(deck_id);
     for ord in &ords {
         if !existing.iter().any(|e| e.1 == *ord) {
             tx.execute(

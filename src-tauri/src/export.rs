@@ -626,7 +626,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let mut used = HashSet::new();
     let mut models: HashMap<i64, Model> = HashMap::new();
     for ntid in notes.iter().map(|n| n.note_type_id).collect::<BTreeSet<_>>() {
-        models.insert(ntid, model(con, ntid, root_did, &mut used)?);
+        models.insert(ntid, model(con, ntid, root_did, &mut used, &deck_map)?);
     }
     // 카드 종류가 없는 카드는 뺀다 (동기화로 남은 고아 카드 · 템플릿이 하나도 없는 유형). Anki 는 그런 유형이 든 패키지를 통째로 거부하고,
     // 다시 센 ord 로 다른 카드 종류에 붙으면 앞면이 빈 카드가 된다. 카드가 모두 빠진 노트 · 유형도 뺀다 (Q2-01 · Q2-02)
@@ -920,7 +920,8 @@ impl Model {
 
 /// 노트 유형 -> Anki 모델. 원본 JSON(anki_raw)이 있으면 그대로 쓰고, 없으면 스키마 11 기본값으로 만든다.
 /// id 는 Anki 에서 온 유형이면 그 id, 아니면 만든 시각(ms) + 행 번호 (기본 유형 셋은 만든 시각이 같다)
-fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<Model> {
+/// deck_map: 내보내는 우리 덱 → Anki 덱 id. 카드 종류의 덱(NT76)이 그 안에 있으면 템플릿 did 로 쓴다 (없으면 null)
+fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>, deck_map: &HashMap<i64, i64>) -> Res<Model> {
     let (name, css, created, updated, anki_id, raw, kind): (String, String, i64, i64, Option<i64>, Option<String>, Option<String>) = con
         .query_row(
             "SELECT name, css, created_at, updated_at, anki_model_id, anki_raw, native_kind FROM note_type WHERE id = ?1",
@@ -947,6 +948,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
     let (slots, fields): (Vec<usize>, Vec<String>) = nt.visible().into_iter().unzip();
     let tmpls: Vec<(i64, String, String, String)> =
         nt.templates.iter().enumerate().map(|(i, t)| (i as i64, t.name.clone(), t.qfmt.clone(), t.afmt.clone())).collect();
+    let tdid = |i: usize| nt.templates.get(i).and_then(|t| t.deck).and_then(|d| deck_map.get(&d).copied());
     let cloze = nt.cloze();
     let ords: HashMap<i64, i64> = if cloze { HashMap::new() } else { nt.templates.iter().enumerate().map(|(i, t)| (t.ord as i64, i as i64)).collect() };
     let io = tmpls.iter().any(|t| crate::occlusion::is_template(&t.2));
@@ -964,7 +966,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
     let mut json = json!({
         "id": id, "name": name, "type": i64::from(cloze), "mod": updated / 1000, "usn": -1, "sortf": 0, "did": did,
         "tmpls": tmpls.iter().map(|(ord, n, q, a)| json!({
-            "name": n, "ord": ord, "qfmt": q, "afmt": a, "did": null, "bqfmt": "", "bafmt": "",
+            "name": n, "ord": ord, "qfmt": q, "afmt": a, "did": tdid(*ord as usize), "bqfmt": "", "bafmt": "",
         })).collect::<Vec<_>>(),
         "flds": fields.iter().enumerate().map(|(i, f)| json!({
             "name": f, "ord": i, "sticky": false, "rtl": false, "font": "Arial", "size": 20, "media": [],
@@ -1378,7 +1380,7 @@ mod tests {
         assert_eq!((qfmt.as_str(), afmt.as_str()), (r#"<div class="nt-l nt-center">{{질문}}</div>"#, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{답변}}</div>"#));
         let edit = nt::TypeEdit {
             fields: vec![field(0, "질문"), field(1, "답변")],
-            templates: vec![nt::TemplateEdit { ord: Some(0), name: None, qfmt: qfmt.clone(), afmt: afmt.clone() }],
+            templates: vec![nt::TemplateEdit { ord: Some(0), name: None, qfmt: qfmt.clone(), afmt: afmt.clone(), deck: None }],
             css: String::new(),
         };
         nt::apply_edit(&con, id, &edit).unwrap();
@@ -2029,6 +2031,60 @@ mod tests {
     // ---------------------------------------------------------------- DU55 Anki 왕복 기준
 
     /// "Anki 에서 고친" 패키지: collection.anki2 를 꺼내 SQL 을 돌리고 다시 묶는다 (미디어는 그대로)
+    #[test]
+    fn card_type_deck_round_trips_as_template_did() {
+        // NT76: 카드 종류의 덱은 Anki 템플릿 did (deck override). 내보낼 때 그 덱의 Anki 덱 id, 가져올 때 이번 패키지의 그 덱. 패키지에 없는 덱이면 비운다
+        use crate::notetype as nt;
+        use std::io::Read;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-tdid-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let out = tmp.0.join("앞뒤.apkg");
+        {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('내 덱', 0, 0)", []).unwrap();
+            let root = con.last_insert_rowid();
+            con.execute("INSERT INTO deck (name, parent_id, created_at, updated_at) VALUES ('뜻 → 단어', ?1, 0, 0)", [root]).unwrap();
+            let sub = con.last_insert_rowid();
+            let id = nt::anki_clone(&con, "reversed", Some("앞뒤"));
+            nt::set_template_deck(&con, id, 1, Some(sub)).unwrap();
+            nt::add_note(&con, &nt::TypedNote { deck_id: root, note_type_id: id, values: vec!["apple".into(), "사과".into()], importance: None }).unwrap();
+            export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+        }
+        let col = tmp.0.join("col.anki2");
+        let mut raw = vec![];
+        zip::ZipArchive::new(File::open(&out).unwrap()).unwrap().by_name("collection.anki2").unwrap().read_to_end(&mut raw).unwrap();
+        std::fs::write(&col, raw).unwrap();
+        let (models, sub_did): (String, i64) = {
+            let c = Connection::open(&col).unwrap();
+            (c.query_row("SELECT models FROM col", [], |r| r.get(0)).unwrap(), c.query_row("SELECT did FROM cards WHERE ord = 1", [], |r| r.get(0)).unwrap())
+        };
+        let m: Value = serde_json::from_str(&models).unwrap();
+        let t = m.as_object().unwrap().values().find(|v| v["name"] == "앞뒤").unwrap();
+        assert_eq!((t["tmpls"][0]["did"].clone(), t["tmpls"][1]["did"].as_i64()), (Value::Null, Some(sub_did)), "카드 종류 2 의 did = 그 카드가 든 덱");
+        // 다시 가져오면 이번 패키지의 그 덱, 새 노트의 카드 2 도 그 덱으로
+        let b = state(&tmp.0.join("b"));
+        crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
+        {
+            let con = b.db.lock().unwrap();
+            let id: i64 = con.query_row("SELECT id FROM note_type WHERE name = '앞뒤'", [], |r| r.get(0)).unwrap();
+            let sub: i64 = con.query_row("SELECT id FROM deck WHERE name = '뜻 → 단어'", [], |r| r.get(0)).unwrap();
+            let root: i64 = con.query_row("SELECT id FROM deck WHERE name = '내 덱'", [], |r| r.get(0)).unwrap();
+            assert_eq!(nt::load(&con, id).unwrap().templates.iter().map(|t| t.deck).collect::<Vec<_>>(), [None, Some(sub)]);
+            nt::add_note(&con, &nt::TypedNote { deck_id: root, note_type_id: id, values: vec!["pear".into(), "배".into()], importance: None }).unwrap();
+            assert_eq!(strings(&con, "SELECT c.template_ord || ':' || d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = (SELECT max(id) FROM note) ORDER BY 1"), ["0:내 덱", "1:뜻 → 단어"]);
+        }
+        // 패키지에 없는 덱을 가리키면 비워 두고 알리지 않는다
+        let odd = tmp.0.join("없는 덱.apkg");
+        let tid = m.as_object().unwrap().iter().find(|(_, v)| v["name"] == "앞뒤").unwrap().0.clone();
+        edit_apkg(&out, &odd, &format!("UPDATE col SET models = json_set(models, '$.\"{tid}\".tmpls[1].did', 424242)"));
+        let c = state(&tmp.0.join("c"));
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &c, odd.to_str().unwrap(), false, &mut vec![]).unwrap()).unwrap();
+        let con = c.db.lock().unwrap();
+        let id: i64 = con.query_row("SELECT id FROM note_type WHERE name = '앞뒤'", [], |r| r.get(0)).unwrap();
+        assert_eq!(nt::load(&con, id).unwrap().templates[1].deck, None);
+        assert_eq!(res["issues"], json!([]), "알리지 않는다");
+    }
+
     fn edit_apkg(src: &Path, dst: &Path, sql: &str) {
         use std::io::Read;
         let mut zip = zip::ZipArchive::new(File::open(src).unwrap()).unwrap();

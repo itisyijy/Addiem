@@ -270,7 +270,8 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   css: string;
   fields: { slot: number; name: string }[];
   /** layout: 쉬운 편집 구조 (없으면 HTML 전용, reason 이 그 이유) */
-  templates: { ord: number; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null }[];
+  /** deck: 이 카드 종류의 새 카드를 늘 넣을 덱 (NT76, null = 노트를 넣는 덱) */
+  templates: { ord: number; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null; deck: number | null }[];
   /** 줄 상자 CSS. 템플릿이 쓰는데 CSS 에 없으면 저장할 때 붙는다 (편집기 미리보기도 붙여 그린다) */
   layout_css: string;
   /** 정의의 지문. 저장할 때 넘기면 그 사이 (동기화로) 바뀐 유형은 저장하지 않는다 */
@@ -293,7 +294,7 @@ export type NoteTypeSample = { note_id: number; deck: string; slots: string[] };
 /** 편집기 초안 (save_note_type). fields 는 보이는 순서 · slot null 은 새 필드, 빠진 필드 · 카드 종류는 지운다 */
 export type NoteTypeEdit = {
   fields: { slot: number | null; name: string }[];
-  templates: { ord: number | null; name: string | null; qfmt: string; afmt: string }[];
+  templates: { ord: number | null; name: string | null; qfmt: string; afmt: string; deck: number | null }[];
   css: string;
 };
 /** 저장 전 확인 창의 수 (NT5) */

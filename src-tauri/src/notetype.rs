@@ -40,6 +40,8 @@ pub(crate) struct Tpl {
     pub name: String,
     pub qfmt: String,
     pub afmt: String,
+    /// NT76 이 카드 종류의 새 카드를 늘 넣을 덱 (card_template.deck_id). None = 노트를 넣는 덱
+    pub deck: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -141,9 +143,9 @@ pub(crate) fn load(con: &Connection, id: i64) -> Res<Nt> {
         .optional()
         .map_err(err)?
         .ok_or("노트 유형을 찾을 수 없어요.")?;
-    let mut st = con.prepare("SELECT ord, name, qfmt, afmt FROM card_template WHERE note_type_id = ?1 ORDER BY ord").map_err(err)?;
+    let mut st = con.prepare("SELECT ord, name, qfmt, afmt, deck_id FROM card_template WHERE note_type_id = ?1 ORDER BY ord").map_err(err)?;
     nt.templates = st
-        .query_map([id], |r| Ok(Tpl { ord: r.get(0)?, name: r.get(1)?, qfmt: r.get(2)?, afmt: r.get(3)? }))
+        .query_map([id], |r| Ok(Tpl { ord: r.get(0)?, name: r.get(1)?, qfmt: r.get(2)?, afmt: r.get(3)?, deck: r.get(4)? }))
         .map_err(err)?
         .collect::<Result<_, _>>()
         .map_err(err)?;
@@ -368,7 +370,36 @@ pub(crate) fn new_left(con: &Connection, decks: &str) -> Res<i64> {
     Ok(all - front_empty_cards(con, decks)?.iter().filter(|(_, s)| s == "new").count() as i64)
 }
 
-/// 일반 유형 노트의 빠진 카드를 만든다 (Anki 처럼 만들기만 하고 지우지 않는다). 덱 · 중요도는 그 노트의 첫 카드를 따른다 (C3-r). 만든 수
+/// NT76 카드 종류마다 덱 (Anki 의 deck override): 그 유형의 그 카드 종류(빈칸 유형은 하나뿐인 카드 종류)에 정한 덱. 없거나 보관한 덱이면 None
+/// → 부르는 쪽 덱 (고른 덱 · 노트의 첫 카드 덱, C3-r). 새 카드를 만드는 길이 모두 부른다. 이미 있는 카드는 옮기지 않는다
+pub(crate) fn template_deck(con: &Connection, note_type_id: i64, ord: u32) -> Res<Option<i64>> {
+    con.query_row(
+        "SELECT t.deck_id FROM card_template t JOIN deck d ON d.id = t.deck_id AND d.archived_at IS NULL
+         WHERE t.note_type_id = ?1 AND (t.ord = ?2 OR t.qfmt LIKE '%{{cloze:%') ORDER BY t.ord = ?2 DESC, t.ord LIMIT 1",
+        params![note_type_id, ord],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(err)
+}
+
+/// 카드 종류의 덱을 정한다 (None = 노트를 넣는 덱). 이미 있는 카드는 옮기지 않는다
+pub(crate) fn set_template_deck(con: &Connection, id: i64, ord: u32, deck: Option<i64>) -> Res<()> {
+    if let Some(d) = deck
+        && !con.query_row("SELECT EXISTS (SELECT 1 FROM deck WHERE id = ?1)", [d], |r| r.get::<_, bool>(0)).map_err(err)?
+    {
+        return Err("덱을 찾을 수 없어요.".into());
+    }
+    con.execute(
+        "UPDATE card_template SET deck_id = ?3, updated_at = ?4 WHERE note_type_id = ?1 AND ord = ?2 AND deck_id IS NOT ?3",
+        params![id, ord, deck, now_ms()],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+/// 일반 유형 노트의 빠진 카드를 만든다 (Anki 처럼 만들기만 하고 지우지 않는다). 덱 · 중요도는 그 노트의 첫 카드를 따른다 (C3-r),
+/// 덱은 그 카드 종류에 정한 덱이 있으면 그 덱 (NT76). 만든 수
 pub(crate) fn add_missing_cards(con: &Connection, nt: &Nt, note_id: i64, values: &[String]) -> Res<usize> {
     add_missing_cards_where(con, nt, note_id, values, |_| true)
 }
@@ -388,8 +419,8 @@ pub(crate) fn add_missing_cards_where(con: &Connection, nt: &Nt, note_id: i64, v
         made += con
             .execute(
                 "INSERT INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at)
-                 SELECT note_id, deck_id, ?2, importance, importance_source, ?3, ?3 FROM card WHERE note_id = ?1 ORDER BY id LIMIT 1",
-                params![note_id, ord, now],
+                 SELECT note_id, coalesce(?4, deck_id), ?2, importance, importance_source, ?3, ?3 FROM card WHERE note_id = ?1 ORDER BY id LIMIT 1",
+                params![note_id, ord, now, template_deck(con, nt.id, ord)?],
             )
             .map_err(err)?;
     }
@@ -995,6 +1026,9 @@ pub struct TemplateEdit {
     pub(crate) name: Option<String>,
     pub(crate) qfmt: String,
     pub(crate) afmt: String,
+    /// NT76 이 카드 종류의 새 카드를 늘 넣을 덱. None = 노트를 넣는 덱
+    #[serde(default)]
+    pub(crate) deck: Option<i64>,
 }
 
 /// 편집기 초안. fields 는 보이는 순서, 빠진 자리는 지운다. templates 에서 빠진 카드 종류도 지운다
@@ -1074,15 +1108,26 @@ pub(crate) fn apply_edit(con: &Connection, id: i64, edit: &TypeEdit) -> Res<Save
     let mut made = 0;
     for t in &edit.templates {
         let name = t.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+        // 덱(NT76)을 먼저 정해 이 저장으로 생기는 카드도 그 덱에 넣는다. 이미 있는 카드는 옮기지 않는다
         match t.ord {
             Some(ord) => {
                 let old = cur.template(ord)?;
+                if t.deck != old.deck {
+                    set_template_deck(con, id, ord, t.deck)?;
+                }
                 let rename = name.filter(|n| *n != old.name);
                 if rename.is_some() || t.qfmt != old.qfmt || t.afmt != old.afmt {
                     made += save_template(con, id, ord, rename, &t.qfmt, &t.afmt)?;
                 }
             }
-            None => made += add_template(con, id, name, &t.qfmt, &t.afmt)?.cards,
+            None => {
+                if cur.cloze() {
+                    return Err("빈칸 유형은 카드 종류를 더할 수 없어요.".into());
+                }
+                let ord = insert_template(con, &load(con, id)?, name, &t.qfmt, &t.afmt)?;
+                set_template_deck(con, id, ord, t.deck)?;
+                made += fill_cards(con, id)?;
+            }
         }
     }
     let mut templates = vec![];
@@ -1144,7 +1189,7 @@ pub(crate) fn add_note(con: &Connection, input: &TypedNote) -> Res<usize> {
         con.execute(
             "INSERT INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, CASE WHEN ?4 IS NULL THEN NULL ELSE 'user' END, ?5, ?5)",
-            params![nid, input.deck_id, ord, input.importance, now],
+            params![nid, template_deck(con, nt.id, *ord)?.unwrap_or(input.deck_id), ord, input.importance, now],
         )
         .map_err(err)?;
     }
@@ -1676,6 +1721,8 @@ pub struct TemplateView {
     layout: Option<Layout>,
     /// HTML 전용인 이유 ("뒷면에 조건문 {{#예문}}")
     reason: Option<String>,
+    /// NT76 이 카드 종류의 새 카드를 늘 넣을 덱 (없으면 노트를 넣는 덱)
+    deck: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -1709,7 +1756,7 @@ pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
                     Ok(l) => (Some(l), None),
                     Err(e) => (None, Some(e)),
                 };
-                TemplateView { ord: t.ord, name: t.name.clone(), qfmt: t.qfmt.clone(), afmt: t.afmt.clone(), layout, reason }
+                TemplateView { ord: t.ord, name: t.name.clone(), qfmt: t.qfmt.clone(), afmt: t.afmt.clone(), layout, reason, deck: t.deck }
             })
             .collect(),
         layout_css: LAYOUT_CSS,
@@ -1724,7 +1771,7 @@ pub(crate) fn version(nt: &Nt) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (&nt.name, &nt.slots, &nt.ids, &nt.order, &nt.css, nt.next_ord).hash(&mut h);
     for t in &nt.templates {
-        (t.ord, &t.name, &t.qfmt, &t.afmt).hash(&mut h);
+        (t.ord, &t.name, &t.qfmt, &t.afmt, t.deck).hash(&mut h);
     }
     format!("{:016x}", h.finish())
 }
@@ -1989,7 +2036,7 @@ pub(crate) fn change_type(con: &Connection, req: &ChangeType) -> Res<ChangeImpac
                 out.made += con
                     .execute(
                         "INSERT OR IGNORE INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                        params![nid, deck, ord, imp, src, now],
+                        params![nid, template_deck(con, to.id, ord)?.unwrap_or(*deck), ord, imp, src, now],
                     )
                     .map_err(err)?;
             }
@@ -2223,6 +2270,83 @@ mod tests {
     }
 
     #[test]
+    fn card_type_deck_takes_new_cards_only() {
+        // NT76 카드 종류마다 덱 (Anki deck override): 정해 두면 새로 생기는 카드는 그 덱 (노트 추가 · 노트 편집으로 생긴 카드 ·
+        // 카드 종류 추가 · 다른 유형으로 옮기기 · 빈칸 새 번호). 정하지 않았거나 보관한 덱이면 지금처럼 노트를 넣는 덱. 이미 있는 카드는 옮기지 않는다
+        let (con, deck) = setup();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('뜻 → 단어', 0, 0)", []).unwrap();
+        let rev = con.last_insert_rowid();
+        let cards = |nid: i64| -> Vec<(u32, i64)> {
+            con.prepare("SELECT template_ord, deck_id FROM card WHERE note_id = ?1 ORDER BY template_ord").unwrap().query_map([nid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+        };
+        let last = || -> i64 { con.query_row("SELECT max(id) FROM note", [], |r| r.get(0)).unwrap() };
+        let nt = anki_clone(&con, "reversed", Some("앞뒤"));
+        note(&con, deck, nt, &["a", "b"]);
+        let old = last();
+        assert!(set_template_deck(&con, nt, 1, Some(9999)).is_err(), "없는 덱");
+        set_template_deck(&con, nt, 1, Some(rev)).unwrap();
+        assert_eq!(load(&con, nt).unwrap().templates[1].deck, Some(rev));
+        assert_eq!(cards(old), [(0, deck), (1, deck)], "이미 있는 카드는 옮기지 않는다");
+        note(&con, deck, nt, &["c", "d"]);
+        assert_eq!(cards(last()), [(0, deck), (1, rev)], "노트 추가 (C3)");
+        con.execute("UPDATE deck SET archived_at = 1 WHERE id = ?1", [rev]).unwrap();
+        note(&con, deck, nt, &["e", "f"]);
+        assert_eq!(cards(last()), [(0, deck), (1, deck)], "보관한 덱이면 노트를 넣는 덱");
+        con.execute("UPDATE deck SET archived_at = NULL WHERE id = ?1", [rev]).unwrap();
+
+        // 노트 편집으로 생긴 카드 · 카드 종류 추가 (편집기 저장)
+        let ex = anki_clone(&con, "basic", Some("예문"));
+        add_field(&con, ex, "예문").unwrap();
+        note(&con, deck, ex, &["word", "뜻", ""]);
+        let n = last();
+        let mut t = detail_edit(&con, ex);
+        t.templates.push(TemplateEdit { ord: None, name: Some("예문".into()), qfmt: "{{예문}}".into(), afmt: "{{FrontSide}}".into(), deck: Some(rev) });
+        apply_edit(&con, ex, &t).unwrap();
+        let ord = load(&con, ex).unwrap().templates[1].ord;
+        assert_eq!(load(&con, ex).unwrap().templates[1].deck, Some(rev), "새 카드 종류의 덱");
+        assert_eq!(cards(n), [(0, deck)], "예문이 비어 아직 카드가 없다");
+        crate::commands::save_note_fields(&con, n, &s(&["word", "뜻", "예문 있음"])).unwrap();
+        assert_eq!(cards(n), [(0, deck), (ord, rev)], "노트 편집으로 생긴 카드");
+        note(&con, deck, ex, &["word2", "뜻2", "예문2"]);
+        let n2 = last();
+        // 편집기에서 덱을 바꿔도 이미 있는 카드는 그대로, 덱을 비우면 노트를 넣는 덱
+        let mut t = detail_edit(&con, ex);
+        t.templates[1].deck = None;
+        apply_edit(&con, ex, &t).unwrap();
+        assert_eq!((cards(n2), load(&con, ex).unwrap().templates[1].deck), (vec![(0, deck), (ord, rev)], None));
+
+        // 다른 유형으로 옮기기: 새로 생기는 카드는 옮길 유형의 카드 종류 덱
+        let basic = anki_clone(&con, "basic", Some("기본"));
+        note(&con, deck, basic, &["move", "옮김"]);
+        let m = last();
+        change_type(&con, &ChangeType { note_ids: vec![m], to: nt, fields: vec![(0, Some(0)), (1, Some(1))], cards: vec![(0, Some(0))] }).unwrap();
+        assert_eq!(cards(m), [(0, deck), (1, rev)], "옮기며 생긴 카드 2");
+
+        // 빈칸 유형: 하나뿐인 카드 종류의 덱이 새 번호 카드에도
+        let cz = anki_clone(&con, "cloze", Some("내 빈칸"));
+        set_template_deck(&con, cz, 0, Some(rev)).unwrap();
+        note(&con, deck, cz, &["{{c1::a}}", ""]);
+        let c = last();
+        crate::commands::save_note_fields(&con, c, &s(&["{{c1::a}} {{c2::b}}", ""])).unwrap();
+        assert_eq!(cards(c), [(0, rev), (1, rev)]);
+
+        // 덱을 지우면 비운다 (FK SET NULL)
+        con.execute("DELETE FROM card WHERE deck_id = ?1", [rev]).unwrap();
+        con.execute("DELETE FROM deck WHERE id = ?1", [rev]).unwrap();
+        assert_eq!((load(&con, nt).unwrap().templates[1].deck, load(&con, cz).unwrap().templates[0].deck), (None, None));
+    }
+
+    /// 편집기가 여는 그대로의 초안 (필드 · 카드 종류 · CSS)
+    fn detail_edit(con: &Connection, id: i64) -> TypeEdit {
+        let nt = load(con, id).unwrap();
+        TypeEdit {
+            fields: nt.visible().into_iter().map(|(slot, name)| FieldEdit { slot: Some(slot), name }).collect(),
+            templates: nt.templates.iter().map(|t| TemplateEdit { ord: Some(t.ord), name: None, qfmt: t.qfmt.clone(), afmt: t.afmt.clone(), deck: t.deck }).collect(),
+            css: nt.css.clone(),
+        }
+    }
+
+    #[test]
     fn visible_skips_deleted_and_keeps_unlisted() {
         let names = s(&["A", "", "C", "D"]);
         assert_eq!(visible(&names, None), [(0, "A".into()), (2, "C".into()), (3, "D".into())]);
@@ -2374,7 +2498,7 @@ mod tests {
         let c2: i64 = con.query_row("SELECT min(id) FROM card WHERE template_ord = 1", [], |r| r.get(0)).unwrap();
         con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 1, 3)", [c2]).unwrap();
         let fe = |slot: Option<usize>, name: &str| FieldEdit { slot, name: name.into() };
-        let te = |ord: Option<u32>, qfmt: &str, afmt: &str| TemplateEdit { ord, name: None, qfmt: qfmt.into(), afmt: afmt.into() };
+        let te = |ord: Option<u32>, qfmt: &str, afmt: &str| TemplateEdit { ord, name: None, qfmt: qfmt.into(), afmt: afmt.into(), deck: None };
         // 이름 바꾸기 + 새 필드 + 순서 + 메모 지우기 + 카드 2 지우기 + 카드 1 앞면을 새 필드로 (앞면이 빈다) + 줄 상자
         let edit = TypeEdit {
             fields: vec![fe(None, "예문"), fe(Some(1), "뜻"), fe(Some(0), "Front")],
@@ -2517,7 +2641,7 @@ mod tests {
         let tpl = &t.templates[0];
         let edit = TypeEdit {
             fields: vec![fe(Some(2), "메모"), fe(Some(0), "Front"), fe(Some(1), "Back")],
-            templates: vec![TemplateEdit { ord: Some(0), name: None, qfmt: tpl.qfmt.clone(), afmt: tpl.afmt.clone() }],
+            templates: vec![TemplateEdit { ord: Some(0), name: None, qfmt: tpl.qfmt.clone(), afmt: tpl.afmt.clone(), deck: None }],
             css: t.css.clone(),
         };
         let out = apply_edit(&con, nt, &edit).unwrap();
