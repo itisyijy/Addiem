@@ -1194,7 +1194,22 @@ pub fn list_cards(
     suspended_only: Option<bool>,
 ) -> Res<CardList> {
     let con = state.db.lock().map_err(err)?;
-    let decks = load_decks(&con)?;
+    card_list(&con, deck_id, &query, limit, buried_only, card_ids, weak_only, suspended_only)
+}
+
+/// list_cards 의 본체 (테스트가 DB 로 부른다)
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn card_list(
+    con: &Connection,
+    deck_id: Option<i64>,
+    query: &str,
+    limit: Option<i64>,
+    buried_only: Option<bool>,
+    card_ids: Option<Vec<i64>>,
+    weak_only: Option<bool>,
+    suspended_only: Option<bool>,
+) -> Res<CardList> {
+    let decks = load_decks(con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let ids = match deck_id {
         Some(id) => descendants(id, &decks),
@@ -1210,11 +1225,11 @@ pub fn list_cards(
     };
     let ids = if ids.is_empty() { "-1".to_string() } else { ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",") };
     // "tag:이름" 낱말은 태그로 거른다 (Q4 M2). 나머지 글자는 지금처럼 필드 원문에서 찾는다 (태그 낱말이 없으면 입력 그대로)
-    let (tags, query) = tag_terms(&query);
+    let (tags, query) = tag_terms(query);
     // LIKE 의 와일드카드를 글자 그대로 찾게 한다
     let q = like_escape(query.trim());
     let q = q.as_str();
-    let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(&con, query.trim(), q)? };
+    let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(con, query.trim(), q)? };
     let filter = format!(
         "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {} {} {}",
         tags.iter().map(|t| tag_filter(t)).collect::<String>(),
@@ -1240,8 +1255,8 @@ pub fn list_cards(
              ORDER BY c.id LIMIT ?2"
         ))
         .map_err(err)?;
-    let field_names = note_field_names(&con)?;
-    let fronts = crate::notetype::Fronts::load(&con)?;
+    let field_names = note_field_names(con)?;
+    let fronts = crate::notetype::Fronts::load(con)?;
     let rows = st
         .query_map(params![q, limit.unwrap_or(100)], |r| {
             let fields: String = r.get(3)?;
@@ -3011,6 +3026,33 @@ mod tests {
         assert_eq!(states[..2], ["new:-1".to_string(), "review:5".to_string()]);
         let tags: String = con.query_row("SELECT tags FROM note WHERE id = (SELECT note_id FROM card WHERE id = ?1)", [cards[0]], |r| r.get(0)).unwrap();
         assert_eq!(tags, "과목::1장");
+    }
+
+    #[test]
+    fn suspended_filter_and_count_follow_the_deck_scope() {
+        // C2 [학습 중지 n장 보기]: 수는 그 덱 범위의 학습 중지 카드 (검색과 상관없이), 거르면 학습 중지 카드만
+        let con = crate::db::open_in_memory().unwrap();
+        let cards = deck_with_cards(&con, 3, None); // 덱 t: 카드 3장
+        let other = deck_with_cards(&con, 2, None).into_iter().filter(|c| !cards.contains(c)).collect::<Vec<_>>(); // 다른 덱 t: 2장
+        let (deck, other_deck): (i64, i64) = (
+            con.query_row("SELECT deck_id FROM card WHERE id = ?1", [cards[0]], |r| r.get(0)).unwrap(),
+            con.query_row("SELECT deck_id FROM card WHERE id = ?1", [other[0]], |r| r.get(0)).unwrap(),
+        );
+        assert_ne!(deck, other_deck);
+        for c in [cards[0], cards[2], other[0]] {
+            con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [c]).unwrap();
+        }
+        let list = |d: Option<i64>, q: &str, only: bool| super::card_list(&con, d, q, None, None, None, None, Some(only)).unwrap();
+        let ids = |l: &super::CardList| l.rows.iter().map(|r| r.id).collect::<Vec<_>>();
+        let all = list(Some(deck), "", false);
+        assert_eq!((all.total, all.suspended), (3, 2), "덱 범위 안의 학습 중지 2장 (다른 덱 것은 세지 않는다)");
+        let only = list(Some(deck), "", true);
+        assert_eq!((ids(&only), only.total, only.suspended), (vec![cards[0], cards[2]], 2, 2), "거르면 학습 중지 카드만");
+        assert_eq!(list(Some(deck), "q1", false).suspended, 2, "수는 검색과 상관없다");
+        assert_eq!(ids(&list(Some(deck), "q2", true)), [cards[2]], "검색과 함께 거른다");
+        let everywhere = list(None, "", true);
+        assert_eq!((everywhere.total, everywhere.suspended), (3, 3), "모든 덱");
+        assert_eq!(list(Some(other_deck), "", false).suspended, 1);
     }
 
     /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)
