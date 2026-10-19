@@ -802,7 +802,13 @@ function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page
   );
 }
 
-const OUTLINE_FROM = { outline: "PDF 목차에서 읽었어요", size: "큰 글자 줄로 읽은 제목이에요 · 틀릴 수 있어요", slide: "슬라이드 제목과 구역에서 읽었어요" } as const;
+const OUTLINE_FROM = {
+  outline: "PDF 목차에서 읽었어요",
+  size: "큰 글자 줄로 읽은 제목이에요 · 틀릴 수 있어요",
+  slide: "슬라이드 제목과 구역에서 읽었어요",
+  slide_title: "슬라이드 제목에서 읽었어요",
+  slide_section: "슬라이드 구역에서 읽었어요",
+} as const;
 
 /** 8.4 [목차 N] 탭 (Figma OT1): 출처 줄 + [목차 다시 읽기], 구간마다 제목 · 쪽 범위 · 이어진 카드, 핵심 범위는 배경 · 배지 · 까닭 한 줄.
  * 구간을 누르면 그 쪽으로. 다시 읽기는 탭이 넷이라 머리 대신 출처 줄 오른쪽 */

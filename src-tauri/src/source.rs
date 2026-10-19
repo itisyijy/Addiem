@@ -290,7 +290,8 @@ pub struct Outline {
     sections: Vec<Section>,
     /// 핵심 범위가 강조 구간의 절반을 넘어 (문서 제목 · 머리글처럼 전체를 덮는 제목) 이 자료는 목차로 가려내지 않았다. 가장 넓게 덮은 제목
     wide: Option<String>,
-    /// 읽은 곳: outline (PDF 목차) · size (목차 없는 PDF 의 큰 글자 줄, 제목 구간에 줄 위치가 있다) · slide (PPTX 제목 · 구역)
+    /// 읽은 곳: outline (PDF 목차) · size (목차 없는 PDF 의 큰 글자 줄, 제목 구간에 줄 위치가 있다) ·
+    /// slide (PPTX 제목과 구역) · slide_title (구역 없는 PPTX 의 제목) · slide_section (제목 자리 없는 PPTX 의 구역)
     source: String,
     /// 자료를 읽은 때 (source_material.updated_at, ms)
     read_at: i64,
@@ -389,7 +390,16 @@ fn outline_of(con: &Connection, material_id: i64) -> Res<Outline> {
     let mut out = outline(&segs, pages);
     // 큰 글자 줄로 읽은 제목만 줄 위치(rects)를 남긴다 (pdf.ts readPdf)
     let sized = segs.iter().any(|s| is_heading(&s.signals) && s.rects.is_some());
-    out.source = if kind == "pptx" { "slide" } else if sized { "size" } else { "outline" }.into();
+    // PPTX 는 구역이 1단계, 슬라이드 제목이 2단계로 저장된다 (pptx_headings)
+    let has = |lv: usize| segs.iter().any(|s| is_heading(&s.signals) && heading_of(&s.text).0 == lv);
+    out.source = match (kind == "pptx", has(1), has(2)) {
+        (true, true, false) => "slide_section",
+        (true, false, true) => "slide_title",
+        (true, ..) => "slide",
+        _ if sized => "size",
+        _ => "outline",
+    }
+    .into();
     out.read_at = read_at;
     Ok(out)
 }
@@ -1755,7 +1765,7 @@ fn core_ranges(con: &Connection, ids: &str) -> Res<HashMap<i64, String>> {
             .map(|s| {
                 let title = if s.title.chars().count() > 30 { format!("{}…", s.title.chars().take(30).collect::<String>()) } else { s.title.clone() };
                 let range = if s.end_page > s.page { format!("{}–{}", s.page, s.end_page) } else { s.page.to_string() };
-                let range = if o.source == "slide" { format!("슬라이드 {range}") } else { format!("{range}쪽") };
+                let range = if o.source.starts_with("slide") { format!("슬라이드 {range}") } else { format!("{range}쪽") };
                 let size = if o.source == "size" { " · 목차가 없는 PDF라 큰 글자 줄로 읽은 제목이에요" } else { "" };
                 format!("{file}의 '{title}' 구간과 연결됐어요. 목차에서 핵심 범위로 본 구간이에요 ({range}){size}")
             })
@@ -2387,6 +2397,15 @@ mod tests {
             (rows, core)
         };
         let deep = build(["##", "##", "###"]);
+        // PPTX 출처 줄: 제목만 · 구역만 · 둘 다
+        let (con, _) = outline_db(&[]);
+        con.execute("UPDATE source_material SET kind = 'pptx'", []).unwrap();
+        add_seg(&con, 1, -1, "## 스택", "heading");
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide_title");
+        add_seg(&con, 1, -1, "# 기초", "heading");
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide");
+        con.execute("DELETE FROM source_segment WHERE text = '## 스택'", []).unwrap();
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide_section");
         assert_eq!(deep, build(["#", "#", "##"]));
         assert_eq!(deep.0.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 1, 2, 1]);
         assert_eq!(deep.0[1], (1, "자료구조 요약".to_string(), 2, 3, 2, Some("제목에 '요약'".to_string())));
