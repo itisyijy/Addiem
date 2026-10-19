@@ -154,8 +154,9 @@ fn edit(s: &AppState, guid: &str, name: &str, value: &str) {
 }
 
 /// 카드 한 장 그리기. 앱의 card_view 와 같은 템플릿 고르기(TEMPLATE_OF_CARD) · render_fields
-fn neo_render(names: &HashMap<i64, (String, Vec<String>)>, ntid: i64, fields: &str, q: Option<&str>, a: Option<&str>, ord: u32) -> (String, String) {
-    let r = commands::render_fields(names, ntid, fields, q, a, ord);
+#[allow(clippy::too_many_arguments)]
+fn neo_render(names: &HashMap<i64, (String, Vec<String>)>, ntid: i64, fields: &str, q: Option<&str>, a: Option<&str>, ord: u32, special: &[(String, String)]) -> (String, String) {
+    let r = commands::render_fields_with(names, ntid, fields, q, a, ord, special);
     (r.front, r.back)
 }
 
@@ -230,7 +231,10 @@ fn snapshot(s: &AppState, root: &str) -> Value {
             "ivl": ivl, "reps": g(7).as_i64().unwrap(), "lapses": g(8).as_i64().unwrap(),
             "s": stab, "d": diff, "revlog": revs, "id": cid,
         }));
-        let (front, back) = neo_render(&names, ntid, &fields, qf.as_deref(), af.as_deref(), ord as u32);
+        // 학습 화면(card_view)과 같은 특수 필드 (C: render_fields_with)
+        let deck_path: Vec<String> = path.split("::").map(String::from).collect();
+        let special = crate::render::special_fields(&tags, &deck_path, &nt.name, tname.as_deref().unwrap_or_default());
+        let (front, back) = neo_render(&names, ntid, &fields, qf.as_deref(), af.as_deref(), ord as u32, &special);
         renders.insert(key, json!({ "q": front, "a": back }));
     }
     let media: serde_json::Map<String, Value> = media
@@ -379,7 +383,7 @@ fn phase1() {
     let v2 = w.join("v2_modern.apkg");
     let none = deck_update::Choices::default();
     let dry = update(&du, &v2, &none, true);
-    let take = deck_update::Choices { take_new: vec![du.db.lock().map(|con| note_id_in(&con, &g("basic2"))).unwrap()], new_looks: vec![] };
+    let take = deck_update::Choices { take_new: vec![du.db.lock().map(|con| note_id_in(&con, &g("basic2"))).unwrap()], new_looks: vec![], ..Default::default() };
     let dry_take = update(&du, &v2, &take, true);
     // [새 버전으로] 고른 적용은 복사본에서 (충돌한 필드에만, DU6)
     let alt = copy_state(&du, &w.join("neo_du_take"));
