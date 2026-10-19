@@ -84,6 +84,8 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         // NT76 카드 종류마다 덱 (Anki 의 deck override, 템플릿 did): 이 카드 종류의 새 카드를 늘 넣을 덱. NULL = 노트를 넣는 덱 (C3-r).
         // 동기화 표의 열이라 다른 기기도 같은 덱에 넣는다 (덱 uid 로 간다). 덱을 지우면 NULL (K42)
         ("card_template", "deck_id", "INTEGER REFERENCES deck(id) ON DELETE SET NULL"),
+        // 그때 정한 덱의 경로 ("토익 영단어 › 역방향"). 그 덱을 지웠거나(deck_id 가 NULL 이 됐다) 가져온 Anki 덱이 없으면 편집기가 "지운 덱"으로 알린다 (NT11)
+        ("card_template", "deck_name", "TEXT"),
     ] {
         let has: i64 = con.query_row(
             &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),

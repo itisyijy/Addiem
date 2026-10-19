@@ -1022,7 +1022,8 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
             None => {
                 // 새 유형의 카드 종류 덱(NT76): 같은 Anki 덱 id 로 가져온 우리 덱이 이미 있을 때만
                 let id = insert_type(&tx, *aid, t, now, &|did| {
-                    tx.query_row("SELECT id FROM deck WHERE anki_deck_id = ?1 AND archived_at IS NULL ORDER BY id LIMIT 1", [did], |r| r.get(0)).optional().map_err(err)
+                    let ours = tx.query_row("SELECT id FROM deck WHERE anki_deck_id = ?1 AND archived_at IS NULL ORDER BY id LIMIT 1", [did], |r| r.get(0)).optional().map_err(err)?;
+                    Ok((ours, pkg.decks.get(&did).map(|d| d.path.join(" › "))))
                 })?;
                 let map = TypeMap {
                     ntid: id,

@@ -209,6 +209,11 @@
 .nte__panel-head .nte__pill-text { min-width: 0; }
 /* NT9 옮기기 창: 낮은 창(1180×640)에서 첫 화면에 버튼이 잘리지 않게 창 아래에 붙인다 (Q4 L6) */
 .modal.ntm > .modal__actions { position: sticky; bottom: -28px; z-index: 1; margin: 0 -32px -28px; padding: 14px 32px 28px; border-top: 1px solid var(--border-default); background: var(--bg-surface); }
-/* NT76 카드 종류마다 덱: 카드 종류 줄 아래 한 줄 (디자인 프레임 전, 기존 고르기 상자) */
-.nte__kind-deck { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: -4px; }
-.nte__kind-deck .ntm__select { width: 260px; height: 34px; }
+/* NT11 넣을 덱 (Figma 293:21525): 옵션 끝 한 줄. 정하면 accent 알약, 지운 덱이면 주황. 메뉴는 DeckMenu 와 같은 모양 */
+.nte__deckopt .deckpick { position: relative; }
+.nte__deckpill { color: var(--text-secondary); }
+.nte__deckpill.is-set { border-color: var(--accent-default); background: var(--accent-subtle); color: var(--accent-text); }
+.nte__deckpill.is-gone { border-color: var(--status-warn-fg); background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.nte__deckopt-note { flex-basis: 100%; }
+.nte__deckmenu { z-index: 45; }
+.nte__deckmenu-row { padding-left: 26px; }

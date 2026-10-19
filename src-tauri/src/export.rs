@@ -1380,7 +1380,7 @@ mod tests {
         assert_eq!((qfmt.as_str(), afmt.as_str()), (r#"<div class="nt-l nt-center">{{질문}}</div>"#, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{답변}}</div>"#));
         let edit = nt::TypeEdit {
             fields: vec![field(0, "질문"), field(1, "답변")],
-            templates: vec![nt::TemplateEdit { ord: Some(0), name: None, qfmt: qfmt.clone(), afmt: afmt.clone(), deck: None }],
+            templates: vec![nt::TemplateEdit { ord: Some(0), name: None, qfmt: qfmt.clone(), afmt: afmt.clone(), deck: None, deck_gone: None }],
             css: String::new(),
         };
         nt::apply_edit(&con, id, &edit).unwrap();
@@ -2082,7 +2082,8 @@ mod tests {
         let con = c.db.lock().unwrap();
         let id: i64 = con.query_row("SELECT id FROM note_type WHERE name = '앞뒤'", [], |r| r.get(0)).unwrap();
         assert_eq!(nt::load(&con, id).unwrap().templates[1].deck, None);
-        assert_eq!(res["issues"], json!([]), "알리지 않는다");
+        assert_eq!(res["issues"], json!([]), "가져오기 요약에 알리지 않는다");
+        assert_eq!(nt::load(&con, id).unwrap().templates[1].deck_name, None, "패키지에 없는 덱은 이름도 모른다");
     }
 
     fn edit_apkg(src: &Path, dst: &Path, sql: &str) {

@@ -3,7 +3,7 @@
 import { forwardRef, Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, type CardKindHint, type DeckDetail, type Level, type NoteTypeDetail, type NoteTypeRow } from "../api";
 import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge, Toggle } from "../ui";
-import { n, ro, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
+import { eun, n, ro, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, chordOf, getKeys, matchAction, useKeymap } from "../keys";
 import { imageTag, plainText, renderCardHtml, sanitize, toStoredHtml } from "../cardHtml";
 import { deckFace, scopeCss } from "../cardCss";
@@ -631,6 +631,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               />
             )}
           </div>
+          {kind === "typed" && typed && <TypeDeckLine type={typed} target={target} />}
 
           {kind === "typed" && typed ? (
             <>
@@ -1098,17 +1099,14 @@ function TypedPreview({ type, values, deck }: { type: NoteTypeDetail; values: st
       // 빈칸 유형은 빈칸 번호마다 (템플릿 하나), 일반 유형은 카드 종류마다
       const shown = type.cloze
         ? clozeNumbers(values).map((c, i) => ({ tpl: type.templates[0], ord: c - 1, label: `카드 ${i + 1} · 빈칸 ${c}` }))
-        : type.templates.map((tpl, i) => ({
-            tpl,
-            ord: tpl.ord,
-            // Anki 기본 이름(Card 1)은 "카드 1" 로 (copy-guide 카드 종류)
-            label: /^card\s*\d+$/i.test(tpl.name) ? `카드 ${i + 1}` : /^카드\s*\d/.test(tpl.name) ? tpl.name : `카드 ${i + 1} · ${tpl.name}`,
-          }));
+        : type.templates.map((tpl, i) => ({ tpl, ord: tpl.ord, label: tplLabel(tpl.name, i) }));
       try {
         const out = await Promise.all(
           shown.slice(0, 4).map(async ({ tpl, ord, label }) => {
-            const p = await api.previewTemplate(type.id, tpl.qfmt, tpl.afmt, ord, values, undefined, undefined, deck);
-            return { label, html: withMath(await renderCardHtml(p.front)) };
+            // NT11-c 카드 종류의 덱이 있으면 그 카드는 그 덱 ({{Deck}} 도 그 덱, 머리에 덱 이름)
+            const own = tpl.deck !== null && tpl.deck !== deck && tpl.deck_path ? tpl : null;
+            const p = await api.previewTemplate(type.id, tpl.qfmt, tpl.afmt, ord, values, undefined, undefined, own?.deck ?? deck);
+            return { label: own ? `${label} · 앞면 · ${own.deck_path}` : `${label} · 앞면`, html: withMath(await renderCardHtml(p.front)) };
           }),
         );
         if (live) setCards(out);
@@ -1134,7 +1132,7 @@ function TypedPreview({ type, values, deck }: { type: NoteTypeDetail; values: st
         cards.map((c, i) => (
           <Fragment key={i}>
             {i > 0 && <div className="preview__rule addcard__nt-rule" />}
-            <p className="t-caption c-tertiary">{c.label} · 앞면</p>
+            <p className="t-caption c-tertiary">{c.label}</p>
             <div className={`addcard__nt-card card-html ${i > 0 ? "is-sub" : ""}`}>
               <div className={face === "night" ? "nightMode night_mode" : undefined} dangerouslySetInnerHTML={{ __html: c.html }} />
             </div>
@@ -1142,6 +1140,30 @@ function TypedPreview({ type, values, deck }: { type: NoteTypeDetail; values: st
         ))
       )}
     </div>
+  );
+}
+
+/** 카드 종류 이름: Anki 기본 이름(Card 1)은 "카드 1" 로 (copy-guide 카드 종류) */
+const tplLabel = (name: string, i: number) => (/^card\s*\d+$/i.test(name) ? `카드 ${i + 1}` : /^카드\s*\d/.test(name) ? name : `카드 ${i + 1} · ${name}`);
+
+/**
+ * NT11-c (Figma 293:21959): "넣을 곳" 아래 회색 한 줄. 노트 유형에서 카드 종류의 덱을 정했고 넣을 곳과 다를 때만
+ * "카드 2 · 뜻 → 단어는 「토익 영단어 › 역방향」에 들어가요 · 노트 유형에서 정했어요". 여럿이면 이어 쓰고, 셋 이상이면 "카드 종류 n개는 다른 덱에". 지운 덱은 줄 없음
+ */
+function TypeDeckLine({ type, target }: { type: NoteTypeDetail; target: number }) {
+  const own = type.templates
+    .map((t, i) => ({ t, label: type.cloze ? "이 유형의 카드" : tplLabel(t.name, i) }))
+    .filter(({ t }) => t.deck !== null && t.deck !== target && t.deck_path);
+  if (!own.length) return null;
+  const text =
+    own.length > 2
+      ? `카드 종류 ${n(own.length)}개는 다른 덱에 들어가요`
+      : `${own.map(({ t, label }, i) => `${label}${eun(label)} 「${t.deck_path}」${i < own.length - 1 ? "," : ""}`).join(" ")}에 들어가요`;
+  return (
+    <p className="addcard__deckline t-caption c-tertiary">
+      <Icon name="info" size={14} />
+      {text} · 노트 유형에서 정했어요
+    </p>
   );
 }
 

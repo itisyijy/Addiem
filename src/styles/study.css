@@ -481,3 +481,5 @@
 /* NT10 디자인 결정 (2026-10-20): 답 면 질문의 두 줄 자르기는 힌트 상자가 든 앞면에는 걸지 않는다 (펼친 힌트를 그대로 보여 준다).
    힌트 없는 긴 질문만 위처럼 두 줄 + 말줄임. 편집기 미리보기도 .study 아래라 같다 */
 .study .study__a-q:has(details.hint) { display: block; -webkit-line-clamp: unset; overflow: visible; }
+/* NT11-c 카드 추가: 노트 유형에서 정한 카드 종류의 덱 한 줄 (넣을 곳 바로 아래) */
+.addcard__deckline { display: flex; align-items: center; gap: 6px; margin-top: -8px; }

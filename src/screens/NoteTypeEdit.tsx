@@ -9,7 +9,7 @@ import {
 import type { ChangeImpact, ChangePlan, NoteTypeRow } from "../api";
 import { useSyncStatus, when } from "../sync";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
-import { eun, iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
+import { eul, eun, iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, matchAction } from "../keys";
 import { useToast } from "../toast";
 import { plainText, renderCardHtml } from "../cardHtml";
@@ -20,13 +20,27 @@ import { DiscardModal, Modal } from "./NewDeck";
 import { CloneDialog, typeLabel } from "./NoteTypes";
 import { nativeLabels } from "./AddCard";
 import { deckPathLabel, loadDeckChoices } from "./DeckPicker";
+import { NewDeckModal } from "./NewDeck";
+import { createPortal } from "react-dom";
 import { menuKeys } from "./Deck";
 import "../styles/notetypes.css";
 import "../styles/study.css";
 
 type Side = "front" | "back";
 type DField = { key: number; slot: number | null; name: string };
-type DTpl = { key: number; ord: number | null; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null; deck: number | null };
+/** deck · gone · cards: 넣을 덱 (NT76 · NT11). gone = 정한 덱을 지웠을 때 그 경로, cards = 이미 있는 카드 수 */
+type DTpl = {
+  key: number;
+  ord: number | null;
+  name: string;
+  qfmt: string;
+  afmt: string;
+  layout: Layout | null;
+  reason: string | null;
+  deck: number | null;
+  gone: string | null;
+  cards: number;
+};
 type Draft = { fields: DField[]; tpls: DTpl[]; css: string };
 
 const SIDE_LABEL: Record<Side, string> = { front: "앞면", back: "뒷면" };
@@ -127,30 +141,121 @@ const keptBoth = (c: NoteTypeConflict) => c.what.startsWith("같은 자리에");
 
 const initDraft = (d: Detail): Draft => ({
   fields: d.fields.map((f) => ({ key: f.slot, slot: f.slot, name: f.name })),
-  tpls: d.templates.map((t) => ({ key: t.ord, ord: t.ord, name: t.name, qfmt: t.qfmt, afmt: t.afmt, layout: t.layout, reason: t.reason, deck: t.deck })),
+  tpls: d.templates.map((t) => ({
+    key: t.ord,
+    ord: t.ord,
+    name: t.name,
+    qfmt: t.qfmt,
+    afmt: t.afmt,
+    layout: t.layout,
+    reason: t.reason,
+    deck: t.deck,
+    gone: t.deck_gone,
+    cards: t.cards,
+  })),
   css: d.css,
 });
 const draftKey = (x: Draft) =>
-  JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt, t.deck]), x.css]);
+  JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt, t.deck, t.gone]), x.css]);
 
-/** 모든 덱 (최상위 덱마다 그 아래까지) [id, "덱 › 하위 덱"]. NT76 카드 종류의 덱 고르기 */
-function useDeckOptions() {
-  const [opts, setOpts] = useState<[number, string][]>([]);
+type DeckOpt = { id: number; label: string };
+/** 모든 덱 (최상위 덱마다 그 아래까지) "덱 › 하위 덱". NT76 넣을 덱 고르기. 두 번째 값은 다시 불러오기 (새 덱을 만든 뒤) */
+function useDeckOptions(): [DeckOpt[], () => void] {
+  const [opts, setOpts] = useState<DeckOpt[]>([]);
+  const [gen, setGen] = useState(0);
   useEffect(() => {
     let live = true;
     api.home().then(async (h) => {
-      const out: [number, string][] = [];
+      const out: DeckOpt[] = [];
       for (const r of [...h.decks, ...h.idle_decks]) {
         const list = await loadDeckChoices(r.id).catch(() => []);
-        out.push(...list.map((c): [number, string] => [c.id, deckPathLabel(list[0], c)]));
+        out.push(...list.map((c) => ({ id: c.id, label: deckPathLabel(list[0], c) })));
       }
       if (live) setOpts(out);
     }, () => {});
     return () => {
       live = false;
     };
-  }, []);
-  return opts;
+  }, [gen]);
+  return [opts, () => setGen((g) => g + 1)];
+}
+
+/** NT11 넣을 덱 메뉴: 덱 찾기 · "노트를 넣는 덱"(기본) · 모든 덱(✓) · "+ 새 덱" (만들면 바로 이 카드 종류의 덱). DeckMenu 와 같은 모양 */
+function TemplateDeckMenu({ value, choices, onPick, onCreated, onClose }: {
+  value: number | null;
+  choices: DeckOpt[];
+  onPick: (id: number | null) => void;
+  onCreated: (id: number) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useOverlayScope();
+  useEffect(() => {
+    if (creating) return;
+    const close = (e: MouseEvent) => !box.current?.parentElement?.contains(e.target as Node) && onClose();
+    const key = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    document.addEventListener("mousedown", close);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", key, true);
+    };
+  }, [creating, onClose]);
+  const q = query.trim().toLowerCase();
+  const rows = choices.filter((c) => !q || c.label.toLowerCase().includes(q));
+  return (
+    <>
+      <div ref={box} className="deckmenu nte__deckmenu" role="dialog" aria-label="넣을 덱 고르기" hidden={creating} onKeyDown={(e) => e.stopPropagation()}>
+        <label className="deckmenu__search">
+          <Icon name="search" size={14} className="c-tertiary" />
+          <input className="t-body-s" placeholder="덱 찾기" value={query} autoFocus onChange={(e) => setQuery(e.target.value)} />
+        </label>
+        <div className="deckmenu__list" role="listbox">
+          {!q && (
+            <button type="button" role="option" aria-selected={value === null} className="deckmenu__row" onClick={() => onPick(null)}>
+              <Icon name="layers" size={16} className="c-tertiary" />
+              <span className="deckmenu__text">
+                <span className="t-body-m">노트를 넣는 덱</span>
+                <span className="t-caption c-tertiary">기본 · 카드를 추가할 때 고른 덱</span>
+              </span>
+              {value === null && <Icon name="check" size={16} className="c-accent" />}
+            </button>
+          )}
+          {rows.map((c) => (
+            <button key={c.id} type="button" role="option" aria-selected={c.id === value} className="deckmenu__row nte__deckmenu-row" onClick={() => onPick(c.id)}>
+              <span className="deckmenu__text">
+                <span className="t-body-m">{c.label}</span>
+              </span>
+              {c.id === value && <Icon name="check" size={16} className="c-accent" />}
+            </button>
+          ))}
+          {q && rows.length === 0 && <p className="deckmenu__empty t-body-s c-tertiary">찾는 덱이 없어요</p>}
+        </div>
+        <div className="deckmenu__rule" />
+        <button type="button" className="deckmenu__row deckmenu__new" onClick={() => setCreating(true)}>
+          <Icon name="plus" size={16} className="c-accent" />
+          <span className="deckmenu__text">
+            <span className="t-body-m c-accent">새 덱</span>
+            <span className="t-caption c-tertiary">만들면 바로 이 카드 종류의 덱이 돼요</span>
+          </span>
+        </button>
+      </div>
+      {creating &&
+        createPortal(
+          <div onKeyDown={(e) => e.stopPropagation()}>
+            <NewDeckModal onClose={() => setCreating(false)} onCreated={(id) => (setCreating(false), onCreated(id))} />
+          </div>,
+          document.body,
+        )}
+    </>
+  );
 }
 
 function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?: number; back: Route; reload: () => void }) {
@@ -199,7 +304,9 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   latest.current = draft;
   const dirty = draftKey(draft) !== draftKey(initial);
   const cur = draft.tpls.find((t) => t.key === curKey) ?? draft.tpls[0];
-  const deckOptions = useDeckOptions();
+  const [deckOptions, reloadDecks] = useDeckOptions();
+  const [deckMenu, setDeckMenu] = useState(false);
+  useEffect(() => setDeckMenu(false), [curKey]);
   const curIndex = draft.tpls.indexOf(cur);
   const effMode = cur?.layout ? mode : "html";
   const names = draft.fields.map((f) => f.name);
@@ -412,7 +519,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     const layout: Layout = { front: [{ kind: "field", name: other }], back: [{ kind: "front_side" }, { kind: "field", name: f0 }] };
     const b = await api.buildTemplateLayout(layout);
     const key = seq.current--;
-    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null, deck: null }] }));
+    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null, deck: null, gone: null, cards: 0 }] }));
     setCurKey(key);
   };
   const removeTpl = (key: number) => {
@@ -465,7 +572,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
 
   const editOf = (): TypeEdit => ({
     fields: draft.fields.filter((f) => f.name).map((f) => ({ slot: f.slot, name: f.name })),
-    templates: draft.tpls.map((t) => ({ ord: t.ord, name: t.name.trim() || null, qfmt: t.qfmt, afmt: t.afmt, deck: t.deck })),
+    templates: draft.tpls.map((t) => ({ ord: t.ord, name: t.name.trim() || null, qfmt: t.qfmt, afmt: t.afmt, deck: t.deck, deck_gone: t.gone })),
     css: draft.css,
   });
   const commit = async (impact: SaveImpact) => {
@@ -637,7 +744,6 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               </p>
             )}
             {kinds()}
-            {kindDeck()}
             <div className="nte__cols">
               {fields()}
               <div className="nte__mid">{effMode === "easy" ? easy() : htmlPanes()}</div>
@@ -728,17 +834,51 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     );
   }
 
-  /** NT76 카드 종류마다 덱 (Anki 의 deck override). 기본은 노트를 넣는 덱. 디자인 프레임 전 기존 부품(MapSelect)으로 */
-  function kindDeck() {
+  /** NT11 넣을 덱 (카드 종류의 옵션 끝, Figma 293:21525): 기본 "노트를 넣는 덱", 정하면 그 덱 · 이미 있는 카드 수, 정한 덱을 지웠으면 주황 "지운 덱" */
+  function deckOption() {
     if (readOnly || !cur) return null;
-    const name = tplTitle(cur, draft.tpls.indexOf(cur), d.cloze, show);
+    const label = cur.deck === null ? null : (deckOptions.find((o) => o.id === cur.deck)?.label ?? d.templates.find((t) => t.ord === cur.ord)?.deck_path ?? "덱");
+    const tone = label ? "is-set" : cur.gone ? "is-gone" : "";
     return (
-      <div className="nte__kind-deck">
-        <Icon name="layers" size={16} className="c-tertiary" />
-        <span className="t-label-m">{d.cloze ? "이 유형의 카드는" : "이 카드 종류는"} 늘</span>
-        <MapSelect plain value={cur.deck} options={deckOptions} none="노트를 넣는 덱" label={`${name}의 새 카드를 넣을 덱`} onChange={(v) => setTpl(cur.key, { deck: v })} />
-        <span className="t-label-m">에 넣기</span>
-        <span className="t-caption c-tertiary">{cur.deck === null ? "카드를 추가할 때 고른 덱에 들어가요" : "새로 생기는 카드만 · 이미 있는 카드는 옮기지 않아요"}</span>
+      <div className="nte__option nte__deckopt">
+        <span className="t-label-m">넣을 덱</span>
+        <span className="deckpick">
+          <button
+            type="button"
+            className={`deckpick__pill nte__deckpill ${tone} ${deckMenu ? "is-open" : ""}`}
+            aria-haspopup="dialog"
+            aria-expanded={deckMenu}
+            onClick={() => setDeckMenu((v) => !v)}
+          >
+            <Icon name={cur.gone && !label ? "alert" : "layers"} size={14} />
+            <span className="deckpick__label t-label-m">{label ?? (cur.gone ? "지운 덱" : "노트를 넣는 덱")}</span>
+            <Icon name="chevron-down" size={12} scaled />
+          </button>
+          {deckMenu && (
+            <TemplateDeckMenu
+              value={cur.deck}
+              choices={deckOptions}
+              onPick={(id) => {
+                setTpl(cur.key, { deck: id, gone: null });
+                setDeckMenu(false);
+              }}
+              onCreated={(id) => {
+                reloadDecks();
+                setTpl(cur.key, { deck: id, gone: null });
+                setDeckMenu(false);
+              }}
+              onClose={() => setDeckMenu(false)}
+            />
+          )}
+        </span>
+        <span className={`t-caption ${tone === "is-gone" ? "c-warn" : "c-tertiary"}`}>
+          {label
+            ? "이 카드 종류로 새로 만드는 카드는 늘 이 덱에 넣어요"
+            : cur.gone
+              ? `정한 덱 「${cur.gone}」${eul(cur.gone)} 지웠어요 · 다시 고를 때까지 노트를 넣는 덱에 넣어요`
+              : "카드를 추가할 때 고른 덱에 넣어요"}
+        </span>
+        {label && cur.cards > 0 && <span className="nte__deckopt-note t-caption c-tertiary">이미 있는 카드 {n(cur.cards)}장은 지금 덱 그대로예요</span>}
       </div>
     );
   }
@@ -1067,6 +1207,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               <span className="t-caption c-tertiary">{readOnly ? "복제하면 켤 수 있어요" : "필드를 소리 내어 읽어 줘요"}</span>
             )}
           </div>
+          {deckOption()}
         </section>
       </>
     );
@@ -1127,6 +1268,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
         {pane("qfmt")}
         {pane("afmt")}
         {pane("css")}
+        {!readOnly && <section className="nte__panel nte__options" aria-label="옵션">{deckOption()}</section>}
         <p className="t-caption c-tertiary">Anki와 같은 문법이에요 · 스크립트(&lt;script&gt;)는 학습 화면에서 실행하지 않아요</p>
       </>
     );
@@ -1458,17 +1600,9 @@ function ConflictList({ list, onClose }: { list: NoteTypeConflict[]; onClose: ()
 const DRAWN_KINDS = ["io", "list", "choice"];
 
 /** 대응 고르기 칸. 옮기지 않음 · 없앰이면 주황 */
-/** plain: "없음"도 보통 모양 (옮기기 창의 "옮기지 않음" 주황 강조를 쓰지 않는다) */
-function MapSelect({ value, options, none, label, onChange, plain = false }: {
-  value: number | null;
-  options: [number, string][];
-  none: string;
-  label: string;
-  onChange: (v: number | null) => void;
-  plain?: boolean;
-}) {
+function MapSelect({ value, options, none, label, onChange }: { value: number | null; options: [number, string][]; none: string; label: string; onChange: (v: number | null) => void }) {
   return (
-    <span className={`ntm__select ${value === null && !plain ? "is-none" : ""}`}>
+    <span className={`ntm__select ${value === null ? "is-none" : ""}`}>
       <select className="t-body-m" aria-label={label} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}>
         {options.map(([v, l]) => (
           <option key={v} value={v}>
