@@ -279,7 +279,7 @@ INSERT OR IGNORE INTO schema_meta (key, value) VALUES
 -- 이 기기 안에서만 쓴다 (payload 가 로컬 id 를 가리킨다. 카드 자체는 card · note 로 동기화된다)
 CREATE TABLE IF NOT EXISTS card_change (
     id         INTEGER PRIMARY KEY,
-    kind       TEXT    NOT NULL CHECK (kind IN ('split','draft')), -- draft: R1 자료에서 카드 초안 승인
+    kind       TEXT    NOT NULL CHECK (kind IN ('split','draft','rewrite')), -- draft: R1 자료에서 카드 초안 승인, rewrite: 8.2 고쳐 쓰기
     deck_id    INTEGER,
     card_id    INTEGER,                        -- 원래 카드
     summary    TEXT    NOT NULL,               -- "3장으로 나누기"

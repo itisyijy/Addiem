@@ -675,8 +675,11 @@ export const api = {
 
 // ---------------------------------------------------------------- G 카드 점검 · 나누기 (quality.rs)
 
-/** lines · items · questions = 카드 모양 (노랑/회색), again = 최근 14일 Again (빨강) */
-export type QualityFlag = { kind: "lines" | "items" | "questions" | "again"; n: number };
+/**
+ * lines · items · questions = 카드 모양 (노랑/회색), again = 최근 14일 Again (빨강),
+ * mismatch = 답이 안 맞아 보임 (reason = 근거 한 줄), format = 서식 제안 (badge = 센 사실, reason = 제안 한 줄). 8.2 CQ1
+ */
+export type QualityFlag = { kind: "lines" | "items" | "questions" | "again" | "mismatch" | "format"; n: number; reason?: string; badge?: string };
 export type QualityCard = { id: number; question: string; path: string[]; flags: QualityFlag[]; hidden: boolean };
 /** 글자 그대로. back 은 줄바꿈으로 항목을 나눈다 (만들 때 HTML 로 바뀐다) */
 export type SplitPart = { front: string; back: string };
@@ -694,7 +697,27 @@ export type SplitProposal = {
   sent: Sent[];
   evidence: Sent[];
 };
-export type CardChange = { id: number; summary: string; card_id: number | null; created_at: number; undone: boolean };
+/** kind rewrite 는 7일 안의 것만. how: format 서식 고치기 · ai AI로 확인한 뒤 · edit 직접 */
+export type CardChange = { id: number; kind: "split" | "rewrite"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean };
+/** 8.2 고쳐 쓰기 전후 (글자, 줄바꿈으로 줄을 나눈다. **…** 는 굵게). locked: 그림 · 소리 · 서식이 있어 덮을 수 없는 칸 [질문, 답] */
+export type Rewrite = {
+  card_id: number;
+  question: string;
+  answer: string;
+  new_question: string;
+  new_answer: string;
+  why: string;
+  locked: [boolean, boolean];
+};
+/** [AI로 확인] 결과. fix 가 없고 matches 가 false 면 근거가 부족해 고친 안을 만들지 않았다 (checks = 직접 확인할 물음) */
+export type CardCheck = {
+  matches: boolean;
+  reason: string;
+  fix: { question: string; answer: string } | null;
+  checks: string[];
+  sent: Sent[];
+  evidence: Sent[];
+};
 
 export const qualityApi = {
   check: (deckId: number) => invoke<QualityCard[]>("quality_check", { deckId }),
@@ -703,7 +726,15 @@ export const qualityApi = {
   suggest: (cardId: number, perCard: number | null = null) => invoke<SplitProposal>("split_suggest", { cardId, perCard }),
   /** 승인. 변경 id 를 돌려준다 (되돌리기용) */
   apply: (cardId: number, parts: SplitPart[], archiveOriginal: boolean) => invoke<number>("split_apply", { cardId, parts, archiveOriginal }),
-  undo: (changeId: number) => invoke<void>("undo_change", { changeId }),
+  /** false: 고쳐 쓰기 뒤에 또 고쳐서 되돌리지 않았다. 확인을 받은 뒤에만 force 로 다시 (CQ2) */
+  undo: (changeId: number, force = false) => invoke<boolean>("undo_change", { changeId, force }),
+  /** 8.2 고쳐 쓰기 제안 (서식은 규칙으로). 아무것도 바꾸지 않는다 */
+  rewrite: (cardId: number) => invoke<Rewrite>("rewrite_suggest", { cardId }),
+  /** [이대로 고치기]. 바뀐 칸만 보통 편집처럼 쓴다. 변경 id 를 돌려준다 */
+  rewriteApply: (cardId: number, question: string, answer: string, how: "format" | "ai" | "edit") =>
+    invoke<number>("rewrite_apply", { cardId, question, answer, how }),
+  /** [전후 보기] */
+  rewriteChange: (changeId: number) => invoke<Rewrite>("rewrite_change", { changeId }),
   recent: (deckId: number) => invoke<CardChange[]>("recent_changes", { deckId }),
 };
 
@@ -737,6 +768,8 @@ export const aiApi = {
   openUsage: () => invoke<void>("ai_open_usage"),
   /** 카드 한 장을 보내 같은 모양의 제안을 받는다. 아무것도 바꾸지 않는다 (승인은 qualityApi.apply). 오류는 AiError */
   regroup: (cardId: number, segmentIds: number[] = []) => invoke<SplitProposal>("ai_regroup", { cardId, segmentIds }),
+  /** 8.2 [AI로 확인]: 카드 한 장(+ 남긴 연결 구간)을 보내 근거와 고친 안을 받는다. 아무것도 바꾸지 않는다 (승인은 qualityApi.rewriteApply) */
+  checkCard: (cardId: number, segmentIds: number[] = []) => invoke<CardCheck>("ai_check_card", { cardId, segmentIds }),
   cancel: () => invoke<void>("ai_cancel"),
 };
 /** ai_regroup 오류는 { kind, message }. 다른 오류(글자)도 받는다 */

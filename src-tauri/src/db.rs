@@ -105,6 +105,20 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
              COMMIT;"
         ))?;
     }
+    // 8.2 고쳐 쓰기(rewrite)도 남긴다. 위와 같은 방법으로 한 번만 (위 블록이 'draft' 를 넣은 뒤의 글자를 다시 읽는다)
+    let sql: String = con.query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'card_change'", [], |r| r.get(0))?;
+    if !sql.contains("'rewrite'") {
+        let new = sql.replacen("card_change", "card_change_new", 1).replace("('split','draft')", "('split','draft','rewrite')");
+        con.execute_batch(&format!(
+            "BEGIN;
+             {new};
+             INSERT INTO card_change_new SELECT id, kind, deck_id, card_id, summary, payload, created_at, undone_at FROM card_change;
+             DROP TABLE card_change;
+             ALTER TABLE card_change_new RENAME TO card_change;
+             CREATE INDEX IF NOT EXISTS idx_card_change_deck ON card_change(deck_id, created_at);
+             COMMIT;"
+        ))?;
+    }
     // DU3 내가 지운 노트: 덱 업데이트가 다시 넣지 않는다. 지우는 길(카드 · 덱 · 카드 종류 · 빈칸 · 받은 삭제)이 여럿이라 트리거 하나로 모은다.
     // 동기화 대상 표다 (DU42): 스냅샷으로 합류한 기기도 알아야 그 기기의 업데이트가 지운 노트를 되살려 다른 기기에 퍼뜨리지 않는다.
     // 이미 있으면 그대로 둔다 (IGNORE): REPLACE 는 행을 새로 만들어 동기화 uid 가 바뀐다
@@ -408,6 +422,44 @@ mod tests {
             assert_eq!(con.query_row("SELECT \"notnull\" FROM pragma_table_info('source_link') WHERE name = 'origin'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn card_change_accepts_rewrites_after_rebuild() {
+        // 8.2 앞의 DB 두 가지: 'split' 만 받는 것(R1 앞) · 'split','draft' 를 받는 것. 열면 'rewrite' 도 받고 기존 행은 그대로, 다시 열어도 한 번만
+        for old in ["('split')", "('split','draft')"] {
+            let dir = std::env::temp_dir().join(format!("neoanki-rewrite-{}-{}-{}", std::process::id(), now_ms(), old.len()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("t.sqlite");
+            let con = open(&path).unwrap();
+            con.execute_batch(&format!(
+                "DROP TABLE card_change;
+                 CREATE TABLE card_change (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN {old}), deck_id INTEGER, card_id INTEGER,
+                   summary TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, undone_at INTEGER);
+                 INSERT INTO card_change (kind, deck_id, card_id, summary, payload, created_at, undone_at) VALUES ('split', 1, 2, '3장으로 나누기', '{{}}', 5, 6);"
+            ))
+            .unwrap();
+            assert!(con.execute("INSERT INTO card_change (kind, summary, payload, created_at) VALUES ('rewrite', 's', '{}', 0)", []).is_err());
+            drop(con);
+            for _ in 0..2 {
+                let con = open(&path).unwrap();
+                let row: (String, i64, i64, String, i64, Option<i64>) = con
+                    .query_row("SELECT kind, deck_id, card_id, summary, created_at, undone_at FROM card_change WHERE id = 1", [], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                    })
+                    .unwrap();
+                assert_eq!(row, ("split".into(), 1, 2, "3장으로 나누기".into(), 5, Some(6)), "{old}");
+                for kind in ["draft", "rewrite"] {
+                    con.execute("INSERT INTO card_change (kind, summary, payload, created_at) VALUES (?1, 's', '{}', 0)", [kind]).unwrap();
+                }
+                assert!(con.execute("INSERT INTO card_change (kind, summary, payload, created_at) VALUES ('other', 's', '{}', 0)", []).is_err());
+                assert_eq!(con.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'idx_card_change_deck'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // 새 DB 는 schema.sql 그대로 받는다
+        let con = open_in_memory().unwrap();
+        con.execute("INSERT INTO card_change (kind, summary, payload, created_at) VALUES ('rewrite', 's', '{}', 0)", []).unwrap();
     }
 
     #[test]
