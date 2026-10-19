@@ -88,6 +88,79 @@ pub(super) fn new_type_origin(t: &AType) -> String {
     serde_json::to_string(&origin).unwrap_or_default()
 }
 
+// ------------------------------------------------------------------ 왕복 기준 (내보낼 때, DU55)
+
+/// 앱 기본 유형이 내보낸 모델 id 는 이만큼만 기억한다 (기기마다 다르다: created_at + rowid)
+const EXPORTED_IDS: usize = 8;
+
+/// 내보낸 유형의 원본 (DU55, 코디네이터 결정 (A)). 만든 사람이 없는 유형만: 사용자 유형(user_made)은 원본이 없을 때 내보낸 정의로,
+/// 앱 기본 유형은 고칠 수 없어 내보낸 모델 id 만 `"m"` 에 (다시 가져올 때 이것으로 찾는다, anki_model_id 는 동기화 자연 키라 건드리지 않는다).
+/// 가져온 유형(만든 사람의 원본)은 어떤 경우에도 덮지 않는다
+pub(crate) fn exported_type_origin(con: &Connection, ntid: i64, model: &serde_json::Value, slots: &[usize], our_ord: impl Fn(u32) -> u32) -> Res<()> {
+    let (native, user_made, origin): (bool, bool, Option<String>) = con
+        .query_row("SELECT native_kind IS NOT NULL, user_made = 1, origin FROM note_type WHERE id = ?1", [ntid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(err)?;
+    let mid = model["id"].as_i64().unwrap_or_default();
+    if native {
+        let mut m: Vec<i64> = origin.as_deref().and_then(|o| serde_json::from_str::<serde_json::Value>(o).ok()).and_then(|v| serde_json::from_value(v["m"].clone()).ok()).unwrap_or_default();
+        if !m.contains(&mid) {
+            m.push(mid);
+            let cut = m.len().saturating_sub(EXPORTED_IDS);
+            m.drain(..cut);
+            con.execute("UPDATE note_type SET origin = ?2 WHERE id = ?1", params![ntid, serde_json::json!({ "m": m }).to_string()]).map_err(err)?;
+        }
+        return Ok(());
+    }
+    if !user_made || origin.is_some() {
+        return Ok(());
+    }
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let names: Vec<String> = model["flds"].as_array().into_iter().flatten().map(|f| s(&f["name"])).collect();
+    let o = TypeOrigin {
+        f: names.into_iter().enumerate().map(|(j, n)| (n, slots.get(j).copied())).collect(),
+        t: model["tmpls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|x| {
+                let ord = x["ord"].as_u64().unwrap_or_default() as u32;
+                TplOrigin { o: ord, n: s(&x["name"]), our: Some(our_ord(ord)), q: h(&s(&x["qfmt"])), a: h(&s(&x["afmt"])) }
+            })
+            .collect(),
+        c: h(&s(&model["css"])),
+    };
+    con.execute("UPDATE note_type SET origin = ?2 WHERE id = ?1 AND origin IS NULL", params![ntid, serde_json::to_string(&o).map_err(err)?]).map_err(err)?;
+    Ok(())
+}
+
+/// 내보낸 노트의 원본 (DU55): 앱에서 만든 노트(원본 · Anki 노트 id 가 없다)만 처음 내보낼 때. 다시 내보내도 쓰지 않는다
+/// (예전에 내보낸 사본을 다시 가져올 때 그 뒤의 앱 수정이 "새 버전"에 덮이지 않게). 가져온 노트의 원본(만든 사람 기준)은 건드리지 않는다
+pub(crate) fn exported_note_origin(con: &Connection, note_id: i64, fields: &[String], tags: &str) -> Res<()> {
+    con.execute(
+        "UPDATE note SET origin = ?2 WHERE id = ?1 AND origin IS NULL AND anki_note_id IS NULL",
+        params![note_id, note_origin(fields, &crate::export::without_source_tags(tags))],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+/// Anki 모델 id 로 우리 유형: 같은 모델 id, 없으면 그 id 로 내보낸 앱 기본 유형 (DU55 "m")
+pub(crate) fn type_of_model(con: &Connection, aid: i64) -> Res<Option<(i64, bool)>> {
+    let found = con.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [aid], |r| r.get(0)).optional().map_err(err)?;
+    if let Some(id) = found {
+        return Ok(Some((id, false)));
+    }
+    con.query_row(
+        "SELECT nt.id FROM note_type nt, json_each(CASE WHEN json_valid(nt.origin) THEN nt.origin ELSE '{}' END, '$.m') m
+         WHERE nt.native_kind IS NOT NULL AND m.value = ?1 ORDER BY nt.id LIMIT 1",
+        [aid],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(err)
+    .map(|o| o.map(|id| (id, true)))
+}
+
 // ------------------------------------------------------------------ 판정 (순수 함수)
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -809,6 +882,15 @@ fn update_type(tx: &Connection, id: i64, t: &AType, choices: &Choices, issues: &
     Ok((TypeMap { ntid: id, slots, ords, cloze, new_ords }, c))
 }
 
+/// 앱 기본 유형 (내보낸 내 덱이 돌아왔다, DU55): 읽기 전용이라 필드 · 카드 종류 · 모양 · 원본은 그대로 두고, 들어온 필드 · 카드 종류를 이름으로 찾기만 한다
+fn native_map(tx: &Connection, id: i64, t: &AType) -> Res<TypeMap> {
+    let nt = notetype::load(tx, id)?;
+    let cloze = nt.cloze();
+    let tmpls: Vec<(u32, String, String)> = t.templates.iter().map(|(o, n, q, _)| (*o, n.clone(), q.clone())).collect();
+    let ords = if cloze { HashMap::new() } else { notetype::incoming_ords(&nt, &tmpls) };
+    Ok(TypeMap { ntid: id, slots: notetype::incoming_slots(&nt, &t.fields), ords, cloze, new_ords: vec![] })
+}
+
 // ------------------------------------------------------------------ 실행
 
 /// 사전 검사 · 적용 요청
@@ -892,9 +974,9 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     let mut type_at: HashMap<i64, usize> = HashMap::new();
     for aid in &used_types {
         let t = &pkg.types[aid];
-        let found: Option<i64> = tx.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [aid], |r| r.get(0)).optional().map_err(err)?;
-        let (map, change) = match found {
-            Some(id) => update_type(&tx, id, t, req.choices, &mut s.issues)?,
+        let (map, change) = match type_of_model(&tx, *aid)? {
+            Some((id, true)) => (native_map(&tx, id, t)?, TypeChange { note_type_id: id, ..Default::default() }),
+            Some((id, false)) => update_type(&tx, id, t, req.choices, &mut s.issues)?,
             None => {
                 let id = insert_type(&tx, *aid, t, now)?;
                 let map = TypeMap {

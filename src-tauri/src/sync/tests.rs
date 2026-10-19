@@ -2156,3 +2156,24 @@ fn deck_update_original_values_follow_to_the_other_device() {
     let origin: String = a.con().query_row("SELECT origin FROM note WHERE anki_guid = 'g1'", [], |r| r.get(0)).unwrap();
     assert_eq!(serde_json::from_str::<J>(&origin).unwrap()["v"], json!(["Q1", "A1 v2"]));
 }
+
+#[test]
+fn native_type_export_mark_follows_without_a_second_type() {
+    // DU55: 앱 기본 유형에 남긴 내보낸 모델 id ("m") 는 origin 열로 따라가고, 자연 키(native_kind)는 그대로라 유형이 두 벌 되지 않는다.
+    // 다른 기기도 그 파일을 다시 가져오면 같은 앱 기본 유형으로 찾는다
+    use crate::import::deck_update;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let basic = db::native_type_id(&a.con(), "basic").unwrap();
+    deck_update::exported_type_origin(&a.con(), basic, &json!({ "id": 4242 }), &[0, 1], |o| o).unwrap();
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE native_kind = 'basic'"), 1);
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE native_kind = 'basic' AND anki_model_id IS NULL AND user_made = 0"), 1, "모델 id · 사용자 유형 표시는 그대로");
+        let found = deck_update::type_of_model(&d.con(), 4242).unwrap();
+        assert_eq!(found.map(|(id, native)| (d.uid("note_type", id), native)), Some((a.uid("note_type", basic), true)));
+    }
+}
