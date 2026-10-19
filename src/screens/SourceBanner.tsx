@@ -19,6 +19,7 @@ let later = false;
 export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: number; board: BoardDeck[]; onChanged: () => void; onShow: () => void }) {
   const model = useModel();
   const [hasMaterial, setHasMaterial] = useState(false);
+  const [hasOutline, setHasOutline] = useState(false);
   const [dl, setDl] = useState<{ done: number; total: number } | null>(null);
   const [progress, setProgress] = useAnalyzeProgress(model?.analyzing);
   const [hidden, setHidden] = useState(later);
@@ -28,7 +29,10 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
   useEffect(() => {
     sourceApi
       .list(deckId)
-      .then((m) => setHasMaterial(m.some((x) => x.status === "ready")))
+      .then((m) => {
+        setHasMaterial(m.some((x) => x.status === "ready"));
+        setHasOutline(m.some((x) => x.headings > 0));
+      })
       .catch(() => {});
   }, [deckId]);
   useEffect(() => {
@@ -68,6 +72,8 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
 
   if (!model || !hasMaterial || hidden) return null;
   const material = board.filter((d) => d.source === "material").length;
+  // 8.4 목차 근거가 붙은 제안 (OT2)
+  const outline = board.filter((d) => sourcesOf(d.source, d.reason).includes("outline")).length;
 
   let body: ReactNode;
   if (dl || model.downloading) {
@@ -110,7 +116,16 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
   } else if (material > 0) {
     body = (
       <>
-        <BannerText title={`자료로 제안 ${n(material)}개가 생겼어요`} sub="노란 '자료' 태그가 붙은 칩이에요. 마우스를 올리면 근거가 보여요" />
+        <BannerText
+          title={`자료로 제안 ${n(material)}개가 생겼어요${outline ? ` · 목차 근거 ${n(outline)}개` : ""}`}
+          sub={
+            outline
+              ? "노란 '자료' · '목차' 태그가 붙은 칩이에요. 마우스를 올리면 근거가 보여요"
+              : hasOutline
+                ? "목차에서 핵심 범위를 찾지 못했어요 · 강조로만 제안했어요"
+                : "노란 '자료' 태그가 붙은 칩이에요. 마우스를 올리면 근거가 보여요"
+          }
+        />
         <Button size="M" label="보기" onClick={onShow} />
       </>
     );
@@ -150,21 +165,24 @@ function BannerText({ title, sub, children }: { title: string; sub: string; chil
   );
 }
 
-const TAG: Record<string, string> = { exam: "기출", material: "자료", tag: "태그", rule: "이름 규칙" };
+const TAG: Record<string, string> = { exam: "기출", material: "자료", outline: "목차", tag: "태그", rule: "이름 규칙" };
+/** 데이터 근거 제안 (importance_source 'material' 의 근거 줄 머리) */
+const DATA = ["material", "exam", "outline"];
 
 /**
- * 제안의 출처들. 데이터 근거 제안(material)은 근거 줄 머리로 나눈다: "기출 · …" 은 기출(N3), 나머지는 자료(I3).
- * 'exam' 은 저장 값이 아니라 화면 값이다 (exam.rs suggest_all)
+ * 제안의 출처들. 데이터 근거 제안(material)은 근거 줄 머리로 나눈다: "기출 · …" 은 기출(N3), "목차 · …" 은 목차(8.4 OT), 나머지는 자료(I3).
+ * 'exam' · 'outline' 은 저장 값이 아니라 화면 값이다 (exam.rs suggest_all · source.rs suggest)
  */
 export function sourcesOf(source: string, reason: string | null): string[] {
   if (source !== "material") return [source];
   const lines = (reason ?? "").split("\n").filter(Boolean);
-  return [...new Set(lines.length ? lines.map((l) => (l.startsWith("기출 · ") ? "exam" : "material")) : ["material"])];
+  const of = (l: string) => (l.startsWith("기출 · ") ? "exam" : l.startsWith("목차 · ") ? "outline" : "material");
+  return [...new Set(lines.length ? lines.map(of) : ["material"])];
 }
 
-/** 칩의 출처 태그 (I3 · N3): 기출 · 자료(노랑) / 태그 / 이름 규칙. 태그 · 이름 규칙은 모델이 있을 때만 붙인다 */
+/** 칩의 출처 태그 (I3 · N3 · OT2): 기출 · 자료 · 목차(노랑) / 태그 / 이름 규칙. 태그 · 이름 규칙은 모델이 있을 때만 붙인다 */
 export function SourceTag({ source }: { source: string }) {
   const model = useModel();
-  if (!TAG[source] || (source !== "material" && source !== "exam" && !model?.ready)) return null;
+  if (!TAG[source] || (!DATA.includes(source) && !model?.ready)) return null;
   return <span className={`src-tag src-tag--${source} t-label-s`}>{TAG[source]}</span>;
 }

@@ -155,6 +155,7 @@ pub fn run() {
             source::source_segments, source::source_slide, source::source_link, source::source_unlink, source::source_for_card,
             source::source_analyze, source::source_unanalyzed, source::source_segment, source::source_region_link, source::source_region_cards,
             source::source_slide_objects, source::source_slide_image, source::source_region_deck, table::source_table_cards, rag::rag_preview, rag::rag_draft, rag::rag_draft_apply, rag::rag_grade_scope, rag::rag_grade, rag::rag_linked, embed::model_status, embed::model_download, embed::model_cancel, embed::model_delete,
+            source::source_outline, source::source_save_outline, // 8.4 목차
             quality::quality_check,
             quality::hide_quality,
             quality::split_suggest,

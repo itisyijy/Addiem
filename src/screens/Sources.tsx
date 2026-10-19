@@ -1,7 +1,7 @@
 // I1 자료 · 강조 구간 (Figma 53:6560, 노트 53:6724). 덱에 붙인 강의 PDF·슬라이드에서 하이라이트·붉은 글씨·★·볼드 구간을 찾아 카드와 잇는다.
 // 모델 없이 동작한다 (B-1). 모델이 있으면 자료를 넣은 뒤 카드와 자동으로 잇는다 (B-2, I3)
 import "../styles/sources.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorText, type CardRow } from "../api";
@@ -10,7 +10,7 @@ import { AiConnect, useAiStatus } from "../ai";
 import { DraftSend } from "./Drafts";
 import { eul, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
-import { readPdf, renderPage } from "../pdf";
+import { readOutline, readPdf, renderPage } from "../pdf";
 import { Modal } from "./NewDeck";
 import { menuKeys } from "./Deck";
 import { ExamDialog, examHint } from "./Exam";
@@ -20,6 +20,7 @@ import { labelOf, occlusionApi } from "../occlusion";
 import { exam as examApi } from "../written";
 import {
   cardSource,
+  isHeading,
   isRegion,
   MAX_PICK,
   mb,
@@ -32,6 +33,7 @@ import {
   topSignal,
   type AnalyzeProgress,
   type Material,
+  type Outline,
   type Para,
   type Segment,
   type Signal,
@@ -57,7 +59,7 @@ export function SourcesButton({ deckId }: { deckId: number }) {
 }
 
 /** R1-a 정렬: ★ · 붉은 글씨 · 기출 구간 > 하이라이트 > 밑줄 > 볼드, 같은 등급은 쪽 순서 */
-const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underline: 2, bold: 3, figure: 3, table: 3 };
+const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underline: 2, bold: 3, figure: 3, table: 3, heading: 3 };
 const gapRank = (s: Segment) => (s.exam.hits ? 0 : Math.min(...s.signals.map((g) => GAP_RANK[g] ?? 3)));
 /** 보내는 글자 수 어림 (1구간 600자에서 자른다, rag.rs) */
 const sentChars = (s: Segment) => Math.min(s.text.trim().length, 600);
@@ -80,7 +82,7 @@ const metaOf = (m: Material, gaps: boolean) =>
       ? "읽는 중…"
       : gaps
         ? `미연결 ${n(m.gaps)}곳 · 강조 ${n(m.segments)}곳`
-        : `${pagesOf(m.kind, n(m.pages))} · 강조 ${n(m.segments)}곳`;
+        : `${pagesOf(m.kind, n(m.pages))} · 강조 ${n(m.segments)}곳${m.headings ? ` · 목차 ${n(m.headings)}` : ""}`;
 
 /** 분석 진행 (I3 노트 "분석 중 2/3 · 기출_2023_필기.pdf"). 이벤트를 듣고, 이미 돌고 있으면 그 상태로 시작한다 */
 export function useAnalyzeProgress(initial: AnalyzeProgress | null | undefined) {
@@ -141,6 +143,10 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const [objs, setObjs] = useState<SlideObjects[] | null>(null);
   const [objErr, setObjErr] = useState<string>();
   const [filesOpen, setFilesOpen] = useState(false);
+  // 8.4 목차 (OT): 네 번째 탭 · 구간과 핵심 범위 · [목차 다시 읽기]
+  const [outlineView, setOutlineView] = useState(false);
+  const [outline, setOutline] = useState<Outline | null>(null);
+  const [rereading, setRereading] = useState(false);
 
   const reload = useCallback(async () => {
     const list = await sourceApi.list(deckId);
@@ -220,6 +226,18 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     if (!sel) return setSegs([]);
     sourceApi.segments(sel).then(setSegs);
   }, [sel]);
+  // 구간의 카드 수가 연결을 따라가게 구간을 다시 읽을 때마다
+  useEffect(() => {
+    if (!sel) return setOutline(null);
+    let live = true;
+    sourceApi.outline(sel).then(
+      (o) => live && setOutline(o),
+      () => live && setOutline(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [sel, segs]);
   useEffect(() => {
     loadSegs();
     setDeleting(false);
@@ -310,6 +328,21 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     }
     setSpread(null);
   };
+  /** 이미 읽은 자료의 목차만 다시 읽는다 (강조 구간 · 연결은 그대로). 모델이 있으면 제안도 다시 만든다 */
+  const reread = async () => {
+    if (!current) return;
+    setRereading(true);
+    setError(undefined);
+    try {
+      setOutline(await sourceApi.saveOutline(current.id, current.kind === "pdf" ? await readOutline(current.id) : null));
+      loadSegs();
+      reload();
+      analyze();
+    } catch (e) {
+      setError(errorText(e));
+    }
+    setRereading(false);
+  };
   const clearSeg = async (s: Segment) => {
     setSegMenu(null);
     await examApi.set("segment", [{ id: s.id, hits: null, names: [] }]).catch((e) => setError(errorText(e)));
@@ -317,8 +350,10 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   };
 
   if (!materials) return null;
-  // 강조 구간 · 빠진 범위는 글자 강조만. 그림 · 표 영역은 [그림·표 N] 탭에서 (IT13)
-  const textSegs = segs.filter((s) => !isRegion(s));
+  // 강조 구간 · 빠진 범위는 글자 강조만. 그림 · 표 영역은 [그림·표 N] 탭에서 (IT13), 목차 제목은 [목차 N] 탭에서
+  const textSegs = segs.filter((s) => !isRegion(s) && !isHeading(s));
+  // 가장 안쪽 핵심 범위 (안쪽 구간이 뒤에 온다)
+  const coreAt = (p: number) => outline?.sections.filter((x) => x.core && x.page <= p && p <= x.end_page).pop()?.title;
   const sorted = [...textSegs].sort((a, b) => rankOf(a) - rankOf(b) || a.page - b.page || a.ord - b.ord);
   const linkedSegs = textSegs.filter((s) => s.links.length).length;
   const gapSegs = textSegs.filter((s) => !s.links.length).sort((a, b) => gapRank(a) - gapRank(b) || a.page - b.page || a.ord - b.ord);
@@ -380,16 +415,18 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
       <SegmentControl
         boxed
         label="구간 보기"
-        value={objView ? "objects" : gapView ? "gaps" : "all"}
+        value={objView ? "objects" : outlineView ? "outline" : gapView ? "gaps" : "all"}
         onChange={(v) => {
           setGapView(v === "gaps");
           setObjView(v === "objects");
+          setOutlineView(v === "outline");
           setLinking(undefined);
         }}
         options={[
-          // 스캔본은 글자 강조가 없어 두 탭을 끄고 그림·표 탭으로 연다 (IT10)
+          // 스캔본은 글자 강조가 없어 글자 탭을 끄고 그림·표 탭으로 연다 (IT10)
           { value: "all", label: `강조 구간 ${n(textSegs.length)}`, disabled: scanned },
           { value: "gaps", label: `미연결 강조 구간 ${n(gapSegs.length)}`, disabled: scanned },
+          { value: "outline", label: `목차 ${n(outline?.sections.length ?? 0)}`, disabled: scanned },
           ...(figId ? [{ value: "objects", label: `그림·표 ${n(objCount)}` }] : []),
         ]}
       />
@@ -398,7 +435,9 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           ? objNote
           : gapView
             ? "인터넷 없이 돼요"
-            : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(textSegs.length - linkedSegs)}`}
+            : outlineView
+              ? ""
+              : `연결된 카드 ${n(linkedSegs)} · 연결 없음 ${n(textSegs.length - linkedSegs)}`}
       </span>
     </div>
   );
@@ -419,7 +458,9 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                 : "슬라이드마다 그림과 표를 목록에서 골라요. PPTX는 슬라이드를 그림으로 그리지 않아서 끌어서 잡기는 없어요."
               : gapView
                 ? "강조 구간 중 연결된 카드가 없는 곳이에요. 이미 만든 카드가 있다면 연결해 주세요."
-                : "강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요."}
+                : outlineView
+                  ? "강의 PDF·슬라이드의 강조와 목차를 찾아 카드와 이어요. 목차 구간마다 핵심 범위인지도 살펴요."
+                  : "강의 PDF·슬라이드의 하이라이트, 붉은 글씨, ★ 표시를 찾아 카드와 이어요."}
             {/* 다시 분석은 자동으로 하지 않는다. 지난 분석 뒤에 생긴 카드가 있을 때만 알린다 */}
             {stale > 0 && model?.ready && !progress && (
               <>
@@ -529,7 +570,8 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
             <Preview
               m={current}
               page={page}
-              segs={segs.filter((s) => s.page === page)}
+              segs={segs.filter((s) => s.page === page && !isHeading(s))}
+              core={coreAt(page)}
               active={active}
               onPage={setPage}
               onPick={(id) => {
@@ -540,7 +582,8 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
           )}
 
           {/* 그림·표 탭은 Figures 가 같은 자리에 목록을 그린다 */}
-          <section className="panel src-list" aria-label="강조된 구간" hidden={objView}>
+          {current && outlineView && !objView && <OutlinePanel m={current} outline={outline} head={head} onPage={setPage} rereading={rereading} onReread={reread} />}
+          <section className="panel src-list" aria-label="강조된 구간" hidden={objView || outlineView}>
             {head}
             {current && unopened(current) ? (
               <p className="src-list__note t-body-s c-secondary">
@@ -710,7 +753,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
 /** R1-a 쪽 지도: 한 칸이 한 쪽. 카드 있음(accent) · 강조됐는데 카드 없음(warn) · 강조 없음(회색). 칸을 누르면 그 쪽만 */
 function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page: number | null; onPage: (p: number | null) => void }) {
   const state = (p: number) => {
-    const on = segs.filter((s) => s.page === p && !isRegion(s));
+    const on = segs.filter((s) => s.page === p && !isRegion(s) && !isHeading(s));
     return !on.length ? "none" : on.some((s) => !s.links.length) ? "gap" : "linked";
   };
   const label = { linked: "카드가 있는 강조 구간", gap: "카드 미연결 강조", none: "강조 없음" } as const;
@@ -749,6 +792,87 @@ function PageMap({ m, segs, page, onPage }: { m: Material; segs: Segment[]; page
         칸을 누르면 그 {pageWord(m.kind)}의 구간만 보여요{page !== null ? ` · ${pageOf(m.kind, n(page))} 선택됨` : ""}
       </p>
     </div>
+  );
+}
+
+const OUTLINE_FROM = { outline: "PDF 목차에서 읽었어요", size: "큰 글자 줄로 읽은 제목이에요 · 틀릴 수 있어요", slide: "슬라이드 제목과 구역에서 읽었어요" } as const;
+
+/** 8.4 [목차 N] 탭 (Figma OT1): 출처 줄 + [목차 다시 읽기], 구간마다 제목 · 쪽 범위 · 이어진 카드, 핵심 범위는 배경 · 배지 · 까닭 한 줄.
+ * 구간을 누르면 그 쪽으로. 다시 읽기는 탭이 넷이라 머리 대신 출처 줄 오른쪽 */
+function OutlinePanel({
+  m,
+  outline,
+  head,
+  onPage,
+  rereading,
+  onReread,
+}: {
+  m: Material;
+  outline: Outline | null;
+  head: ReactNode;
+  onPage: (p: number) => void;
+  rereading: boolean;
+  onReread: () => void;
+}) {
+  const secs = outline?.sections ?? [];
+  const cores = secs.filter((s) => s.core).length;
+  const day = outline && new Date(outline.read_at);
+  const from =
+    outline &&
+    [
+      OUTLINE_FROM[outline.source],
+      outline.source !== "size" && day ? `${day.getMonth() + 1}월 ${day.getDate()}일` : "",
+      outline.wide ? "핵심 범위 없음 · 자료 대부분을 덮는 제목이에요" : cores ? `핵심 범위 ${n(cores)}곳` : "핵심 범위 없음",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  return (
+    <section className="panel src-list src-outline" aria-label="목차">
+      {head}
+      {m.status === "ready" && (
+        <div className="src-outline__bar">
+          <span className="src-outline__from t-caption c-tertiary">
+            <Icon name="list" size={14} />
+            {secs.length ? from : "목차를 찾지 못했어요"}
+          </span>
+          <Button variant="ghost" size="M" icon="rotate" label="목차 다시 읽기" busy={rereading} busyLabel="읽는 중…" onClick={onReread} />
+        </div>
+      )}
+      {m.status !== "ready" ? (
+        <p className="src-list__note t-body-s c-secondary">글자를 읽을 수 있는 자료에서만 목차를 찾아요.</p>
+      ) : !secs.length ? (
+        <p className="src-list__note t-body-s c-secondary">
+          {m.kind === "pptx" ? "슬라이드 제목 자리와 구역" : "PDF 목차와 큰 글자 줄"}에서 제목을 찾아요. 이 기능 전에 넣은 자료라면 [목차 다시 읽기]를 눌러 주세요.
+        </p>
+      ) : (
+        <>
+          {secs.map((s) => (
+            <button
+              key={s.id}
+              className={`src-sec ${s.core ? "is-core" : ""} ${outline?.source === "size" ? "is-guess" : ""}`}
+              style={{ paddingLeft: 16 + (s.level - 1) * 20 }}
+              onClick={() => onPage(s.page)}
+            >
+              <span className="src-sec__text">
+                <span className="src-sec__title">
+                  <span className={s.level === 1 ? "t-body-m-strong" : "t-body-m"}>{s.title}</span>
+                  <span className="t-caption c-tertiary">{pageOf(m.kind, s.end_page > s.page ? `${n(s.page)}–${n(s.end_page)}` : n(s.page))}</span>
+                  {s.core && <Badge tone="warn">핵심 범위</Badge>}
+                </span>
+                {s.core && (
+                  <span className="t-caption c-secondary">
+                    왜 핵심 범위? {s.core}
+                    {s.segments ? ` · 강조 ${n(s.segments)}곳` : ""}
+                  </span>
+                )}
+              </span>
+              {s.cards ? <Badge tone="accent">카드 {n(s.cards)}장</Badge> : <span className="t-caption c-tertiary">연결 없음</span>}
+            </button>
+          ))}
+          <p className="src-outline__foot t-caption c-secondary">핵심 범위는 제안이에요. 중요도 정하기에서 "목차" 근거로 보여 주고, 확정은 거기서 해요.</p>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -799,6 +923,7 @@ function Preview({
   m,
   page,
   segs,
+  core,
   active,
   onPage,
   onPick,
@@ -806,6 +931,8 @@ function Preview({
   m: Material;
   page: number;
   segs: Segment[];
+  /** 8.4 이 쪽을 덮는 핵심 범위 제목: 쪽 왼쪽 세로 막대 · 쪽 번호 옆 */
+  core?: string;
   active?: number;
   onPage: (p: number) => void;
   onPick: (id: number) => void;
@@ -814,13 +941,16 @@ function Preview({
   const shown = m.status === "ready" || (m.kind === "pdf" && m.status === "unsupported" && m.pages > 0);
   return (
     <div className="src-preview">
-      {!shown ? (
-        <div className="src-page src-page--empty t-body-s c-tertiary">{m.status === "pending" ? "자료를 읽고 있어요…" : "미리 볼 수 없어요"}</div>
-      ) : m.kind === "pdf" ? (
-        <PdfPage materialId={m.id} page={page} width={300} segs={segs} active={active} onPick={onPick} />
-      ) : (
-        <SlidePage materialId={m.id} page={page} />
-      )}
+      <div className="src-preview__page">
+        {!shown ? (
+          <div className="src-page src-page--empty t-body-s c-tertiary">{m.status === "pending" ? "자료를 읽고 있어요…" : "미리 볼 수 없어요"}</div>
+        ) : m.kind === "pdf" ? (
+          <PdfPage materialId={m.id} page={page} width={300} segs={segs} active={active} onPick={onPick} />
+        ) : (
+          <SlidePage materialId={m.id} page={page} />
+        )}
+        {shown && core && <span className="src-core-bar" aria-hidden />}
+      </div>
       {shown && (
         <span className="src-preview__nav">
           <button className="src-icon-btn" aria-label={`이전 ${pageWord(m.kind)}`} disabled={page <= 1} onClick={() => onPage(page - 1)}>
@@ -828,6 +958,7 @@ function Preview({
           </button>
           <span className="t-caption c-tertiary">
             {pageOf(m.kind, n(page))} / {n(m.pages)}
+            {core && ` · ${core}`}
           </span>
           <button className="src-icon-btn" aria-label={`다음 ${pageWord(m.kind)}`} disabled={page >= m.pages} onClick={() => onPage(page + 1)}>
             <Icon name="chevron-right" size={16} />

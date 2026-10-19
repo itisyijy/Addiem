@@ -450,7 +450,7 @@ fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<(i64,
         let ids = source::subtree(&con, root_of(&con, deck)?)?;
         let mut st = con
             .prepare(&format!(
-                "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready'"
+                "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready' AND s.signals <> 'heading'"
             ))
             .map_err(err)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;

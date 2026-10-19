@@ -150,7 +150,7 @@
 
 /* 칩 출처 태그: 자료(노랑) / 태그 / 이름 규칙 */
 .src-tag { display: inline-flex; padding: 1px 6px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-secondary); white-space: nowrap; }
-.src-tag--material, .src-tag--exam { background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.src-tag--material, .src-tag--exam, .src-tag--outline { background: var(--status-warn-bg); color: var(--status-warn-fg); }
 .board__tip-line { display: block; }
 
 /* 자료 근거는 길어 줄을 바꾼다 (Figma 툴팁 폭 340) */
@@ -203,3 +203,22 @@
 .src-seg__exam { background: var(--importance-core-bg); color: var(--importance-core-fg); }
 .src-spread { display: flex; align-items: center; gap: 8px; padding: 8px 14px 12px 20px; }
 .src-spread > .t-body-s { flex: 1; }
+
+/* ---------------------------------------------------------------- 8.4 목차 · 핵심 범위 (Figma OT1) */
+.src-outline__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 8px 6px 20px; }
+.src-outline__from { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.src-sec { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 16px; border-top: 1px solid var(--border-default); text-align: left; }
+.src-sec:hover { background: var(--bg-canvas); }
+.src-sec.is-core { background: var(--importance-core-bg); }
+.src-sec__text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.src-sec__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.src-sec__title > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-sec__title > .t-caption { flex-shrink: 0; }
+/* 큰 글자 줄로 읽은 제목: 틀릴 수 있어 제목 앞에 점선 */
+.src-sec.is-guess .src-sec__title::before { content: ""; flex-shrink: 0; width: 10px; border-top: 1.5px dashed var(--border-strong); }
+.src-outline__foot { padding: 12px 16px 12px 20px; border-top: 1px solid var(--border-default); }
+/* 미리보기 왼쪽 세로 막대: 이 쪽이 핵심 범위 안. ponytail: 쪽 높이 전체, 범위가 쪽 가운데서 시작 · 끝나도 그 위치는 그리지 않는다 */
+.src-preview__page { position: relative; }
+.src-core-bar { position: absolute; top: 24px; bottom: 24px; left: 7px; width: 4px; border-radius: 2px; background: var(--accent-warm); pointer-events: none; }
+/* 탭이 넷이면 머리 오른쪽 한 줄(연결된 카드 수 등)은 아래 줄로 */
+.src-list__head { flex-wrap: wrap; row-gap: 6px; }
