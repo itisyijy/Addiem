@@ -165,7 +165,7 @@
 | `inspect_update` | path, deck_ids?, choices?, voices? | `UpdateSummary` (쓰지 않는다) — B2-u · B2-k · B2-kt |
 | `apply_update` | path, deck_ids?, choices?, voices? | `UpdateSummary` + `backup` (적용 전 백업 경로) — B3-u |
 
-- `choices = { take_new: [노트 id…], new_looks: [[노트 유형 id, ord | null]…] }`. 기본(빈 값)은 모두 내 것 · 내 모양. `take_new` 는 그 노트의 충돌한 필드에만, `new_looks` 의 ord null 은 CSS.
+- `choices = { take_new: [노트 id…], take_new_fields: [[노트 id, 자리]…], new_looks: [[노트 유형 id, ord | null]…] }`. 기본(빈 값)은 모두 내 것 · 내 모양. `take_new` 는 그 노트의 충돌한 필드에만, `take_new_fields` 는 그 충돌 필드만 (2단계, DU54), `new_looks` 의 ord null 은 CSS.
 - `UpdateHint = { notes, existing_notes, known_decks: [덱 이름], suggested }`. suggested = 절반 이상이 이미 있거나 같은 Anki 덱 id 의 덱이 있다.
 - `UpdateSummary` (부록 A B2-u 의 줄 순서): `hint` · `changed` (새 버전으로 바뀌는 노트) · `merged` · `conflicts[]` (`note_id, title, deck, fields[{slot, name, mine, new}], auto_new, auto_mine, take_new, no_base`) · `mine_kept` · `same` · `new_notes` · `new_note_cards` · `missing_notes` · `missing_card_ids` ([카드 목록에서 보기]) · `gone` · `cloze{renumbered_notes, new_cards, emptied_cards}` · `new_cards` (이미 있는 노트에 생기는 카드 전부) · `emptied_cards` (앞면이 비어 학습에서 빠지는 카드 전부) · `types[]` (`note_type_id, name, created, no_base, new_fields, renamed_fields, removed_fields, new_templates, new_template_cards, removed_templates, updated_looks, looks[{ord, name, mine_front, mine_back, new_front, new_back, take_new}]`) · `kept_looks` · `no_base` · `other_type` · `media_new` · `media_renamed` · `reviews_skipped` · `issues[]` · `backup` · `roots`.
 
@@ -191,6 +191,11 @@
 - **내가 지운 노트는 동기화로 따라간다 (DU43).** `origin_gone` 은 동기화 대상 표다 (1장의 "기기 안 표"를 바꿈).
 - **두 벌 노트 알림 (DU44)**, 요약 정확도 (DU45), 낮음 반영 · 남김 (DU46 · DU47).
 
+## 12. 2단계 (2026-10-19, 브랜치 `feat/nt-du-phase2`)
+
+- **원본 글 (DU53).** `note.origin` 에 `"v"`(자리마다 넣은 값, 모르면 null). 해시 `"f"` 로 판정하는 것은 그대로이고 `"v"` 는 해시가 맞는 자리만 믿는다. 옛 앱이 원본을 다시 쓰면 `"v"` 가 빠져 "원본 글이 없어요"가 된다.
+- **필드마다 고르기 (DU54).** `Choices.take_new_fields`. 충돌 요약의 필드마다 `base`(원본 글) · `take_new`. B2-k 는 필드마다 [내 것 | 새 버전], [원본 보기] 세 칸.
+
 ## 부록 A. 디자인 세션에 줄 화면 요청 (초안)
 
 Figma Row DU (프레임 이름은 화면 id), 라이트 · 다크. 문구는 [copy-guide](../design/copy-guide.md) (노트 / 카드 / 노트 유형 / 카드 종류 / 필드 / 백업으로 복구). 쌍 이름은 **내 것 / 새 버전**으로 통일한다. 진행 · 결과 틀은 기존 B2-p · B3 을 재사용한다.
@@ -204,4 +209,4 @@ Figma Row DU (프레임 이름은 화면 id), 라이트 · 다크. 문구는 [co
 | B2-p 진행 | B2-p 단계 앞에 "백업" 단계 더하기 | 백업 중 · 멈춤 |
 | B3-u 결과 | 새 버전으로 바꾼 노트 n · 합친 노트 n · 지킨 n · 충돌 (내 것 a / 새 버전 b) · 새 노트 n · 새 카드 n · 새 버전에 없어 그대로 둔 노트 n [카드 목록에서 보기] · "업데이트 전 백업을 만들었어요. 되돌리려면 설정 › 백업에서 [백업으로 복구] (그 뒤의 학습도 함께 돌아가요)" · 동기화 중이면 "다른 기기에도 다음 동기화 때 반영돼요" | 동기화 연결 / 안 함 · 사라진 노트 0 |
 
-2단계 프레임(나중): 필드별 고르기, 원본 보기(바뀐 곳 표시), 업데이트 되돌리기.
+2단계 프레임(나중): 필드별 고르기, 원본 보기(바뀐 곳 표시), 업데이트 되돌리기. → Figma DU2-k 273:19133 · DU2-u 274:19232 (2026-10-19, 12장).

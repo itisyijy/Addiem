@@ -33,6 +33,18 @@
 .du-item__head { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
 .du-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .du-field { display: flex; align-items: center; gap: 8px; }
+/* DU2-k 필드마다 고르기 · 원본 보기 (Figma 273:19133) */
+.du-fieldblock { display: flex; flex-direction: column; gap: 10px; }
+.du-fieldblock.is-cursor { margin: -6px -8px; padding: 6px 8px; border-radius: 12px; box-shadow: inset 2px 0 0 var(--accent-default); }
+.du-field__right { display: flex; align-items: center; gap: 12px; margin-left: auto; white-space: nowrap; }
+.du-basebtn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 8px; color: var(--text-secondary); }
+.du-basebtn:hover, .du-basebtn[aria-pressed="true"] { color: var(--text-primary); }
+.du-seg .segment--boxed { padding: 2px; }
+.du-seg .segment__item { padding: 3px 10px; font-size: 12px; line-height: 16px; }
+.du-compare--3 .du-side { padding: 14px 16px; }
+.du-compare--3 .du-side.is-chosen { padding: 13px 15px; }
+.du-side[role="button"] { cursor: pointer; }
+.du-side--base { border: 0; background: var(--bg-subtle); color: var(--text-secondary); }
 .du-compare { display: flex; align-items: flex-start; gap: 12px; }
 .du-side { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; padding: 16px 18px; border: 1px solid var(--border-default); border-radius: 14px; background: var(--bg-canvas); }
 .du-side.is-default { border: 1px dashed var(--border-strong); }

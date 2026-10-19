@@ -35,16 +35,29 @@ fn words(tags: &str) -> String {
     tags.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// note.origin: 자리마다 넣은 값의 해시 ("" = 원본 없음, 빈 값으로 본다), 태그 글 (출처 태그는 뺀 것)
+/// note.origin: 자리마다 넣은 값의 해시 ("" = 원본 없음, 빈 값으로 본다), 태그 글 (출처 태그는 뺀 것),
+/// 자리마다 넣은 값 그대로 (DU 2단계 "원본 보기", DU53. null = 모른다: 이 기능 전에 받은 원본 · 옛 앱이 다시 쓴 원본).
+/// 옛 앱은 모르는 "v" 를 건너뛴다 (serde 기본). 판정은 여전히 해시 "f" 로 한다
 #[derive(Serialize, Deserialize, Default)]
 struct NoteOrigin {
     f: Vec<String>,
     t: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    v: Option<Vec<Option<String>>>,
+}
+
+impl NoteOrigin {
+    /// 그 자리의 원본 글. 해시가 맞을 때만 (다른 길로 f 만 바뀌었으면 믿지 않는다)
+    fn value(&self, slot: usize) -> Option<&str> {
+        let v = self.v.as_ref()?.get(slot)?.as_deref()?;
+        (self.f.get(slot).is_some_and(|x| *x == h(v))).then_some(v)
+    }
 }
 
 /// 넣은 값(자리 맞추기 · 미디어 이름 바꾸기 뒤)의 원본. 처음 가져올 때와 업데이트를 적용할 때 쓴다
 pub(crate) fn note_origin(fields: &[String], tags: &str) -> String {
-    serde_json::to_string(&NoteOrigin { f: fields.iter().map(|f| h(f)).collect(), t: words(tags) }).unwrap_or_default()
+    serde_json::to_string(&NoteOrigin { f: fields.iter().map(|f| h(f)).collect(), t: words(tags), v: Some(fields.iter().cloned().map(Some).collect()) })
+        .unwrap_or_default()
 }
 
 /// note_type.origin 의 카드 종류 하나: Anki ord · 이름, 우리 ord (None = 이 앱에서 지웠거나 넣지 못했다), 앞 · 뒷면 해시 (Anki 필드 이름 그대로)
@@ -125,9 +138,12 @@ fn exam_of(tags: &str) -> (Option<i64>, Option<String>) {
 /// B2-k · B2-kt 에서 고른 것. 기본은 모두 내 것 (DU6 · DU9)
 #[derive(Deserialize, Default)]
 pub struct Choices {
-    /// 충돌한 필드를 새 버전으로 할 노트 (우리 노트 id). 같은 노트의 충돌 없는 변경은 고르기와 상관없이 합친다
+    /// 충돌한 필드를 모두 새 버전으로 할 노트 (우리 노트 id). 같은 노트의 충돌 없는 변경은 고르기와 상관없이 합친다
     #[serde(default)]
     pub take_new: Vec<i64>,
+    /// 필드마다 고르기 (DU2-k, DU54): 새 버전으로 할 충돌 필드 [노트 id, 자리]. take_new 와 합친다 (어느 쪽에 있어도 새 버전)
+    #[serde(default)]
+    pub take_new_fields: Vec<(i64, usize)>,
     /// 새 모양으로 할 카드 종류 [노트 유형 id, ord]. ord 가 null 이면 CSS
     #[serde(default)]
     pub new_looks: Vec<(i64, Option<u32>)>,
@@ -152,6 +168,10 @@ pub struct ConflictField {
     name: String,
     mine: String,
     new: String,
+    /// 원본 글 (지난번에 받은 값, DU53). None = "원본 글이 없어요" (예전에 가져온 노트)
+    base: Option<String>,
+    /// 지금 고른 것 (기본 false = 내 것)
+    take_new: bool,
 }
 
 /// B2-k 충돌 노트 한 줄
@@ -170,7 +190,7 @@ pub struct ConflictNote {
     auto_new_fields: Vec<String>,
     /// 내가 마지막으로 고친 시각 (note.updated_at, ms)
     edited_at: i64,
-    /// 지금 고른 것 (기본 false = 내 것)
+    /// 충돌 필드 하나라도 새 버전으로 골랐다 (기본 false = 내 것). 필드마다는 fields[].take_new
     take_new: bool,
     /// 원본이 없어 어림으로 충돌로 본 노트 (DU18)
     no_base: bool,
@@ -1118,7 +1138,9 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
     let mut fin = m.clone();
     let mut of = base.as_ref().map_or_else(Vec::new, |b| b.f.clone());
     of.resize(len, String::new());
-    let take = choices.take_new.contains(&o.id);
+    // 원본 글: 들어온 자리는 새 버전 값, 나머지는 지난번 값 (해시가 맞을 때만, 모르면 null)
+    let mut ov: Vec<Option<String>> = (0..len).map(|sl| base.as_ref().and_then(|b| b.value(sl)).map(String::from)).collect();
+    let take = |sl: usize| choices.take_new.contains(&o.id) || choices.take_new_fields.contains(&(o.id, sl));
     // DU18: 원본이 없으면 updated_at 의 ms 자리로 가져온 뒤 고쳤는지 본다 (가져올 때는 Anki mod 초 × 1000).
     // ponytail: 앱에서 저장한 시각의 ms 가 000 이면 (1/1000) 고치지 않은 것으로 본다
     let touched = o.updated_at % 1000 != 0;
@@ -1138,13 +1160,15 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
             Pick::Mine => mine += 1,
             Pick::Conflict => {
                 let name = names.get(sl).cloned().unwrap_or_default();
-                conflicts.push(ConflictField { slot: sl, name, mine: m[sl].clone(), new: v.clone() });
-                if take {
+                let base = base.as_ref().and_then(|b| b.value(sl)).map(String::from);
+                conflicts.push(ConflictField { slot: sl, name, mine: m[sl].clone(), new: v.clone(), base, take_new: take(sl) });
+                if take(sl) {
                     fin[sl] = v.clone();
                 }
             }
         }
         of[sl] = h(v);
+        ov[sl] = Some(v.clone());
     }
     let fin_tags = merge_tags(base.as_ref().map(|b| b.t.as_str()), &o.tags, tags);
     let set = |t: &str| t.split_whitespace().map(String::from).collect::<BTreeSet<_>>();
@@ -1172,6 +1196,7 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
                     |r| r.get(0),
                 )
                 .map_err(err)?;
+            let take_new = conflicts.iter().any(|f| f.take_new);
             s.conflicts.push(ConflictNote {
                 note_id: o.id,
                 title,
@@ -1181,7 +1206,7 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
                 auto_mine: mine,
                 auto_new_fields: new_names,
                 edited_at: o.updated_at,
-                take_new: take,
+                take_new,
                 no_base: base.is_none(),
             });
         }
@@ -1193,7 +1218,7 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
 
     let fields_changed = fin != m;
     let fields_json = if fields_changed { serde_json::to_string(&fin).map_err(err)? } else { o.fields_raw.clone() };
-    let origin = serde_json::to_string(&NoteOrigin { f: of, t: words(tags) }).map_err(err)?;
+    let origin = serde_json::to_string(&NoteOrigin { f: of, t: words(tags), v: Some(ov) }).map_err(err)?;
     if fields_changed || tags_changed || exam != o.exam || o.origin.as_deref() != Some(origin.as_str()) {
         tx.execute(
             "UPDATE note SET fields = ?2, tags = ?3, exam_hits = ?4, exam_names = ?5, origin = ?6, updated_at = ?7 WHERE id = ?1",
@@ -1810,6 +1835,57 @@ mod tests {
         assert_eq!(r.merged, 1, "g1: 내가 더한 태그 c 와 만든 사람의 태그 변경을 합친다");
         assert_eq!(q::<String>(&s, "SELECT tags || ' ' || exam_hits FROM note WHERE anki_guid = 'g1'"), "a 기출::2023 c d 기출::2024 2", "출처 태그는 들이지 않는다");
         assert_eq!(q::<String>(&s, "SELECT tags || ' ' || exam_hits FROM note WHERE anki_guid = 'g2'"), "기출::2023 기출::2024 0", "사용자가 고친 기출 표시는 지킨다");
+    }
+
+    #[test]
+    fn field_picks_and_original_values() {
+        // DU53 · DU54: 원본 글("v")을 남기고, 충돌 필드마다 고른다. 노트 단위 고르기(DU6)도 그대로
+        let t = tmp("pick");
+        let s = state(&t.0.join("data"));
+        let (p1, p2) = (t.0.join("v1.apkg"), t.0.join("v2.apkg"));
+        let m = || Model { id: 20, name: "Three", fields: vec!["Front", "Back", "Extra"], templates: vec![("Card 1", "{{Front}}", AFMT)], css: "" };
+        let v1 = [note(1, "g1", 20, &["Q", "A", "X"], &[(1, 0)]), note(2, "g2", 20, &["Q2", "A2", ""], &[(1, 0)]), note(3, "g3", 20, &["Q3", "A3", ""], &[(1, 0)])];
+        testpkg::write(&p1, &[m()], &[(1, "D")], &v1, &[]);
+        import(&s, &p1);
+        let o: NoteOrigin = serde_json::from_str(&q::<String>(&s, "SELECT origin FROM note WHERE anki_guid = 'g1'")).unwrap();
+        assert_eq!(o.v, Some(vec![Some("Q".to_string()), Some("A".into()), Some("X".into())]), "처음 가져올 때 넣은 값");
+        // 옛 앱(구조체에 v 가 없다)도 읽는다
+        #[derive(Deserialize)]
+        struct Old {
+            f: Vec<String>,
+            #[allow(dead_code)]
+            t: String,
+        }
+        let old: Old = serde_json::from_str(&q::<String>(&s, "SELECT origin FROM note WHERE anki_guid = 'g1'")).unwrap();
+        assert_eq!(old.f, o.f);
+        for (g, v) in [("g1", ["Q 내 것", "A 내 것"]), ("g2", ["Q2 내 것", "A2"]), ("g3", ["Q3", "A3 내 것"])] {
+            edit(&s, g, 0, v[0]);
+            edit(&s, g, 1, v[1]);
+        }
+        // 옛 앱이 g3 의 원본을 다시 썼다 (v 가 없다): 원본 글이 없어요
+        s.db.lock().unwrap().execute("UPDATE note SET origin = json_remove(origin, '$.v') WHERE anki_guid = 'g3'", []).unwrap();
+        let v2 = [note(1, "g1", 20, &["Q 새", "A 새", "X 새"], &[(1, 0)]), note(2, "g2", 20, &["Q2 새", "A2", ""], &[(1, 0)]), note(3, "g3", 20, &["Q3", "A3 새", ""], &[(1, 0)])];
+        testpkg::write(&p2, &[m()], &[(1, "D")], &v2, &[]);
+        let r = update(&s, &p2, &Choices::default(), true);
+        let c1 = r.conflicts.iter().find(|c| c.note_id == id_of(&s, "g1")).unwrap();
+        assert_eq!(c1.fields.iter().map(|f| (f.slot, f.base.as_deref(), f.take_new)).collect::<Vec<_>>(), [(0, Some("Q"), false), (1, Some("A"), false)]);
+        let c3 = r.conflicts.iter().find(|c| c.note_id == id_of(&s, "g3")).unwrap();
+        assert_eq!((c3.fields[0].base.as_deref(), c3.no_base), (None, false), "해시는 있어 판정은 되지만 원본 글은 없다");
+        // g1 은 Back 만 새 버전, g2 는 노트 단위로 새 버전
+        let choices = Choices { take_new: vec![id_of(&s, "g2")], take_new_fields: vec![(id_of(&s, "g1"), 1)], ..Default::default() };
+        let r = update(&s, &p2, &choices, true);
+        let c1 = r.conflicts.iter().find(|c| c.note_id == id_of(&s, "g1")).unwrap();
+        assert_eq!((c1.fields[0].take_new, c1.fields[1].take_new, c1.take_new), (false, true, true));
+        update(&s, &p2, &choices, false);
+        assert_eq!(fields(&s, "g1"), ["Q 내 것", "A 새", "X 새"], "고른 필드만 새 버전, 충돌 없는 Extra 는 합친다");
+        assert_eq!(fields(&s, "g2"), ["Q2 새", "A2", ""]);
+        assert_eq!(fields(&s, "g3")[1], "A3 내 것");
+        // 원본 = 새 버전 값 (글도), 옛 앱이 지웠던 g3 도 다시 채운다
+        for g in ["g1", "g3"] {
+            let o: NoteOrigin = serde_json::from_str(&q::<String>(&s, &format!("SELECT origin FROM note WHERE anki_guid = '{g}'"))).unwrap();
+            let want: Vec<&str> = if g == "g1" { vec!["Q 새", "A 새", "X 새"] } else { vec!["Q3", "A3 새", ""] };
+            assert_eq!((0..3).map(|i| o.value(i)).collect::<Vec<_>>(), want.into_iter().map(Some).collect::<Vec<_>>());
+        }
     }
 
     #[test]

@@ -205,8 +205,9 @@ type Pick = "mine" | "new";
 const lookKey = (t: number, ord: number | null) => `${t}:${ord ?? "css"}`;
 
 /** 화면의 고르기 → 엔진 choices. 카드 종류를 새 모양으로 고르면 그 유형의 CSS 충돌도 새 모양 (B2-kt "앞면 · 뒷면 · CSS를 모두"), CSS 만 따로 내 것으로 고르면 지킨다 */
-function toChoices(picks: Map<number, Pick>, looks: Map<string, Pick>, s: UpdateSummary): UpdateChoices {
-  const take_new = [...picks].filter(([, v]) => v === "new").map(([k]) => k);
+function toChoices(picks: Map<string, Pick>, looks: Map<string, Pick>, s: UpdateSummary): UpdateChoices {
+  // 필드마다 고른 것 (DU54). 노트 단위 take_new 는 쓰지 않는다 (엔진은 둘 다 받는다)
+  const take_new_fields = [...picks].filter(([, v]) => v === "new").map(([k]) => k.split(":").map(Number) as [number, number]);
   const new_looks: [number, number | null][] = [];
   for (const t of s.types) {
     const anyNew = t.looks.some((l) => l.ord !== null && looks.get(lookKey(t.note_type_id, l.ord)) === "new");
@@ -215,7 +216,7 @@ function toChoices(picks: Map<number, Pick>, looks: Map<string, Pick>, s: Update
       if (v === "new" || (l.ord === null && anyNew && v !== "mine")) new_looks.push([t.note_type_id, l.ord]);
     }
   }
-  return { take_new, new_looks };
+  return { take_new: [], take_new_fields, new_looks };
 }
 
 type Step = "summary" | "conflicts" | "looks" | "apply";
@@ -224,7 +225,7 @@ export function DeckUpdate({ path, info, summary: first }: { path: string; info:
   const nav = useNav();
   const [summary, setSummary] = useState(first);
   const [step, setStep] = useState<Step>("summary");
-  const [picks, setPicks] = useState<Map<number, Pick>>(new Map());
+  const [picks, setPicks] = useState<Map<string, Pick>>(new Map());
   const [looks, setLooks] = useState<Map<string, Pick>>(new Map());
   const [reviewed, setReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -628,85 +629,176 @@ function underlineDiff(a: string, b: string): [string, string] {
 /** 그림 이름 (src) */
 const srcs = (html: string) => [...html.matchAll(/src=["']?([^"' >]+)/g)].map((m) => m[1]);
 
-function FieldCompare({ name, mine, next, pick, edited, preview }: {
-  name: string;
-  mine: string;
-  next: string;
+/** 충돌 필드 하나의 고르기 키 (필드마다 고르기, DU54) */
+const fieldKey = (note: number, slot: number) => `${note}:${slot}`;
+type Field = UpdateConflict["fields"][number];
+
+function FieldCompare({ f, pick, showBase, cursor, edited, preview, onPick, onBase }: {
+  f: Field;
   pick: Pick | undefined;
+  showBase: boolean;
+  cursor: boolean;
   edited: number;
   preview: Record<string, string>;
+  onPick: (v: Pick) => void;
+  onBase: () => void;
 }) {
-  const [html, setHtml] = useState<[string, string] | null>(null);
+  const [html, setHtml] = useState<{ base: string; mine: string; next: string } | null>(null);
   const [full, setFull] = useState(false);
+  const base = showBase ? f.base : null;
   useEffect(() => {
     let live = true;
     // 적용 전이라 아직 저장하지 않은 새 그림은 사전 검사가 준 data URL 로 (I85 새 이름)
-    const withPreview = next.replace(/src=(["']?)([^"' >]+)/g, (m, q, src) => (preview[src] ? `src=${q}${preview[src]}` : m));
-    Promise.all([renderCardHtml(showCloze(mine)), renderCardHtml(showCloze(withPreview))]).then(([a, b]) => live && setHtml(underlineDiff(a, b)));
+    const withPreview = f.new.replace(/src=(["']?)([^"' >]+)/g, (m, q, src) => (preview[src] ? `src=${q}${preview[src]}` : m));
+    Promise.all([renderCardHtml(showCloze(f.mine)), renderCardHtml(showCloze(withPreview)), base === null ? "" : renderCardHtml(showCloze(base))]).then(([a, b, o]) => {
+      if (!live) return;
+      // 원본을 펼치면 원본과 다른 곳, 아니면 두 칸이 서로 다른 곳에 밑줄
+      if (base === null) {
+        const [mine, next] = underlineDiff(a, b);
+        setHtml({ base: "", mine, next });
+      } else setHtml({ base: o, mine: underlineDiff(o, a)[1], next: underlineDiff(o, b)[1] });
+    });
     return () => {
       live = false;
     };
-  }, [mine, next, preview]);
+  }, [f.mine, f.new, base, preview]);
   // 같은 이름에 내용만 다른 그림 (새 버전은 이름-<sha8> 로 저장한다, DU10)
-  const mineSrcs = srcs(mine);
-  const sameName = srcs(next).some((x) => mineSrcs.includes(x.replace(/-[0-9a-f]{8}(\.[^.]+)?$/, "$1")) && !mineSrcs.includes(x));
-  const side = (who: Pick) => {
+  const mineSrcs = srcs(f.mine);
+  const sameName = srcs(f.new).some((x) => mineSrcs.includes(x.replace(/-[0-9a-f]{8}(\.[^.]+)?$/, "$1")) && !mineSrcs.includes(x));
+  const side = (who: Pick | "base") => {
     const chosen = pick === who;
     const fallback = !pick && who === "mine";
-    return (
-      <div className={`du-side ${chosen ? "is-chosen" : fallback ? "is-default" : ""} ${full ? "is-full" : ""}`}>
-        <span className="du-side__head">
+    const head =
+      who === "base" ? (
+        <>
+          <span className="t-label-m">원본</span>
+          <span className="t-caption c-tertiary">지난번에 받은 버전</span>
+        </>
+      ) : (
+        <>
           <Kbd k={who === "mine" ? "1" : "2"} />
           <span className="t-label-m">{who === "mine" ? "내 것" : "새 버전"}</span>
           <span className="t-caption c-tertiary">{who === "mine" ? `${day(edited)}에 고침` : "이 파일"}</span>
+          {chosen && <Icon name="check" size={16} className="c-accent" />}
           {fallback && <Badge>고르지 않으면 이것</Badge>}
           {who === "new" && sameName && <span className="t-caption c-warn">이름은 같고 그림이 달라요</span>}
-        </span>
-        <div className="du-side__body t-body-l card-html" dangerouslySetInnerHTML={{ __html: html?.[who === "mine" ? 0 : 1] ?? "" }} />
+        </>
+      );
+    const body = <div className="du-side__body t-body-l card-html" dangerouslySetInnerHTML={{ __html: html?.[who === "new" ? "next" : who] ?? "" }} />;
+    const cls = `du-side ${who === "base" ? "du-side--base" : chosen ? "is-chosen" : fallback ? "is-default" : ""} ${full ? "is-full" : ""}`;
+    if (who === "base")
+      return (
+        <div className={cls}>
+          <span className="du-side__head">{head}</span>
+          {body}
+        </div>
+      );
+    // 칸을 눌러도 고른다 (세그먼트와 같다)
+    return (
+      <div className={cls} role="button" tabIndex={-1} aria-pressed={chosen} aria-label={`${f.name} ${who === "mine" ? "내 것" : "새 버전"}으로`} onClick={() => onPick(who)}>
+        <span className="du-side__head">{head}</span>
+        {body}
       </div>
     );
   };
-  const long = Math.max(mine.length, next.length) > 600;
+  const long = Math.max(f.mine.length, f.new.length, f.base?.length ?? 0) > 600;
   return (
-    <>
+    <div className={`du-fieldblock ${cursor ? "is-cursor" : ""}`}>
       <span className="du-field">
-        <span className="t-label-m">{name}</span>
-        <span className="t-caption c-tertiary">다른 부분에 밑줄을 그어요</span>
-        {long && <Button variant="ghost" size="M" label={full ? "접기" : "전체 보기"} onClick={() => setFull(!full)} />}
+        <span className="t-label-m">{f.name}</span>
+        <span className="t-caption c-tertiary">{base !== null ? "다른 부분에 밑줄 · 원본과 비교해요" : "다른 부분에 밑줄을 그어요"}</span>
+        <span className="du-field__right">
+          {long && <Button variant="ghost" size="M" label={full ? "접기" : "전체 보기"} onClick={() => setFull(!full)} />}
+          {f.base !== null ? (
+            <button type="button" className="du-basebtn t-label-m" aria-pressed={showBase} onClick={onBase}>
+              <Icon name="info" size={16} />
+              {showBase ? "원본 숨기기" : "원본 보기"}
+            </button>
+          ) : (
+            <span className="t-caption c-tertiary">원본 글이 없어요 · 예전에 가져온 노트예요</span>
+          )}
+          <span className="du-seg">
+            <Segment<string>
+              boxed
+              label={`${f.name} 고르기`}
+              options={[
+                { value: "mine", label: "내 것" },
+                { value: "new", label: "새 버전" },
+              ]}
+              value={pick ?? ""}
+              onChange={(v) => onPick(v as Pick)}
+            />
+          </span>
+        </span>
       </span>
-      <div className="du-compare">
+      <div className={`du-compare ${base !== null ? "du-compare--3" : ""}`}>
+        {base !== null && side("base")}
         {side("mine")}
         {side("new")}
       </div>
-    </>
+    </div>
   );
 }
 
 function ConflictReview({ summary, picks, onPick, onBack }: {
   summary: UpdateSummary;
-  picks: Map<number, Pick>;
-  onPick: (m: Map<number, Pick>) => void;
+  picks: Map<string, Pick>;
+  onPick: (m: Map<string, Pick>) => void;
   onBack: () => void;
 }) {
   const list = summary.conflicts;
   const [cursor, setCursor] = useState(0);
   const [open, setOpen] = useState<number | null>(0);
+  const [fieldAt, setFieldAt] = useState(0);
+  const [bases, setBases] = useState<Set<string>>(new Set());
   const rows = useRef<(HTMLDivElement | null)[]>([]);
   useEffect(() => {
     rows.current[cursor]?.scrollIntoView({ block: "nearest" });
   }, [cursor]);
-  const choose = (i: number, v: Pick) => {
-    onPick(new Map(picks).set(list[i].note_id, v));
-    // 고르면 다음 노트가 펼쳐진다
-    if (i + 1 < list.length) (setCursor(i + 1), setOpen(i + 1));
+  const done = (c: UpdateConflict, m: Map<string, Pick>) => c.fields.every((f) => m.has(fieldKey(c.note_id, f.slot)));
+  const moveTo = (i: number) => (setCursor(i), setOpen(i), setFieldAt(0));
+  const choose = (i: number, slot: number, v: Pick) => {
+    const next = new Map(picks).set(fieldKey(list[i].note_id, slot), v);
+    onPick(next);
+    // 그 노트의 필드를 다 고르면 다음 노트가 펼쳐진다. 아니면 아직 고르지 않은 필드로
+    if (done(list[i], next)) {
+      if (i + 1 < list.length) moveTo(i + 1);
+    } else setFieldAt(Math.max(0, list[i].fields.findIndex((f) => !next.has(fieldKey(list[i].note_id, f.slot)))));
   };
-  const all = (v: Pick) => onPick(new Map(list.map((c) => [c.note_id, v])));
+  const chooseNote = (i: number, v: Pick) => {
+    const next = new Map(picks);
+    list[i].fields.forEach((f) => next.set(fieldKey(list[i].note_id, f.slot), v));
+    onPick(next);
+    if (i + 1 < list.length) moveTo(i + 1);
+  };
+  const all = (v: Pick) => onPick(new Map(list.flatMap((c) => c.fields.map((f) => [fieldKey(c.note_id, f.slot), v] as const))));
+  const toggleBase = (key: string) =>
+    setBases((b) => {
+      const next = new Set(b);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  const curField = list[cursor]?.fields[fieldAt];
   useKey("Escape", onBack);
-  useKey("ArrowDown", () => setCursor((c) => Math.min(list.length - 1, c + 1)));
-  useKey("ArrowUp", () => setCursor((c) => Math.max(0, c - 1)));
+  useKey("ArrowDown", () => (setCursor((c) => Math.min(list.length - 1, c + 1)), setFieldAt(0)));
+  useKey("ArrowUp", () => (setCursor((c) => Math.max(0, c - 1)), setFieldAt(0)));
   useKey("Enter", () => setOpen((o) => (o === cursor ? null : cursor)));
-  useKey(["1", "2"], (_, i) => choose(cursor, i === 0 ? "mine" : "new"));
-  const picked = list.filter((c) => picks.has(c.note_id)).length;
+  useKey(["1", "2"], (_, i) => curField && choose(cursor, curField.slot, i === 0 ? "mine" : "new"));
+  useKey("o", () => curField?.base != null && open === cursor && toggleBase(fieldKey(list[cursor].note_id, curField.slot)));
+  // Tab: 펼친 노트 안에서 필드를 옮긴다. 끝 필드에서는 브라우저 초점 이동 그대로 (키보드로 버튼에 갈 수 있게)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || open !== cursor || e.defaultPrevented) return;
+      const count = list[cursor]?.fields.length ?? 0;
+      const to = fieldAt + (e.shiftKey ? -1 : 1);
+      if (to < 0 || to >= count) return;
+      e.preventDefault();
+      setFieldAt(to);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, cursor, fieldAt, list]);
+  const picked = list.filter((c) => done(c, picks)).length;
 
   return (
     <main className="import du-wide">
@@ -737,11 +829,15 @@ function ConflictReview({ summary, picks, onPick, onBack }: {
               rows.current[i] = el;
             }}
             c={c}
-            pick={picks.get(c.note_id)}
+            picks={picks}
+            bases={bases}
             cursor={cursor === i}
+            fieldAt={cursor === i ? fieldAt : -1}
             open={open === i}
-            onToggle={() => (setCursor(i), setOpen(open === i ? null : i))}
-            onPick={(v) => choose(i, v)}
+            onToggle={() => (setCursor(i), setFieldAt(0), setOpen(open === i ? null : i))}
+            onPick={(slot, v) => (setCursor(i), choose(i, slot, v))}
+            onNote={(v) => chooseNote(i, v)}
+            onBase={(slot) => toggleBase(fieldKey(c.note_id, slot))}
             preview={summary.media_preview}
           />
         ))}
@@ -755,6 +851,10 @@ function ConflictReview({ summary, picks, onPick, onBack }: {
         <span className="t-caption c-secondary">내 것</span>
         <Kbd k="2" />
         <span className="t-caption c-secondary">새 버전</span>
+        <Kbd k="Tab" />
+        <span className="t-caption c-secondary">필드 이동</span>
+        <Kbd k="O" />
+        <span className="t-caption c-secondary">원본 보기</span>
       </span>
       <div className="import__foot">
         <span className="t-caption c-secondary">{picked < list.length ? `고르지 않은 ${n(list.length - picked)}개는 내 것을 지켜요` : "모두 골랐어요"}</span>
@@ -764,17 +864,32 @@ function ConflictReview({ summary, picks, onPick, onBack }: {
   );
 }
 
-function ConflictRow({ c, pick, cursor, open, onToggle, onPick, ref, preview }: {
+function ConflictRow({ c, picks, bases, cursor, fieldAt, open, onToggle, onPick, onNote, onBase, ref, preview }: {
   c: UpdateConflict;
   preview: Record<string, string>;
-  pick: Pick | undefined;
+  picks: Map<string, Pick>;
+  bases: Set<string>;
   cursor: boolean;
+  fieldAt: number;
   open: boolean;
   onToggle: () => void;
-  onPick: (v: Pick) => void;
+  onPick: (slot: number, v: Pick) => void;
+  onNote: (v: Pick) => void;
+  onBase: (slot: number) => void;
   ref: (el: HTMLDivElement | null) => void;
 }) {
   const others = c.auto_new_fields;
+  const mine = c.fields.map((f) => picks.get(fieldKey(c.note_id, f.slot)));
+  const noBase = c.no_base || c.fields.every((f) => f.base === null);
+  const badge = mine.every((p) => !p) ? (
+    <Badge tone="warn">고르지 않음 · 내 것</Badge>
+  ) : mine.every((p) => p === "new") ? (
+    <Badge tone="accent">새 버전</Badge>
+  ) : mine.some((p) => p === "new") ? (
+    <Badge tone="accent">일부 새 버전</Badge>
+  ) : (
+    <Badge>내 것</Badge>
+  );
   return (
     <div ref={ref} className={`du-item ${cursor ? "is-cursor" : ""}`}>
       <button className="du-item__head" aria-expanded={open} onClick={onToggle}>
@@ -783,14 +898,25 @@ function ConflictRow({ c, pick, cursor, open, onToggle, onPick, ref, preview }: 
           <span className="t-body-m-strong du-ellipsis">{c.title.replace(/\{\{c\d+::.*?\}\}/g, "[...]") || "(첫 필드가 비어 있어요)"}</span>
           <span className="t-caption c-secondary du-ellipsis">
             {c.deck} · 충돌 필드: {c.fields.map((f) => f.name).join(", ")}
+            {noBase && " · 원본 글이 없어요 (예전에 가져온 노트)"}
           </span>
         </span>
-        {pick === "new" ? <Badge tone="accent">새 버전</Badge> : pick === "mine" ? <Badge>내 것</Badge> : <Badge tone="warn">고르지 않음 · 내 것</Badge>}
+        {badge}
       </button>
       {open && (
         <>
-          {c.fields.map((f) => (
-            <FieldCompare key={f.slot} name={f.name} mine={f.mine} next={f.new} pick={pick} edited={c.edited_at} preview={preview} />
+          {c.fields.map((f, i) => (
+            <FieldCompare
+              key={f.slot}
+              f={f}
+              pick={mine[i]}
+              showBase={bases.has(fieldKey(c.note_id, f.slot))}
+              cursor={fieldAt === i && c.fields.length > 1}
+              edited={c.edited_at}
+              preview={preview}
+              onPick={(v) => onPick(f.slot, v)}
+              onBase={() => onBase(f.slot)}
+            />
           ))}
           {(others.length > 0 || c.auto_mine > 0) && (
             <span className="du-other">
@@ -807,8 +933,9 @@ function ConflictRow({ c, pick, cursor, open, onToggle, onPick, ref, preview }: 
           )}
           {c.no_base && <span className="t-caption c-tertiary">예전에 가져온 노트라 비교할 원본이 없어 충돌로 봤어요</span>}
           <span className="du-actions">
-            <Button variant="secondary" size="M" label="내 것 유지" onClick={() => onPick("mine")} />
-            <Button variant="secondary" size="M" label="새 버전으로" onClick={() => onPick("new")} />
+            <span className="t-caption c-secondary">{c.fields.length > 1 ? "필드마다 고른 것은 그 필드에만 적용돼요 · " : ""}이 노트 모두:</span>
+            <Button variant="ghost" size="M" label="내 것" onClick={() => onNote("mine")} />
+            <Button variant="ghost" size="M" label="새 버전" onClick={() => onNote("new")} />
           </span>
         </>
       )}

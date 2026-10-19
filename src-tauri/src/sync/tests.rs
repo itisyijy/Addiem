@@ -2121,3 +2121,38 @@ fn deck_update_origin_follows_and_the_other_device_judges_with_it() {
     assert_eq!(a.n("SELECT count(*) FROM note WHERE anki_guid = 'g3'"), 0, "지운 기기에 되살아나지 않는다");
     assert_eq!(a.dump(), c.dump());
 }
+
+#[test]
+fn deck_update_original_values_follow_to_the_other_device() {
+    // DU53: 원본 글("v")도 note.origin 열로 따라가, 다른 기기의 충돌 검토가 [원본 보기]를 보인다
+    use crate::import::deck_update::testpkg::{self, Model, note};
+    use crate::import::deck_update::{self, Choices, Req};
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let b = Dev::new("데스크톱");
+    let pkg = |d: &Dev, name: &str, back: &str| {
+        let model = Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")], css: "" };
+        let p = d.dir.join(name);
+        testpkg::write(&p, &[model], &[(1, "공유덱")], &[note(1, "g1", 7, &["Q1", back], &[(1, 0)])], &[]);
+        p
+    };
+    let run = |d: &Dev, p: &std::path::Path, dry: bool| {
+        let choices = Choices::default();
+        deck_update::run(&mut d.con(), &d.dir, &Req { path: p, selected: None, choices: &choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false }, dry, &mut vec![]).unwrap()
+    };
+    run(&a, &pkg(&a, "v1.apkg", "A1"), false);
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    engine::join(&b.db, &env.cx(&b), Join::Take, json!({})).unwrap();
+    let t = db::now_ms();
+    b.edit_at(t + 1000, "UPDATE note SET fields = ?1, updated_at = ?2 WHERE anki_guid = 'g1'", params![json!(["Q1", "A1 (B)"]).to_string(), t + 1000]);
+    let r = run(&b, &pkg(&b, "v2.apkg", "A1 v2"), true);
+    let conflict = serde_json::to_value(&r.conflicts).unwrap();
+    assert_eq!(conflict[0]["fields"][0]["base"], json!("A1"), "A 가 받은 원본 글이 B 에도 있다");
+    // B 가 적용하면 새 원본 글이 A 로 따라간다
+    b.at(t + 2000, || run(&b, &pkg(&b, "v2.apkg", "A1 v2"), false));
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    let origin: String = a.con().query_row("SELECT origin FROM note WHERE anki_guid = 'g1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<J>(&origin).unwrap()["v"], json!(["Q1", "A1 v2"]));
+}

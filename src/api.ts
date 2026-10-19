@@ -393,13 +393,15 @@ export type UpdateHint = {
   suggested: boolean;
 };
 /** B2-k · B2-kt 고른 것. take_new: 충돌 필드를 새 버전으로 할 노트 id, new_looks: [노트 유형 id, ord | null(CSS)] */
-export type UpdateChoices = { take_new: number[]; new_looks: [number, number | null][] };
+/** take_new: 충돌 필드를 모두 새 버전으로 할 노트, take_new_fields: 필드마다 [노트 id, 자리] (DU54). 둘 중 어디 있어도 새 버전 */
+export type UpdateChoices = { take_new: number[]; take_new_fields?: [number, number][]; new_looks: [number, number | null][] };
 export type UpdateConflict = {
   note_id: number;
   title: string;
   /** 첫 카드의 덱 경로 ("A › B") */
   deck: string;
-  fields: { slot: number; name: string; mine: string; new: string }[];
+  /** base: 원본 글 (지난번에 받은 값, DU53). null 이면 "원본 글이 없어요" */
+  fields: { slot: number; name: string; mine: string; new: string; base: string | null; take_new: boolean }[];
   auto_new: number;
   auto_mine: number;
   auto_new_fields: string[];
