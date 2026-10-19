@@ -280,7 +280,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     const key = seq.current--;
     const ok = h.name !== null && !fieldNameError(h.name, names);
     setDraft((x) => ({ ...x, fields: [...x.fields, { key, slot: h.slot, name: ok ? (h.name ?? "") : "" }] }));
-    if (!ok) setRenaming({ what: "field", key, value: h.name ?? "" });
+    // 이름이 겹치면 겹치지 않는 이름("뒷면 2")을 채워 묻는다 (빨간 오류부터 보이지 않게, Q4 디자인 검토)
+    if (!ok) setRenaming({ what: "field", key, value: h.name === null ? "" : freeName(h.name, names) });
   };
 
   // ---------------------------------------------------------------- 쉬운 편집 줄
@@ -1599,4 +1600,10 @@ function lostLine(impact: ChangeImpact, free: boolean | undefined, toName: strin
   return free
     ? `옮기지 않는 칸이 있어요 · ${what}${eun(last)} 옮기지 않아요. 옮기면 그 칸에 쓴 내용은 지워져요 (노트 ${n(impact.lost_notes)}개)`
     : `옮기지 못하는 칸이 있어요 · ${what}${eun(last)} 「${toName}」에 없어요. 옮기면 그 칸에 쓴 내용은 지워져요 (노트 ${n(impact.lost_notes)}개)`;
+}
+
+/** 겹치지 않는 필드 이름: "뒷면" → "뒷면 2" → "뒷면 3" … (fieldNameError 와 같은 규칙으로 본다) */
+function freeName(name: string, names: string[]) {
+  for (let i = 2; i < 100; i++) if (!fieldNameError(`${name} ${i}`, names)) return `${name} ${i}`;
+  return "";
 }

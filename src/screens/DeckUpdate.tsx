@@ -1497,7 +1497,7 @@ export function UndoConfirm({ batch, onClose }: { batch: number; onClose: () => 
         u.archived_notes > 0 && {
           icon: "layers" as const,
           tone: "c-secondary",
-          text: `보관해요 · 공부하지 않은 새 노트 ${n(u.archived_notes)}개(카드 ${n(u.archived_note_cards)}장)는 학습에서 빼고 '${ARCHIVE_TAG}' 태그로 모아요. 카드 목록에서 tag:${ARCHIVE_TAG} 로 찾아 학습을 다시 하거나 지울 수 있어요`,
+          text: `보관해요 · 공부하지 않은 새 노트 ${n(u.archived_notes)}개(카드 ${n(u.archived_note_cards)}장)는 학습에서 빼고 '${ARCHIVE_TAG}' 태그로 모아요. 카드 목록에서 tag:${ARCHIVE_TAG} 로 찾아 학습 중지를 풀거나 지울 수 있어요`,
         },
         u.archived_cards > u.archived_note_cards && {
           icon: "layers" as const,
@@ -1608,7 +1608,7 @@ export function UndoResultScreen({ undo: u }: { undo: UndoSummary }) {
               </span>
               <span className="t-body-s c-secondary">
                 학습에 나오지 않고{u.archived_notes > 0 ? ` '${ARCHIVE_TAG}' 태그로 모아 뒀어요` : " 학습 중지로 두었어요"}.
-                {u.archived_notes > 0 && u.archived_cards > u.archived_note_cards ? ` 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장도 학습 중지로 두었어요.` : ""} 카드 목록에서 {u.archived_notes > 0 ? `tag:${ARCHIVE_TAG} 로 찾아 ` : ""}학습을 다시 하거나 지울 수 있어요.
+                {u.archived_notes > 0 && u.archived_cards > u.archived_note_cards ? ` 이미 있던 노트에 생긴 새 카드 ${n(u.archived_cards - u.archived_note_cards)}장도 학습 중지로 두었어요.` : ""} 카드 목록에서 {u.archived_notes > 0 ? `tag:${ARCHIVE_TAG} 로 찾아 ` : ""}학습 중지를 풀거나 지울 수 있어요.
               </span>
             </span>
             {/* 다 보관한 새 노트의 카드뿐이면 나중에도 찾는 그 검색으로 (Q4 M2). 이미 있던 노트의 새 카드는 태그가 없어 카드로 */}

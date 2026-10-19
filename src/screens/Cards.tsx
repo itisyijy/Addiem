@@ -58,6 +58,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   const [scope, setScope] = useState<number | null>(deckId);
   const [only, setOnly] = useState(cardIds ?? null);
   const [weak, setWeak] = useState(weakOnly); // C1-w [약한 챕터 카드 보기]
+  const [susp, setSusp] = useState(false); // [학습 중지 n장 보기]
   const [query, setQuery] = useState(start ?? "");
   const [limit, setLimit] = useState(PAGE);
   const [list, setList] = useState<CardList | null>(null);
@@ -101,8 +102,8 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   useEffect(loadFixable, [loadFixable]);
 
   const load = useCallback(
-    () => api.listCards(scope, query, limit, buriedOnly, only, weak).then(setList, (e) => setError(errorText(e))),
-    [scope, query, limit, buriedOnly, only, weak],
+    () => api.listCards(scope, query, limit, buriedOnly, only, weak, susp).then(setList, (e) => setError(errorText(e))),
+    [scope, query, limit, buriedOnly, only, weak, susp],
   );
   useEffect(() => {
     const t = setTimeout(load, 150); // 입력 중에는 기다렸다가 찾는다
@@ -232,7 +233,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
     const ids = cards.filter((c) => c.state === "suspended").map((c) => c.id);
     closeMenus();
     endSelection();
-    act(api.unsuspendCards(ids).then((k) => toast({ title: k > 1 ? `${n(k)}장을 학습에 다시 넣었어요` : "학습에 다시 넣었어요", text: "다음에 시작하는 학습부터 포함돼요" })));
+    act(api.unsuspendCards(ids).then((k) => toast({ title: k > 1 ? `${n(k)}장의 학습 중지를 풀었어요` : "학습 중지를 풀었어요", text: "다음에 시작하는 학습부터 포함돼요" })));
   };
   const unbury = (c: CardRow) => {
     closeMenus();
@@ -325,10 +326,17 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
         <div className="deck__title">
           <h1 className="t-title-l">{buriedOnly ? "접어둔 카드" : "카드"} {n(list?.total ?? deck.total)}장</h1>
           <p className="t-body-s c-secondary">
+            {/* 결과에 맞게: 접어둔 카드 화면만 "접어둔 카드" (Q4 디자인 검토) */}
             {deckId === null
-              ? cardIds
+              ? only
                 ? "모든 덱 · 고른 카드만 보여요"
-                : "모든 덱 · 자동으로 또는 직접 접어둔 카드"
+                : buriedOnly
+                  ? "모든 덱 · 자동으로 또는 직접 접어둔 카드"
+                  : susp
+                    ? "모든 덱 · 학습 중지 카드만 보여요"
+                    : query.trim()
+                      ? "모든 덱 · 찾은 카드"
+                      : "모든 덱"
               : `${deck.name} · 중요도는 하위 덱 설정을 따르고, 카드마다 직접 지정할 수 있어요`}
           </p>
         </div>
@@ -425,6 +433,35 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
               모두 보기
             </button>
           </span>
+        )}
+        {susp ? (
+          <span className="cards__only t-label-m">
+            학습 중지 카드만 보는 중
+            <button
+              className="c-accent"
+              onClick={() => {
+                setSusp(false);
+                resetFilter();
+              }}
+            >
+              모두 보기
+            </button>
+          </span>
+        ) : (
+          !buriedOnly &&
+          (list?.suspended ?? 0) > 0 && (
+            // 가져온 Anki 일시 정지 카드 · 되돌리기가 보관한 카드 (태그가 없는 것도) 를 거른다
+            <button
+              className="cards__fix t-label-m"
+              onClick={() => {
+                setSusp(true);
+                resetFilter();
+              }}
+            >
+              <Icon name="pause" size={16} scaled />
+              학습 중지 {n(list?.suspended ?? 0)}장 보기
+            </button>
+          )
         )}
         {error && <span className="t-body-s c-danger">{error}</span>}
         {deckId !== null && fixable > 0 && !selecting && (
@@ -548,7 +585,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                   <button role="menuitem" className="menu__item t-body-m" onClick={() => unsuspend(picked)}>
                     <Icon name="play" size={16} scaled />
                     <span className="menu__text">
-                      <span className="t-body-m">학습 다시 하기</span>
+                      <span className="t-body-m">학습 중지 풀기</span>
                       <span className="t-caption c-tertiary">학습 중지 카드 {n(picked.filter((c) => c.state === "suspended").length)}장</span>
                     </span>
                   </button>
@@ -736,11 +773,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                         <button role="menuitem" className="menu__item menu__item--top" onMouseEnter={() => setRowMove(false)} onClick={() => unsuspend([c])}>
                           <Icon name="play" size={16} scaled />
                           <span className="menu__text">
-                            <span className="t-body-m">학습 다시 하기</span>
-                            <span className="t-caption c-tertiary">학습 중지를 풀어요 · 다음 학습부터 포함</span>
+                            <span className="t-body-m">학습 중지 풀기</span>
+                            <span className="t-caption c-tertiary">다음에 시작하는 학습부터 포함</span>
                           </span>
                         </button>
                       )}
+                      {/* 학습 중지 카드는 학습에 나오지 않아 접어두기가 없다 (접어두기 풀기는 그대로) */}
                       {c.buried ? (
                         <button role="menuitem" className="menu__item menu__item--top" onMouseEnter={() => setRowMove(false)} onClick={() => unbury(c)}>
                           <Icon name="rotate" size={16} scaled />
@@ -749,7 +787,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                             <span className="t-caption c-tertiary">다음에 시작하는 학습부터 포함</span>
                           </span>
                         </button>
-                      ) : (
+                      ) : c.state === "suspended" ? null : (
                         <button role="menuitem" className="menu__item menu__item--top" onMouseEnter={() => setRowMove(false)} onClick={() => bury([c])}>
                           <Icon name="archive" size={16} scaled />
                           <span className="menu__text">
