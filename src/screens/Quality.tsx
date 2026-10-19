@@ -43,8 +43,7 @@ function FlagBadge({ f }: { f: QualityFlag }) {
   return <Badge tone="danger">Again {n(f.n)}번</Badge>;
 }
 
-const CRITERIA = `검사 기준 · 답이 8줄 또는 항목 6개 이상 · 질문에 물음표나 "와/과 … 은?"이 2개 이상 · 최근 14일 Again 2번 이상`;
-const CRITERIA_FIX = `검사 기준 · 답이 안 맞아 보임: 질문이 묻는 꼴(차이 · 이유 · 순서 · 개수 · 수)과 답의 꼴이 다르거나, 답이 비었거나 질문을 되풀이해요 · 서식 제안: 한 줄에 번호 3개 이상, "이름:"이 한 줄에 2번 이상, 또는 긴 줄에 쉼표로 이은 짧은 항목 3개 이상`;
+const CRITERIA = `검사 기준 · 긴 카드: 답이 8줄 또는 항목 6개 이상 · 질문 여러 개: 물음표나 "와/과 … 은?"이 2개 이상 · 자주 틀림: 최근 14일 Again 2번 이상 · 답이 안 맞아 보임: 질문이 묻는 꼴(차이 · 이유 · 순서 · 개수 · 수)과 답의 꼴이 다르거나, 답이 비었거나 질문을 되풀이해요 · 서식 제안: 한 줄에 번호 3개 이상, "이름:"이 한 줄에 2번 이상, 또는 긴 줄에 쉼표로 이은 짧은 항목 3개 이상`;
 /** "최근 고친 카드" 둘째 줄 (CQ1) */
 const HOW: Record<NonNullable<CardChange["how"]>, string> = { format: "서식 고치기", ai: "AI로 확인한 뒤 고침", edit: "직접 고침" };
 
@@ -195,7 +194,7 @@ export function Quality({ deckId }: { deckId: number }) {
             (f) =>
               f.reason && (
                 <p key={f.kind} className="quality__reason t-caption c-secondary">
-                  {f.kind === "format" ? "제안" : "근거"} · {f.reason}
+                  {f.kind === "format" ? "제안" : "이유"} · {f.reason}
                 </p>
               ),
           )}
@@ -259,7 +258,7 @@ export function Quality({ deckId }: { deckId: number }) {
       {fixInfo && (
         <p className="quality__info t-body-s">
           <Icon name="info" size={16} />
-          규칙으로 찾은 것이라 틀릴 수 있어요. 서식 제안은 내용은 그대로 두고 줄바꿈 · 굵게만 바꿔요. 고치기 전에 바뀌는 곳을 보여 드리고, 고친 뒤에도 되돌릴 수 있어요.
+          규칙으로 찾은 것이라 틀릴 수 있어요. 서식 제안은 내용은 그대로 두고 줄바꿈 · 굵게 · 항목 사이 쉼표만 바꿔요. 고치기 전에 바뀌는 곳을 보여 드리고, 고친 뒤에도 되돌릴 수 있어요.
         </p>
       )}
 
@@ -295,7 +294,6 @@ export function Quality({ deckId }: { deckId: number }) {
       )}
 
       <p className="t-caption c-tertiary">{CRITERIA}</p>
-      <p className="t-caption c-tertiary">{CRITERIA_FIX}</p>
 
       {hidden.length > 0 && (
         <section className="quality__section">
@@ -352,14 +350,13 @@ export function Quality({ deckId }: { deckId: number }) {
       )}
       {viewing !== null && <ChangeModal change={viewing} onClose={() => setViewing(null)} onUndo={() => undoRewrite(viewing.id)} />}
       {forceUndo !== null && (
-        <DiscardModal
-          title="그 뒤에 고친 내용이 있어요"
-          text="되돌리면 그 뒤에 고친 내용도 사라져요."
-          keep="그대로 두기"
-          discard="되돌리기"
-          onKeep={() => setForceUndo(null)}
-          onDiscard={() => undoRewrite(forceUndo, true)}
-        />
+        <Modal title="그 뒤에 고친 내용이 있어요" onClose={() => setForceUndo(null)} variant="confirm" icon="rotate">
+          <p className="t-body-m c-secondary">되돌리면 그 뒤에 고친 내용도 사라져요.</p>
+          <div className="modal__actions">
+            <Button variant="ghost" size="M" label="그대로 두기" shortcut="Esc" onClick={() => setForceUndo(null)} />
+            <Button variant="danger" size="M" icon="rotate" label="되돌리기" onClick={() => undoRewrite(forceUndo, true)} />
+          </div>
+        </Modal>
       )}
     </main>
   );
@@ -462,6 +459,7 @@ function Diff({ before, after }: { before: string; after: string }) {
 /** "바뀌는 곳: 뒷면 줄바꿈 6곳 · 글자는 그대로예요" (CQ2). 바뀐 낱말은 이어진 묶음 하나를 한 곳으로 센다 */
 function changesLine(before: [string, string], after: [string, string]) {
   let words = 0;
+  let cuts = 0;
   const sides = (["앞면", "뒷면"] as const).flatMap((side, s) => {
     let nl = 0;
     let bold = 0;
@@ -477,11 +475,12 @@ function changesLine(before: [string, string], after: [string, string]) {
       run = changed && o.tok.t !== "\n";
     }
     words += w;
+    cuts += cut;
     const parts = [nl && `줄바꿈 ${n(nl)}곳`, bold && `굵게 ${n(bold)}곳`, cut && `쉼표 ${n(cut)}개 빼기`, w && `글자 ${n(w)}곳`].filter(Boolean);
     return parts.length ? [`${side} ${parts.join(" · ")}`] : [];
   });
   if (!sides.length) return "바뀌는 곳이 없어요";
-  return `바뀌는 곳: ${sides.join(" · ")}${words ? "" : " · 글자는 그대로예요"}`;
+  return `바뀌는 곳: ${sides.join(" · ")}${words ? "" : cuts ? " · 다른 글자는 그대로예요" : " · 글자는 그대로예요"}`;
 }
 
 /** 지금 카드 | → | 오른쪽 (G2 나누기 창과 같은 틀) */
@@ -504,12 +503,13 @@ function Compare({ before, children, label = "지금 카드" }: { before: [strin
 }
 
 /** 고친 카드 (보기 · 손보기). 칸을 누르면 바로 고친다. 고친 곳 표시는 내가 쓴 글 기준으로 다시 그린다 (CQ3 다른 상태) */
-function FixedCard({ before, value, onChange, locked, readOnly }: {
+function FixedCard({ before, value, onChange, locked, readOnly, label = "고친 카드" }: {
   before: [string, string];
   value: [string, string];
   onChange?: (v: [string, string]) => void;
   locked?: [boolean, boolean];
   readOnly?: boolean;
+  label?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const field = (i: 0 | 1, label: string) => (
@@ -539,11 +539,11 @@ function FixedCard({ before, value, onChange, locked, readOnly }: {
   return (
     <section
       className={`rewrite__card rewrite__card--after ${editing ? "is-editing" : ""}`}
-      aria-label="고친 카드"
+      aria-label={label}
       onClick={() => !readOnly && !editing && setEditing(true)}
     >
       <span className="rewrite__head">
-        <span className="t-label-s c-tertiary">고친 카드</span>
+        <span className="t-label-s c-tertiary">{label}</span>
         {!readOnly && (
           <button
             type="button"
@@ -558,6 +558,7 @@ function FixedCard({ before, value, onChange, locked, readOnly }: {
       </span>
       {field(0, "앞면")}
       {field(1, "뒷면")}
+      {editing && <span className="t-caption c-tertiary">**글자**는 굵게로 저장돼요</span>}
     </section>
   );
 }
@@ -793,7 +794,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
             {c}
           </p>
         ))}
-        <span className="t-caption c-secondary">자료를 연결하면 그 근거로 다시 확인할 수 있어요.</span>
+        <span className="t-caption c-secondary">자료 화면에서 이 카드와 자료를 이으면 그 근거로 다시 확인할 수 있어요.</span>
         <span className="rewrite__actions">
           <Button variant="secondary" size="M" label="카드 편집" onClick={onEdit} />
         </span>
@@ -835,7 +836,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
           r.why && (
             <p className="quality__info split__why t-body-s">
               <Icon name="info" size={16} />
-              근거 · {r.why}
+              이유 · {r.why}
             </p>
           )
         )}
@@ -853,7 +854,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
                 <span className="rewrite__nl">↵</span> 줄을 나눈 곳 · 지운 글자는 취소선, 더한 글자는 밑줄로 보여요
               </>
             ) : (
-              "지운 글자는 취소선, 더한 글자는 밑줄 · 근거에 없는 내용은 넣지 않게 했어요"
+              "지운 글자는 취소선, 더한 글자는 밑줄 · 자료에 있는 내용으로만 고치라고 요청했어요"
             )}
           </p>
         )}
@@ -900,7 +901,7 @@ function ChangeModal({ change, onClose, onUndo }: { change: CardChange; onClose:
     <Modal title="고친 전후" sub={`${HOW[change.how ?? "edit"]} · ${ago(change.created_at)}`} onClose={onClose} className="split rewrite">
       {r ? (
         <Compare before={[r.question, r.answer]} label="고치기 전">
-          <FixedCard before={[r.question, r.answer]} value={[r.new_question, r.new_answer]} readOnly />
+          <FixedCard before={[r.question, r.answer]} value={[r.new_question, r.new_answer]} readOnly label="고친 뒤 · 지금 카드" />
         </Compare>
       ) : (
         <p className="t-body-s c-danger">{error}</p>

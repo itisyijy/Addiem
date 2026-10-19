@@ -1046,7 +1046,7 @@ const CHECK_INSTRUCTIONS: &str = "암기 카드 한 장의 질문과 답이 서�
 - reason: 그렇게 본 근거 한 문장. 질문과 같은 언어로.
 - fix: 어긋나면 서로 맞게 고친 {\"question\": 질문, \"answer\": 답}. 원래 글자를 되도록 그대로 두고 꼭 필요한 곳만 고치세요. 줄은 줄바꿈으로 나누고 HTML 이나 서식 기호는 쓰지 마세요.
 - 카드와 자료 구간에 없는 새 사실을 넣지 마세요. 고칠 근거가 부족하면 fix 를 null 로 두고 reason 에 무엇이 부족한지 쓰세요. 맞으면 fix 는 null.
-- checks: 어긋나는데 fix 가 null 이면 사용자가 직접 확인할 것을 물음으로 2~3개. 아니면 빈 배열.
+- checks: 어긋나는데 fix 가 null 이면 사용자가 직접 확인할 것을 물음으로 2~3개. 첫 물음은 질문을 되풀이하지 말고 어긋나 보이는 이유를 짚으세요 (예: \"질문은 '몇'(개수)을 묻는데 답에 수가 없어요. 답에 몇 계층인지 넣어야 할까요?\"). 아니면 빈 배열.
 - segments: 고친 안이 기댄 자료 구간 번호. 없으면 빈 배열.
 - 답은 {\"matches\": true 또는 false, \"reason\": 근거, \"fix\": {\"question\": 질문, \"answer\": 답} 또는 null, \"checks\": [물음, …], \"segments\": [번호, …]} 모양의 JSON 하나만.";
 
@@ -1159,7 +1159,7 @@ fn fake_check(question: &str, answer: &str, rule: Option<&str>, segments: usize)
             "matches": false,
             "reason": format!("{why}. 연결된 자료가 없어 고칠 근거가 부족해요 (개발용 가짜 응답)"),
             "fix": null,
-            "checks": [format!("이 카드가 묻는 것이 \"{question}\"가 맞나요?"), "답이 다른 카드의 답과 섞였는지 봐 주세요."],
+            "checks": [format!("{why}. 답에 질문이 묻는 내용을 넣어야 할까요?"), "답이 다른 카드의 답과 섞였는지 봐 주세요."],
             "segments": [],
         }),
         None => json!({ "matches": true, "reason": "질문이 묻는 것에 맞게 답했어요 (개발용 가짜 응답)", "fix": null, "checks": [], "segments": [] }),
