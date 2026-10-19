@@ -1461,15 +1461,23 @@ export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number
       live = false;
     };
   }, [plan, fields, cards, noteIds]);
+  // 앱 기본 유형은 카드 추가 · 편집과 같은 칸 이름 (NT51: Front · Back 대신 질문 · 답변)
+  const showOf = (d: Detail | null): Show => {
+    const labels = d?.native_kind ? nativeLabels(d.native_kind) : undefined;
+    const map = new Map(labels && d ? d.fields.map((f, i) => [f.name, labels[i] ?? f.name]) : []);
+    return (x) => map.get(x) ?? x;
+  };
+  const [showFrom, showTo] = [showOf(from), showOf(to)];
   const fromTpl = (ord: number) => {
     if (!from) return "";
     if (from.cloze) return `빈칸 ${ord + 1}`;
     const i = from.templates.findIndex((t) => t.ord === ord);
-    return i < 0 ? `카드 ${ord + 1}` : tplTitle(from.templates[i], i, false);
+    return i < 0 ? `카드 ${ord + 1}` : tplTitle(from.templates[i], i, false, showFrom);
   };
-  const toOptions: [number, string][] = !to || !plan ? [] : to.cloze ? Array.from({ length: Math.max(1, plan.card_ords.length) }, (_, i) => [i, `빈칸 ${i + 1}`]) : to.templates.map((t, i) => [t.ord, tplTitle(t, i, false)]);
+  const toOptions: [number, string][] =
+    !to || !plan ? [] : to.cloze ? Array.from({ length: Math.max(1, plan.card_ords.length) }, (_, i) => [i, `빈칸 ${i + 1}`]) : to.templates.map((t, i) => [t.ord, tplTitle(t, i, false, showTo)]);
   const toTpl = (ord: number) => toOptions.find(([o]) => o === ord)?.[1] ?? `카드 ${ord + 1}`;
-  const fromField = (slot: number) => from?.fields.find((f) => f.slot === slot)?.name ?? "";
+  const fromField = (slot: number) => showFrom(from?.fields.find((f) => f.slot === slot)?.name ?? "");
   const toName = to ? typeLabel(to) : "";
   const choices = types.filter((t) => t.id !== plan?.from && !DRAWN_KINDS.includes(t.native_kind ?? "") && t.templates > 0);
   const setOne = <K extends number>(list: [K, number | null][], k: K, v: number | null) =>
@@ -1483,12 +1491,15 @@ export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number
     : [
         ...impact.removed.map(([ord, count]): Line => ({ icon: "trash", text: `「${fromTpl(ord)}」의 카드 ${n(count)}장을 지워요 · 되돌릴 수 없어요. 이 카드들의 복습 기록은 학습 통계에만 남아요.` })),
         ...(impact.removed_notes > 0 ? [{ icon: "trash" as const, text: `카드가 하나도 남지 않는 노트 ${n(impact.removed_notes)}개도 함께 지워요.` }] : []),
-        ...impact.lost.map(([name, notes]): Line => ({
+        ...impact.lost.map(([raw, notes]): Line => {
+          const name = showFrom(raw);
+          return {
           icon: "alert",
           text: free
             ? `옮기지 않는 칸이 있어요 · ${name} 칸은 옮기지 않아요. 옮기면 노트 ${n(notes)}개의 ${name} 칸에 쓴 내용은 지워져요.`
             : `옮기지 못하는 칸이 있어요 · ${name} 칸은 「${toName}」에 없어요. 옮기면 노트 ${n(notes)}개의 ${name} 칸에 쓴 내용은 지워져요.`,
-        })),
+          };
+        }),
         ...(impact.unclozed > 0 ? [{ icon: "info" as const, text: "빈칸 표시는 글자로 바뀌어요." }] : []),
         ...(impact.empty_fronts > 0 ? [{ icon: "alert" as const, text: `옮기면 카드 ${n(impact.empty_fronts)}장의 앞면이 비어요 · 학습에 나오지 않고, 필드를 채우면 다시 나와요.` }] : []),
         ...(impact.made > 0 ? [{ icon: "plus" as const, text: `카드 ${n(impact.made)}장이 새로 생겨요.` }] : []),
@@ -1527,7 +1538,7 @@ export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number
               <div key={s} className="ntm__row">
                 <span className="t-body-m">{fromField(s)}</span>
                 <Icon name="arrow-right" size={16} className="c-tertiary" />
-                <MapSelect value={t} options={to.fields.map((f) => [f.slot, f.name])} none="옮기지 않음" label={`${fromField(s)} 옮길 칸`} onChange={(v) => setFields(setOne(fields, s, v))} />
+                <MapSelect value={t} options={to.fields.map((f) => [f.slot, showTo(f.name)])} none="옮기지 않음" label={`${fromField(s)} 옮길 칸`} onChange={(v) => setFields(setOne(fields, s, v))} />
               </div>
             ))}
           </section>

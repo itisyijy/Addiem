@@ -127,7 +127,8 @@ fn render(tpl: &str, fields: &HashMap<String, String>, ord: u32, is_back: bool, 
 
 fn tag_value(tag: &str, fields: &HashMap<String, String>, ord: u32, is_back: bool, front_side: &str) -> String {
     if tag == "FrontSide" {
-        return front_side.to_string();
+        // 답 면의 앞면 부분 힌트도 펼친 채 (디자인 NT10: 답을 볼 때는 힌트가 열려 있다)
+        return front_side.replace("<details class=\"hint\">", "<details class=\"hint\" open>");
     }
     match tag.rsplit_once(':') {
         Some((filters, field)) => {
@@ -427,6 +428,8 @@ mod tests {
         assert_eq!(render_card("{{hint:Extra}}", "", &f(&[("Extra", " ")]), 0).front, "");
         assert_eq!(render_card("{{hint:text:Extra}}", "", &f(&[("Extra", "<b>a</b>")]), 0).front, "<details class=\"hint\"><summary>Extra</summary>a</details>");
         assert_eq!(render_card("", "{{hint:Extra}}", &f(&[("Extra", "a")]), 0).back, "<details class=\"hint\" open><summary>Extra</summary>a</details>", "답 면은 펼친 채");
+        let fs = render_card("{{hint:Extra}}", "{{FrontSide}}", &f(&[("Extra", "a")]), 0);
+        assert_eq!((fs.front.contains(" open"), fs.back.contains(" open")), (false, true), "답 면의 앞면 부분도 펼친 채");
         assert_eq!(strip_tags(&h.front), "Q Extra 메모");
         assert_eq!(render_card("{{Front", "", &f(&[]), 0).front, "{{Front", "닫히지 않은 태그는 그대로 둔다");
         // type-in: 앞면은 비우고 뒷면은 정답 (J1)
