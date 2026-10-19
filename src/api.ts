@@ -137,7 +137,8 @@ export type CardRow = {
 export type IoPos = { ordinal: number; n: number; count: number };
 /** 8.4 기출 (exam.rs). hits null 이면 표시 없음 */
 export type ExamState = { id: number; hits: number | null; names: string[] };
-export type CardList = { rows: CardRow[]; total: number };
+/** suspended: 이 덱 범위의 학습 중지 카드 수 (검색과 상관없이) */
+export type CardList = { rows: CardRow[]; total: number; suspended: number };
 
 export type DeckConfig = {
   deck_id: number;
@@ -611,8 +612,8 @@ export const api = {
   addCard: (card: NewCard) => invoke<number>("add_card", { card }),
   /** deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
   /** cardIds: 이 카드들만 (C1-xr "찾지 못한 미디어" [카드 보기]) */
-  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false) =>
-    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly }),
+  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false) =>
+    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly }),
   /** C1-w [약함으로] / [해제] */
   setDeckWeak: (deckId: number, weak: boolean) => invoke<void>("set_deck_weak", { deckId, weak }),
   /** C1-w [아니에요] (14일 제안 쉼) / recovered: "요즘 괜찮아요" 안내를 닫음 */

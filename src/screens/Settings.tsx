@@ -111,7 +111,7 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
           <span className="prefs__text">
             <span className="t-body-m-strong">백업 위치</span>
             {/* 사용자 결정 2026-10-20 (commands.rs prune_auto_backups) */}
-            <span className="t-body-s c-secondary">자동 백업은 최근 10개와 7일 안의 것만 남겨요 · 직접 만든 백업은 지우지 않아요</span>
+            <span className="t-body-s c-secondary">자동 백업은 최근 10개와 7일 안에 만든 것을 남기고, 그보다 오래된 것은 지워요 · 직접 만든 백업은 지우지 않아요</span>
           </span>
           <span className="prefs__path">
             <span className="prefs__mono c-secondary" title={info.backup_dir}>

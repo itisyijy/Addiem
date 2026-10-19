@@ -1112,6 +1112,8 @@ pub struct CardList {
     rows: Vec<CardRow>,
     /// limit 을 적용하기 전 일치하는 카드 수
     total: i64,
+    /// 이 덱 범위의 학습 중지 카드 (검색 · 거르기와 상관없이). 있으면 C2 가 [학습 중지 n장 보기] 칩을 보인다
+    suspended: i64,
 }
 
 /// 뒷면에서 답 부분만. Basic 템플릿은 <hr id=answer> 뒤가 답이다
@@ -1180,6 +1182,7 @@ fn tag_filter(tag: &str) -> String {
 
 /// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기"
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn list_cards(
     state: State<AppState>,
     deck_id: Option<i64>,
@@ -1188,6 +1191,7 @@ pub fn list_cards(
     buried_only: Option<bool>,
     card_ids: Option<Vec<i64>>,
     weak_only: Option<bool>,
+    suspended_only: Option<bool>,
 ) -> Res<CardList> {
     let con = state.db.lock().map_err(err)?;
     let decks = load_decks(&con)?;
@@ -1212,8 +1216,10 @@ pub fn list_cards(
     let q = q.as_str();
     let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(&con, query.trim(), q)? };
     let filter = format!(
-        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {} {}",
+        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {} {} {}",
         tags.iter().map(|t| tag_filter(t)).collect::<String>(),
+        // [학습 중지 n장 보기]: 가져온 Anki 일시 정지 카드는 태그가 없어 tag: 로 찾지 못한다
+        if suspended_only.unwrap_or(false) { "AND c.state = 'suspended'" } else { "" },
         if buried_only.unwrap_or(false) { "AND c.buried_until IS NOT NULL" } else { "" },
         // C1-xr [카드 보기]: 이 카드들만
         card_ids.map_or(String::new(), |c| format!("AND c.id IN ({})", if c.is_empty() { "-1".into() } else { id_list(&c) })),
@@ -1281,7 +1287,8 @@ pub fn list_cards(
         .map_err(err)?
         .collect::<Result<_, _>>()
         .map_err(err)?;
-    Ok(CardList { rows, total })
+    let suspended: i64 = con.query_row(&format!("SELECT count(*) FROM card c WHERE c.deck_id IN ({ids}) AND c.state = 'suspended'"), [], |r| r.get(0)).map_err(err)?;
+    Ok(CardList { rows, total, suspended })
 }
 
 /// 카드 하나의 중요도. None 이면 덱 설정을 따른다
@@ -1384,7 +1391,7 @@ pub fn unbury_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     Ok(())
 }
 
-/// C2 [학습 다시 하기]: 학습 중지를 푼다 (Q4 M2). 공부한 적 없으면 신규, 간격이 하루 이상이면 복습, 그 밖은 학습 중으로 (일정 값은 그대로).
+/// C2 [학습 중지 풀기] (Q4 M2). 공부한 적 없으면 신규, 간격이 하루 이상이면 복습, 그 밖은 학습 중으로 (일정 값은 그대로).
 /// 되돌리기가 보관한 노트(deck_update::ARCHIVE_TAG)는 학습 중지 카드가 남지 않으면 그 태그도 뗀다. 푼 카드 수
 #[tauri::command]
 pub fn unsuspend_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<usize> {
@@ -2996,7 +3003,7 @@ mod tests {
         }
         let hits = |t: &str| -> i64 { con.query_row(&format!("SELECT count(*) FROM note n WHERE 1 {}", super::tag_filter(t)), [], |r| r.get(0)).unwrap() };
         assert_eq!([hits("되돌린_업데이트"), hits("과목"), hits("과"), hits("과목::1장"), hits("x' OR 1=1 --")], [1, 2, 0, 1, 0]);
-        // 학습 다시 하기: 공부한 적 없으면 신규, 간격이 하루 이상이면 복습. 보관 태그는 학습 중지 카드가 남지 않으면 뗀다
+        // 학습 중지 풀기: 공부한 적 없으면 신규, 간격이 하루 이상이면 복습. 보관 태그는 학습 중지 카드가 남지 않으면 뗀다
         con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [cards[0]]).unwrap();
         con.execute("UPDATE card SET state = 'suspended', reps = 2, interval_days = 3, last_reviewed_at = 1, due_at = 5 WHERE id = ?1", [cards[1]]).unwrap();
         assert_eq!(super::unsuspend(&mut con, &cards, 9).unwrap(), 2);
