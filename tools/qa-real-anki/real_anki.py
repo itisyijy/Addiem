@@ -519,6 +519,7 @@ def report(work):
     text = "\n".join(out)
     with open(os.path.join(work, "report.md"), "w", encoding="utf-8") as f:
         f.write(text + "\n")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows 콘솔(cp949)이 › 같은 글자에서 멈추지 않게
     print(text)
     return counts["FAIL"]
 
