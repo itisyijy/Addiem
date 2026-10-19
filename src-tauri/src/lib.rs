@@ -32,15 +32,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 첫 창은 여기서 만든다 (tauri.conf.json create: false). 만들기 전에 크기를 정해 커졌다 줄어드는 깜빡임이 없다.
-            // 켤 때마다 주 모니터 작업 영역에 맞춘다. 모니터를 못 읽으면 설정 크기(1280×800) 그대로
+            // 켤 때마다 주 모니터 작업 영역에 맞추고, 크기와 상관없이 작업 영역 가운데에 둔다. 모니터를 못 읽으면 설정 크기(1280×800) 그대로
             // ponytail: 크기 기억은 하지 않는다. 필요하면 닫을 때 크기를 저장해 여기서 읽는다
             if let Some(conf) = app.config().app.windows.first().cloned() {
                 let mut win = tauri::WebviewWindowBuilder::from_config(app.handle(), &conf)?;
                 let area = app.primary_monitor().ok().flatten().map(|m| m.work_area().size.to_logical::<f64>(m.scale_factor()));
                 if let Some((w, h)) = area.and_then(|a| fit_window(a.width, a.height)) {
-                    win = win.inner_size(w, h).center();
+                    win = win.inner_size(w, h);
                 }
-                win.build()?;
+                win.center().build()?;
             }
             // %APPDATA%\<식별자> (DECISIONS H1: 식별자가 바뀌면 이 경로가 바뀐다).
             // NEOANKI_DATA_DIR 로 바꿀 수 있다. 테스트가 실제 데이터를 건드리지 않게 하기 위한 것이다
