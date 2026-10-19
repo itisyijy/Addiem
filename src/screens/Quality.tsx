@@ -801,7 +801,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
             {c}
           </p>
         ))}
-        <span className="t-caption c-secondary">자료 화면에서 이 카드와 자료를 이으면 그 근거로 다시 확인할 수 있어요.</span>
+        {!check.kept_locked && <span className="t-caption c-secondary">자료 화면에서 이 카드와 자료를 이으면 그 근거로 다시 확인할 수 있어요.</span>}
         <span className="rewrite__actions">
           <Button variant="secondary" size="M" label="카드 편집" onClick={onEdit} />
         </span>
@@ -869,7 +869,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
         {error && <p className="t-body-s c-danger">{error}</p>}
         <div className="split__foot">
           <span className="t-caption c-secondary">
-            {fix ? `고친 뒤 7일 동안 카드 점검의 "최근 고친 카드"에서 되돌릴 수 있어요` : noFix && !check?.kept_locked ? "근거 없이 고친 답은 만들지 않아요" : ""}
+            {fix ? `고친 뒤 7일 동안 카드 점검의 "최근 고친 카드"에서 되돌릴 수 있어요` : noFix ? (check?.kept_locked ? "그림 · 소리 · 서식이 있는 칸은 여기서 바꾸지 않아요" : "근거 없이 고친 답은 만들지 않아요") : ""}
           </span>
           <span className="split__actions">
             {fix ? (
