@@ -182,15 +182,6 @@
 /* 되살린 필드: 저장 전까지 그 행 아래 한 줄 */
 .nte__field:has(.nte__restored) { flex-wrap: wrap; }
 .nte__field .nte__restored { flex-basis: 100%; padding-left: 22px; white-space: normal; }
-/* NT10 {{hint:필드}} (render.rs): 점선 줄 "› 힌트 보기 · 필드", 펼치면 회색 상자. 답 면은 펼친 채로 온다.
-   카드 HTML 이 그려지는 모든 곳(.card-html)에 걸린다: App.tsx 가 이 파일을 정적으로 불러 전역이다 (통합 때 screens.css 로 옮길 수 있다) */
-.card-html details.hint { display: inline-block; max-width: 100%; margin: 6px 0; padding: 5px 12px; border: 1px dashed var(--border-strong); border-radius: 8px; font-size: 14px; line-height: 1.5; text-align: left; vertical-align: top; }
-.card-html details.hint[open] { border: 1px solid var(--border-default); background: var(--bg-subtle); }
-.card-html details.hint > summary { cursor: pointer; list-style: none; color: var(--text-secondary); font-weight: 600; }
-.card-html details.hint > summary::-webkit-details-marker { display: none; }
-.card-html details.hint > summary::before { content: "› 힌트 보기 · "; }
-.card-html details.hint[open] > summary::before { content: "⌄ 힌트 · "; }
-.card-html details.hint[open] > summary { margin-bottom: 4px; }
 /* NT9 다른 유형으로 옮기기 (Figma 271:18979): 옮길 유형 · 필드 대응 · 카드 종류 대응 · 잃는 것 주황 상자 */
 .modal.ntm { top: 40px; gap: 14px; width: 640px; max-height: calc(100vh - 80px); overflow: auto; }
 .ntm__type { display: grid; grid-template-columns: 96px minmax(0, 260px); align-items: center; gap: 12px; }

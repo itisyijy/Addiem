@@ -947,7 +947,8 @@ export type RestorePreview = {
   others: string[];
 };
 /** winner: 자동으로 맞출 때 이긴(나중에 고친) 버전 */
-export type SyncVersion = { device: string; at: number; fields: string[]; current: boolean; winner: boolean };
+// usable false: 그 버전은 지금과 다른 노트 유형의 내용이라 [이 버전으로 바꾸기]를 쓸 수 없다 (K41)
+export type SyncVersion = { device: string; at: number; fields: string[]; current: boolean; winner: boolean; usable: boolean };
 /** picked: [이 버전으로 바꾸기]로 직접 고른 적이 있다 (지금 내용 꼬리표) */
 export type SyncConflict = { id: number; question: string; deck_path: string[]; versions: [SyncVersion, SyncVersion]; picked: boolean };
 

@@ -956,8 +956,11 @@ function Version({ v, other, current, picked, onUse, busy }: { v: SyncConflict["
       {current ? (
         // 저절로 맞춘 쪽(이긴 버전, 고른 적 없음)만 "나중에 고친 쪽". 시각 비교로 고르지 않는다 (T3-02)
         <span className="t-caption c-accent">{v.winner && !picked ? "나중에 고친 쪽이라 이 내용으로 맞췄어요" : "직접 고른 내용이에요"}</span>
-      ) : (
+      ) : v.usable ? (
         <Button variant="secondary" size="M" icon="rotate" label="이 버전으로 바꾸기" busy={busy} onClick={onUse} />
+      ) : (
+        // K41: 노트 유형을 옮기기 전 내용이라 그대로 넣으면 필드가 뒤섞인다. 글만 보여 준다
+        <span className="t-caption c-warn">노트 유형이 바뀐 뒤라 이 버전으로 바꿀 수 없어요 · 글을 복사해 직접 고쳐 주세요</span>
       )}
     </div>
   );
