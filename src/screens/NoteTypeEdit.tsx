@@ -152,6 +152,11 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   useEffect(() => {
     if (!readOnly) api.noteTypeConflicts(d.id).then(setConflicts, () => {});
   }, [d.id, readOnly]);
+  // 미리 보기 카드 (Preview), 읽어주기를 켤 때 기본 언어
+  const [samples, setSamples] = useState<Sample[] | null>(null);
+  useEffect(() => {
+    api.noteTypeSamples(d.id, note).then(setSamples, () => setSamples([]));
+  }, [d.id, note]);
   const unseen = conflicts.filter((c) => !c.seen);
   const lost = unseen.filter((c) => !keptBoth(c)).length;
   const drawn = !d.cloneable && !!d.native_kind; // 목록 · 선택형 · 그림 가리기
@@ -368,6 +373,12 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
       }
     }
     setLayout(cur.key, { ...l, front: [...l.front, { kind: "tts", ...t }] });
+  };
+  /** 읽어주기를 켤 때 언어: 그 필드의 노트 글자에 한글이 있거나 글자가 없으면 앱 언어(한국어), 한글 없는 글자면 영어. 고른 언어는 그대로 둔다 */
+  const ttsDefault = (name: string) => {
+    const slot = draft.fields.find((f) => f.name === name)?.slot;
+    const text = slot == null ? "" : (samples ?? []).map((s) => plainText(s.slots[slot] ?? "").replace(/\[sound:[^\]]*\]/g, "")).join("").trim();
+    return !text || /[ㄱ-ㆎ가-힣]/.test(text) ? "ko_KR" : "en_US";
   };
 
   // ---------------------------------------------------------------- 카드 종류
@@ -606,7 +617,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             <div className="nte__cols">
               {fields()}
               <div className="nte__mid">{effMode === "easy" ? easy() : htmlPanes()}</div>
-              <Preview d={d} draft={draft} tpl={cur} note={note} />
+              <Preview d={d} draft={draft} tpl={cur} samples={samples} />
             </div>
           </>
         )}
@@ -998,7 +1009,10 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               checked={!!ttsPart}
               label="읽어주기"
               disabled={readOnly}
-              onChange={(on) => setTts(on ? { name: nameOf(linesOf(layout.front)[0]?.[0] ?? { kind: "front_side" }) || names[0], opts: "en_US" } : null)}
+              onChange={(on) => {
+                const name = nameOf(linesOf(layout.front)[0]?.[0] ?? { kind: "front_side" }) || names[0];
+                setTts(on ? { name, opts: ttsDefault(name) } : null);
+              }}
             />
             {ttsPart ? (
               pill(
@@ -1164,19 +1178,15 @@ function CodeArea({ label, value, readOnly, invalid, onChange, onFocus }: {
 
 // ---------------------------------------------------------------- 미리보기 (학습 화면과 같은 렌더: 살균 · 소리 칩 · 수식 · CSS 가두기)
 
-function Preview({ d, draft, tpl, note }: { d: Detail; draft: Draft; tpl: DTpl | undefined; note?: number }) {
+function Preview({ d, draft, tpl, samples }: { d: Detail; draft: Draft; tpl: DTpl | undefined; samples: Sample[] | null }) {
   const [side, setSide] = useState<Side>("back");
   const [theme, setTheme] = useState<"light" | "dark">(() => (document.documentElement.dataset.theme === "dark" ? "dark" : "light"));
-  const [samples, setSamples] = useState<Sample[] | null>(null);
   const [pick, setPick] = useState<number | "names">(0);
   const [open, setOpen] = useState(false);
   const [html, setHtml] = useState<{ front: string; question: string; answer: string } | null>(null);
   const [error, setError] = useState<string>();
   useOverlayScope(open);
   useKey("Escape", () => setOpen(false), open, { modal: true });
-  useEffect(() => {
-    api.noteTypeSamples(d.id, note).then(setSamples, () => setSamples([]));
-  }, [d.id, note]);
   const sample = samples && pick !== "names" ? samples[pick] : undefined;
   const names = draft.fields.filter((f) => f.name).map((f) => f.name);
   const values = sample ? draft.fields.filter((f) => f.name).map((f) => (f.slot !== null ? (sample.slots[f.slot] ?? "") : `(${f.name})`)) : null;
