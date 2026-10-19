@@ -2404,8 +2404,36 @@ pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag:
     let _ = std::fs::remove_file(&db_copy);
     if result.is_err() {
         let _ = std::fs::remove_file(&out);
+    } else if !tag.is_empty() {
+        prune_auto_backups(&dir, now_ms());
     }
     result.map(|_| out)
+}
+
+/// 사용자 결정 2026-10-20: 자동 백업은 가장 최근 AUTO_KEEP 개 + AUTO_DAYS 일 안에 만든 것만 남긴다
+const AUTO_KEEP: usize = 10;
+const AUTO_DAYS: i64 = 7;
+
+/// 새 자동 백업을 만들 때 오래된 자동 백업을 지운다. 지운 이름을 돌려준다.
+/// auto_backup 이 알아본 이름(앱이 만드는 꼴과 꼭 맞는 것)만 본다: 직접 만든 백업 · 사용자가 넣은 파일 · 모르는 이름은 건드리지 않는다
+pub(crate) fn prune_auto_backups(dir: &std::path::Path, now: i64) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut autos: Vec<(i64, std::path::PathBuf, String)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            auto_backup(&name).map(|(_, at)| (at, e.path(), name))
+        })
+        .collect();
+    autos.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut gone = vec![];
+    for (i, (at, path, name)) in autos.into_iter().enumerate() {
+        if i >= AUTO_KEEP && now - at > AUTO_DAYS * db::DAY_MS && std::fs::remove_file(&path).is_ok() {
+            gone.push(name);
+        }
+    }
+    gone
 }
 
 #[tauri::command]
@@ -2642,15 +2670,27 @@ pub struct LocalBackup {
 /// 동기화 기기 백업(sync/mod.rs local_backup)은 이름 앞이 neoanki-before-sync- (sync) · neoanki-before-restore- (restore). 화면 이름은 Settings.tsx BACKUP_KIND
 const BACKUP_KINDS: [&str; 7] = ["update", "restore", "move", "undo", "notetype", "deck", "wipe"];
 
-/// 백업 zip 이름 → 종류. 어느 것도 아니면 직접 만든 백업
+/// 자동 백업이면 (종류, 만든 시각 ms). 앱이 만드는 이름과 꼴이 꼭 맞을 때만: neoanki-<YYYYmmdd-HHMMSS>-<종류>.zip (write_backup_as),
+/// neoanki-before-sync-<시각>.zip · neoanki-before-restore-<시각>.zip (sync/mod.rs local_backup). 그 밖은 None (직접 만든 백업으로 본다)
+fn auto_backup(name: &str) -> Option<(&'static str, i64)> {
+    use chrono::TimeZone;
+    let s = name.strip_prefix("neoanki-")?.strip_suffix(".zip")?;
+    let (kind, stamp) = if let Some(t) = s.strip_prefix("before-sync-") {
+        ("sync", t)
+    } else if let Some(t) = s.strip_prefix("before-restore-") {
+        ("restore", t)
+    } else {
+        let (stamp, k) = s.split_at_checked(15)?;
+        let k = k.strip_prefix('-')?;
+        (BACKUP_KINDS.into_iter().find(|x| *x == k)?, stamp)
+    };
+    let at = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d-%H%M%S").ok()?;
+    Some((kind, chrono::Local.from_local_datetime(&at).earliest()?.timestamp_millis()))
+}
+
+/// 백업 zip 이름 → 종류. 자동 백업이 아니면 직접 만든 백업
 fn backup_kind(name: &str) -> &'static str {
-    if name.starts_with("neoanki-before-sync-") {
-        return "sync";
-    }
-    if name.starts_with("neoanki-before-restore-") {
-        return "restore";
-    }
-    BACKUP_KINDS.into_iter().find(|k| name.ends_with(&format!("-{k}.zip"))).unwrap_or("manual")
+    auto_backup(name).map_or("manual", |x| x.0)
 }
 
 /// 이 기기 백업 zip 들, 최근 것부터
@@ -2792,6 +2832,48 @@ mod tests {
     use rusqlite::{params, Connection};
 
     #[test]
+    fn old_automatic_backups_are_pruned_but_never_manual_ones() {
+        // 사용자 결정 2026-10-20: 자동 백업은 최근 10개 + 7일 안의 것만. 직접 만든 백업 · 모르는 파일은 지우지 않는다
+        let dir = std::env::temp_dir().join(format!("na-prune-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = now_ms();
+        let at = |ago: i64| chrono::DateTime::from_timestamp_millis(now - ago).unwrap().with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S").to_string();
+        let day = crate::db::DAY_MS;
+        let kinds = ["update", "move", "undo", "notetype", "deck", "wipe", "restore"];
+        let mut autos = vec![];
+        for (i, days) in [1, 2].into_iter().chain(10..22).enumerate() {
+            autos.push(format!("neoanki-{}-{}.zip", at(days * day), kinds[i % kinds.len()]));
+        }
+        autos.push(format!("neoanki-before-sync-{}.zip", at(30 * day)));
+        let keep = [
+            format!("neoanki-{}.zip", at(40 * day)), // 직접 만든 백업 (오래됐어도)
+            format!("neoanki-before-restore-{}.sqlite", at(40 * day)),
+            "neoanki-old-update.zip".into(),
+            "my-update.zip".into(),
+            format!("neoanki-{}-mine.zip", at(40 * day)),
+            format!("neoanki-{}-update.zip.part", at(40 * day)),
+        ];
+        for n in autos.iter().chain(&keep) {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        // 최근 10개(1 · 2 · 10..17일) 다음은 모두 7일이 넘었다
+        assert_eq!(sorted(super::prune_auto_backups(&dir, now)), sorted(autos[10..].to_vec()));
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일은 남는다: {left:?}");
+        assert!(super::prune_auto_backups(&dir, now).is_empty(), "다시 불러도 지울 것이 없다");
+        // 7일 안의 자동 백업은 10개가 넘어도 남긴다: 오늘 12개를 더하면 7일 넘은 10..17일 것만 지운다
+        for i in 0..12 {
+            std::fs::write(dir.join(format!("neoanki-{}-update.zip", at(i * 60_000))), b"x").unwrap();
+        }
+        assert_eq!(sorted(super::prune_auto_backups(&dir, now)), sorted(autos[2..10].to_vec()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn backup_kind_by_name() {
         // "직접 만든 백업"은 [백업 만들기]만. 자동 백업은 이름 끝 (동기화 기기 백업은 이름 앞)
         for (name, kind) in [
@@ -2801,6 +2883,9 @@ mod tests {
             ("neoanki-20261020-101010-notetype.zip", "notetype"),
             ("neoanki-before-sync-20261020-101010.zip", "sync"),
             ("neoanki-before-restore-20261020-101010.zip", "restore"),
+            ("neoanki-20261020-101010-mine.zip", "manual"),
+            ("my-update.zip", "manual"),
+            ("neoanki-old-update.zip", "manual"),
         ] {
             assert_eq!(super::backup_kind(name), kind, "{name}");
         }
