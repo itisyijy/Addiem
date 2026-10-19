@@ -97,11 +97,12 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
              winner_device TEXT, winner TEXT, loser_device TEXT, loser TEXT, seen INTEGER NOT NULL DEFAULT 0);",
     )
     .map_err(dbe)?;
-    // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다)
-    for col in ["cols", "floor"] {
-        let has: i64 = con.query_row("SELECT count(*) FROM pragma_table_info('sync_outbox') WHERE name = ?1", [col], |r| r.get(0)).map_err(dbe)?;
+    // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다).
+    // K7 기록의 버전마다 노트 유형 (K41: 다른 유형으로 옮기는 사이 고친 내용은 옛 유형 자리 배열이다. NULL = 이 기능 전 기록)
+    for (table, col) in [("sync_outbox", "cols"), ("sync_outbox", "floor"), ("sync_conflict", "winner_type"), ("sync_conflict", "loser_type")] {
+        let has: i64 = con.query_row(&format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get(0)).map_err(dbe)?;
         if has == 0 {
-            con.execute_batch(&format!("ALTER TABLE sync_outbox ADD COLUMN {col} TEXT")).map_err(dbe)?;
+            con.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT")).map_err(dbe)?;
         }
     }
     Ok(())
@@ -1695,6 +1696,21 @@ impl Applier<'_> {
             } else {
                 None
             };
+            // K7 기록의 버전마다 노트 유형: 받은 쪽은 그 기기 행의 유형 (옮겼으면 받은 유형 열), 이 기기는 지금 유형.
+            // 받은 쪽이 이 기기가 옮긴 것을 모르고 고쳤으면 옮기기 전 유형이다: 그 uid 는 여기 없어 "?" (어느 유형과도 다르다)
+            let type_of = |v: Option<&J>| v.and_then(|v| v.as_str()).map(|u| alias_of(&self.aliases, "note_type", u)).unwrap_or_default();
+            let note_types = if t == "note" {
+                let here = type_of(local.get("note_type_id"));
+                let there = match f.cols.get("note_type_id").map(|(v, _)| v).or_else(|| f.row.as_ref().and_then(|(_, r)| r.get("note_type_id"))) {
+                    Some(v) => type_of(Some(v)),
+                    None if fields_rule == Some(false) => "?".into(),
+                    None => here.clone(),
+                };
+                (there, here)
+            } else {
+                Default::default()
+            };
+            let types = (note_types.0.as_str(), note_types.1.as_str());
             // 필드 목록은 열 하나로 통째로 겨루지 않고 자리마다 합친다 (Q2-06)
             let merged = t == "note_type" && f.cols.contains_key("fields");
             if merged {
@@ -1718,7 +1734,7 @@ impl Applier<'_> {
                     && let Some(take) = fields_rule
                     && take != (*h > lh)
                 {
-                    self.conflict(uid, h, v, &lh, local.get(c), !take)?;
+                    self.conflict(uid, h, v, &lh, local.get(c), !take, types)?;
                     if take {
                         sets.push((c.clone(), v.clone(), h.clone()));
                     }
@@ -1738,7 +1754,7 @@ impl Applier<'_> {
                     if !same {
                         // 받은 쪽이 이 기기 값을 모르고 고쳤으면(바탕이 더 옛것) 동시에 고친 것이다. 처음 합칠 때는 바탕이 없다: 내용이 다르면 남긴다
                         if t == "note" && c == "fields" && hlc_ms(&lh) > 0 && (self.mode == Mode::Merge || f.base.as_ref().is_none_or(|b| *b < lh)) {
-                            self.conflict(uid, h, v, &lh, local.get(c), false)?;
+                            self.conflict(uid, h, v, &lh, local.get(c), false, types)?;
                         }
                         sets.push((c.clone(), v.clone(), h.clone()));
                     } else {
@@ -1746,7 +1762,7 @@ impl Applier<'_> {
                     }
                 } else if !same {
                     if t == "note" && c == "fields" {
-                        self.conflict(uid, h, v, &lh, local.get(c), true)?;
+                        self.conflict(uid, h, v, &lh, local.get(c), true, types)?;
                     }
                     if self.mode == Mode::Merge {
                         self.local_won.insert((t.into(), uid.to_string()));
@@ -1764,7 +1780,7 @@ impl Applier<'_> {
                 && local.get("fields") != Some(v)
             {
                 let lh = col_hlc(&clock, pend.as_ref(), "fields");
-                self.conflict(uid, h, v, &lh, local.get("fields"), false)?;
+                self.conflict(uid, h, v, &lh, local.get("fields"), false, types)?;
                 sets.push(("fields".into(), v.clone(), h.clone()));
             }
             let applied = !sets.is_empty();
@@ -1832,7 +1848,9 @@ impl Applier<'_> {
     }
 
     /// K7: 같은 노트 내용을 두 기기에서 고쳤다. 진 쪽 내용을 남긴다. 시각은 고친 순간 (K28)
-    fn conflict(&mut self, note_uid: &str, h: &str, incoming: &J, lh: &str, local: Option<&J>, local_wins: bool) -> SRes<()> {
+    /// types: (받은 버전의 노트 유형 uid, 이 기기 버전의 노트 유형 uid). [이 버전으로 바꾸기]가 다른 유형의 자리 배열을 넣지 않게 남긴다 (K41)
+    #[allow(clippy::too_many_arguments)]
+    fn conflict(&mut self, note_uid: &str, h: &str, incoming: &J, lh: &str, local: Option<&J>, local_wins: bool, types: (&str, &str)) -> SRes<()> {
         let local_dev = hlc_device(lh).to_string();
         // 옛 앱이 만든 스냅샷은 HLC 에 기기가 없다: 그 스냅샷을 쓴 기기
         let in_dev = match hlc_device(h) {
@@ -1841,16 +1859,17 @@ impl Applier<'_> {
         };
         let local_fields = local.and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let in_fields = incoming.as_str().unwrap_or_default().to_string();
-        let (wd, wa, wf, ld, la, lf) = if local_wins {
-            (local_dev, hlc_ms(lh), local_fields, in_dev, hlc_ms(h), in_fields)
+        let (wd, wa, wf, wt, ld, la, lf, lt) = if local_wins {
+            (local_dev, hlc_ms(lh), local_fields, types.1, in_dev, hlc_ms(h), in_fields, types.0)
         } else {
-            (in_dev, hlc_ms(h), in_fields, local_dev, hlc_ms(lh), local_fields)
+            (in_dev, hlc_ms(h), in_fields, types.0, local_dev, hlc_ms(lh), local_fields, types.1)
         };
+        let ty = |t: &str| (!t.is_empty()).then(|| t.to_string());
         self.tx
             .execute(
-                "INSERT INTO sync_conflict (note_uid, at, winner_device, winner_at, winner_fields, loser_device, loser_at, loser_fields)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![note_uid, db::now_ms(), wd, wa, wf, ld, la, lf],
+                "INSERT INTO sync_conflict (note_uid, at, winner_device, winner_at, winner_fields, loser_device, loser_at, loser_fields, winner_type, loser_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![note_uid, db::now_ms(), wd, wa, wf, ld, la, lf, ty(wt), ty(lt)],
             )
             .map_err(dbe)?;
         self.report.conflicts += 1;

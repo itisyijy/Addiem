@@ -1741,7 +1741,7 @@ pub fn undoable_updates(state: State<'_, AppState>) -> Res<Vec<Undoable>> {
     Ok(out)
 }
 
-/// [이 업데이트 되돌리기] (DU2-u). dry_run 이면 확인 창의 수만. 적용은 되돌리기 전 백업(-restore) → 한 트랜잭션
+/// [이 업데이트 되돌리기] (DU2-u). dry_run 이면 확인 창의 수만. 적용은 되돌리기 전 백업(-undo) → 한 트랜잭션
 #[tauri::command]
 pub fn undo_update(state: State<'_, AppState>, batch: i64, dry_run: bool) -> Res<UndoSummary> {
     let mut con = state.db.lock().map_err(err)?;
@@ -1752,7 +1752,7 @@ pub fn undo_update(state: State<'_, AppState>, batch: i64, dry_run: bool) -> Res
     if let Some(why) = first.blocked {
         return Err(why);
     }
-    let backup = crate::commands::write_backup_as(&con, &state.data_dir, "restore").map_err(|e| format!("되돌리기 전 백업을 만들지 못해 되돌리지 않았어요. {e}"))?;
+    let backup = crate::commands::write_backup_as(&con, &state.data_dir, "undo").map_err(|e| format!("되돌리기 전 백업을 만들지 못해 되돌리지 않았어요. {e}"))?;
     let mut s = undo(&mut con, batch, false)?;
     s.backup = Some(backup.display().to_string());
     Ok(s)
@@ -2285,7 +2285,11 @@ mod tests {
         let r = update(&s, &p2, &choices, true);
         let c1 = r.conflicts.iter().find(|c| c.note_id == id_of(&s, "g1")).unwrap();
         assert_eq!((c1.fields[0].take_new, c1.fields[1].take_new, c1.take_new), (false, true, true));
-        update(&s, &p2, &choices, false);
+        let applied = update(&s, &p2, &choices, false);
+        // 결과 화면도 고른 것 그대로 센다 (요약 = 결과: 새 버전 g2 · 일부 g1 · 내 것 g3)
+        let picks = |r: &UpdateSummary| r.conflicts.iter().map(|c| (c.note_id, c.fields.iter().map(|f| f.take_new).collect::<Vec<_>>())).collect::<Vec<_>>();
+        assert_eq!(picks(&applied), picks(&r));
+        assert_eq!(picks(&applied).iter().map(|(_, f)| (f.iter().all(|x| *x), f.iter().any(|x| *x))).collect::<Vec<_>>(), [(false, true), (true, true), (false, false)]);
         assert_eq!(fields(&s, "g1"), ["Q 내 것", "A 새", "X 새"], "고른 필드만 새 버전, 충돌 없는 Extra 는 합친다");
         assert_eq!(fields(&s, "g2"), ["Q2 새", "A2", ""]);
         assert_eq!(fields(&s, "g3")[1], "A3 내 것");
@@ -2337,6 +2341,7 @@ mod tests {
         assert_eq!(dry.edited_card_ids.len(), 2);
         let r = u(false);
         assert_eq!((r.reverted_notes, r.archived_cards), (1, 5));
+        assert_eq!(r.archived_card_ids.len(), 5, "[보관한 카드 보기]는 이미 있던 노트에 생긴 새 카드(태그 없음, 학습 중지)도 보여 준다");
         assert_eq!(fields(&s, "g1"), ["Q1", "A1"], "업데이트 전 내용");
         assert_eq!(fields(&s, "g2")[1], "A2 (내 수정)", "그 뒤에 고친 노트는 그대로");
         assert_eq!(studied(), studied_before, "공부한 카드의 일정 · 상태 그대로");

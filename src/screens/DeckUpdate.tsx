@@ -221,6 +221,16 @@ function toChoices(picks: Map<string, Pick>, looks: Map<string, Pick>, s: Update
   return { take_new: [], take_new_fields, new_looks };
 }
 
+/** 충돌 노트를 고른 쪽으로 센다 (엔진이 돌려준 필드마다 take_new). 요약 · 결과 · 결과 파일이 같은 수를 쓴다:
+ *  모든 충돌 필드가 새 버전 = 새 버전, 일부만 = 일부, 하나도 없으면 내 것 */
+function conflictPicks(conflicts: UpdateSummary["conflicts"]) {
+  const all = conflicts.filter((c) => c.fields.length > 0 && c.fields.every((f) => f.take_new)).length;
+  const part = conflicts.filter((c) => c.take_new).length - all;
+  const mine = conflicts.length - all - part;
+  const parts = [mine > 0 && `내 것 ${n(mine)}`, all > 0 && `새 버전 ${n(all)}`, part > 0 && `일부 ${n(part)}`].filter(Boolean) as string[];
+  return { mine, all, part, text: parts.join(" · "), last: String([mine, all, part].filter((x) => x > 0).slice(-1)[0] ?? 0) };
+}
+
 type Step = "summary" | "conflicts" | "looks" | "apply";
 
 export function DeckUpdate({ path, info, summary: first }: { path: string; info: AnkiPreview; summary: UpdateSummary; pulled: boolean }) {
@@ -327,7 +337,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
   const nav = useNav();
   useKey("Escape", onMode);
   const conflicts = s.conflicts.length;
-  const takeNew = s.conflicts.filter((c) => c.take_new).length;
+  const picked = conflictPicks(s.conflicts);
   const typeRows = s.types.filter(
     (t) =>
       t.created ||
@@ -370,7 +380,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
       icon: "alert",
       title: "충돌 · 같은 필드를 둘 다 고친 노트",
       desc: "검토하지 않으면 내 것을 지켜요. 고른 것은 충돌한 필드에만 적용되고, 같은 노트의 다른 변경은 합쳐요",
-      right: reviewed ? `${n(conflicts)}개 · 내 것 ${n(conflicts - takeNew)} · 새 버전 ${n(takeNew)}${ro(String(takeNew))} 골랐어요` : `${n(conflicts)}개`,
+      right: reviewed ? `${n(conflicts)}개 · ${picked.text}${ro(picked.last)} 골랐어요` : `${n(conflicts)}개`,
       warn: !reviewed,
       actions: [{ label: reviewed ? "다시 검토" : "검토", onClick: onReview, ink: !reviewed }],
     },
@@ -529,7 +539,7 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
               : conflicts === 0
                 ? "충돌 없음 · 바로 적용할 수 있어요"
                 : reviewed
-                  ? `충돌 ${n(conflicts)}개 · 내 것 ${n(conflicts - takeNew)} · 새 버전 ${n(takeNew)}`
+                  ? `충돌 ${n(conflicts)}개 · ${picked.text}`
                   : `충돌 ${n(conflicts)}개 · 검토 전이라 내 것을 지켜요`)}
         </span>
         <span className="import__foot-right">
@@ -882,7 +892,6 @@ function ConflictRow({ c, picks, bases, cursor, fieldAt, open, onToggle, onPick,
 }) {
   const others = c.auto_new_fields;
   const mine = c.fields.map((f) => picks.get(fieldKey(c.note_id, f.slot)));
-  const noBase = c.no_base || c.fields.every((f) => f.base === null);
   const badge = mine.every((p) => !p) ? (
     <Badge tone="warn">고르지 않음 · 내 것</Badge>
   ) : mine.every((p) => p === "new") ? (
@@ -900,7 +909,7 @@ function ConflictRow({ c, picks, bases, cursor, fieldAt, open, onToggle, onPick,
           <span className="t-body-m-strong du-ellipsis">{c.title.replace(/\{\{c\d+::.*?\}\}/g, "[...]") || "(첫 필드가 비어 있어요)"}</span>
           <span className="t-caption c-secondary du-ellipsis">
             {c.deck} · 충돌 필드: {c.fields.map((f) => f.name).join(", ")}
-            {noBase && " · 원본 글이 없어요 (예전에 가져온 노트)"}
+            {/* "원본 글이 없어요"는 필드 머리에만 (두 번 보이지 않게) */}
           </span>
         </span>
         {badge}
@@ -1294,13 +1303,12 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
 // ---------------------------------------------------------------- B3-u 업데이트 결과
 
 function report(s: UpdateSummary) {
-  const takeNew = s.conflicts.filter((c) => c.take_new).length;
   const lines = [
     "Neo-Anki 덱 업데이트 결과",
     `파일: ${s.file_name}${deckOf(s) ? ` → 덱 "${deckOf(s)}"` : ""}`,
     `시각: ${new Date().toLocaleString("ko-KR")}`,
     "",
-    `새 버전으로 바꾼 노트 ${n(s.changed)}개 · 합친 노트 ${n(s.merged)}개 · 충돌 ${n(s.conflicts.length)}개 (내 것 ${n(s.conflicts.length - takeNew)} · 새 버전 ${n(takeNew)})`,
+    `새 버전으로 바꾼 노트 ${n(s.changed)}개 · 합친 노트 ${n(s.merged)}개 · 충돌 ${n(s.conflicts.length)}개${s.conflicts.length ? ` (${conflictPicks(s.conflicts).text})` : ""}`,
     `새 노트 ${n(s.new_notes)}개 · 새 카드 ${n(s.new_note_cards + s.new_cards)}장 · 지킨 노트 ${n(s.mine_kept)}개`,
     `새 버전에 없어 그대로 둔 노트 ${n(s.missing_notes)}개 · 내가 지운 노트 ${n(s.gone)}개 (다시 넣지 않음)`,
     `빈칸: 새 번호 카드 ${n(s.cloze.new_cards)}장 · 학습에서 빠진 옛 번호 카드 ${n(s.cloze.emptied_cards)}장`,
@@ -1323,10 +1331,9 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
   const root = s.roots[0] ?? null;
   const openDeck = () => nav(root !== null ? { name: "deck", deckId: root } : { name: "home" });
   useKey("Escape", openDeck, !undoing);
-  const takeNew = s.conflicts.filter((c) => c.take_new).length;
   const tiles = [
     s.changed + s.merged > 0 && { label: "바꾼 노트", value: n(s.changed + s.merged), sub: [s.changed > 0 && `새 버전 ${n(s.changed)}`, s.merged > 0 && `합친 노트 ${n(s.merged)}`].filter(Boolean).join(" · ") },
-    s.conflicts.length > 0 && { label: "충돌", value: n(s.conflicts.length), sub: [s.conflicts.length > takeNew && `내 것 ${n(s.conflicts.length - takeNew)}`, takeNew > 0 && `새 버전 ${n(takeNew)}`].filter(Boolean).join(" · ") },
+    s.conflicts.length > 0 && { label: "충돌", value: n(s.conflicts.length), sub: conflictPicks(s.conflicts).text },
     s.new_notes > 0 && { label: "새 노트", value: n(s.new_notes), sub: `새 카드 ${n(s.new_note_cards + s.new_cards)}장 · 신규` },
     s.mine_kept > 0 && { label: "지킨 노트", value: n(s.mine_kept), sub: "내가 고친 노트" },
   ].filter(Boolean) as { label: string; value: string; sub: string }[];

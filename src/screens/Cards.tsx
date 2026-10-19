@@ -517,7 +517,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
               <Icon name="more" size={16} />
             </button>
             {barMenu === "more" && (
-              <div className="menu__list menu--panel cards__bar-menu" role="menu" onKeyDown={menuKeys} onClick={(e) => e.stopPropagation()}>
+              <div className="menu__list menu--panel cards__bar-menu cards__bar-more" role="menu" onKeyDown={menuKeys} onClick={(e) => e.stopPropagation()}>
                 <button
                   role="menuitem"
                   className="menu__item t-body-m"

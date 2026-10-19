@@ -466,3 +466,15 @@
 /* NT13 [편집] 으로 떠날 때 확인 (저장하고 이동 · 버리고 이동 · 계속 고치기) */
 .modal.edit__leave { top: 220px; width: 500px; gap: 18px; }
 .edit__leave-error { padding: 10px 12px; border-radius: 12px; background: var(--status-danger-bg); }
+/* NT10 {{hint:필드}} (render.rs): 점선 줄 "› 힌트 보기 · 필드", 펼치면 회색 상자. 답 면은 펼친 채로 온다.
+   카드 HTML 이 그려지는 모든 곳(.card-html: 학습 · 미리보기 · 카드 목록)에 걸린다. 화살표는 Icon 과 같은 chevron (mask, 글자색).
+   summary 안 글자는 필드 이름이라, 화살표(::before)와 "힌트 보기 · "(::after)를 order 로 그 앞에 둔다 */
+.card-html details.hint { display: inline-block; max-width: 100%; margin: 6px 0; padding: 5px 12px; border: 1px dashed var(--border-strong); border-radius: 8px; font-size: 14px; line-height: 1.5; text-align: left; vertical-align: top; }
+.card-html details.hint[open] { border: 1px solid var(--border-default); background: var(--bg-subtle); }
+.card-html details.hint > summary { display: flex; align-items: center; cursor: pointer; list-style: none; color: var(--text-secondary); font-weight: 600; }
+.card-html details.hint > summary::-webkit-details-marker { display: none; }
+.card-html details.hint > summary::before { content: ""; order: -2; flex: none; width: 14px; height: 14px; margin-right: 4px; background: currentColor; -webkit-mask: url("../assets/icons/chevron-right-14.svg") center / 100% 100% no-repeat; mask: url("../assets/icons/chevron-right-14.svg") center / 100% 100% no-repeat; }
+.card-html details.hint[open] > summary::before { -webkit-mask-image: url("../assets/icons/chevron-down-14.svg"); mask-image: url("../assets/icons/chevron-down-14.svg"); }
+.card-html details.hint > summary::after { content: "힌트 보기 · "; order: -1; white-space: pre; }
+.card-html details.hint[open] > summary::after { content: "힌트 · "; }
+.card-html details.hint[open] > summary { margin-bottom: 4px; }

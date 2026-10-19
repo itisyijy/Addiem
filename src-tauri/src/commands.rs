@@ -1202,7 +1202,8 @@ pub fn list_cards(
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
-                    c.buried_until, c.template_ord, nt.id, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS}
+                    c.buried_until, c.template_ord, nt.id, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS},
+                    n.tags, nt.name, coalesce(t.name, '')
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
@@ -1218,7 +1219,10 @@ pub fn list_cards(
             let nt: i64 = r.get(11)?;
             let qfmt: Option<String> = r.get(12)?;
             let afmt: Option<String> = r.get(13)?;
-            let rendered = render_fields(&field_names, nt, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?);
+            // 목록 칸은 글자 한 줄: 특수 필드({{Tags}} …)는 학습 화면과 같은 값으로, 힌트 상자({{hint:}})는 뺀다 (펼치기 이름 · 내용이 질문에 섞인다, NT10)
+            let special = render::special_fields(&r.get::<_, String>(18)?, &path_of(r.get(2)?, &by_id), &r.get::<_, String>(19)?, &r.get::<_, String>(20)?);
+            let rendered = render_fields_with(&field_names, nt, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?, &special);
+            let rendered = render::Rendered { front: render::drop_hints(&rendered.front), back: render::drop_hints(&rendered.back) };
             let occlusion = io_pos(qfmt.as_deref(), r.get(10)?, r.get(16)?, r.get(17)?);
             // 그림 가리기 답은 칸 이름(질문 칸에 보인다)이라 답변 칸에는 덧붙임(Back Extra, 4번째 필드)만
             let answer = match occlusion {
@@ -1402,7 +1406,7 @@ pub(crate) fn render_fields(
     render_fields_with(names, note_type, fields_json, qfmt, afmt, ord, &[])
 }
 
-/// render_fields + 특수 필드 ({{Tags}} {{Deck}} …, render::special_fields). 학습 화면(card_view)만 쓴다
+/// render_fields + 특수 필드 ({{Tags}} {{Deck}} …, render::special_fields). 학습 화면(card_view) · 카드 목록(list_cards)
 pub(crate) fn render_fields_with(
     names: &HashMap<i64, (String, Vec<String>)>,
     note_type: i64,
@@ -2368,7 +2372,7 @@ pub(crate) fn write_backup(con: &Connection, data_dir: &std::path::Path) -> Res<
     write_backup_as(con, data_dir, "")
 }
 
-/// tag: 백업 목록이 무엇의 백업인지 보이게 이름 끝에 붙인다 ("update" = 덱 업데이트 적용 전, "restore" = 복구 전). 빈 값이면 직접 만든 백업
+/// tag: 백업 목록이 무엇의 백업인지 보이게 이름 끝에 붙인다 (BACKUP_KINDS). 빈 값이면 직접 만든 백업
 pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag: &str) -> Res<std::path::PathBuf> {
     use std::io::Write;
     let dir = backup_dir(data_dir);
@@ -2604,11 +2608,12 @@ pub fn heatmap(state: State<AppState>, deck_id: Option<i64>) -> Res<Vec<HeatDay>
         .collect())
 }
 
-/// E1 "백업 만들기". 만든 파일 경로를 돌려준다
+/// E1 "백업 만들기". 만든 파일 경로를 돌려준다. kind "notetype" = 노트 유형 저장 전 자동 백업 (NT44 지우는 저장). 그 밖은 직접 만든 백업
 #[tauri::command]
-pub async fn create_backup(state: State<'_, AppState>) -> Res<String> {
+pub async fn create_backup(state: State<'_, AppState>, kind: Option<String>) -> Res<String> {
     let con = state.db.lock().map_err(err)?;
-    write_backup(&con, &state.data_dir).map(|p| p.display().to_string())
+    let tag = if kind.as_deref() == Some("notetype") { "notetype" } else { "" };
+    write_backup_as(&con, &state.data_dir, tag).map(|p| p.display().to_string())
 }
 
 /// S1-6 "다시 시도". 학습 데이터를 다시 연다
@@ -2631,6 +2636,10 @@ pub struct LocalBackup {
     kind: &'static str,
 }
 
+/// 자동 백업의 이름 끝 (-update.zip …). update = 덱 업데이트 적용 전, restore = 복구 전, move = 노트 유형 옮기기 전,
+/// undo = 업데이트 되돌리기 전, notetype = 노트 유형 저장 전 (NT44). 화면 이름은 Settings.tsx BACKUP_KIND
+const BACKUP_KINDS: [&str; 5] = ["update", "restore", "move", "undo", "notetype"];
+
 /// 이 기기 백업 zip 들, 최근 것부터
 #[tauri::command]
 pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
@@ -2642,7 +2651,7 @@ pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
             let m = e.metadata().ok()?;
             let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
             let name = e.file_name().to_string_lossy().into_owned();
-            let kind = if name.ends_with("-update.zip") { "update" } else if name.ends_with("-restore.zip") { "restore" } else { "manual" };
+            let kind = BACKUP_KINDS.into_iter().find(|k| name.ends_with(&format!("-{k}.zip"))).unwrap_or("manual");
             Some(LocalBackup { name, at, bytes: m.len(), kind })
         })
         .collect();

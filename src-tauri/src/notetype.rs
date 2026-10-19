@@ -695,6 +695,8 @@ pub struct HiddenSlot {
     name: Option<String>,
     /// 그 자리에 내용이 있는 노트
     notes: i64,
+    /// 이름 없는 필드 여럿을 구별하는 남은 내용 한 토막 (글자만, 앞 20자). 내용이 없으면 None
+    sample: Option<String>,
 }
 
 pub(crate) fn hidden_slots(con: &Connection, nt: &Nt) -> Res<Vec<HiddenSlot>> {
@@ -712,6 +714,10 @@ pub(crate) fn hidden_slots(con: &Connection, nt: &Nt) -> Res<Vec<HiddenSlot>> {
             slot,
             name: anki.iter().find(|(_, s)| *s == Some(slot)).map(|(n, _)| n.clone()).filter(|n| field_name(nt, n, None).is_ok()),
             notes: notes.iter().filter(|(_, v)| v.get(slot).is_some_and(|x| !blank_field(x))).count() as i64,
+            sample: notes.iter().filter_map(|(_, v)| v.get(slot)).map(|x| render::strip_tags(x)).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ")).find(|t| !t.is_empty()).map(|t| {
+                let cut: String = t.chars().take(20).collect();
+                if cut.len() < t.len() { format!("{cut}…") } else { cut }
+            }),
         })
         .collect())
 }
@@ -1766,8 +1772,10 @@ pub struct ChangeImpact {
     cards: usize,
     /// 지우는 카드: (원래 ord, 카드 수, 복습 기록 수). 기록은 card_id = NULL 로 통계에 남는다 (A4 · NT23)
     removed: Vec<(u32, usize, usize)>,
-    /// 옮기지 못하는 칸: (원래 필드 이름, 내용이 있는 노트 수). 숨긴 필드도 센다
+    /// 옮기지 못하는 칸: (원래 필드 이름, 내용이 있는 노트 수). 숨긴 필드도 자리마다 센다 (이름 "")
     lost: Vec<(String, usize)>,
+    /// 옮기지 못하는 칸 중 하나라도 내용이 있던 노트 (NT9 한 줄 "… 지워져요 (노트 3개)")
+    lost_notes: usize,
     /// 기록 · 일정이 이어지는 카드: (원래 ord, 새 ord, 카드 수)
     kept: Vec<(u32, u32, usize)>,
     /// 빈칸 표시를 글자로 푼 노트 (빈칸 유형 → 일반 유형)
@@ -1886,7 +1894,7 @@ pub(crate) fn change_type(con: &Connection, req: &ChangeType) -> Res<ChangeImpac
     let target_of = |s: usize| req.fields.iter().find(|(x, _)| *x == s).and_then(|(_, t)| *t);
     let unwrap = from.cloze() && !to.cloze();
     let mut out = ChangeImpact { notes: req.note_ids.len(), ..Default::default() };
-    let mut lost: Vec<(String, usize)> = vec![];
+    let mut lost: Vec<(usize, String, usize)> = vec![];
     let now = now_ms();
     for &nid in &req.note_ids {
         let old: Vec<String> = con
@@ -1895,6 +1903,7 @@ pub(crate) fn change_type(con: &Connection, req: &ChangeType) -> Res<ChangeImpac
             .map_err(err)?;
         let mut new = vec![String::new(); to.slots.len()];
         let mut unclozed = false;
+        let mut lost_any = false;
         for (s, v) in old.iter().enumerate() {
             match target_of(s) {
                 Some(t) => {
@@ -1903,19 +1912,17 @@ pub(crate) fn change_type(con: &Connection, req: &ChangeType) -> Res<ChangeImpac
                     new[t] = moved;
                 }
                 None if !blank_field(v) => {
-                    let name = match from.slots.get(s).map(String::as_str) {
-                        Some("") | None => "(숨긴 필드)".to_string(),
-                        Some(n) => n.to_string(),
-                    };
-                    match lost.iter_mut().find(|(n, _)| *n == name) {
-                        Some(x) => x.1 += 1,
-                        None => lost.push((name, 1)),
+                    lost_any = true;
+                    match lost.iter_mut().find(|x| x.0 == s) {
+                        Some(x) => x.2 += 1,
+                        None => lost.push((s, from.slots.get(s).cloned().unwrap_or_default(), 1)),
                     }
                 }
                 None => {}
             }
         }
         out.unclozed += unclozed as usize;
+        out.lost_notes += lost_any as usize;
         con.execute("UPDATE note SET note_type_id = ?2, fields = ?3, updated_at = ?4 WHERE id = ?1", params![nid, req.to, serde_json::to_string(&new).map_err(err)?, now])
             .map_err(err)?;
         // 카드: 대응이 없는 것은 지우고, 나머지는 잠깐 음수 ord 로 비켜 둔 뒤 새 ord 로 (맞바꾸기에도 유일 키가 걸리지 않게)
@@ -1977,7 +1984,7 @@ pub(crate) fn change_type(con: &Connection, req: &ChangeType) -> Res<ChangeImpac
         }
     }
     lost.sort();
-    out.lost = lost;
+    out.lost = lost.into_iter().map(|(_, name, notes)| (name, notes)).collect();
     out.kept.sort();
     out.removed.sort();
     // 앞면이 비는 카드 (NT49): 옮긴 노트의 카드 중
@@ -2001,7 +2008,7 @@ pub fn change_type_plan(state: State<AppState>, note_ids: Vec<i64>, to: Option<i
 pub fn change_note_type(state: State<AppState>, req: ChangeType, dry_run: bool) -> Res<ChangeImpact> {
     let mut con = state.db.lock().map_err(err)?;
     if !dry_run {
-        crate::commands::write_backup(&con, &state.data_dir).map_err(|e| format!("옮기기 전 백업을 만들지 못해 옮기지 않았어요. {e}"))?;
+        crate::commands::write_backup_as(&con, &state.data_dir, "move").map_err(|e| format!("옮기기 전 백업을 만들지 못해 옮기지 않았어요. {e}"))?;
     }
     let tx = con.transaction().map_err(err)?;
     let out = change_type(&tx, &req)?;
@@ -2423,6 +2430,7 @@ mod tests {
                 cards: 4,
                 removed: vec![(1, 2, 1)],
                 lost: vec![("출처".into(), 1)],
+                lost_notes: 1,
                 kept: vec![(0, 0, 2)],
                 unclozed: 0,
                 made: 0,
@@ -2476,7 +2484,9 @@ mod tests {
         reorder_fields(&con, nt, &[2, 0, 1]).unwrap();
         delete_field(&con, nt, 2).unwrap();
         let t = load(&con, nt).unwrap();
-        assert_eq!(hidden_slots(&con, &t).unwrap(), [HiddenSlot { slot: 2, name: None, notes: 1 }], "앱에서 만든 유형은 이름을 묻는다");
+        let h = hidden_slots(&con, &t).unwrap();
+        assert_eq!(h.iter().map(|h| (h.slot, h.name.clone(), h.notes)).collect::<Vec<_>>(), [(2, None, 1)], "앱에서 만든 유형은 이름을 묻는다");
+        assert_eq!(h[0].sample.as_deref(), Some("비밀"), "이름 없는 필드를 구별하는 남은 내용");
         assert!(restore_field(&con, nt, 2, "front").is_err(), "보이는 필드와 겹치는 이름");
         assert!(restore_field(&con, nt, 0, "x").is_err(), "숨긴 자리가 아니다");
         // 가져온 유형은 원본의 Anki 이름이 기본 (겹치면 묻는다)
@@ -2812,11 +2822,12 @@ mod tests {
         let n: i64 = con.query_row("SELECT max(id) FROM note WHERE note_type_id = ?1", [nt], |r| r.get(0)).unwrap();
         con.execute("UPDATE note SET tags = '기출::2023 <x>' WHERE id = ?1", [n]).unwrap();
         con.execute("UPDATE card SET deck_id = ?2 WHERE note_id = ?1", [n, sub]).unwrap();
-        let p = preview(&con, nt, tpl, "", 0, None, None, Some(n)).unwrap();
+        let p = preview(&con, nt, tpl, "{{FrontSide}}<hr id=answer>", 0, None, None, Some(n)).unwrap();
+        assert_eq!(p.back, format!("{}<hr id=answer>", p.front), "NT10 답 면의 {{FrontSide}} 안 특수 필드도 값으로");
         assert_eq!(p.front, format!("기출::2023 &lt;x&gt;|덱::하위|하위|{name}|Cloze||t"));
         let p = preview(&con, nt, tpl, "", 0, None, Some(&s(&["Text"])), None).unwrap();
         assert_eq!(p.front, format!("(태그)|(덱)|(덱)|{name}|Cloze||t"), "노트가 없으면 이름 샘플");
-        // 다른 곳(목록 · 품질 · 서술형)의 render_fields 는 지금처럼 빈 값
+        // render_fields(품질 · 서술형)는 지금처럼 빈 값 (학습 화면 · 목록은 render_fields_with)
         let names = crate::commands::note_field_names(&con).unwrap();
         assert_eq!(crate::commands::render_fields(&names, nt, r#"["x",""]"#, Some("{{Tags}}{{Deck}}{{Text}}"), Some(""), 0).front, "x");
     }

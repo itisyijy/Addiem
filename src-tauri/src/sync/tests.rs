@@ -919,6 +919,10 @@ fn later_edit_wins_even_when_it_syncs_first() {
     assert_eq!(a.dump(), b.dump());
     assert_eq!(a.conflicts().last().unwrap(), &(b.me(), t + 4000, b2.clone(), a.me(), t + 3000, a2.clone()));
     assert_eq!(b.conflicts().last().unwrap(), &(b.me(), t + 4000, b2.clone(), a.me(), t + 3000, a2.clone()));
+    // 같은 노트 유형의 두 버전이라 [이 버전으로 바꾸기]를 쓸 수 있다 (K41 막기는 유형이 다를 때만)
+    let id = a.n("SELECT max(id) FROM sync_conflict");
+    crate::sync::use_conflict(&a.con(), id).unwrap();
+    assert_eq!(a.fields(&note), a2);
 }
 
 #[test]
@@ -2274,6 +2278,25 @@ fn moved_note_keeps_the_new_layout_when_edited_elsewhere() {
         }
         let kept = |d: &Dev| d.conflicts().iter().filter(|c| c.5.contains("질문 (B)") || c.2.contains("질문 (B)")).count();
         assert!(kept(&a) + kept(&b) >= 1, "B 의 수정은 기록에 남는다 (b_first={b_first})");
+        // 그 기록의 [이 버전으로 바꾸기]는 옛 유형 자리 배열을 새 유형에 넣지 않는다: 막고 (화면은 글만), 노트 내용은 그대로
+        for d in [&a, &b] {
+            let con = d.con();
+            let ids: Vec<i64> = con
+                .prepare("SELECT id FROM sync_conflict WHERE winner_fields LIKE '%질문 (B)%' OR loser_fields LIKE '%질문 (B)%'")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            for id in ids {
+                let e = crate::sync::use_conflict(&con, id).unwrap_err();
+                assert!(e.to_string().contains("노트 유형이 바뀐 뒤라"), "{e} (b_first={b_first})");
+                let (fields, resolved): (String, i64) = con
+                    .query_row("SELECT n.fields, x.resolved FROM note n, sync_conflict x WHERE n.uid = ?1 AND x.id = ?2", params![note, id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .unwrap();
+                assert_eq!((fields, resolved), (json!(["답", "질문"]).to_string(), 0));
+            }
+        }
     }
 }
 
