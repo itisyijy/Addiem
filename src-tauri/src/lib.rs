@@ -20,6 +20,8 @@ mod table;
 mod srs;
 mod sync;
 mod tts;
+#[cfg(test)]
+mod qa_real_anki;
 
 use tauri::Manager;
 

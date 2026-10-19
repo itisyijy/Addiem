@@ -398,6 +398,12 @@ pub fn reveal_file(path: String) -> Res<()> {
     Ok(())
 }
 
+/// 실제 Anki 검증 하네스(qa_real_anki.rs)가 앱과 같은 내보내기를 부른다
+#[cfg(test)]
+pub(crate) fn export_for_qa(con: &Connection, data_dir: &Path, deck_id: i64, path: &Path, with_history: bool) -> Res<ExportResult> {
+    export(con, data_dir, deck_id, path, with_history, &Job { emit: &|_, _, _| {}, cancelled: &|| false })
+}
+
 /// 임시 파일에 다 쓴 뒤 이름을 바꾼다. 실패하면 임시 파일만 지우고 대상 파일은 건드리지 않는다
 fn export(con: &Connection, data_dir: &Path, deck_id: i64, path: &Path, with_history: bool, job: &Job) -> Res<ExportResult> {
     let col = data_dir.join(format!("export-{}.anki2", std::process::id()));

@@ -1886,6 +1886,12 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
     Ok(result)
 }
 
+/// 실제 Anki 검증 하네스(qa_real_anki.rs)가 앱과 같은 평가를 부른다
+#[cfg(test)]
+pub(crate) fn answer_for_qa(con: &mut Connection, fsrs: &fsrs::FSRS, session_id: i64, card_id: i64, rating: u8, now: i64) -> Res<()> {
+    answer_at(con, fsrs, session_id, card_id, rating, 4000, None, now).map(|_| ())
+}
+
 /// answer 의 본체 (테스트가 시각을 정해 부른다). 되돌리기 기록이 없으면 평가를 남기지 않은 것이다
 #[allow(clippy::too_many_arguments)]
 fn answer_at(
