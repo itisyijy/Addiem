@@ -281,15 +281,15 @@ pub struct Section {
     /// 구간 안(아래 단계 포함) 강조 구간 수 · 그 구간들과 이어진 카드 수
     segments: usize,
     cards: usize,
-    /// 핵심 범위면 까닭 ("제목에 '요약'" · "제목에 하이라이트 표시")
+    /// 핵심 범위면 까닭 ("제목에 '요약'" · "제목이 하이라이트로 강조돼 있어요")
     core: Option<String>,
 }
 
 #[derive(Serialize, Debug, Default)]
 pub struct Outline {
     sections: Vec<Section>,
-    /// 핵심 범위가 강조 구간의 절반을 넘어 (문서 제목 · 머리글처럼 전체를 덮는 제목) 이 자료는 목차로 가려내지 않았다
-    wide: bool,
+    /// 핵심 범위가 강조 구간의 절반을 넘어 (문서 제목 · 머리글처럼 전체를 덮는 제목) 이 자료는 목차로 가려내지 않았다. 가장 넓게 덮은 제목
+    wide: Option<String>,
     /// 읽은 곳: outline (PDF 목차) · size (목차 없는 PDF 의 큰 글자 줄, 제목 구간에 줄 위치가 있다) · slide (PPTX 제목 · 구역)
     source: String,
     /// 자료를 읽은 때 (source_material.updated_at, ms)
@@ -320,7 +320,7 @@ fn core_reason(title: &str, page: i64, texts: &[&Segment]) -> Option<String> {
         let n = short.chars().count();
         let same = n >= 2 && long.contains(short.as_str()) && n * 2 >= long.chars().count();
         let mark = SIGNALS.iter().position(|g| MARKS.contains(&g.0) && s.signals.iter().any(|x| x == g.0))?;
-        same.then(|| format!("제목에 {} 표시", SIGNAL_LABEL[mark]))
+        same.then(|| format!("제목이 {}로 강조돼 있어요", SIGNAL_LABEL[mark]))
     })
 }
 
@@ -365,7 +365,7 @@ fn outline(segs: &[Segment], pages: i64) -> Outline {
     }
     let covered: std::collections::HashSet<i64> = ranges.iter().flat_map(|r| r.1.iter().copied()).collect();
     if covered.len() * 2 > texts.len() {
-        out.wide = true;
+        out.wide = ranges.iter().max_by_key(|r| (r.1.len(), std::cmp::Reverse(r.0))).map(|r| out.sections[r.0].title.clone());
         out.sections.iter_mut().for_each(|s| s.core = None);
         return out;
     }
@@ -2241,10 +2241,10 @@ mod tests {
                 (2, "1.1 특징", 3, 4, 1, 1, None),
                 // 같은 자리 같은 제목 둘은 하나로. 7쪽 3장 제목 앞에 강조가 있어 7쪽까지
                 (1, "2장 요약", 5, 7, 3, 2, Some("제목에 '요약'")),
-                (1, "3장 회귀", 7, 10, 2, 0, Some("제목에 하이라이트 표시")),
+                (1, "3장 회귀", 7, 10, 2, 0, Some("제목이 하이라이트로 강조돼 있어요")),
             ]
         );
-        assert_eq!((o.wide, o.source.as_str()), (false, "outline"));
+        assert_eq!((o.wide.as_deref(), o.source.as_str()), (None, "outline"));
         // 핵심 범위는 강조 구간 10곳 중 5곳 (그림 영역은 세지 않는다). 절반을 넘지 않아 쓴다
         assert_eq!(o.core.len(), 5);
         assert_eq!((o.core[&sum1], o.core[&marked]), (2, 3));
@@ -2255,7 +2255,8 @@ mod tests {
         // 절반을 넘으면 (자료 전체를 덮는 "요약 노트" 같은 제목) 핵심 범위를 두지 않는다
         add_seg(&con, 1, 0, "# 핵심 요약 노트", "heading");
         let o = outline_of(&con, 1).unwrap();
-        assert!(o.wide && o.core.is_empty() && o.sections.iter().all(|s| s.core.is_none()));
+        assert!(o.core.is_empty() && o.sections.iter().all(|s| s.core.is_none()));
+        assert_eq!(o.wide.as_deref(), Some("핵심 요약 노트"), "가장 넓게 덮은 제목");
         // 큰 글자 줄로 읽은 제목은 줄 위치가 있다
         con.execute("UPDATE source_segment SET rects = '[[0,0,1,0.1]]' WHERE signals = 'heading'", []).unwrap();
         assert_eq!(outline_of(&con, 1).unwrap().source, "size");

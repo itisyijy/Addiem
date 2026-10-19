@@ -138,11 +138,11 @@ export type CardSource = { material: Material; segment: Segment; method: "manual
 // ---------------------------------------------------------------- 8.4 목차 (source.rs outline)
 
 /** 목차 구간 = 제목부터 다음 같은 · 윗 단계 제목 앞까지. segments · cards: 구간 안(아래 단계 포함) 강조 구간 수 · 이어진 카드 수.
- * core: 핵심 범위면 까닭 ("제목에 '요약'" · "제목에 하이라이트 표시") */
+ * core: 핵심 범위면 까닭 ("제목에 '요약'" · "제목이 하이라이트로 강조돼 있어요") */
 export type Section = { id: number; level: number; title: string; page: number; end_page: number; segments: number; cards: number; core: string | null };
-/** source: outline PDF 목차 · size 목차 없는 PDF 의 큰 글자 줄 · slide PPTX 제목 · 구역. wide: 핵심 범위가 강조 구간의 절반을 넘어 쓰지 않음.
- * read_at: 자료를 읽은 때 (ms) */
-export type Outline = { sections: Section[]; wide: boolean; source: "outline" | "size" | "slide"; read_at: number };
+/** source: outline PDF 목차 · size 목차 없는 PDF 의 큰 글자 줄 · slide PPTX 제목 · 구역.
+ * wide: 핵심 범위가 강조 구간의 절반을 넘어 쓰지 않았을 때 가장 넓게 덮은 제목. read_at: 자료를 읽은 때 (ms) */
+export type Outline = { sections: Section[]; wide: string | null; source: "outline" | "size" | "slide"; read_at: number };
 
 /** "source-analyze" 이벤트. step 0 은 카드, 그다음 자료 하나씩 */
 export type AnalyzeProgress = { step: number; steps: number; label: string; done: number; total: number };
