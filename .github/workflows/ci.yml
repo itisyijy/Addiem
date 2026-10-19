@@ -41,3 +41,13 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
+
+      # 8.3 개념 관계 확인 엔진 (보조 실행 파일, 본체와 따로 빌드). 검사만 하고 설치 파일용 AVX2 빌드는 tools/build_llm.ps1.
+      # 본체의 target 을 같이 써서 같은 버전의 candle · tokenizers 를 다시 빌드하지 않는다
+      - name: cargo clippy (llm 엔진)
+        working-directory: src-tauri/llm
+        run: cargo clippy --locked --target-dir ../target --all-targets -- -D warnings
+
+      - name: cargo test (llm 엔진)
+        working-directory: src-tauri/llm
+        run: cargo test --locked --target-dir ../target

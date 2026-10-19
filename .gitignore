@@ -29,3 +29,5 @@ dist/
 
 # AU20 읽어주기 음성 모델 · ONNX Runtime (약 400MB). tools/fetch_tts.ps1 로 채운다
 src-tauri/resources/tts/
+# 8.3 개념 관계 확인 엔진 (보조 실행 파일). tools/build_llm.ps1 이 AVX2 로 빌드해 넣는다
+src-tauri/resources/llm/

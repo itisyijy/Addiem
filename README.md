@@ -89,6 +89,16 @@ pwsh -File tools\fetch_tts.ps1 -Download   # 받아 둔 것이 없으면 Hugging
 
 폴더가 비어 있어도 `cargo build` · `npm run tauri dev` · CI 는 그대로 돈다(`build.rs` 가 빈 폴더를 만든다). 그 빌드의 읽어주기는 OS 음성(Windows 설정 › 시간 및 언어 › 음성)으로만 읽는다. 실제 모델로 한 문장 읽어 보는 시험은 `cd src-tauri; cargo test tts -- --ignored --nocapture`.
 
+### 서술형 개념 관계 확인 엔진 (8.3)
+
+서술형 답의 개념 관계를 이 기기에서 살펴보는 실험 기능은 추론을 보조 실행 파일 `neoanki-llm.exe`(`src-tauri/llm`, candle)가 한다. 본체는 AVX2 없이 빌드해 모든 CPU 에서 돌고, 엔진만 AVX2 로 빌드한다(candle 의 양자화 계산은 컴파일 때만 AVX2 를 켠다). 본체는 CPU 가 AVX2 · FMA · F16C 를 지원하고, 앱 리소스 폴더의 엔진 파일이 빌드 때 잰 크기 · SHA-256 과 같을 때만 띄운다. 모델(Qwen2.5-1.5B-Instruct 4비트, 약 1.1GB)은 설치 파일에 넣지 않고 설정 › 서술형 채점에서 사용자가 받는다.
+
+```powershell
+pwsh -File tools\build_llm.ps1             # RUSTFLAGS +avx2,+fma,+f16c 로 따로 빌드해 src-tauri/resources/llm/ 에 넣는다 (gitignore)
+```
+
+엔진이 없어도 `cargo build` · `npm run tauri dev` · CI 는 그대로 돈다(`build.rs` 가 빈 폴더를 만들고, 앱은 "이 설치에는 엔진이 없어요"로 핵심어 채점만 한다). **릴리스 빌드(`npm run tauri build`)는 엔진 없이는 멈춘다**(알고 빼려면 `NEOANKI_ALLOW_NO_LLM=1`). 개발셋 측정은 `cd src-tauri; $env:NEOANKI_LLM_BIN="<neoanki-llm.exe>"; $env:NEOANKI_LLM_DIR="<model.gguf · tokenizer.json 폴더>"; cargo test --lib eval83 -- --ignored --nocapture` (DECISIONS J).
+
 ### Google Drive 동기화 (개발)
 
 [설계](docs/engineering/drive-sync.md) · 코드는 `src-tauri/src/sync/`. Google 연결은 빌드할 때 넣는 OAuth 클라이언트가 있어야 켜진다. 없으면 설정의 Google Drive 칸이 "이 앱 버전에서는 Google Drive 연결을 사용할 수 없어요"로 보이고 나머지는 그대로 동작한다.
@@ -138,6 +148,7 @@ npx tsc --noEmit
 - [ ] **아이콘**: `src-tauri/icons/` 는 아직 Tauri 기본 아이콘이다. 로고가 정해지면 `npx tauri icon <1024px PNG>` 로 다시 만든다. 설치 파일 자체의 아이콘은 `bundle.windows.nsis.installerIcon`.
 - [ ] **Google OAuth**: 배포 빌드를 하는 셸에 `NEOANKI_GOOGLE_CLIENT_ID` · `NEOANKI_GOOGLE_CLIENT_SECRET` 을 넣는다. 빠져도 빌드는 성공하고 Drive 연결만 꺼지니(`option_env!`) 빌드 전에 확인한다. OAuth 동의 화면을 테스트에서 프로덕션으로 게시한다(테스트 상태에서는 등록한 테스트 사용자만 로그인된다).
 - [ ] **읽어주기 음성**: `tools\fetch_tts.ps1` 로 `src-tauri/resources/tts/` 의 11개 파일을 채운 뒤 빌드한다. 비어 있어도 빌드는 성공하고 OS 음성으로만 읽는다.
+- [ ] **개념 관계 확인 엔진**: `tools\build_llm.ps1` 로 `src-tauri/resources/llm/neoanki-llm.exe` 를 만든 뒤 빌드한다(없으면 릴리스 빌드가 멈춘다). 엔진 exe 도 본체처럼 코드 서명하지 않으면 SmartScreen · Defender 가 막을 수 있다.
 - [ ] **WebView2**: `bundle.windows.webviewInstallMode` 는 기본값 `downloadBootstrapper` 다. WebView2 가 없는 PC(일부 Windows 10)는 설치 중에 인터넷이 필요하다. 오프라인 배포라면 `embedBootstrapper` 또는 `offlineInstaller`.
 - [ ] **업데이트**: 자동 업데이트는 없다(`tauri-plugin-updater` 안 씀). 새 버전은 설치 파일을 다시 받아 설치한다. 버전은 `tauri.conf.json` · `Cargo.toml` · `package.json` 을 같이 올리고, 설정 화면 맨 아래에 보인다.
 
@@ -149,7 +160,8 @@ npx tsc --noEmit
 | `src/ui.tsx`, `src/styles/` | Figma 컴포넌트와 디자인 토큰 |
 | `src-tauri/src/` | 데이터 계층. Rust: `db` 스키마, `queue` 오늘의 큐, `srs` FSRS, `render` Anki 템플릿, `import` 가져오기, `commands` 화면이 부르는 명령 |
 | `db/schema.sql` | 데이터 모델 정본 |
-| `tools/` | Python 참조 구현. Rust로 옮긴 원본. `fetch_tts.ps1` 은 읽어주기 음성 채우기 |
+| `src-tauri/llm/` | 8.3 개념 관계 확인 엔진 (보조 실행 파일, 본체와 따로 AVX2 로 빌드) |
+| `tools/` | Python 참조 구현. Rust로 옮긴 원본. `fetch_tts.ps1` 은 읽어주기 음성 채우기, `build_llm.ps1` 은 개념 관계 확인 엔진 빌드 |
 
 ### Python 도구 사용
 

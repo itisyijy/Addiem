@@ -16,6 +16,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# 8.3 엔진 파일(resources/llm)의 SHA-256 을 앱에 박는다. 아래 dependencies 와 같은 버전이라 새로 받는 크레이트는 없다
+sha2 = "=0.10.9"
 
 [dependencies]
 tauri = { version = "2", features = [] }
