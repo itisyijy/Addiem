@@ -290,7 +290,8 @@ pub struct Outline {
     sections: Vec<Section>,
     /// 핵심 범위가 강조 구간의 절반을 넘어 (문서 제목 · 머리글처럼 전체를 덮는 제목) 이 자료는 목차로 가려내지 않았다. 가장 넓게 덮은 제목
     wide: Option<String>,
-    /// 읽은 곳: outline (PDF 목차) · size (목차 없는 PDF 의 큰 글자 줄, 제목 구간에 줄 위치가 있다) · slide (PPTX 제목 · 구역)
+    /// 읽은 곳: outline (PDF 목차) · size (목차 없는 PDF 의 큰 글자 줄, 제목 구간에 줄 위치가 있다) ·
+    /// slide (PPTX 제목과 구역) · slide_title (구역 없는 PPTX 의 제목) · slide_section (제목 자리 없는 PPTX 의 구역)
     source: String,
     /// 자료를 읽은 때 (source_material.updated_at, ms)
     read_at: i64,
@@ -333,6 +334,9 @@ fn outline(segs: &[Segment], pages: i64) -> Outline {
     items.sort_by_key(|s| (s.page, s.ord, !is_heading(&s.signals), level(s)));
     items.dedup_by(|a, b| is_heading(&a.signals) && is_heading(&b.signals) && (a.page, a.ord, &a.text) == (b.page, b.ord, &b.text));
     let texts: Vec<&Segment> = items.iter().filter(|s| text(s)).copied().collect();
+    // 화면 단계는 가장 얕은 제목을 1단계로 당긴다 (구역 없는 PPTX 는 제목이 모두 2단계로 저장된다, QA L6).
+    // 구간 끝은 저장된 단계끼리 견주므로 구간 · 핵심 범위는 그대로다
+    let base = items.iter().filter(|s| is_heading(&s.signals)).map(|s| level(s)).min().unwrap_or(1) - 1;
     let mut out = Outline::default();
     let mut ranges: Vec<(usize, Vec<i64>)> = vec![]; // 핵심 범위 구간 번호 · 그 안 강조 구간
     for (i, h) in items.iter().enumerate() {
@@ -354,7 +358,7 @@ fn outline(segs: &[Segment], pages: i64) -> Outline {
         }
         out.sections.push(Section {
             id: h.id,
-            level: lv,
+            level: lv - base,
             title: title.to_string(),
             page: h.page,
             end_page: end_page.max(h.page),
@@ -386,7 +390,16 @@ fn outline_of(con: &Connection, material_id: i64) -> Res<Outline> {
     let mut out = outline(&segs, pages);
     // 큰 글자 줄로 읽은 제목만 줄 위치(rects)를 남긴다 (pdf.ts readPdf)
     let sized = segs.iter().any(|s| is_heading(&s.signals) && s.rects.is_some());
-    out.source = if kind == "pptx" { "slide" } else if sized { "size" } else { "outline" }.into();
+    // PPTX 는 구역이 1단계, 슬라이드 제목이 2단계로 저장된다 (pptx_headings)
+    let has = |lv: usize| segs.iter().any(|s| is_heading(&s.signals) && heading_of(&s.text).0 == lv);
+    out.source = match (kind == "pptx", has(1), has(2)) {
+        (true, true, false) => "slide_section",
+        (true, false, true) => "slide_title",
+        (true, ..) => "slide",
+        _ if sized => "size",
+        _ => "outline",
+    }
+    .into();
     out.read_at = read_at;
     Ok(out)
 }
@@ -1752,7 +1765,7 @@ fn core_ranges(con: &Connection, ids: &str) -> Res<HashMap<i64, String>> {
             .map(|s| {
                 let title = if s.title.chars().count() > 30 { format!("{}…", s.title.chars().take(30).collect::<String>()) } else { s.title.clone() };
                 let range = if s.end_page > s.page { format!("{}–{}", s.page, s.end_page) } else { s.page.to_string() };
-                let range = if o.source == "slide" { format!("슬라이드 {range}") } else { format!("{range}쪽") };
+                let range = if o.source.starts_with("slide") { format!("슬라이드 {range}") } else { format!("{range}쪽") };
                 let size = if o.source == "size" { " · 목차가 없는 PDF라 큰 글자 줄로 읽은 제목이에요" } else { "" };
                 format!("{file}의 '{title}' 구간과 연결됐어요. 목차에서 핵심 범위로 본 구간이에요 ({range}){size}")
             })
@@ -2362,5 +2375,40 @@ mod tests {
         let mut got: Vec<i64> = st.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
         got.sort();
         assert_eq!(got, vec![a, f]);
+    }
+
+    #[test]
+    fn outline_levels_start_at_one() {
+        // 구역 없는 PPTX: 제목이 모두 2단계("## ")로 저장된다. 화면 단계만 1부터, 구간 · 끝 쪽 · 핵심 범위는 1단계로 저장한 것과 같다
+        let build = |marks: [&str; 3]| {
+            let (con, _) = outline_db(&[]);
+            add_seg(&con, 1, 0, "강조 하나", "highlight");
+            add_seg(&con, 2, 0, "요약 강조", "highlight");
+            add_seg(&con, 3, 0, "세부 강조", "bold");
+            add_seg(&con, 4, 0, "다른 강조", "red");
+            for (i, (page, title)) in [(1, "소개"), (2, "자료구조 요약"), (3, "세부")].into_iter().enumerate() {
+                add_seg(&con, page, -1, &format!("{} {title}", marks[i]), "heading");
+            }
+            add_seg(&con, 4, -1, &format!("{} 트리", marks[0]), "heading");
+            let o = outline_of(&con, 1).unwrap();
+            let rows: Vec<_> = o.sections.iter().map(|s| (s.level, s.title.clone(), s.page, s.end_page, s.segments, s.core.clone())).collect();
+            let mut core: Vec<(String, usize)> = segments_of(&con, 1).unwrap().into_iter().filter_map(|s| o.core.get(&s.id).map(|k| (s.text, *k))).collect();
+            core.sort();
+            (rows, core)
+        };
+        let deep = build(["##", "##", "###"]);
+        // PPTX 출처 줄: 제목만 · 구역만 · 둘 다
+        let (con, _) = outline_db(&[]);
+        con.execute("UPDATE source_material SET kind = 'pptx'", []).unwrap();
+        add_seg(&con, 1, -1, "## 스택", "heading");
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide_title");
+        add_seg(&con, 1, -1, "# 기초", "heading");
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide");
+        con.execute("DELETE FROM source_segment WHERE text = '## 스택'", []).unwrap();
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide_section");
+        assert_eq!(deep, build(["#", "#", "##"]));
+        assert_eq!(deep.0.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 1, 2, 1]);
+        assert_eq!(deep.0[1], (1, "자료구조 요약".to_string(), 2, 3, 2, Some("제목에 '요약'".to_string())));
+        assert_eq!(deep.1, vec![("세부 강조".to_string(), 1), ("요약 강조".to_string(), 1)]);
     }
 }
