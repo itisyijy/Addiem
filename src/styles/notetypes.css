@@ -171,3 +171,49 @@
 /* 본 뒤에도 진 쪽 기록을 다시 여는 줄 */
 .nte__seen { display: flex; align-items: center; gap: 6px; }
 .nte__seen-btn { color: var(--text-secondary); text-decoration: underline; text-underline-offset: 3px; }
+/* NT74 숨긴 필드 · 되살리기 */
+.nte__hidden { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border-default); }
+.nte__hidden-head { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; padding: 2px 0; color: var(--text-secondary); }
+.nte__hidden-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 10px; background: var(--bg-subtle); }
+.nte__hidden-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.nte__hidden-text > .t-body-m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nte__restore { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 8px; color: var(--text-primary); }
+.nte__restore:hover { background: var(--bg-surface); }
+/* 되살린 필드: 저장 전까지 그 행 아래 한 줄 */
+.nte__field:has(.nte__restored) { flex-wrap: wrap; }
+.nte__field .nte__restored { flex-basis: 100%; padding-left: 22px; white-space: normal; }
+/* NT9 다른 유형으로 옮기기 (Figma 271:18979): 옮길 유형 · 필드 대응 · 카드 종류 대응 · 잃는 것 주황 상자 */
+.modal.ntm { top: 40px; gap: 14px; width: 640px; max-height: calc(100vh - 80px); overflow: auto; }
+.ntm__type { display: grid; grid-template-columns: 96px minmax(0, 260px); align-items: center; gap: 12px; }
+.ntm__box { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 16px; background: var(--bg-subtle); }
+.ntm__head { display: flex; align-items: baseline; gap: 8px; }
+.ntm__row { display: grid; grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1.3fr); align-items: center; gap: 12px; }
+.ntm__row > .t-body-m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ntm__select { position: relative; display: flex; align-items: center; min-width: 0; height: 40px; padding: 0 12px 0 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-surface); }
+.ntm__select:focus-within { border: 2px solid var(--accent-default); padding: 0 11px 0 13px; }
+.ntm__select.is-none { border-color: var(--status-warn-fg); background: var(--status-warn-bg); }
+.ntm__select select { flex: 1; min-width: 0; appearance: none; border: 0; outline: none; background: none; color: var(--text-primary); cursor: pointer; }
+.ntm__lines { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 12px 16px; border-radius: 14px; background: var(--bg-subtle); list-style: none; }
+.ntm__lines.is-warn { background: var(--status-warn-bg); }
+.ntm__lines li { display: flex; align-items: flex-start; gap: 8px; }
+.ntm__lines li > .icon { flex-shrink: 0; margin-top: 2px; }
+.ntm__backup { display: flex; align-items: center; gap: 6px; }
+/* 이름 칸 아래 오류 줄은 접어 쓴다 (되살리기 이름 겹침 등) */
+.nte__field .nte__fname-edit .t-caption { white-space: normal; }
+/* NT9 카드 목록 선택 바 [⋯] 메뉴: "다른 유형으로 옮기기" 한 줄 */
+.menu__list.cards__bar-more { width: max-content; }
+.cards__bar-more .menu__text > .t-body-m { white-space: nowrap; }
+/* 미리보기 머리 줄: 노트 이름이 길어도 1180 창에서 넘치지 않게 고르기 단추가 줄고 말줄임 (Q4 L2) */
+.nte__panel-head > .menu { display: flex; flex: 0 1 auto; min-width: 0; }
+.nte__panel-head .nte__pill { min-width: 0; }
+.nte__panel-head .nte__pill-text { min-width: 0; }
+/* NT9 옮기기 창: 낮은 창(1180×640)에서 첫 화면에 버튼이 잘리지 않게 창 아래에 붙인다 (Q4 L6) */
+.modal.ntm > .modal__actions { position: sticky; bottom: -28px; z-index: 1; margin: 0 -32px -28px; padding: 14px 32px 28px; border-top: 1px solid var(--border-default); background: var(--bg-surface); }
+/* NT11 넣을 덱 (Figma 293:21525): 옵션 끝 한 줄. 정하면 accent 알약, 지운 덱이면 주황. 메뉴는 DeckMenu 와 같은 모양 */
+.nte__deckopt .deckpick { position: relative; }
+.nte__deckpill { color: var(--text-secondary); }
+.nte__deckpill.is-set { border-color: var(--accent-default); background: var(--accent-subtle); color: var(--accent-text); }
+.nte__deckpill.is-gone { border-color: var(--status-warn-fg); background: var(--status-warn-bg); color: var(--status-warn-fg); }
+.nte__deckopt-note { flex-basis: 100%; }
+.nte__deckmenu { z-index: 45; }
+.nte__deckmenu-row { padding-left: 26px; }

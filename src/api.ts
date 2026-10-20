@@ -137,7 +137,8 @@ export type CardRow = {
 export type IoPos = { ordinal: number; n: number; count: number };
 /** 8.4 기출 (exam.rs). hits null 이면 표시 없음 */
 export type ExamState = { id: number; hits: number | null; names: string[] };
-export type CardList = { rows: CardRow[]; total: number };
+/** suspended: 이 덱 범위의 학습 중지 카드 수 (검색과 상관없이) */
+export type CardList = { rows: CardRow[]; total: number; suspended: number };
 
 export type DeckConfig = {
   deck_id: number;
@@ -246,6 +247,22 @@ export type NoteTypeRow = {
   made_here: boolean;
   made_by: string | null;
 };
+/** NT9 다른 유형으로 옮기기. fields: [원래 자리, 새 자리 | null], cards: [원래 ord, 새 ord | null] (null = 옮기지 않음 · 없앰) */
+export type ChangeTypeReq = { note_ids: number[]; to: number; fields: [number, number | null][]; cards: [number, number | null][] };
+export type ChangePlan = { from: number; to: number; notes: number; cards: number; card_ords: [number, number][]; fields: [number, number | null][]; card_map: [number, number | null][] };
+/** removed: [원래 ord, 카드 수, 기록 수] · lost: [필드 이름 ("" = 숨긴 필드), 노트 수] · lost_notes: 그중 하나라도 내용이 있던 노트 · kept: [원래 ord, 새 ord, 카드 수] */
+export type ChangeImpact = {
+  notes: number;
+  cards: number;
+  removed: [number, number, number][];
+  lost: [string, number][];
+  lost_notes: number;
+  kept: [number, number, number][];
+  unclozed: number;
+  made: number;
+  empty_fronts: number;
+  removed_notes: number;
+};
 /** K39 두 기기에서 고쳐 진 쪽 정의 (편집기 안내) */
 export type NoteTypeConflict = { what: string; at: number; winner: string; winner_device: string; loser: string; loser_device: string; seen: boolean };
 /** note_type_detail. fields 는 보이는 순서 (add_typed_note 의 values 순서) */
@@ -253,11 +270,28 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
   css: string;
   fields: { slot: number; name: string }[];
   /** layout: 쉬운 편집 구조 (없으면 HTML 전용, reason 이 그 이유) */
-  templates: { ord: number; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null }[];
+  /** deck: 이 카드 종류의 새 카드를 늘 넣을 덱 (NT76, null = 노트를 넣는 덱) · deck_path 그 경로 · deck_gone 정한 덱을 지웠으면 그때 경로 (NT11) · cards 이미 있는 카드 수 */
+  templates: {
+    ord: number;
+    name: string;
+    qfmt: string;
+    afmt: string;
+    layout: Layout | null;
+    reason: string | null;
+    deck: number | null;
+    deck_path: string | null;
+    /** 정한 덱을 보관했다: 그 경로 (새 카드는 노트를 넣는 덱으로) */
+    deck_archived: string | null;
+    deck_gone: string | null;
+    cards: number;
+  }[];
   /** 줄 상자 CSS. 템플릿이 쓰는데 CSS 에 없으면 저장할 때 붙는다 (편집기 미리보기도 붙여 그린다) */
   layout_css: string;
   /** 정의의 지문. 저장할 때 넘기면 그 사이 (동기화로) 바뀐 유형은 저장하지 않는다 */
   version: string;
+  /** 숨긴 필드 (NT74 되살리기). name: 기본 이름 (가져온 유형의 Anki 이름), null 이면 묻는다. notes: 그 자리에 내용이 든 노트 */
+  /** sample: 남은 내용 한 토막 (이름 없는 필드 여럿을 구별) */
+  hidden: { slot: number; name: string | null; notes: number; sample: string | null }[];
 };
 /** 쉬운 편집 줄 모양 (NT2 S/M/L · 왼쪽/가운데). 없으면 면의 기본 (앞면 L · 가운데, 뒷면 M · 왼쪽). 쉬운 편집이 쓰는 줄은 늘 상자 (NT41) */
 export type Look = { size: "s" | "m" | "l"; align: "left" | "center" };
@@ -273,7 +307,8 @@ export type NoteTypeSample = { note_id: number; deck: string; slots: string[] };
 /** 편집기 초안 (save_note_type). fields 는 보이는 순서 · slot null 은 새 필드, 빠진 필드 · 카드 종류는 지운다 */
 export type NoteTypeEdit = {
   fields: { slot: number | null; name: string }[];
-  templates: { ord: number | null; name: string | null; qfmt: string; afmt: string }[];
+  /** deck_gone: 연 "지운 덱" 표시를 그대로 둘 때 그 경로 (null 이면 지운다) */
+  templates: { ord: number | null; name: string | null; qfmt: string; afmt: string; deck: number | null; deck_gone: string | null }[];
   css: string;
 };
 /** 저장 전 확인 창의 수 (NT5) */
@@ -380,7 +415,10 @@ export type AnkiPreview = {
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
 /** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
-export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" };
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "cleanup" };
+/** DU59 새 버전에 없는 노트 정리의 수 (확인 창 · 결과). backup: 지우기 전에 만든 백업 이름 */
+/** 학습 중지면 notes · cards 는 이번에 바꾼 것만, changed 는 그 카드 (토스트 [되돌리기]) */
+export type TidySummary = { notes: number; cards: number; studied: number; suspended: number; backup: string | null; changed: number[] };
 
 export type UpdateHint = {
   notes: number;
@@ -391,19 +429,24 @@ export type UpdateHint = {
   suggested: boolean;
 };
 /** B2-k · B2-kt 고른 것. take_new: 충돌 필드를 새 버전으로 할 노트 id, new_looks: [노트 유형 id, ord | null(CSS)] */
-export type UpdateChoices = { take_new: number[]; new_looks: [number, number | null][] };
+/** take_new: 충돌 필드를 모두 새 버전으로 할 노트, take_new_fields: 필드마다 [노트 id, 자리] (DU54). 둘 중 어디 있어도 새 버전 */
+export type UpdateChoices = { take_new: number[]; take_new_fields?: [number, number][]; new_looks: [number, number | null][] };
 export type UpdateConflict = {
   note_id: number;
   title: string;
   /** 첫 카드의 덱 경로 ("A › B") */
   deck: string;
-  fields: { slot: number; name: string; mine: string; new: string }[];
+  /** base: 원본 글 (지난번에 받은 값, DU53). null 이면 "원본 글이 없어요" */
+  fields: { slot: number; name: string; mine: string; new: string; base: string | null; take_new: boolean }[];
   auto_new: number;
   auto_mine: number;
   auto_new_fields: string[];
   edited_at: number;
   take_new: boolean;
   no_base: boolean;
+  /** 앱 기본 유형이면 그 종류 · 자리 이름 (화면 칸 이름으로 바꿔 보인다, NT51) */
+  native_kind: string | null;
+  slot_names: string[];
 };
 export type LookConflict = {
   /** null 이면 CSS (front 에 CSS) */
@@ -472,7 +515,35 @@ export type UpdateSummary = {
   issues: ImportIssue[];
   backup: string | null;
   roots: number[];
+  /** 적용한 업데이트 (B3-u [이 업데이트 되돌리기]) */
+  batch: number | null;
 };
+/** DU2-u 이 업데이트 되돌리기 (undo_update). blocked 면 되돌릴 수 없는 이유 */
+export type UndoSummary = {
+  batch: number;
+  file_name: string;
+  applied_at: number;
+  changed: number;
+  merged: number;
+  reverted_notes: number;
+  reverted_types: number;
+  archived_notes: number;
+  archived_cards: number;
+  /** 그중 보관한 새 노트의 카드. 나머지는 이미 있던 노트에 생긴 새 카드 */
+  archived_note_cards: number;
+  archived_card_ids: number[];
+  kept_cards: number;
+  kept_card_ids: number[];
+  edited_notes: number;
+  edited_card_ids: number[];
+  edited_types: number;
+  blocked: string | null;
+  backup: string | null;
+  roots: number[];
+  kept_structure: number;
+};
+/** 설정 › 이 기기 백업: 업데이트 전 백업과 그 업데이트 */
+export type Undoable = { batch: number; file_name: string; applied_at: number; backup: string | null; blocked: string | null };
 /** apply_update 가 보내는 "update-progress" (B2-p) */
 export type UpdateProgress = { step: "backup" | "types" | "notes" | "cards" | "media" | "done"; done: number; total: number };
 /** import_anki 가 보내는 "import-progress" 이벤트 (B2-p) */
@@ -559,8 +630,8 @@ export const api = {
   addCard: (card: NewCard) => invoke<number>("add_card", { card }),
   /** deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
   /** cardIds: 이 카드들만 (C1-xr "찾지 못한 미디어" [카드 보기]) */
-  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false) =>
-    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly }),
+  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false) =>
+    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly }),
   /** C1-w [약함으로] / [해제] */
   setDeckWeak: (deckId: number, weak: boolean) => invoke<void>("set_deck_weak", { deckId, weak }),
   /** C1-w [아니에요] (14일 제안 쉼) / recovered: "요즘 괜찮아요" 안내를 닫음 */
@@ -575,6 +646,8 @@ export const api = {
   /** 학습 밖 접어두기 (C2-r · C2-b). 3일 뒤 다시 */
   buryCards: (cardIds: number[]) => invoke<void>("bury_cards", { cardIds }),
   unburyCards: (cardIds: number[]) => invoke<void>("unbury_cards", { cardIds }),
+  /** 학습 중지 풀기 (C2 [학습 다시 하기]). 푼 카드 수 */
+  unsuspendCards: (cardIds: number[]) => invoke<number>("unsuspend_cards", { cardIds }),
   /** E2-h 최근 26주 하루별 평가한 카드 수. 0 인 날은 빠진다 */
   heatmap: (deckId: number | null) => invoke<HeatDay[]>("heatmap", { deckId }),
   saveDeckConfig: (config: DeckConfig) => invoke<void>("save_deck_config", { config }),
@@ -610,6 +683,11 @@ export const api = {
   /** [업데이트 적용]: 백업 → 한 트랜잭션. 진행은 "update-progress", 멈추기는 cancelImport */
   applyUpdate: async (path: string, choices: UpdateChoices) =>
     invoke<UpdateSummary>("apply_update", { path, deckIds: null, choices, voices: await voiceLangs() }),
+  /** DU2-u 이 업데이트 되돌리기. dryRun 이면 확인 창의 수만 (쓰지 않는다). 적용은 되돌리기 전 백업 → 한 트랜잭션 */
+  undoUpdate: (batch: number, dryRun: boolean) => invoke<UndoSummary>("undo_update", { batch, dryRun }),
+  /** DU59 새 버전에 없는 노트 정리 (요약의 missing_card_ids). action: 학습 중지 suspend · 지우기 delete. 업데이트 되돌리기와 따로 */
+  tidyMissingNotes: (cardIds: number[], action: "suspend" | "delete", dryRun: boolean) => invoke<TidySummary>("tidy_missing_notes", { cardIds, action, dryRun }),
+  undoableUpdates: () => invoke<Undoable[]>("undoable_updates"),
   /** B2-j 끌어놓은 .json 파일을 읽는다 */
   readJsonFile: (path: string) => invoke<string>("read_json_file", { path }),
   /** B2-c 끌어놓은 CSV 의 바이트 (인코딩은 화면이 고른다) */
@@ -635,14 +713,20 @@ export const api = {
   /** 그 덱(하위 덱 포함) 노트가 쓰는 유형 id, 많이 쓰는 것 먼저 */
   deckNoteTypes: (deckId: number) => invoke<number[]>("deck_note_types", { deckId }),
   /** values 는 보이는 순서. names 를 주면 편집 중인 필드 이름 (values 가 null 이면 이름 샘플) */
-  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[]) =>
-    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names }),
+  /** note: 값을 가져온 노트 ({{Tags}} {{Deck}} 같은 특수 필드를 그 노트 것으로) */
+  /** deck: 노트가 없을 때 {{Deck}} 에 쓸 덱 (C3 카드 추가) */
+  previewTemplate: (id: number, qfmt: string, afmt: string, ord: number, values: string[] | null, names?: string[], note?: number, deck?: number) =>
+    invoke<{ front: string; back: string }>("preview_template", { id, qfmt, afmt, ord, values, names, note, deck }),
   // NT1–NT5 목록 · 편집기
   cloneNoteType: (id: number, name: string | null) => invoke<number>("clone_note_type", { id, name }),
   renameNoteType: (id: number, name: string) => invoke<void>("rename_note_type", { id, name }),
   deleteNoteType: (id: number) => invoke<void>("delete_note_type", { id }),
   /** first: 먼저 보일 노트 (E 에서 연 카드의 노트) */
   noteTypeSamples: (id: number, first?: number) => invoke<NoteTypeSample[]>("note_type_samples", { id, first }),
+    /** NT9 다른 유형으로 옮기기: 기본 대응 (to 가 null 이면 처음 보일 유형) */
+  changeTypePlan: (noteIds: number[], to: number | null) => invoke<ChangePlan>("change_type_plan", { noteIds, to }),
+  /** dryRun 이면 확인 창의 수만 (쓰지 않는다). 적용은 옮기기 전 백업 → 한 트랜잭션 */
+  changeNoteType: (req: ChangeTypeReq, dryRun: boolean) => invoke<ChangeImpact>("change_note_type", { req, dryRun }),
   /** HTML 전용이면 이유 문자열로 거부한다 ("뒷면에 조건문 {{#예문}}") */
   templateLayout: (qfmt: string, afmt: string) => invoke<Layout>("template_layout", { qfmt, afmt }),
   buildTemplateLayout: (layout: Layout) => invoke<{ qfmt: string; afmt: string }>("build_template_layout", { layout }),
@@ -662,7 +746,8 @@ export const api = {
   ttsLangs: () => invoke<string[]>("tts_langs"),
   ttsLicense: (which: "supertonic" | "onnxruntime") => invoke<string>("tts_license", { which }),
   mvpMetrics: () => invoke<MvpMetrics>("mvp_metrics"),
-  createBackup: () => invoke<string>("create_backup"),
+  /** kind "notetype": 노트 유형 저장 전 자동 백업 (목록에 그 이름으로). 없으면 직접 만든 백업 */
+  createBackup: (kind?: "notetype" | "deck") => invoke<string>("create_backup", { kind: kind ?? null }),
   retryOpen: () => invoke<void>("retry_open"),
   /** 가장 최근 백업으로 되돌린다. 쓴 백업 파일 이름을 돌려준다 */
   /** name 이 없으면 가장 최근 백업. backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */
@@ -675,8 +760,11 @@ export const api = {
 
 // ---------------------------------------------------------------- G 카드 점검 · 나누기 (quality.rs)
 
-/** lines · items · questions = 카드 모양 (노랑/회색), again = 최근 14일 Again (빨강) */
-export type QualityFlag = { kind: "lines" | "items" | "questions" | "again"; n: number };
+/**
+ * lines · items · questions = 카드 모양 (노랑/회색), again = 최근 14일 Again (빨강),
+ * mismatch = 답이 안 맞아 보임 (reason = 근거 한 줄), format = 서식 제안 (badge = 센 사실, reason = 제안 한 줄). 8.2 CQ1
+ */
+export type QualityFlag = { kind: "lines" | "items" | "questions" | "again" | "mismatch" | "format"; n: number; reason?: string; badge?: string };
 export type QualityCard = { id: number; question: string; path: string[]; flags: QualityFlag[]; hidden: boolean };
 /** 글자 그대로. back 은 줄바꿈으로 항목을 나눈다 (만들 때 HTML 로 바뀐다) */
 export type SplitPart = { front: string; back: string };
@@ -694,7 +782,31 @@ export type SplitProposal = {
   sent: Sent[];
   evidence: Sent[];
 };
-export type CardChange = { id: number; summary: string; card_id: number | null; created_at: number; undone: boolean };
+/** kind rewrite 는 7일 안의 것만. how: format 서식 고치기 · ai AI로 확인한 뒤 · edit 직접 */
+export type CardChange = { id: number; kind: "split" | "rewrite"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean };
+/** 8.2 고쳐 쓰기 전후 (글자, 줄바꿈으로 줄을 나눈다. **…** 는 굵게). locked: 그림 · 소리 · 서식이 있어 덮을 수 없는 칸 [질문, 답] */
+export type Rewrite = {
+  card_id: number;
+  question: string;
+  answer: string;
+  new_question: string;
+  new_answer: string;
+  why: string;
+  locked: [boolean, boolean];
+  /** [전후 보기]: 고친 뒤 그 칸을 또 고쳤다 (new_* 는 지금 값) */
+  edited_since: boolean;
+};
+/** [AI로 확인] 결과. fix 가 없고 matches 가 false 면 근거가 부족해 고친 안을 만들지 않았다 (checks = 직접 확인할 물음) */
+export type CardCheck = {
+  matches: boolean;
+  reason: string;
+  fix: { question: string; answer: string } | null;
+  /** 고친 안이 잠긴 칸(그림 · 소리 · 서식)을 바꿔서 그 칸은 버렸다 */
+  kept_locked: boolean;
+  checks: string[];
+  sent: Sent[];
+  evidence: Sent[];
+};
 
 export const qualityApi = {
   check: (deckId: number) => invoke<QualityCard[]>("quality_check", { deckId }),
@@ -703,7 +815,15 @@ export const qualityApi = {
   suggest: (cardId: number, perCard: number | null = null) => invoke<SplitProposal>("split_suggest", { cardId, perCard }),
   /** 승인. 변경 id 를 돌려준다 (되돌리기용) */
   apply: (cardId: number, parts: SplitPart[], archiveOriginal: boolean) => invoke<number>("split_apply", { cardId, parts, archiveOriginal }),
-  undo: (changeId: number) => invoke<void>("undo_change", { changeId }),
+  /** false: 고쳐 쓰기 뒤에 또 고쳐서 되돌리지 않았다. 확인을 받은 뒤에만 force 로 다시 (CQ2) */
+  undo: (changeId: number, force = false) => invoke<boolean>("undo_change", { changeId, force }),
+  /** 8.2 고쳐 쓰기 제안 (서식은 규칙으로). 아무것도 바꾸지 않는다 */
+  rewrite: (cardId: number) => invoke<Rewrite>("rewrite_suggest", { cardId }),
+  /** [이대로 고치기]. 바뀐 칸만 보통 편집처럼 쓴다. 변경 id 를 돌려준다 */
+  rewriteApply: (cardId: number, question: string, answer: string, how: "format" | "ai" | "edit") =>
+    invoke<number>("rewrite_apply", { cardId, question, answer, how }),
+  /** [전후 보기] */
+  rewriteChange: (changeId: number) => invoke<Rewrite>("rewrite_change", { changeId }),
   recent: (deckId: number) => invoke<CardChange[]>("recent_changes", { deckId }),
 };
 
@@ -737,6 +857,8 @@ export const aiApi = {
   openUsage: () => invoke<void>("ai_open_usage"),
   /** 카드 한 장을 보내 같은 모양의 제안을 받는다. 아무것도 바꾸지 않는다 (승인은 qualityApi.apply). 오류는 AiError */
   regroup: (cardId: number, segmentIds: number[] = []) => invoke<SplitProposal>("ai_regroup", { cardId, segmentIds }),
+  /** 8.2 [AI로 확인]: 카드 한 장(+ 남긴 연결 구간)을 보내 근거와 고친 안을 받는다. 아무것도 바꾸지 않는다 (승인은 qualityApi.rewriteApply) */
+  checkCard: (cardId: number, segmentIds: number[] = []) => invoke<CardCheck>("ai_check_card", { cardId, segmentIds }),
   cancel: () => invoke<void>("ai_cancel"),
 };
 /** ai_regroup 오류는 { kind, message }. 다른 오류(글자)도 받는다 */
@@ -892,7 +1014,8 @@ export type RestorePreview = {
   others: string[];
 };
 /** winner: 자동으로 맞출 때 이긴(나중에 고친) 버전 */
-export type SyncVersion = { device: string; at: number; fields: string[]; current: boolean; winner: boolean };
+// usable false: 그 버전은 지금과 다른 노트 유형의 내용이라 [이 버전으로 바꾸기]를 쓸 수 없다 (K41)
+export type SyncVersion = { device: string; at: number; fields: string[]; current: boolean; winner: boolean; usable: boolean };
 /** picked: [이 버전으로 바꾸기]로 직접 고른 적이 있다 (지금 내용 꼬리표) */
 export type SyncConflict = { id: number; question: string; deck_path: string[]; versions: [SyncVersion, SyncVersion]; picked: boolean };
 

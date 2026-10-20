@@ -679,6 +679,8 @@ struct AType {
     degraded: Vec<&'static str>,
     /// Anki originalStockKind (0 = 사용자 정의). 내보낼 때 다시 붙인다 (I78)
     stock: i64,
+    /// 카드 종류마다 덱 (Anki deck override, 템플릿 did · target_deck_id): (ord, Anki 덱 id). NT76
+    decks: Vec<(u32, i64)>,
 }
 
 struct Package {
@@ -841,6 +843,16 @@ fn read_modern(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
             .prepare("SELECT ord, name, config FROM templates WHERE ntid = ?1 ORDER BY ord")
             .and_then(|mut s| s.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect())
             .map_err(err)?;
+        // CardTemplate.Config: 1 앞면 · 2 뒷면 · 5 target_deck_id (deck override, 0 = 없음)
+        let tdecks: Vec<(u32, i64)> = raw
+            .iter()
+            .filter_map(|(ord, _, c)| {
+                pb_fields(c.as_deref().unwrap_or_default()).into_iter().find_map(|(n, v)| match v {
+                    Pb::Varint(d) if n == 5 && d > 0 => Some((*ord, d as i64)),
+                    _ => None,
+                })
+            })
+            .collect();
         let templates: Vec<(u32, String, String, String)> = raw
             .into_iter()
             .map(|(ord, n, c)| {
@@ -856,7 +868,7 @@ fn read_modern(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
                 }
             }
         }
-        types.insert(id, AType { name, fields, css: pb_str(&cfg, 3), templates, degraded, stock: stock.unwrap_or(0) });
+        types.insert(id, AType { name, fields, css: pb_str(&cfg, 3), templates, degraded, stock: stock.unwrap_or(0), decks: tdecks });
     }
     Ok((decks, types))
 }
@@ -899,7 +911,17 @@ fn read_legacy(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
                 }
             }
             let stock = t.get("originalStockKind").and_then(Value::as_i64).unwrap_or(0);
-            types.insert(id, AType { name: s(&t, "name"), fields, css: s(&t, "css"), templates, degraded, stock });
+            let tdecks: Vec<(u32, i64)> = t
+                .get("tmpls")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .enumerate()
+                        .filter_map(|(i, x)| Some((x.get("ord").and_then(Value::as_u64).unwrap_or(i as u64) as u32, x.get("did").and_then(Value::as_i64).filter(|d| *d > 0)?)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            types.insert(id, AType { name: s(&t, "name"), fields, css: s(&t, "css"), templates, degraded, stock, decks: tdecks });
         }
     }
     Ok((decks, types))
@@ -1394,7 +1416,8 @@ fn run_import_selected(
         if !by_type.contains_key(aid) {
             continue;
         }
-        let existing: Option<i64> = tx.query_row("SELECT id FROM note_type WHERE anki_model_id = ?1", [aid], |r| r.get(0)).optional().map_err(err)?;
+        // 내보낸 내 덱의 앱 기본 유형은 내보낸 모델 id 로 찾는다 (DU55, 새 "Basic" 이 생기지 않게)
+        let existing = deck_update::type_of_model(&tx, *aid)?.map(|(id, _)| id);
         let id = match existing {
             Some(id) => {
                 let ours = crate::notetype::load(&tx, id)?;
@@ -1403,7 +1426,7 @@ fn run_import_selected(
                 remap.insert(*aid, (crate::notetype::incoming_slots(&ours, &t.fields), ours.slots.clone(), ords));
                 id
             }
-            None => insert_type(&tx, *aid, t, now)?,
+            None => insert_type(&tx, *aid, t, now, &|did| Ok((deck_cache.get(&did).copied(), pkg.decks.get(&did).map(|d| d.path.join(" › ")))))?,
         };
         nt_map.insert(*aid, id);
         // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
@@ -1788,8 +1811,11 @@ fn run_import_selected(
     Ok(result)
 }
 
-/// 처음 보는 Anki 노트타입을 그대로 넣는다. 원본(B)도 함께 남긴다 (DU1, 덱 업데이트가 다음 버전과 비교한다)
-fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64) -> Res<i64> {
+/// 처음 보는 Anki 노트타입을 그대로 넣는다. 원본(B)도 함께 남긴다 (DU1, 덱 업데이트가 다음 버전과 비교한다).
+/// deck_of: Anki 덱 id → (이번에 가져온 우리 덱, 패키지의 덱 경로). 카드 종류의 덱(deck override)은 그 덱이 있을 때만 (없으면 비워 두고
+/// 요약에는 알리지 않는다. 경로를 알면 편집기가 "지운 덱"으로 보인다, NT76 · NT11)
+pub(super) type DeckOf<'a> = &'a dyn Fn(i64) -> Res<(Option<i64>, Option<String>)>;
+fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64, deck_of: DeckOf) -> Res<i64> {
     tx.execute(
         "INSERT INTO note_type (name, fields, css, created_at, updated_at, is_supported, unsupported_note, anki_model_id, anki_stock_kind, origin)
          VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -1807,9 +1833,22 @@ fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64) -> Res<i64> {
     )
     .map_err(err)?;
     let id = tx.last_insert_rowid();
+    // 빈칸 유형의 did 는 맞추지 않는다 (Anki 26.9.3 도 무시한다, NT77)
+    let cloze = t.templates.iter().any(|x| crate::notetype::cloze_like(&x.2));
     for (ord, name, q, a) in &t.templates {
-        tx.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, ord, name, q, a])
-            .map_err(err)?;
+        let (deck, deck_name) = match t.decks.iter().find(|(o, _)| o == ord).filter(|_| !cloze) {
+            Some((_, did)) => deck_of(*did)?,
+            None => (None, None),
+        };
+        let deck_name = match deck {
+            Some(d) => crate::notetype::deck_path(tx, d)?.or(deck_name),
+            None => deck_name,
+        };
+        tx.execute(
+            "INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt, deck_id, deck_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, ord, name, q, a, deck, deck_name],
+        )
+        .map_err(err)?;
     }
     Ok(id)
 }

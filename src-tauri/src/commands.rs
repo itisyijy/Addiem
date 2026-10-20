@@ -1046,6 +1046,8 @@ pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String])
         rows.collect::<Result<_, _>>().map_err(err)?
     };
     let deck_id = existing.first().map(|e| e.2).ok_or("카드를 찾을 수 없어요.")?;
+    // 새 빈칸 번호의 카드: 그 유형의 카드 종류에 정한 덱(NT76), 없으면 노트의 첫 카드 덱
+    let deck_id = notetype::template_deck(tx, nt.id, 0)?.unwrap_or(deck_id);
     for ord in &ords {
         if !existing.iter().any(|e| e.1 == *ord) {
             tx.execute(
@@ -1112,6 +1114,8 @@ pub struct CardList {
     rows: Vec<CardRow>,
     /// limit 을 적용하기 전 일치하는 카드 수
     total: i64,
+    /// 이 덱 범위의 학습 중지 카드 (검색 · 거르기와 상관없이). 있으면 C2 가 [학습 중지 n장 보기] 칩을 보인다
+    suspended: i64,
 }
 
 /// 뒷면에서 답 부분만. Basic 템플릿은 <hr id=answer> 뒤가 답이다
@@ -1158,8 +1162,29 @@ fn sound_only_hits(con: &Connection, query: &str, like: &str) -> Res<Vec<i64>> {
     Ok(out)
 }
 
-/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). buried_only 는 A2-b "접어둔 카드 보기"
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// 검색 글자에서 "tag:이름" 낱말을 뺀다 (태그, 나머지 글자). 태그 낱말이 없으면 글자는 입력 그대로 (띄어쓰기도)
+fn tag_terms(query: &str) -> (Vec<String>, String) {
+    let is_tag = |w: &str| w.len() > 4 && w.is_char_boundary(4) && w[..4].eq_ignore_ascii_case("tag:");
+    if !query.split_whitespace().any(is_tag) {
+        return (vec![], query.to_string());
+    }
+    let (tags, rest): (Vec<&str>, Vec<&str>) = query.split_whitespace().partition(|w| is_tag(w));
+    (tags.into_iter().map(|t| t[4..].to_string()).collect(), rest.join(" "))
+}
+
+/// 그 태그나 그 아래 태그(이름::…)가 있는 노트. 대소문자는 가리지 않는다 (Anki tag: 와 같다)
+fn tag_filter(tag: &str) -> String {
+    let t = like_escape(&tag.to_lowercase()).replace('\'', "''");
+    format!("AND ((' ' || lower(n.tags) || ' ') LIKE '% {t} %' ESCAPE '\\' OR (' ' || lower(n.tags)) LIKE '% {t}::%' ESCAPE '\\')")
+}
+
+/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기"
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn list_cards(
     state: State<AppState>,
     deck_id: Option<i64>,
@@ -1168,9 +1193,25 @@ pub fn list_cards(
     buried_only: Option<bool>,
     card_ids: Option<Vec<i64>>,
     weak_only: Option<bool>,
+    suspended_only: Option<bool>,
 ) -> Res<CardList> {
     let con = state.db.lock().map_err(err)?;
-    let decks = load_decks(&con)?;
+    card_list(&con, deck_id, &query, limit, buried_only, card_ids, weak_only, suspended_only)
+}
+
+/// list_cards 의 본체 (테스트가 DB 로 부른다)
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn card_list(
+    con: &Connection,
+    deck_id: Option<i64>,
+    query: &str,
+    limit: Option<i64>,
+    buried_only: Option<bool>,
+    card_ids: Option<Vec<i64>>,
+    weak_only: Option<bool>,
+    suspended_only: Option<bool>,
+) -> Res<CardList> {
+    let decks = load_decks(con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let ids = match deck_id {
         Some(id) => descendants(id, &decks),
@@ -1185,12 +1226,17 @@ pub fn list_cards(
         ids
     };
     let ids = if ids.is_empty() { "-1".to_string() } else { ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",") };
+    // "tag:이름" 낱말은 태그로 거른다 (Q4 M2). 나머지 글자는 지금처럼 필드 원문에서 찾는다 (태그 낱말이 없으면 입력 그대로)
+    let (tags, query) = tag_terms(query);
     // LIKE 의 와일드카드를 글자 그대로 찾게 한다
-    let q = query.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let q = like_escape(query.trim());
     let q = q.as_str();
-    let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(&con, query.trim(), q)? };
+    let sound_only = if q.is_empty() { vec![] } else { sound_only_hits(con, query.trim(), q)? };
     let filter = format!(
-        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {}",
+        "c.deck_id IN ({ids}) AND (?1 = '' OR {SEARCH_TEXT} LIKE '%' || ?1 || '%' ESCAPE '\\') {} {} {} {} {}",
+        tags.iter().map(|t| tag_filter(t)).collect::<String>(),
+        // [학습 중지 n장 보기]: 가져온 Anki 일시 정지 카드는 태그가 없어 tag: 로 찾지 못한다
+        if suspended_only.unwrap_or(false) { "AND c.state = 'suspended'" } else { "" },
         if buried_only.unwrap_or(false) { "AND c.buried_until IS NOT NULL" } else { "" },
         // C1-xr [카드 보기]: 이 카드들만
         card_ids.map_or(String::new(), |c| format!("AND c.id IN ({})", if c.is_empty() { "-1".into() } else { id_list(&c) })),
@@ -1202,7 +1248,8 @@ pub fn list_cards(
     let mut st = con
         .prepare(&format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
-                    c.buried_until, c.template_ord, nt.id, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS}
+                    c.buried_until, c.template_ord, nt.id, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS},
+                    n.tags, nt.name, coalesce(t.name, '')
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
@@ -1210,15 +1257,18 @@ pub fn list_cards(
              ORDER BY c.id LIMIT ?2"
         ))
         .map_err(err)?;
-    let field_names = note_field_names(&con)?;
-    let fronts = crate::notetype::Fronts::load(&con)?;
+    let field_names = note_field_names(con)?;
+    let fronts = crate::notetype::Fronts::load(con)?;
     let rows = st
         .query_map(params![q, limit.unwrap_or(100)], |r| {
             let fields: String = r.get(3)?;
             let nt: i64 = r.get(11)?;
             let qfmt: Option<String> = r.get(12)?;
             let afmt: Option<String> = r.get(13)?;
-            let rendered = render_fields(&field_names, nt, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?);
+            // 목록 칸은 글자 한 줄: 특수 필드({{Tags}} …)는 학습 화면과 같은 값으로, 힌트 상자({{hint:}})는 뺀다 (펼치기 이름 · 내용이 질문에 섞인다, NT10)
+            let special = render::special_fields(&r.get::<_, String>(18)?, &path_of(r.get(2)?, &by_id), &r.get::<_, String>(19)?, &r.get::<_, String>(20)?);
+            let rendered = render_fields_with(&field_names, nt, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?, &special);
+            let rendered = render::Rendered { front: render::drop_hints(&rendered.front), back: render::drop_hints(&rendered.back) };
             let occlusion = io_pos(qfmt.as_deref(), r.get(10)?, r.get(16)?, r.get(17)?);
             // 그림 가리기 답은 칸 이름(질문 칸에 보인다)이라 답변 칸에는 덧붙임(Back Extra, 4번째 필드)만
             let answer = match occlusion {
@@ -1254,7 +1304,8 @@ pub fn list_cards(
         .map_err(err)?
         .collect::<Result<_, _>>()
         .map_err(err)?;
-    Ok(CardList { rows, total })
+    let suspended: i64 = con.query_row(&format!("SELECT count(*) FROM card c WHERE c.deck_id IN ({ids}) AND c.state = 'suspended'"), [], |r| r.get(0)).map_err(err)?;
+    Ok(CardList { rows, total, suspended })
 }
 
 /// 카드 하나의 중요도. None 이면 덱 설정을 따른다
@@ -1305,7 +1356,7 @@ pub fn dismiss_weak(state: State<AppState>, deck_id: i64, recovered: bool) -> Re
 }
 
 /// "1,2,3". 숫자만 들어가므로 SQL 에 바로 넣어도 된다
-fn id_list(ids: &[i64]) -> String {
+pub(crate) fn id_list(ids: &[i64]) -> String {
     ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
 }
 
@@ -1357,6 +1408,44 @@ pub fn unbury_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     Ok(())
 }
 
+/// C2 [학습 중지 풀기] (Q4 M2). 공부한 적 없으면 신규, 간격이 하루 이상이면 복습, 그 밖은 학습 중으로 (일정 값은 그대로).
+/// 되돌리기가 보관한 노트(deck_update::ARCHIVE_TAG)는 학습 중지 카드가 남지 않으면 그 태그도 뗀다. 푼 카드 수
+#[tauri::command]
+pub fn unsuspend_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<usize> {
+    let mut con = state.db.lock().map_err(err)?;
+    unsuspend(&mut con, &card_ids, now_ms())
+}
+
+pub(crate) fn unsuspend(con: &mut Connection, card_ids: &[i64], now: i64) -> Res<usize> {
+    if card_ids.is_empty() {
+        return Ok(0);
+    }
+    let ids = id_list(card_ids);
+    let tx = con.transaction().map_err(err)?;
+    let n = tx
+        .execute(
+            &format!(
+                "UPDATE card SET state = CASE WHEN reps = 0 AND last_reviewed_at IS NULL THEN 'new' WHEN interval_days >= 1 THEN 'review' ELSE 'learning' END,
+                        due_at = CASE WHEN reps = 0 AND last_reviewed_at IS NULL THEN due_at ELSE coalesce(due_at, ?1) END, updated_at = ?1
+                 WHERE id IN ({ids}) AND state = 'suspended'"
+            ),
+            [now],
+        )
+        .map_err(err)?;
+    let tag = crate::import::deck_update::ARCHIVE_TAG;
+    tx.execute(
+        &format!(
+            "UPDATE note SET tags = trim(replace(' ' || tags || ' ', ' ' || ?1 || ' ', ' ')), updated_at = ?2
+             WHERE id IN (SELECT note_id FROM card WHERE id IN ({ids})) AND (' ' || tags || ' ') LIKE '% ' || ?1 || ' %'
+               AND NOT EXISTS (SELECT 1 FROM card c WHERE c.note_id = note.id AND c.state = 'suspended')"
+        ),
+        params![tag, now],
+    )
+    .map_err(err)?;
+    tx.commit().map_err(err)?;
+    Ok(n)
+}
+
 /// 카드를 지운다. 노트에 남은 카드가 없으면 노트도 지운다. 복습 기록은 남는다 (review_log.card_id 가 NULL 이 된다)
 #[tauri::command]
 pub fn delete_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
@@ -1399,11 +1488,25 @@ pub(crate) fn render_fields(
     afmt: Option<&str>,
     ord: u32,
 ) -> render::Rendered {
+    render_fields_with(names, note_type, fields_json, qfmt, afmt, ord, &[])
+}
+
+/// render_fields + 특수 필드 ({{Tags}} {{Deck}} …, render::special_fields). 학습 화면(card_view) · 카드 목록(list_cards)
+pub(crate) fn render_fields_with(
+    names: &HashMap<i64, (String, Vec<String>)>,
+    note_type: i64,
+    fields_json: &str,
+    qfmt: Option<&str>,
+    afmt: Option<&str>,
+    ord: u32,
+    special: &[(String, String)],
+) -> render::Rendered {
     let values: Vec<String> = serde_json::from_str(fields_json).unwrap_or_default();
-    let map: HashMap<String, String> = names
+    let mut map: HashMap<String, String> = names
         .get(&note_type)
         .map(|(_, n)| n.iter().cloned().zip(values.iter().cloned()).filter(|(k, _)| !k.is_empty()).collect())
         .unwrap_or_default();
+    map.extend(special.iter().cloned());
     match (qfmt, afmt) {
         (Some(q), Some(a)) => render::render_card(q, a, &map, ord),
         _ => render::Rendered { front: values.first().cloned().unwrap_or_default(), back: values.get(1).cloned().unwrap_or_default() },
@@ -1811,7 +1914,8 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let mut view = con.query_row(
         &format!(
-            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS}
+            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, c.deck_id, c.eff_importance, c.state, n.id, coalesce(nt.css, ''), {IO_POS},
+                    n.tags, nt.name, coalesce(t.name, '')
          FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
          LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
          WHERE c.id = ?1"
@@ -1822,7 +1926,8 @@ pub fn card_view(state: State<AppState>, card_id: i64) -> Res<CardView> {
             let nt: i64 = r.get(2)?;
             let q: Option<String> = r.get(3)?;
             let a: Option<String> = r.get(4)?;
-            let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = render::special_fields(&r.get::<_, String>(13)?, &path_of(r.get(6)?, &by_id), &r.get::<_, String>(14)?, &r.get::<_, String>(15)?);
+            let rendered = render_fields_with(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?, &special);
             let special = names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
             Ok(CardView {
                 id: r.get(0)?,
@@ -1884,6 +1989,12 @@ pub fn answer(state: State<AppState>, session_id: i64, card_id: i64, rating: u8,
         push_undo(&state, u)?;
     }
     Ok(result)
+}
+
+/// 실제 Anki 검증 하네스(qa_real_anki.rs)가 앱과 같은 평가를 부른다
+#[cfg(test)]
+pub(crate) fn answer_for_qa(con: &mut Connection, fsrs: &fsrs::FSRS, session_id: i64, card_id: i64, rating: u8, now: i64) -> Res<()> {
+    answer_at(con, fsrs, session_id, card_id, rating, 4000, None, now).map(|_| ())
 }
 
 /// answer 의 본체 (테스트가 시각을 정해 부른다). 되돌리기 기록이 없으면 평가를 남기지 않은 것이다
@@ -2346,7 +2457,7 @@ pub(crate) fn write_backup(con: &Connection, data_dir: &std::path::Path) -> Res<
     write_backup_as(con, data_dir, "")
 }
 
-/// tag: 백업 목록이 무엇의 백업인지 보이게 이름 끝에 붙인다 ("update" = 덱 업데이트 적용 전, "restore" = 복구 전). 빈 값이면 직접 만든 백업
+/// tag: 백업 목록이 무엇의 백업인지 보이게 이름 끝에 붙인다 (BACKUP_KINDS). 빈 값이면 직접 만든 백업
 pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag: &str) -> Res<std::path::PathBuf> {
     use std::io::Write;
     let dir = backup_dir(data_dir);
@@ -2378,8 +2489,46 @@ pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag:
     let _ = std::fs::remove_file(&db_copy);
     if result.is_err() {
         let _ = std::fs::remove_file(&out);
+    } else if !tag.is_empty() {
+        prune_auto_backups(con, &dir, now_ms());
     }
     result.map(|_| out)
+}
+
+/// 사용자 결정 2026-10-20: 자동 백업은 가장 최근 AUTO_KEEP 개 + AUTO_DAYS 일 안에 만든 것만 남긴다
+const AUTO_KEEP: usize = 10;
+const AUTO_DAYS: i64 = 7;
+
+/// 새 자동 백업을 만들 때 오래된 자동 백업을 지운다. 지운 이름을 돌려준다.
+/// auto_backup 이 알아본 이름(앱이 만드는 꼴과 꼭 맞는 것)만 본다: 직접 만든 백업 · 사용자가 넣은 파일 · 모르는 이름은 건드리지 않는다.
+/// 지운 백업이 그 업데이트 전 백업이면 그 업데이트의 되돌리기 기록(update_journal)도 지운다: 설정의 되돌리기 진입점은 그 백업이 남아 있는 동안만이고,
+/// 기기 DB 가 끝없이 커지지 않게 (코디네이터 결정 2026-10-20)
+pub(crate) fn prune_auto_backups(con: &Connection, dir: &std::path::Path, now: i64) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut autos: Vec<(i64, std::path::PathBuf, String)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            auto_backup(&name).map(|(_, at)| (at, e.path(), name))
+        })
+        .collect();
+    autos.sort_by_key(|a| std::cmp::Reverse(a.0));
+    let mut gone = vec![];
+    for (i, (at, path, name)) in autos.into_iter().enumerate() {
+        if i >= AUTO_KEEP && now - at > AUTO_DAYS * db::DAY_MS && std::fs::remove_file(&path).is_ok() {
+            gone.push(name);
+        }
+    }
+    if !gone.is_empty() {
+        // 정리가 실패해도 백업은 이미 만들었다 (다음 정리에서 다시 본다)
+        let _ = con.execute(
+            "DELETE FROM update_journal WHERE batch_id IN (
+               SELECT batch_id FROM update_journal WHERE kind = 'meta' AND json_extract(after, '$.backup') IN (SELECT value FROM json_each(?1)))",
+            [serde_json::to_string(&gone).unwrap_or_default()],
+        );
+    }
+    gone
 }
 
 #[tauri::command]
@@ -2582,11 +2731,13 @@ pub fn heatmap(state: State<AppState>, deck_id: Option<i64>) -> Res<Vec<HeatDay>
         .collect())
 }
 
-/// E1 "백업 만들기". 만든 파일 경로를 돌려준다
+/// E1 "백업 만들기". 만든 파일 경로를 돌려준다. kind "notetype" = 노트 유형 저장 전 자동 백업 (NT44 지우는 저장), "deck" = 덱 삭제 전.
+/// 그 밖은 직접 만든 백업 ([백업 만들기]만)
 #[tauri::command]
-pub async fn create_backup(state: State<'_, AppState>) -> Res<String> {
+pub async fn create_backup(state: State<'_, AppState>, kind: Option<String>) -> Res<String> {
     let con = state.db.lock().map_err(err)?;
-    write_backup(&con, &state.data_dir).map(|p| p.display().to_string())
+    let tag = ["notetype", "deck"].into_iter().find(|k| kind.as_deref() == Some(*k)).unwrap_or("");
+    write_backup_as(&con, &state.data_dir, tag).map(|p| p.display().to_string())
 }
 
 /// S1-6 "다시 시도". 학습 데이터를 다시 연다
@@ -2609,6 +2760,35 @@ pub struct LocalBackup {
     kind: &'static str,
 }
 
+/// 자동 백업의 이름 끝 (-update.zip …). update = 덱 업데이트 적용 전, restore = 복구 전, move = 노트 유형 옮기기 전,
+/// undo = 업데이트 되돌리기 전, notetype = 노트 유형 저장 전 (NT44), deck = 덱 삭제 전, wipe = 모든 데이터 삭제 전.
+/// 동기화 기기 백업(sync/mod.rs local_backup)은 이름 앞이 neoanki-before-sync- (sync) · neoanki-before-restore- (restore). 화면 이름은 Settings.tsx BACKUP_KIND
+/// cleanup = 덱 업데이트 결과에서 새 버전에 없는 노트 지우기 전 (DU59 "노트 정리 전 자동 백업")
+const BACKUP_KINDS: [&str; 8] = ["update", "restore", "move", "undo", "notetype", "deck", "wipe", "cleanup"];
+
+/// 자동 백업이면 (종류, 만든 시각 ms). 앱이 만드는 이름과 꼴이 꼭 맞을 때만: neoanki-<YYYYmmdd-HHMMSS>-<종류>.zip (write_backup_as),
+/// neoanki-before-sync-<시각>.zip · neoanki-before-restore-<시각>.zip (sync/mod.rs local_backup). 그 밖은 None (직접 만든 백업으로 본다)
+fn auto_backup(name: &str) -> Option<(&'static str, i64)> {
+    use chrono::TimeZone;
+    let s = name.strip_prefix("neoanki-")?.strip_suffix(".zip")?;
+    let (kind, stamp) = if let Some(t) = s.strip_prefix("before-sync-") {
+        ("sync", t)
+    } else if let Some(t) = s.strip_prefix("before-restore-") {
+        ("restore", t)
+    } else {
+        let (stamp, k) = s.split_at_checked(15)?;
+        let k = k.strip_prefix('-')?;
+        (BACKUP_KINDS.into_iter().find(|x| *x == k)?, stamp)
+    };
+    let at = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d-%H%M%S").ok()?;
+    Some((kind, chrono::Local.from_local_datetime(&at).earliest()?.timestamp_millis()))
+}
+
+/// 백업 zip 이름 → 종류. 자동 백업이 아니면 직접 만든 백업
+fn backup_kind(name: &str) -> &'static str {
+    auto_backup(name).map_or("manual", |x| x.0)
+}
+
 /// 이 기기 백업 zip 들, 최근 것부터
 #[tauri::command]
 pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
@@ -2620,7 +2800,7 @@ pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
             let m = e.metadata().ok()?;
             let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
             let name = e.file_name().to_string_lossy().into_owned();
-            let kind = if name.ends_with("-update.zip") { "update" } else if name.ends_with("-restore.zip") { "restore" } else { "manual" };
+            let kind = backup_kind(&name);
             Some(LocalBackup { name, at, bytes: m.len(), kind })
         })
         .collect();
@@ -2718,7 +2898,7 @@ pub fn set_cutoff_hour(state: State<AppState>, hour: i64) -> Res<()> {
 /// E1-b 모든 데이터 삭제. backup 이면 먼저 백업 파일을 만든다. 만든 백업 경로를 돌려준다
 #[tauri::command]
 pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::SyncState>, backup: bool) -> Res<Option<String>> {
-    let saved = if backup { Some(write_backup(&*state.db.lock().map_err(err)?, &state.data_dir)?.display().to_string()) } else { None };
+    let saved = if backup { Some(write_backup_as(&*state.db.lock().map_err(err)?, &state.data_dir, "wipe")?.display().to_string()) } else { None };
     // "이 기기에서" 지우는 것이 다른 기기로 번지지 않게 Drive 동기화를 먼저 끊는다. [연결 끊기 · 남기기]와 같다:
     // 이 기기의 동기화 기록 · Google 로그인 토큰 · Drive 잠금 키를 지우고 Drive 데이터는 그대로 (K19 · Q2-10)
     crate::sync::disconnect(&sync, false).await?;
@@ -2747,6 +2927,77 @@ mod tests {
     use crate::db::{now_ms, study_day, study_day_end_ms};
     use rusqlite::{params, Connection};
 
+    #[test]
+    fn old_automatic_backups_are_pruned_but_never_manual_ones() {
+        // 사용자 결정 2026-10-20: 자동 백업은 최근 10개 + 7일 안의 것만. 직접 만든 백업 · 모르는 파일은 지우지 않는다
+        let dir = std::env::temp_dir().join(format!("na-prune-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = now_ms();
+        let con = crate::db::open_in_memory().unwrap();
+        let at = |ago: i64| chrono::DateTime::from_timestamp_millis(now - ago).unwrap().with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S").to_string();
+        let day = crate::db::DAY_MS;
+        let kinds = ["update", "move", "undo", "notetype", "deck", "wipe", "restore"];
+        let mut autos = vec![];
+        for (i, days) in [1, 2].into_iter().chain(10..22).enumerate() {
+            autos.push(format!("neoanki-{}-{}.zip", at(days * day), kinds[i % kinds.len()]));
+        }
+        autos.push(format!("neoanki-before-sync-{}.zip", at(30 * day)));
+        let keep = [
+            format!("neoanki-{}.zip", at(40 * day)), // 직접 만든 백업 (오래됐어도)
+            format!("neoanki-before-restore-{}.sqlite", at(40 * day)),
+            "neoanki-old-update.zip".into(),
+            "my-update.zip".into(),
+            format!("neoanki-{}-mine.zip", at(40 * day)),
+            format!("neoanki-{}-update.zip.part", at(40 * day)),
+        ];
+        for n in autos.iter().chain(&keep) {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        // 되돌리기 기록: 지울 백업(autos[12]) 전의 업데이트 1 · 남길 백업(autos[0]) 전의 업데이트 2
+        for (batch, backup) in [(1, &autos[12]), (2, &autos[0])] {
+            con.execute("INSERT INTO import_batch (id, source_kind, source_name, started_at, status) VALUES (?1, 'apkg', 'v2.apkg', 0, 'ok')", [batch]).unwrap();
+            con.execute("INSERT INTO update_journal (batch_id, kind, uid, after) VALUES (?1, 'meta', '', json_object('backup', ?2))", params![batch, backup]).unwrap();
+            con.execute("INSERT INTO update_journal (batch_id, kind, uid, before, after) VALUES (?1, 'note', 'n1', '{}', '{}')", [batch]).unwrap();
+        }
+        // 최근 10개(1 · 2 · 10..17일) 다음은 모두 7일이 넘었다
+        assert_eq!(sorted(super::prune_auto_backups(&con, &dir, now)), sorted(autos[10..].to_vec()));
+        let journal: Vec<String> = con.prepare("SELECT batch_id || kind FROM update_journal ORDER BY 1").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(journal, ["2meta", "2note"], "백업이 정리된 업데이트의 되돌리기 기록도 지운다 (가져온 기록 import_batch 는 남긴다)");
+        assert_eq!(con.query_row("SELECT count(*) FROM import_batch", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일은 남는다: {left:?}");
+        assert!(super::prune_auto_backups(&con, &dir, now).is_empty(), "다시 불러도 지울 것이 없다");
+        // 7일 안의 자동 백업은 10개가 넘어도 남긴다: 오늘 12개를 더하면 7일 넘은 10..17일 것만 지운다
+        for i in 0..12 {
+            std::fs::write(dir.join(format!("neoanki-{}-update.zip", at(i * 60_000))), b"x").unwrap();
+        }
+        assert_eq!(sorted(super::prune_auto_backups(&con, &dir, now)), sorted(autos[2..10].to_vec()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_kind_by_name() {
+        // "직접 만든 백업"은 [백업 만들기]만. 자동 백업은 이름 끝 (동기화 기기 백업은 이름 앞)
+        for (name, kind) in [
+            ("neoanki-20261020-101010.zip", "manual"),
+            ("neoanki-20261020-101010-deck.zip", "deck"),
+            ("neoanki-20261020-101010-wipe.zip", "wipe"),
+            ("neoanki-20261020-101010-cleanup.zip", "cleanup"),
+            ("neoanki-20261020-101010-notetype.zip", "notetype"),
+            ("neoanki-before-sync-20261020-101010.zip", "sync"),
+            ("neoanki-before-restore-20261020-101010.zip", "restore"),
+            ("neoanki-20261020-101010-mine.zip", "manual"),
+            ("my-update.zip", "manual"),
+            ("neoanki-old-update.zip", "manual"),
+        ] {
+            assert_eq!(super::backup_kind(name), kind, "{name}");
+        }
+    }
+
     /// 덱 하나에 기본 카드 n장 (하루 신규 상한 limit). 카드 id
     fn deck_with_cards(con: &Connection, n: usize, limit: Option<i64>) -> Vec<i64> {
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('t', 0, 0)", []).unwrap();
@@ -2757,6 +3008,55 @@ mod tests {
             super::insert_note(con, &card, "", None).unwrap();
         }
         con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn tag_search_and_unsuspend() {
+        // Q4 M2: C2 검색의 "tag:" 낱말은 태그로 (그 아래 태그도, 일부 글자는 아님), 나머지 글자는 그대로
+        assert_eq!(super::tag_terms("a  b"), (vec![], "a  b".to_string()), "태그 낱말이 없으면 입력 그대로");
+        assert_eq!(super::tag_terms("tag:X 사과 TAG:y::z"), (vec!["X".to_string(), "y::z".to_string()], "사과".to_string()));
+        let mut con = crate::db::open_in_memory().unwrap();
+        let cards = deck_with_cards(&con, 3, None);
+        for (c, tags) in cards.iter().zip(["되돌린_업데이트 과목::1장", "과목", ""]) {
+            con.execute("UPDATE note SET tags = ?2 WHERE id = (SELECT note_id FROM card WHERE id = ?1)", params![c, tags]).unwrap();
+        }
+        let hits = |t: &str| -> i64 { con.query_row(&format!("SELECT count(*) FROM note n WHERE 1 {}", super::tag_filter(t)), [], |r| r.get(0)).unwrap() };
+        assert_eq!([hits("되돌린_업데이트"), hits("과목"), hits("과"), hits("과목::1장"), hits("x' OR 1=1 --")], [1, 2, 0, 1, 0]);
+        // 학습 중지 풀기: 공부한 적 없으면 신규, 간격이 하루 이상이면 복습. 보관 태그는 학습 중지 카드가 남지 않으면 뗀다
+        con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [cards[0]]).unwrap();
+        con.execute("UPDATE card SET state = 'suspended', reps = 2, interval_days = 3, last_reviewed_at = 1, due_at = 5 WHERE id = ?1", [cards[1]]).unwrap();
+        assert_eq!(super::unsuspend(&mut con, &cards, 9).unwrap(), 2);
+        let states: Vec<String> = con.prepare("SELECT state || ':' || coalesce(due_at, -1) FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(states[..2], ["new:-1".to_string(), "review:5".to_string()]);
+        let tags: String = con.query_row("SELECT tags FROM note WHERE id = (SELECT note_id FROM card WHERE id = ?1)", [cards[0]], |r| r.get(0)).unwrap();
+        assert_eq!(tags, "과목::1장");
+    }
+
+    #[test]
+    fn suspended_filter_and_count_follow_the_deck_scope() {
+        // C2 [학습 중지 n장 보기]: 수는 그 덱 범위의 학습 중지 카드 (검색과 상관없이), 거르면 학습 중지 카드만
+        let con = crate::db::open_in_memory().unwrap();
+        let cards = deck_with_cards(&con, 3, None); // 덱 t: 카드 3장
+        let other = deck_with_cards(&con, 2, None).into_iter().filter(|c| !cards.contains(c)).collect::<Vec<_>>(); // 다른 덱 t: 2장
+        let (deck, other_deck): (i64, i64) = (
+            con.query_row("SELECT deck_id FROM card WHERE id = ?1", [cards[0]], |r| r.get(0)).unwrap(),
+            con.query_row("SELECT deck_id FROM card WHERE id = ?1", [other[0]], |r| r.get(0)).unwrap(),
+        );
+        assert_ne!(deck, other_deck);
+        for c in [cards[0], cards[2], other[0]] {
+            con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [c]).unwrap();
+        }
+        let list = |d: Option<i64>, q: &str, only: bool| super::card_list(&con, d, q, None, None, None, None, Some(only)).unwrap();
+        let ids = |l: &super::CardList| l.rows.iter().map(|r| r.id).collect::<Vec<_>>();
+        let all = list(Some(deck), "", false);
+        assert_eq!((all.total, all.suspended), (3, 2), "덱 범위 안의 학습 중지 2장 (다른 덱 것은 세지 않는다)");
+        let only = list(Some(deck), "", true);
+        assert_eq!((ids(&only), only.total, only.suspended), (vec![cards[0], cards[2]], 2, 2), "거르면 학습 중지 카드만");
+        assert_eq!(list(Some(deck), "q1", false).suspended, 2, "수는 검색과 상관없다");
+        assert_eq!(ids(&list(Some(deck), "q2", true)), [cards[2]], "검색과 함께 거른다");
+        let everywhere = list(None, "", true);
+        assert_eq!((everywhere.total, everywhere.suspended), (3, 3), "모든 덱");
+        assert_eq!(list(Some(other_deck), "", false).suspended, 1);
     }
 
     /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)

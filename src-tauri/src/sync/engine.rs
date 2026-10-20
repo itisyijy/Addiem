@@ -97,11 +97,12 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
              winner_device TEXT, winner TEXT, loser_device TEXT, loser TEXT, seen INTEGER NOT NULL DEFAULT 0);",
     )
     .map_err(dbe)?;
-    // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다)
-    for col in ["cols", "floor"] {
-        let has: i64 = con.query_row("SELECT count(*) FROM pragma_table_info('sync_outbox') WHERE name = ?1", [col], |r| r.get(0)).map_err(dbe)?;
+    // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다).
+    // K7 기록의 버전마다 노트 유형 (K41: 다른 유형으로 옮기는 사이 고친 내용은 옛 유형 자리 배열이다. NULL = 이 기능 전 기록)
+    for (table, col) in [("sync_outbox", "cols"), ("sync_outbox", "floor"), ("sync_conflict", "winner_type"), ("sync_conflict", "loser_type")] {
+        let has: i64 = con.query_row(&format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get(0)).map_err(dbe)?;
         if has == 0 {
-            con.execute_batch(&format!("ALTER TABLE sync_outbox ADD COLUMN {col} TEXT")).map_err(dbe)?;
+            con.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT")).map_err(dbe)?;
         }
     }
     Ok(())
@@ -1294,6 +1295,10 @@ struct Applier<'a> {
     by_note: Vec<(&'static str, String, String)>,
     /// 다시 보낸 refused 의 수 (delete_rows 를 두 번 불러도 한 번만)
     revived: usize,
+    /// K41 다른 유형으로 옮긴 노트를 받았다 (rowid): 끝에 새 유형에 카드 종류가 없는 카드를 지운다
+    retyped: HashSet<i64>,
+    /// K41 같은 노트의 다른 카드가 아직 그 번호에 있어 잠시 비켜 둔 카드 (rowid, 음수 ord). 제 차례에 새 번호로 가지 않으면 끝에 지운다
+    displaced: Vec<i64>,
 }
 
 /// 같은 자리에 두 기기가 따로 더한 필드: 잃은 것이 없다 (둘 다 남기고 나중 쪽이 그 자리, 다른 쪽은 끝 자리). 화면이 이 제목으로 따로 그린다
@@ -1460,7 +1465,19 @@ impl Applier<'_> {
             // 부모가 없다: 덱은 부모가 같은 묶음 뒤쪽에 있을 수 있어 다음 바퀴에, 나머지는 지워진 부모라 건너뛴다
             return Ok(if t == "deck" { Step::Later } else { self.skip() });
         };
+        // K41 다른 유형으로 옮긴 노트에 새 유형의 카드 종류가 없는 번호의 카드가 왔다: 옮긴 것을 모르고 옛 유형으로 만든 카드다. 넣지 않는다
+        // (그 기기도 옮긴 것을 받으면 지운다, settle_retyped). 옮기지 않은 노트는 그대로 둔다 (K37 의 남은 카드가 카드 종류를 붙잡는 길)
+        if t == "card"
+            && let (Some(Value::Integer(note)), Some(Value::Integer(ord))) = (vals.get("note_id"), vals.get("template_ord"))
+            && self.orphan_in_moved(*note, *ord)?
+        {
+            return Ok(self.skip());
+        }
         if let Some((rowid, local_uid)) = natural_match(self.tx, table, &vals, self.mode)? {
+            // K41 다른 유형으로 옮긴 카드(번호가 바뀌었다)와 같은 자리의 다른 카드는 옛 유형의 카드다: 합치지 않는다 (일정이 섞인다)
+            if t == "card" && self.moved_card(&local_uid)? {
+                return Ok(self.skip());
+            }
             // 이 묶음이 그 행을 지운다: 지웠다 다시 만든 것(빈칸 c2 를 지웠다 다시 넣기, 같은 이름의 덱)이라 같은 것이 아니다.
             // 합치면 옛 행의 지우기가 새 행까지 지운다. 지우기를 정한 뒤 다시: 지웠으면 새 행으로, 남았으면 그때 합친다 (K40)
             if self.doomed.contains(&(t.to_string(), local_uid.clone())) {
@@ -1518,6 +1535,79 @@ impl Applier<'_> {
         }
         self.report.applied += 1;
         Ok(Step::Done)
+    }
+
+    /// 다른 유형으로 옮겨 번호(template_ord)가 바뀐 카드인가 (번호는 그 밖에는 바뀌지 않는다, NT21)
+    fn moved_card(&self, uid: &str) -> SRes<bool> {
+        if self.pend("card", uid).is_some_and(|p| p.col("template_ord").is_some()) {
+            return Ok(true);
+        }
+        Ok(load_clock(self.tx, "card", uid)?.is_some_and(|c| c.cols.contains_key("template_ord")))
+    }
+
+    /// K41 다른 유형으로 옮긴 노트(유형 열이 바뀌었다)인데 그 유형(빈칸 유형 아님)에 이 번호의 카드 종류가 없다
+    fn orphan_in_moved(&self, note: i64, ord: i64) -> SRes<bool> {
+        let Some(uid) = self.tx.query_row("SELECT uid FROM note WHERE id = ?1", [note], |r| r.get::<_, Option<String>>(0)).optional().map_err(dbe)?.flatten() else {
+            return Ok(false);
+        };
+        let moved = self.pend("note", &uid).is_some_and(|p| p.col("note_type_id").is_some())
+            || load_clock(self.tx, "note", &uid)?.is_some_and(|c| c.cols.contains_key("note_type_id"));
+        if !moved {
+            return Ok(false);
+        }
+        self.tx
+            .query_row(
+                "SELECT NOT EXISTS (SELECT 1 FROM note x JOIN card_template t ON t.note_type_id = x.note_type_id WHERE x.id = ?1 AND (t.ord = ?2 OR t.qfmt LIKE '%{{cloze:%'))",
+                params![note, ord],
+                |r| r.get(0),
+            )
+            .map_err(dbe)
+    }
+
+    /// K41 같은 노트에서 그 번호를 차지한 다른 카드를 음수 번호로 비켜 둔다. 비켰으면 true
+    fn displace(&mut self, rowid: i64, to: &Value) -> SRes<bool> {
+        let Value::Integer(to) = to else { return Ok(false) };
+        let other: Option<i64> = self
+            .tx
+            .query_row(
+                "SELECT o.rowid FROM card o JOIN card c ON c.note_id = o.note_id WHERE c.rowid = ?1 AND o.template_ord = ?2 AND o.rowid <> ?1",
+                params![rowid, to],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(dbe)?;
+        let Some(other) = other else { return Ok(false) };
+        self.tx.execute("UPDATE card SET template_ord = -1 - rowid WHERE rowid = ?1", [other]).map_err(dbe)?;
+        self.displaced.push(other);
+        Ok(true)
+    }
+
+    /// K41 다른 유형으로 옮긴 노트를 받은 뒤: 새 유형에 카드 종류가 없는 그 노트의 카드(옮긴 것을 모르고 이 기기가 옛 유형으로 만든 카드)와
+    /// 제 번호로 가지 못한 비켜 둔 카드를 지운다. 이 기기의 변경으로 올린다 (다른 기기에도 없게). 복습 기록은 통계에 남는다 (A4)
+    fn settle_retyped(&mut self) -> SRes<()> {
+        let mut notes: BTreeSet<i64> = std::mem::take(&mut self.retyped).into_iter().collect();
+        for c in std::mem::take(&mut self.displaced) {
+            if let Some(n) = self.tx.query_row("SELECT note_id FROM card WHERE rowid = ?1", [c], |r| r.get::<_, i64>(0)).optional().map_err(dbe)? {
+                notes.insert(n);
+            }
+        }
+        if notes.is_empty() {
+            return Ok(());
+        }
+        applying(self.tx, false)?;
+        for n in notes {
+            let gone = self
+                .tx
+                .execute(
+                    "DELETE FROM card WHERE note_id = ?1 AND (template_ord < 0 OR (
+                       NOT EXISTS (SELECT 1 FROM note x JOIN card_template t ON t.note_type_id = x.note_type_id WHERE x.id = ?1 AND t.qfmt LIKE '%{{cloze:%')
+                       AND NOT EXISTS (SELECT 1 FROM note x JOIN card_template t ON t.note_type_id = x.note_type_id WHERE x.id = ?1 AND t.ord = card.template_ord)))",
+                    [n],
+                )
+                .map_err(dbe)?;
+            self.report.skipped += gone;
+        }
+        applying(self.tx, true)
     }
 
     fn skip(&mut self) -> Step {
@@ -1581,6 +1671,46 @@ impl Applier<'_> {
         } else {
             let mut sets: Vec<(String, J, String)> = vec![];
             let mut srs_differs = false;
+            // K41 다른 유형으로 옮긴 노트의 자리 배열(fields)은 새 유형의 자리다. 유형 열과 내용 열을 따로 겨루면 옛 유형 자리로 쓴 내용이
+            // 새 유형 아래 엉뚱한 필드에 보인다. 그래서 내용은 유형을 정한 쪽 것으로: 받은 쪽이 나중에 옮겼으면 받은 내용 (Some(true)),
+            // 받은 쪽이 이 기기가 옮긴 것을 모르고 고쳤으면(바탕이 옮긴 것보다 옛것) 이 기기 내용 (Some(false)). 진 쪽 내용은 K7 에 남는다.
+            // 처음 합치기(Merge)는 바탕이 없어 보지 않는다
+            // 받은 쪽이 옮긴 것이 이기면 그 HLC (내용 열이 바뀌지 않은 옮기기도 행 전체의 내용을 쓴다)
+            let mut moved_at: Option<String> = None;
+            let fields_rule: Option<bool> = if t == "note" && self.mode == Mode::Sync {
+                let lt = col_hlc(&clock, pend.as_ref(), "note_type_id");
+                let moved_in = f.cols.get("note_type_id").filter(|(v, _)| {
+                    let v = v.as_str().map(|u| J::String(alias_of(&self.aliases, "note_type", u))).unwrap_or_else(|| v.clone());
+                    local.get("note_type_id") != Some(&v)
+                });
+                match moved_in {
+                    Some((_, h)) => {
+                        if *h > lt {
+                            moved_at = Some(h.clone());
+                        }
+                        Some(*h > lt)
+                    }
+                    None if f.cols.contains_key("fields") => f.base.as_deref().filter(|b| *b != "0" && *b < lt.as_str()).map(|_| false),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            // K7 기록의 버전마다 노트 유형: 받은 쪽은 그 기기 행의 유형 (옮겼으면 받은 유형 열), 이 기기는 지금 유형.
+            // 받은 쪽이 이 기기가 옮긴 것을 모르고 고쳤으면 옮기기 전 유형이다: 그 uid 는 여기 없어 "?" (어느 유형과도 다르다)
+            let type_of = |v: Option<&J>| v.and_then(|v| v.as_str()).map(|u| alias_of(&self.aliases, "note_type", u)).unwrap_or_default();
+            let note_types = if t == "note" {
+                let here = type_of(local.get("note_type_id"));
+                let there = match f.cols.get("note_type_id").map(|(v, _)| v).or_else(|| f.row.as_ref().and_then(|(_, r)| r.get("note_type_id"))) {
+                    Some(v) => type_of(Some(v)),
+                    None if fields_rule == Some(false) => "?".into(),
+                    None => here.clone(),
+                };
+                (there, here)
+            } else {
+                Default::default()
+            };
+            let types = (note_types.0.as_str(), note_types.1.as_str());
             // 필드 목록은 열 하나로 통째로 겨루지 않고 자리마다 합친다 (Q2-06)
             let merged = t == "note_type" && f.cols.contains_key("fields");
             if merged {
@@ -1598,6 +1728,18 @@ impl Applier<'_> {
                     _ => v.clone(),
                 };
                 let same = local.get(c) == Some(v);
+                // K41 (위): 나중에 고친 쪽이 아니라 유형을 정한 쪽 내용으로. 그대로 겨뤄도 같은 결과면 아래 보통 길
+                if c == "fields"
+                    && !same
+                    && let Some(take) = fields_rule
+                    && take != (*h > lh)
+                {
+                    self.conflict(uid, h, v, &lh, local.get(c), !take, types)?;
+                    if take {
+                        sets.push((c.clone(), v.clone(), h.clone()));
+                    }
+                    continue;
+                }
                 srs_differs |= !same && t == "card" && SRS_COLS.contains(&c.as_str());
                 // 노트 유형 정의를 이 기기도 고쳤는데 아직 올리지 않았다: 받은 쪽은 이 기기 것을 모르고 고쳤다. 진 쪽을 남긴다 (K39)
                 if !same
@@ -1612,7 +1754,7 @@ impl Applier<'_> {
                     if !same {
                         // 받은 쪽이 이 기기 값을 모르고 고쳤으면(바탕이 더 옛것) 동시에 고친 것이다. 처음 합칠 때는 바탕이 없다: 내용이 다르면 남긴다
                         if t == "note" && c == "fields" && hlc_ms(&lh) > 0 && (self.mode == Mode::Merge || f.base.as_ref().is_none_or(|b| *b < lh)) {
-                            self.conflict(uid, h, v, &lh, local.get(c), false)?;
+                            self.conflict(uid, h, v, &lh, local.get(c), false, types)?;
                         }
                         sets.push((c.clone(), v.clone(), h.clone()));
                     } else {
@@ -1620,7 +1762,7 @@ impl Applier<'_> {
                     }
                 } else if !same {
                     if t == "note" && c == "fields" {
-                        self.conflict(uid, h, v, &lh, local.get(c), true)?;
+                        self.conflict(uid, h, v, &lh, local.get(c), true, types)?;
                     }
                     if self.mode == Mode::Merge {
                         self.local_won.insert((t.into(), uid.to_string()));
@@ -1631,7 +1773,20 @@ impl Applier<'_> {
                 let incoming = |c: &str| f.cols.get(c).map(|(v, _)| v).or_else(|| f.row.as_ref().and_then(|(_, r)| r.get(c)));
                 self.merge_srs.insert(rowid, (srs_of(|c| local.get(c)), srs_of(incoming)));
             }
+            // K41 (위): 옮기면서 자리 배열이 그대로였다 (같은 자리로 옮김). 받은 행의 내용으로 맞춘다 (이 기기가 옮긴 것을 모르고 고친 내용은 진다)
+            if !f.cols.contains_key("fields")
+                && let (Some(h), Some((_, row))) = (&moved_at, &f.row)
+                && let Some(v) = row.get("fields")
+                && local.get("fields") != Some(v)
+            {
+                let lh = col_hlc(&clock, pend.as_ref(), "fields");
+                self.conflict(uid, h, v, &lh, local.get("fields"), false, types)?;
+                sets.push(("fields".into(), v.clone(), h.clone()));
+            }
             let applied = !sets.is_empty();
+            if t == "note" && sets.iter().any(|(c, _, _)| c == "note_type_id") {
+                self.retyped.insert(rowid);
+            }
             // 앞면이 바뀐 카드 종류: 보낸 기기가 모르던 이 기기 노트에 카드가 생길 수 있다 (Q2-04)
             if t == "card_template" && sets.iter().any(|(c, _, _)| c == "qfmt") {
                 self.new_tpls.insert(rowid);
@@ -1650,6 +1805,15 @@ impl Applier<'_> {
                         clock.cols.insert(c, h);
                     }
                     // 이 묶음이 지울 행이 아직 그 이름(유일 키)을 차지했다 (지운 덱 이름으로 바꾸기): 지운 뒤 다시
+                    // K41 다른 유형으로 옮기며 번호를 맞바꿨다: 같은 노트의 다른 카드가 아직 그 번호에 있다. 그 카드를 잠시 음수 번호로 비켜 두고 다시 쓴다.
+                    // 비켜 둔 카드는 이 묶음의 제 차례에 새 번호로 간다 (가지 않으면 끝에 지운다, settle_retyped)
+                    Err(_) if t == "card" && c == "template_ord" && self.displace(rowid, &val)? => {
+                        if self.tx.execute("UPDATE card SET template_ord = ?2 WHERE rowid = ?1", params![rowid, val]).is_ok() {
+                            clock.cols.insert(c, h);
+                        } else if !self.doomed.is_empty() {
+                            return Ok(Step::Park);
+                        }
+                    }
                     Err(_) if !self.doomed.is_empty() => return Ok(Step::Park),
                     Err(_) => {}
                 }
@@ -1684,7 +1848,9 @@ impl Applier<'_> {
     }
 
     /// K7: 같은 노트 내용을 두 기기에서 고쳤다. 진 쪽 내용을 남긴다. 시각은 고친 순간 (K28)
-    fn conflict(&mut self, note_uid: &str, h: &str, incoming: &J, lh: &str, local: Option<&J>, local_wins: bool) -> SRes<()> {
+    /// types: (받은 버전의 노트 유형 uid, 이 기기 버전의 노트 유형 uid). [이 버전으로 바꾸기]가 다른 유형의 자리 배열을 넣지 않게 남긴다 (K41)
+    #[allow(clippy::too_many_arguments)]
+    fn conflict(&mut self, note_uid: &str, h: &str, incoming: &J, lh: &str, local: Option<&J>, local_wins: bool, types: (&str, &str)) -> SRes<()> {
         let local_dev = hlc_device(lh).to_string();
         // 옛 앱이 만든 스냅샷은 HLC 에 기기가 없다: 그 스냅샷을 쓴 기기
         let in_dev = match hlc_device(h) {
@@ -1693,16 +1859,17 @@ impl Applier<'_> {
         };
         let local_fields = local.and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let in_fields = incoming.as_str().unwrap_or_default().to_string();
-        let (wd, wa, wf, ld, la, lf) = if local_wins {
-            (local_dev, hlc_ms(lh), local_fields, in_dev, hlc_ms(h), in_fields)
+        let (wd, wa, wf, wt, ld, la, lf, lt) = if local_wins {
+            (local_dev, hlc_ms(lh), local_fields, types.1, in_dev, hlc_ms(h), in_fields, types.0)
         } else {
-            (in_dev, hlc_ms(h), in_fields, local_dev, hlc_ms(lh), local_fields)
+            (in_dev, hlc_ms(h), in_fields, types.0, local_dev, hlc_ms(lh), local_fields, types.1)
         };
+        let ty = |t: &str| (!t.is_empty()).then(|| t.to_string());
         self.tx
             .execute(
-                "INSERT INTO sync_conflict (note_uid, at, winner_device, winner_at, winner_fields, loser_device, loser_at, loser_fields)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![note_uid, db::now_ms(), wd, wa, wf, ld, la, lf],
+                "INSERT INTO sync_conflict (note_uid, at, winner_device, winner_at, winner_fields, loser_device, loser_at, loser_fields, winner_type, loser_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![note_uid, db::now_ms(), wd, wa, wf, ld, la, lf, ty(wt), ty(lt)],
             )
             .map_err(dbe)?;
         self.report.conflicts += 1;
@@ -2119,6 +2286,8 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
         replaced: HashSet::new(),
         by_note: vec![],
         revived: 0,
+        retyped: HashSet::new(),
+        displaced: vec![],
     };
     if mode == Mode::Merge {
         // 아직 차례가 오지 않은 행도 Drive 가 아는 uid 다 (insert 가 이 기기 uid 를 버려도 되는지 본다)
@@ -2168,6 +2337,7 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
     }
     // 받은 행 · 지우기가 모두 정해진 뒤에: 진 쪽 노트 값 옮기기, 빠진 카드 만들기 (다시 넣은 노트 · 카드 종류도 insert 가 new_notes · new_tpls 에 넣었다).
     // 받은 가장 큰 HLC 는 처음에 남겼다 (bump_hlc_last): 여기서 쓰는 이 기기 변경은 받은 어떤 값보다 크다 (K28)
+    ap.settle_retyped()?;
     ap.move_values()?;
     ap.fill_cards()?;
     ap.recompute(fsrs)?;
@@ -2300,7 +2470,7 @@ pub enum Join {
 
 /// 동기화 대상 표를 비운다 (Drive 데이터로 바꾸기). applying 이라 지운 기록이 쌓이지 않는다
 /// 이 기기 안에서만 쓰지만 동기화 대상 행을 정수 id 로 가리키는 표. Drive 데이터로 바꾸면 id 가 달라져 비운다
-const LOCAL_REFS: [&str; 5] = ["session_card_state", "card_change", "embedding_cache", "import_issue", "recall_mark"];
+const LOCAL_REFS: [&str; 6] = ["session_card_state", "card_change", "embedding_cache", "import_issue", "recall_mark", "update_journal"];
 
 fn clear_synced(tx: &Transaction) -> SRes<()> {
     for t in LOCAL_REFS {

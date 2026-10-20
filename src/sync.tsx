@@ -373,7 +373,7 @@ export function SyncHost({ studying }: { studying: boolean }) {
       shown.current = s.conflict_seq;
       toast({
         title: "다른 기기와 맞췄어요",
-        text: `카드 ${n(s.conflicts)}장은 두 기기에서 고쳐서 나중에 고친 쪽 내용으로 맞췄어요`,
+        text: `카드 ${n(s.conflicts)}장은 두 기기에서 고쳐서 한쪽 내용으로 맞췄어요 (보통 나중에 고친 쪽, 노트 유형을 옮겼으면 옮긴 쪽)`,
         icon: "cloud-check",
         ms: 5000,
         action: { label: "보기", onClick: () => setFlow({ kind: "conflicts" }) },
@@ -956,8 +956,11 @@ function Version({ v, other, current, picked, onUse, busy }: { v: SyncConflict["
       {current ? (
         // 저절로 맞춘 쪽(이긴 버전, 고른 적 없음)만 "나중에 고친 쪽". 시각 비교로 고르지 않는다 (T3-02)
         <span className="t-caption c-accent">{v.winner && !picked ? "나중에 고친 쪽이라 이 내용으로 맞췄어요" : "직접 고른 내용이에요"}</span>
-      ) : (
+      ) : v.usable ? (
         <Button variant="secondary" size="M" icon="rotate" label="이 버전으로 바꾸기" busy={busy} onClick={onUse} />
+      ) : (
+        // K41: 노트 유형을 옮기기 전 내용이라 그대로 넣으면 필드가 뒤섞인다. 글만 보여 준다
+        <span className="t-caption c-warn">노트 유형이 바뀐 뒤라 이 버전으로 바꿀 수 없어요 · 글을 복사해 직접 고쳐 주세요</span>
       )}
     </div>
   );
@@ -995,7 +998,10 @@ function ConflictsModal({ onClose }: { onClose: () => void }) {
           // 저절로 맞춘 그대로인 카드만 있으면 규칙을, 직접 고른(또는 다른 기기에서 고른) 카드가 있으면 그 말을 빼고
           list?.some((c) => c.picked || !c.versions.some((v) => v.current && v.winner))
             ? "내용이 다른 카드예요. 지금 내용은 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
-            : "나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
+            : list?.some((c) => c.versions.some((v) => !v.usable))
+              ? // K41: 노트 유형을 옮긴 쪽 내용으로 맞춘 카드가 있다 (나중에 고친 쪽이 아닐 수 있고, 그 버전은 바꿀 수 없다)
+                "한쪽 내용을 지금 내용으로 썼어요. 노트 유형이 바뀐 카드는 옮긴 쪽 내용이에요. 복습 기록은 양쪽 모두 남았어요."
+              : "나중에 고친 쪽 내용을 지금 내용으로 썼어요. 다른 쪽 내용이 맞다면 바꿀 수 있어요. 복습 기록은 양쪽 모두 남았어요."
         }
         onClose={onClose}
       />

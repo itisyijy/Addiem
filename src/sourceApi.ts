@@ -59,14 +59,26 @@ export const pagesOf = (kind: "pdf" | "pptx", count: string) => (kind === "pptx"
 /** "3장_빅데이터분석.pdf · 13쪽" · "4장_회귀분석.pptx · 슬라이드 4" */
 export const placeOf = (s: { material: string; kind: "pdf" | "pptx"; page: number }) => `${s.material} · ${pageOf(s.kind, s.page)}`;
 
-/** 신뢰도 순 (source.rs SIGNALS). figure · table 은 8.4 그림 · 표로 만든 카드의 영역 (강조가 아니다, 빠진 범위에서 뺀다) */
-export type Signal = "highlight" | "underline" | "red" | "star" | "bold" | "figure" | "table";
-export const SIGNAL_LABEL: Record<Signal, string> = { highlight: "하이라이트", underline: "밑줄", red: "붉은 글씨", star: "★", bold: "볼드", figure: "그림", table: "표" };
+/** 신뢰도 순 (source.rs SIGNALS). figure · table 은 8.4 그림 · 표로 만든 카드의 영역 (강조가 아니다, 빠진 범위에서 뺀다).
+ * heading 은 8.4 목차 제목 (OT1): 글이 "## 3.2 요약" 꼴이고 강조 목록 · 빠진 범위 · 개수에서 뺀다 ([목차 N] 탭에서만) */
+export type Signal = "highlight" | "underline" | "red" | "star" | "bold" | "figure" | "table" | "heading";
+export const SIGNAL_LABEL: Record<Signal, string> = { highlight: "하이라이트", underline: "밑줄", red: "붉은 글씨", star: "★", bold: "볼드", figure: "그림", table: "표", heading: "목차" };
 /** 밑줄은 하이라이트와 구분되게 회색 + 글자 밑줄 (SignalBadge) */
-export const SIGNAL_TONE: Record<Signal, string> = { highlight: "warn", underline: "neutral", red: "danger", star: "accent", bold: "neutral", figure: "neutral", table: "neutral" };
-export const SIGNAL_ORDER: Signal[] = ["highlight", "underline", "red", "star", "bold", "figure", "table"];
+export const SIGNAL_TONE: Record<Signal, string> = {
+  highlight: "warn",
+  underline: "neutral",
+  red: "danger",
+  star: "accent",
+  bold: "neutral",
+  figure: "neutral",
+  table: "neutral",
+  heading: "neutral",
+};
+export const SIGNAL_ORDER: Signal[] = ["highlight", "underline", "red", "star", "bold", "figure", "table", "heading"];
 /** 그림 · 표 영역 구간 (IT9) */
 export const isRegion = (s: { signals: Signal[] }) => s.signals.includes("figure") || s.signals.includes("table");
+/** 8.4 목차 제목 구간 */
+export const isHeading = (s: { signals: Signal[] }) => s.signals.includes("heading");
 
 export type Material = {
   id: number;
@@ -81,6 +93,8 @@ export type Material = {
   linked: number;
   /** R1-a 빠진 범위: 강조됐는데 이어진 카드가 없는 구간 수 */
   gaps: number;
+  /** 8.4 목차 제목 수 */
+  headings: number;
 };
 /** 쪽 위 위치 [x, y, w, h], 0~1 비율 (왼쪽 위 기준) */
 export type Rect = [number, number, number, number];
@@ -121,6 +135,15 @@ export type TableMethod = "cloze" | "rows" | "list";
 export type TableSpec = { rows: Cell[][]; header: boolean; method: TableMethod; cols: number[]; hide_same_col: boolean };
 /** method "": 근거 칩으로 구간을 열었다 (카드 연결이 아님) */
 export type CardSource = { material: Material; segment: Segment; method: "manual" | "auto" | "" };
+// ---------------------------------------------------------------- 8.4 목차 (source.rs outline)
+
+/** 목차 구간 = 제목부터 다음 같은 · 윗 단계 제목 앞까지. segments · cards: 구간 안(아래 단계 포함) 강조 구간 수 · 이어진 카드 수.
+ * core: 핵심 범위면 까닭 ("제목에 '요약'" · "제목이 하이라이트로 강조돼 있어요") */
+export type Section = { id: number; level: number; title: string; page: number; end_page: number; segments: number; cards: number; core: string | null };
+/** source: outline PDF 목차 · size 목차 없는 PDF 의 큰 글자 줄 · slide PPTX 제목과 구역 · slide_title 제목만 · slide_section 구역만.
+ * wide: 핵심 범위가 강조 구간의 절반을 넘어 쓰지 않았을 때 가장 넓게 덮은 제목. read_at: 자료를 읽은 때 (ms) */
+export type Outline = { sections: Section[]; wide: string | null; source: "outline" | "size" | "slide" | "slide_title" | "slide_section"; read_at: number };
+
 /** "source-analyze" 이벤트. step 0 은 카드, 그다음 자료 하나씩 */
 export type AnalyzeProgress = { step: number; steps: number; label: string; done: number; total: number };
 export type ModelStatus = { ready: boolean; downloading: boolean; bytes: number; name: string; analyzing: AnalyzeProgress | null };
@@ -133,6 +156,10 @@ export const sourceApi = {
   savePdf: (materialId: number, pages: number, segments: NewSegment[], readable: boolean) =>
     invoke<Material>("source_save_pdf", { materialId, pages, segments, readable }),
   segments: (materialId: number) => invoke<Segment[]>("source_segments", { materialId }),
+  /** 8.4 [목차 N] 탭 */
+  outline: (materialId: number) => invoke<Outline>("source_outline", { materialId }),
+  /** [목차 다시 읽기]: 제목 구간만 바꾼다. PDF 는 pdf.ts readOutline 결과, PPTX 는 null (파일에서 다시 읽는다) */
+  saveOutline: (materialId: number, headings: NewSegment[] | null) => invoke<Outline>("source_save_outline", { materialId, headings }),
   slide: (materialId: number, page: number) => invoke<Para[]>("source_slide", { materialId, page }),
   link: (segmentId: number, cardId: number) => invoke<void>("source_link", { segmentId, cardId }),
   unlink: (segmentId: number, cardId: number) => invoke<void>("source_unlink", { segmentId, cardId }),

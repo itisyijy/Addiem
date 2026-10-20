@@ -6,6 +6,8 @@ const ALLOWED_TAGS = [
   "b", "strong", "i", "em", "u", "s", "br", "p", "div", "span", "ul", "ol", "li", "img", "hr",
   "sub", "sup", "table", "thead", "tbody", "tr", "td", "th", "font", "code", "pre", "blockquote",
   "h1", "h2", "h3", "h4", "h5", "h6",
+  // {{hint:필드}} (render.rs): 스크립트 없는 펼치기
+  "details", "summary",
 ];
 
 /**
@@ -16,7 +18,7 @@ const ALLOWED_TAGS = [
 export function sanitize(html: string): string {
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
-    ALLOWED_ATTR: ["src", "alt", "class", "style", "color", "colspan", "rowspan", "data-media", "data-c", "data-hint", "data-snd", "data-tts", "data-text", "data-speed"],
+    ALLOWED_ATTR: ["src", "alt", "class", "style", "color", "colspan", "rowspan", "data-media", "data-c", "data-hint", "data-snd", "data-tts", "data-text", "data-speed", "open"],
     ALLOWED_URI_REGEXP: /^(?:data:image\/[a-z+.-]+;base64,|[^:/?#\\]+$)/i,
   });
 }
@@ -70,7 +72,12 @@ async function soundChip(mark: Element) {
   chip.dataset.snd = name;
   if (len === null) {
     const url = await mediaUrl(name);
-    const why = url.startsWith(TOO_LARGE) ? `소리 파일이 너무 커서 재생하지 않아요 (${largeMb(url)} MB)` : "소리 파일을 찾을 수 없어요";
+    // 파일은 있는데 읽지 못하면(깨졌거나 모르는 형식) 찾지 못한 것과 따로 말한다
+    const why = url.startsWith(TOO_LARGE)
+      ? `소리 파일이 너무 커서 재생하지 않아요 (${largeMb(url)} MB)`
+      : url
+        ? "소리 파일을 재생할 수 없어요"
+        : "소리 파일을 찾을 수 없어요";
     chip.disabled = true;
     chip.classList.add("is-missing");
     chip.dataset.label = chip.title = `${why} · ${name}`;

@@ -33,6 +33,18 @@
 .du-item__head { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
 .du-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .du-field { display: flex; align-items: center; gap: 8px; }
+/* DU2-k 필드마다 고르기 · 원본 보기 (Figma 273:19133) */
+.du-fieldblock { display: flex; flex-direction: column; gap: 10px; }
+.du-fieldblock.is-cursor { margin: -6px -8px; padding: 6px 8px; border-radius: 12px; box-shadow: inset 2px 0 0 var(--accent-default); }
+.du-field__right { display: flex; align-items: center; gap: 12px; margin-left: auto; white-space: nowrap; }
+.du-basebtn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 8px; color: var(--text-secondary); }
+.du-basebtn:hover, .du-basebtn[aria-pressed="true"] { color: var(--text-primary); }
+.du-seg .segment--boxed { padding: 2px; }
+.du-seg .segment__item { padding: 3px 10px; font-size: 12px; line-height: 16px; }
+.du-compare--3 .du-side { padding: 14px 16px; }
+.du-compare--3 .du-side.is-chosen { padding: 13px 15px; }
+.du-side[role="button"] { cursor: pointer; }
+.du-side--base { border: 0; background: var(--bg-subtle); color: var(--text-secondary); }
 .du-compare { display: flex; align-items: flex-start; gap: 12px; }
 .du-side { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; padding: 16px 18px; border: 1px solid var(--border-default); border-radius: 14px; background: var(--bg-canvas); }
 .du-side.is-default { border: 1px dashed var(--border-strong); }
@@ -77,3 +89,16 @@ u.du-diff { text-decoration: underline; text-underline-offset: 3px; }
 .restore__list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow: auto; }
 .restore__list .import__option { padding: 12px 14px; }
 .restore__list .import__option.is-on { padding: 11px 13px; }
+/* 낮은 창(1180×640)에서도 버튼까지 보이게 (Q4 M1): 위 여백을 줄이고 창 높이 안에서 백업 목록이 줄어 스크롤. 되돌리기 확인 창도 같다 */
+.modal.restore, .modal.du-undo { top: clamp(24px, calc(100vh - 720px), 220px); max-height: calc(100vh - 48px); overflow: auto; }
+.modal.restore .restore__list { flex: 0 1 auto; min-height: 96px; }
+
+/* DU2-u 이 업데이트 되돌리기 (Figma 274:19232) · DU2-u2 결과 (276:20499) */
+.modal.du-undo { gap: 14px; width: 560px; }
+.du-undo__lines { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 14px 16px; border-radius: 14px; background: var(--bg-subtle); list-style: none; }
+.du-undo__line { display: flex; align-items: flex-start; gap: 8px; }
+.du-undo__line > .icon { flex-shrink: 0; margin-top: 2px; }
+.du-undo-strip { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--accent-subtle); }
+.du-undo-strip > .t-body-s { flex: 1; min-width: 0; }
+/* DU3-v1 결과 화면 [정리하기] 메뉴: 버튼 아래 오른쪽 맞춤 */
+.menu__list.du-tidy-menu { top: calc(100% + 8px); width: 300px; }

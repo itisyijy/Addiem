@@ -1,14 +1,15 @@
 // NT2 쉬운 편집 · NT3 HTML (쉬운 편집 잠김) · NT4 앱 기본 유형 보기 · NT5 저장할 때 확인과 오류.
 // 초안을 화면에 들고 있다가 [저장]에서 한 트랜잭션으로 쓴다 (save_note_type). 먼저 dry-run 으로 확인 창의 수를 센다
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
   api, errorText,
   type Layout, type Look, type NoteTypeConflict, type NoteTypeDetail as Detail, type NoteTypeEdit as TypeEdit, type NoteTypeImpact as SaveImpact,
   type NoteTypeSample as Sample, type Part,
 } from "../api";
+import type { ChangeImpact, ChangePlan, NoteTypeRow } from "../api";
 import { useSyncStatus, when } from "../sync";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
-import { iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
+import { eul, eun, iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, matchAction } from "../keys";
 import { useToast } from "../toast";
 import { plainText, renderCardHtml } from "../cardHtml";
@@ -18,13 +19,30 @@ import { splitBack } from "./Study";
 import { DiscardModal, Modal } from "./NewDeck";
 import { CloneDialog, typeLabel } from "./NoteTypes";
 import { nativeLabels } from "./AddCard";
+import { deckPathLabel, loadDeckChoices } from "./DeckPicker";
+import { NewDeckModal } from "./NewDeck";
+import { createPortal } from "react-dom";
 import { menuKeys } from "./Deck";
 import "../styles/notetypes.css";
 import "../styles/study.css";
 
 type Side = "front" | "back";
 type DField = { key: number; slot: number | null; name: string };
-type DTpl = { key: number; ord: number | null; name: string; qfmt: string; afmt: string; layout: Layout | null; reason: string | null };
+/** deck · gone · cards: 넣을 덱 (NT76 · NT11). gone = 정한 덱을 지웠을 때 그 경로, cards = 이미 있는 카드 수 */
+type DTpl = {
+  key: number;
+  ord: number | null;
+  name: string;
+  qfmt: string;
+  afmt: string;
+  layout: Layout | null;
+  reason: string | null;
+  deck: number | null;
+  gone: string | null;
+  /** 정한 덱을 보관했다 (연 때의 덱 그대로일 때만): 그 경로 */
+  archived: string | null;
+  cards: number;
+};
 type Draft = { fields: DField[]; tpls: DTpl[]; css: string };
 
 const SIDE_LABEL: Record<Side, string> = { front: "앞면", back: "뒷면" };
@@ -63,14 +81,15 @@ function fieldNameError(name: string, others: string[]) {
 /** show: 화면 필드 이름 (앱 기본 유형은 "질문 · 답변" 처럼, NT51) */
 type Show = (name: string) => string;
 const same: Show = (x) => x;
-function tplTitle(t: DTpl, i: number, cloze: boolean, show: Show = same) {
+type TplText = Pick<DTpl, "name" | "qfmt" | "afmt">;
+function tplTitle(t: TplText, i: number, cloze: boolean, show: Show = same) {
   return `카드 ${i + 1} · ${tplName(t, cloze, show)}`;
 }
-function tplName(t: DTpl, cloze: boolean, show: Show = same) {
+function tplName(t: TplText, cloze: boolean, show: Show = same) {
   if (t.name && !/^(Card \d+|Cloze)$/.test(t.name)) return t.name;
   return autoName(t, cloze, show);
 }
-function autoName(t: DTpl, cloze: boolean, show: Show = same) {
+function autoName(t: TplText, cloze: boolean, show: Show = same) {
   const f = refsOf(t.qfmt);
   if (cloze) return `빈칸${f[0] ? ` · ${show(f[0])}` : ""}`;
   const b = refsOf(t.afmt).find((x) => !f.includes(x));
@@ -124,11 +143,140 @@ const keptBoth = (c: NoteTypeConflict) => c.what.startsWith("같은 자리에");
 
 const initDraft = (d: Detail): Draft => ({
   fields: d.fields.map((f) => ({ key: f.slot, slot: f.slot, name: f.name })),
-  tpls: d.templates.map((t) => ({ key: t.ord, ord: t.ord, name: t.name, qfmt: t.qfmt, afmt: t.afmt, layout: t.layout, reason: t.reason })),
+  tpls: d.templates.map((t) => ({
+    key: t.ord,
+    ord: t.ord,
+    name: t.name,
+    qfmt: t.qfmt,
+    afmt: t.afmt,
+    layout: t.layout,
+    reason: t.reason,
+    deck: t.deck,
+    gone: t.deck_gone,
+    archived: t.deck_archived,
+    cards: t.cards,
+  })),
   css: d.css,
 });
 const draftKey = (x: Draft) =>
-  JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt]), x.css]);
+  JSON.stringify([x.fields.map((f) => [f.slot, f.name]), x.tpls.map((t) => [t.ord, t.name, t.qfmt, t.afmt, t.deck, t.gone]), x.css]);
+
+type DeckOpt = { id: number; label: string };
+/** 모든 덱 (최상위 덱마다 그 아래까지) "덱 › 하위 덱". NT76 넣을 덱 고르기. 두 번째 값은 다시 불러오기 (새 덱을 만든 뒤) */
+function useDeckOptions(): [DeckOpt[], () => void] {
+  const [opts, setOpts] = useState<DeckOpt[]>([]);
+  const [gen, setGen] = useState(0);
+  useEffect(() => {
+    let live = true;
+    api.home().then(async (h) => {
+      const out: DeckOpt[] = [];
+      for (const r of [...h.decks, ...h.idle_decks]) {
+        const list = await loadDeckChoices(r.id).catch(() => []);
+        out.push(...list.map((c) => ({ id: c.id, label: deckPathLabel(list[0], c) })));
+      }
+      if (live) setOpts(out);
+    }, () => {});
+    return () => {
+      live = false;
+    };
+  }, [gen]);
+  return [opts, () => setGen((g) => g + 1)];
+}
+
+/** NT11 넣을 덱 메뉴: 덱 찾기 · "노트를 넣는 덱"(기본) · 모든 덱(✓) · "+ 새 덱" (만들면 바로 이 카드 종류의 덱). DeckMenu 와 같은 모양 */
+function TemplateDeckMenu({ value, gone, choices, onPick, onCreated, onClose }: {
+  value: number | null;
+  /** 정한 덱을 지운 상태: "노트를 넣는 덱"에 ✓ 를 붙이지 않는다 (실제 값은 지운 덱) */
+  gone: boolean;
+  choices: DeckOpt[];
+  onPick: (id: number | null) => void;
+  onCreated: (id: number) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
+  // 아래 공간이 모자라면 위로 (넓은 쪽), 그래도 모자라면 목록만 줄여 스크롤 (1180×640 · 800px 창)
+  const [place, setPlace] = useState<{ up: boolean; max?: number }>({ up: false });
+  const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = box.current;
+    const anchor = el?.parentElement?.getBoundingClientRect();
+    const list = el?.querySelector<HTMLElement>(".deckmenu__list");
+    if (!el || !anchor || !list) return;
+    const h = el.getBoundingClientRect().height;
+    const below = window.innerHeight - anchor.bottom - 14;
+    const above = anchor.top - 14;
+    if (h <= below) return;
+    const up = above > below;
+    const room = up ? above : below;
+    setPlace({ up, max: h > room ? Math.max(96, room - (h - list.offsetHeight)) : undefined });
+  }, []);
+  useOverlayScope();
+  useEffect(() => {
+    if (creating) return;
+    const close = (e: MouseEvent) => !box.current?.parentElement?.contains(e.target as Node) && onClose();
+    const key = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    document.addEventListener("mousedown", close);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", key, true);
+    };
+  }, [creating, onClose]);
+  const q = query.trim().toLowerCase();
+  const rows = choices.filter((c) => !q || c.label.toLowerCase().includes(q));
+  return (
+    <>
+      <div ref={box} className={`deckmenu nte__deckmenu ${place.up ? "is-up" : ""}`} role="dialog" aria-label="넣을 덱 고르기" hidden={creating} onKeyDown={(e) => e.stopPropagation()}>
+        <label className="deckmenu__search">
+          <Icon name="search" size={14} className="c-tertiary" />
+          <input className="t-body-s" placeholder="덱 찾기" value={query} autoFocus onChange={(e) => setQuery(e.target.value)} />
+        </label>
+        <div className="deckmenu__list" role="listbox" style={place.max ? { maxHeight: place.max } : undefined}>
+          {!q && (
+            <button type="button" role="option" aria-selected={value === null && !gone} className="deckmenu__row" onClick={() => onPick(null)}>
+              <Icon name="layers" size={16} className="c-tertiary" />
+              <span className="deckmenu__text">
+                <span className="t-body-m">노트를 넣는 덱</span>
+                <span className="t-caption c-tertiary">기본 · 카드를 추가할 때 고른 덱</span>
+              </span>
+              {value === null && !gone && <Icon name="check" size={16} className="c-accent" />}
+            </button>
+          )}
+          {rows.map((c) => (
+            <button key={c.id} type="button" role="option" aria-selected={c.id === value} className="deckmenu__row nte__deckmenu-row" onClick={() => onPick(c.id)}>
+              <span className="deckmenu__text">
+                <span className="t-body-m">{c.label}</span>
+              </span>
+              {c.id === value && <Icon name="check" size={16} className="c-accent" />}
+            </button>
+          ))}
+          {q && rows.length === 0 && <p className="deckmenu__empty t-body-s c-tertiary">찾는 덱이 없어요</p>}
+        </div>
+        <div className="deckmenu__rule" />
+        <button type="button" className="deckmenu__row deckmenu__new" onClick={() => setCreating(true)}>
+          <Icon name="plus" size={16} className="c-accent" />
+          <span className="deckmenu__text">
+            <span className="t-body-m c-accent">새 덱</span>
+            <span className="t-caption c-tertiary">만들면 바로 이 카드 종류의 덱이 돼요</span>
+          </span>
+        </button>
+      </div>
+      {creating &&
+        createPortal(
+          <div onKeyDown={(e) => e.stopPropagation()}>
+            <NewDeckModal onClose={() => setCreating(false)} onCreated={(id) => (setCreating(false), onCreated(id))} />
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
 
 function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?: number; back: Route; reload: () => void }) {
   const nav = useNav();
@@ -150,6 +298,11 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   useEffect(() => {
     if (!readOnly) api.noteTypeConflicts(d.id).then(setConflicts, () => {});
   }, [d.id, readOnly]);
+  // 미리 보기 카드 (Preview), 읽어주기를 켤 때 기본 언어
+  const [samples, setSamples] = useState<Sample[] | null>(null);
+  useEffect(() => {
+    api.noteTypeSamples(d.id, note).then(setSamples, () => setSamples([]));
+  }, [d.id, note]);
   const unseen = conflicts.filter((c) => !c.seen);
   const lost = unseen.filter((c) => !keptBoth(c)).length;
   const drawn = !d.cloneable && !!d.native_kind; // 목록 · 선택형 · 그림 가리기
@@ -157,7 +310,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   const [draft, setDraft] = useState<Draft>(initial);
   const [curKey, setCurKey] = useState(() => d.templates.find((t) => t.ord === ord)?.ord ?? d.templates[0]?.ord ?? 0);
   const [mode, setMode] = useState<"easy" | "html">("easy");
-  const [renaming, setRenaming] = useState<{ what: "field" | "tpl"; key: number; value: string } | null>(null);
+  // tried: 빈 이름으로 저장하려 했다 (그때만 빈 칸을 빨갛게, NT8)
+  const [renaming, setRenaming] = useState<{ what: "field" | "tpl"; key: number; value: string; tried?: boolean } | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [leaving, setLeaving] = useState<Route | null>(null);
   const [ask, setAsk] = useState<SaveImpact | null>(null);
@@ -170,6 +324,9 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   latest.current = draft;
   const dirty = draftKey(draft) !== draftKey(initial);
   const cur = draft.tpls.find((t) => t.key === curKey) ?? draft.tpls[0];
+  const [deckOptions, reloadDecks] = useDeckOptions();
+  const [deckMenu, setDeckMenu] = useState(false);
+  useEffect(() => setDeckMenu(false), [curKey]);
   const curIndex = draft.tpls.indexOf(cur);
   const effMode = cur?.layout ? mode : "html";
   const names = draft.fields.map((f) => f.name);
@@ -262,6 +419,19 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
       return { ...x, fields };
     });
   const removeField = (key: number) => setDraft((x) => ({ ...x, fields: x.fields.filter((f) => f.key !== key) }));
+  // NT74 숨긴 필드 되살리기: 그 자리를 초안 끝에 다시 넣는다 (저장하면 이름만 붙고 값은 그대로). 기본 이름이 없거나 겹치면 이름부터
+  // (겹치면 그 이름을 채운 채 열어 "같은 이름 필드가 있어요"를 바로 보인다, Q4 L3)
+  const clashes = (h: Detail["hidden"][number]) => h.name !== null && !!fieldNameError(h.name, names);
+  const hiddenLeft = d.hidden.filter((h) => !draft.fields.some((f) => f.slot === h.slot));
+  const [hiddenOpen, setHiddenOpen] = useState(true);
+  const restored = (f: DField) => f.slot !== null && d.hidden.some((h) => h.slot === f.slot);
+  const restoreField = (h: Detail["hidden"][number]) => {
+    const key = seq.current--;
+    const ok = h.name !== null && !fieldNameError(h.name, names);
+    setDraft((x) => ({ ...x, fields: [...x.fields, { key, slot: h.slot, name: ok ? (h.name ?? "") : "" }] }));
+    // 이름이 겹치면 겹치지 않는 이름("뒷면 2")을 채워 묻는다 (빨간 오류부터 보이지 않게, Q4 디자인 검토)
+    if (!ok) setRenaming({ what: "field", key, value: h.name === null ? "" : freeName(h.name, names) });
+  };
 
   // ---------------------------------------------------------------- 쉬운 편집 줄
 
@@ -354,6 +524,12 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     }
     setLayout(cur.key, { ...l, front: [...l.front, { kind: "tts", ...t }] });
   };
+  /** 읽어주기를 켤 때 언어: 그 필드의 노트 글자에 한글이 있거나 글자가 없으면 앱 언어(한국어), 한글 없는 글자면 영어. 고른 언어는 그대로 둔다 */
+  const ttsDefault = (name: string) => {
+    const slot = draft.fields.find((f) => f.name === name)?.slot;
+    const text = slot == null ? "" : (samples ?? []).map((s) => plainText(s.slots[slot] ?? "").replace(/\[sound:[^\]]*\]/g, "")).join("").trim();
+    return !text || /[ㄱ-ㆎ가-힣]/.test(text) ? "ko_KR" : "en_US";
+  };
 
   // ---------------------------------------------------------------- 카드 종류
 
@@ -363,7 +539,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     const layout: Layout = { front: [{ kind: "field", name: other }], back: [{ kind: "front_side" }, { kind: "field", name: f0 }] };
     const b = await api.buildTemplateLayout(layout);
     const key = seq.current--;
-    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null }] }));
+    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null, deck: null, gone: null, archived: null, cards: 0 }] }));
     setCurKey(key);
   };
   const removeTpl = (key: number) => {
@@ -416,14 +592,14 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
 
   const editOf = (): TypeEdit => ({
     fields: draft.fields.filter((f) => f.name).map((f) => ({ slot: f.slot, name: f.name })),
-    templates: draft.tpls.map((t) => ({ ord: t.ord, name: t.name.trim() || null, qfmt: t.qfmt, afmt: t.afmt })),
+    templates: draft.tpls.map((t) => ({ ord: t.ord, name: t.name.trim() || null, qfmt: t.qfmt, afmt: t.afmt, deck: t.deck, deck_gone: t.gone })),
     css: draft.css,
   });
   const commit = async (impact: SaveImpact) => {
     setSaving(true);
     try {
       // 지우는 저장은 이 기기 백업을 먼저 (디자인 NT8)
-      if (impact.templates.length || impact.fields.length) await api.createBackup();
+      if (impact.templates.length || impact.fields.length) await api.createBackup("notetype");
       await api.saveNoteType(d.id, editOf(), false, d.version);
       toast({ title: "노트 유형을 저장했어요", text: impact.made ? `카드 ${n(impact.made)}장을 새로 만들었어요` : undefined });
       nav(back, true);
@@ -591,7 +767,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             <div className="nte__cols">
               {fields()}
               <div className="nte__mid">{effMode === "easy" ? easy() : htmlPanes()}</div>
-              <Preview d={d} draft={draft} tpl={cur} note={note} />
+              <Preview d={d} draft={draft} tpl={cur} samples={samples} />
             </div>
           </>
         )}
@@ -678,12 +854,70 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     );
   }
 
+  /** NT11 넣을 덱 (카드 종류의 옵션 끝, Figma 293:21525): 기본 "노트를 넣는 덱", 정하면 그 덱 · 이미 있는 카드 수, 정한 덱을 지웠으면 주황 "지운 덱" */
+  function deckOption() {
+    // 빈칸 유형은 카드 종류의 덱을 쓰지 않는다 (Anki 26.9.3 과 같다, NT77)
+    if (readOnly || !cur || d.cloze) return null;
+    // 보관한 덱이면 실제로는 노트를 넣는 덱에 넣는다: 지운 덱처럼 주황으로 (Q6 #2)
+    const archived = cur.deck !== null ? cur.archived : null;
+    const label = cur.deck === null || archived ? null : (deckOptions.find((o) => o.id === cur.deck)?.label ?? d.templates.find((t) => t.ord === cur.ord)?.deck_path ?? "덱");
+    const tone = label ? "is-set" : cur.gone || archived ? "is-gone" : "";
+    return (
+      <div className="nte__option nte__deckopt">
+        <span className="t-label-m">넣을 덱</span>
+        <span className="deckpick">
+          <button
+            type="button"
+            className={`deckpick__pill nte__deckpill ${tone} ${deckMenu ? "is-open" : ""}`}
+            aria-haspopup="dialog"
+            aria-expanded={deckMenu}
+            onClick={() => setDeckMenu((v) => !v)}
+          >
+            <Icon name={(cur.gone || archived) && !label ? "alert" : "layers"} size={14} />
+            <span className="deckpick__label t-label-m">{label ?? (archived ? "보관한 덱" : cur.gone ? "지운 덱" : "노트를 넣는 덱")}</span>
+            <Icon name="chevron-down" size={12} scaled />
+          </button>
+          {deckMenu && (
+            <TemplateDeckMenu
+              value={cur.deck}
+              gone={cur.deck === null && !!cur.gone}
+              choices={deckOptions}
+              onPick={(id) => {
+                setTpl(cur.key, { deck: id, gone: null, archived: null });
+                setDeckMenu(false);
+              }}
+              onCreated={(id) => {
+                reloadDecks();
+                setTpl(cur.key, { deck: id, gone: null, archived: null });
+                setDeckMenu(false);
+              }}
+              onClose={() => setDeckMenu(false)}
+            />
+          )}
+        </span>
+        <span className={`t-caption ${tone === "is-gone" ? "c-warn" : "c-tertiary"}`}>
+          {label
+            ? "이 카드 종류로 새로 만드는 카드는 늘 이 덱에 넣어요"
+            : archived
+              ? `정한 덱 「${archived}」${eun(archived)} 보관한 덱이라 노트를 넣는 덱에 넣어요 · 보관 해제하면 다시 그 덱에 넣어요`
+              : cur.gone
+              ? `정한 덱 「${cur.gone}」${eul(cur.gone)} 지웠어요 · 다시 고를 때까지 노트를 넣는 덱에 넣어요`
+              : "카드를 추가할 때 고른 덱에 넣어요"}
+        </span>
+        {label && cur.cards > 0 && <span className="nte__deckopt-note t-caption c-tertiary">이미 있는 카드 {n(cur.cards)}장은 지금 덱 그대로예요</span>}
+      </div>
+    );
+  }
+
   function fields() {
     const html = effMode === "html";
     return (
       <section className="nte__panel nte__fields" aria-label="필드">
         <div className="nte__panel-head">
-          <span className="t-label-m">필드 {n(names.filter(Boolean).length)}</span>
+          <span className="t-label-m">
+            필드 {n(names.filter(Boolean).length)}
+            {!readOnly && hiddenLeft.length > 0 && ` · 숨긴 필드 ${n(hiddenLeft.length)}`}
+          </span>
           {!readOnly && (
             <button className="nte__add t-label-m c-accent" onClick={addField}>
               <Icon name="plus" size={14} />
@@ -734,15 +968,18 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               {editing ? (
                 <span className="nte__fname-edit">
                   <input
-                    className={`nte__fname-input t-body-m ${renameError ? "is-error" : ""}`}
+                    className={`nte__fname-input t-body-m ${renameError && (renaming.value.trim() || renaming.tried) ? "is-error" : ""}`}
                     autoFocus
                     aria-label="필드 이름"
+                    placeholder="필드 이름"
                     value={renaming.value}
-                    onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+                    onChange={(e) => setRenaming({ ...renaming, value: e.target.value, tried: false })}
                     onBlur={() => renameField(f.key, renaming.value)}
                     onKeyDown={(e) => {
                       e.stopPropagation();
-                      if (e.key === "Enter") renameField(f.key, renaming.value);
+                      // 빈 이름으로 Enter: 지우지 않고 오류를 보인다 (칸을 떠나면 그 필드를 넣지 않는다)
+                      if (e.key === "Enter" && !renaming.value.trim()) setRenaming({ ...renaming, tried: true });
+                      else if (e.key === "Enter") renameField(f.key, renaming.value);
                       if (e.key === "Escape") {
                         e.preventDefault();
                         if (!f.name) removeField(f.key);
@@ -750,7 +987,9 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                       }
                     }}
                   />
-                  {renameError && renaming.value.trim() && <span className="t-caption c-danger">{renameError}</span>}
+                  {renameError && (renaming.value.trim() || renaming.tried) && (
+                    <span className="t-caption c-danger">{restored(f) && renameError.endsWith("이미 있어요.") ? "같은 이름 필드가 있어요. 다른 이름으로 되살려 주세요" : renameError}</span>
+                  )}
                 </span>
               ) : (
                 <button
@@ -765,6 +1004,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               )}
               {!editing && <span className="t-caption c-tertiary">{use}</span>}
               {!editing && show(f.name) !== f.name && <span className="nte__dbname t-mono-key c-tertiary" title="템플릿 · Anki 에 쓰는 필드 이름">{f.name}</span>}
+              {!editing && restored(f) && !use && <span className="nte__restored t-caption c-accent">되살렸어요 · 카드 모양에 넣으려면 앞면 · 뒷면으로 끌어 오세요</span>}
               {!readOnly && !editing && (
                 <span className="nte__trash-wrap">
                   <button
@@ -787,6 +1027,32 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             </div>
           );
         })}
+        {!readOnly && hiddenLeft.length > 0 && (
+          <div className="nte__hidden">
+            <button type="button" className="nte__hidden-head t-label-m" aria-expanded={hiddenOpen} onClick={() => setHiddenOpen((o) => !o)}>
+              <Icon name={hiddenOpen ? "chevron-down" : "chevron-right"} size={14} />
+              숨긴 필드 {n(hiddenLeft.length)}
+            </button>
+            {hiddenOpen && (
+              <>
+                {hiddenLeft.map((h) => (
+                  <div key={h.slot} className="nte__hidden-row">
+                    <span className="nte__hidden-text">
+                      <span className="t-body-m">{h.name ?? "이름 없는 필드"}</span>
+                      <span className="t-caption c-tertiary">{h.notes ? `노트 ${n(h.notes)}개에 남아 있어요${h.sample ? ` · 예: '${h.sample}'` : ""}` : "내용이 남은 노트가 없어요"}</span>
+                      {clashes(h) && <span className="t-caption c-warn">같은 이름 필드가 있어 다른 이름으로 되살려요</span>}
+                    </span>
+                    <button type="button" className="nte__restore t-label-m" aria-label={`${h.name ?? "이름 없는 필드"} 되살리기`} onClick={() => restoreField(h)}>
+                      <Icon name="rotate" size={16} />
+                      되살리기
+                    </button>
+                  </div>
+                ))}
+                <p className="t-caption c-tertiary">지운 필드는 내용을 지우지 않고 숨겨 둬요. 되살리면 필드 끝에 다시 붙고, 카드 모양에는 직접 넣어야 보여요.</p>
+              </>
+            )}
+          </div>
+        )}
         <p className="t-caption c-tertiary">
           {readOnly
             ? "필드 이름과 순서도 복제한 뒤에 바꿀 수 있어요."
@@ -948,7 +1214,10 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               checked={!!ttsPart}
               label="읽어주기"
               disabled={readOnly}
-              onChange={(on) => setTts(on ? { name: nameOf(linesOf(layout.front)[0]?.[0] ?? { kind: "front_side" }) || names[0], opts: "en_US" } : null)}
+              onChange={(on) => {
+                const name = nameOf(linesOf(layout.front)[0]?.[0] ?? { kind: "front_side" }) || names[0];
+                setTts(on ? { name, opts: ttsDefault(name) } : null);
+              }}
             />
             {ttsPart ? (
               pill(
@@ -964,6 +1233,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               <span className="t-caption c-tertiary">{readOnly ? "복제하면 켤 수 있어요" : "필드를 소리 내어 읽어 줘요"}</span>
             )}
           </div>
+          {deckOption()}
         </section>
       </>
     );
@@ -1024,6 +1294,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
         {pane("qfmt")}
         {pane("afmt")}
         {pane("css")}
+        {!readOnly && <section className="nte__panel nte__options" aria-label="옵션">{deckOption()}</section>}
         <p className="t-caption c-tertiary">Anki와 같은 문법이에요 · 스크립트(&lt;script&gt;)는 학습 화면에서 실행하지 않아요</p>
       </>
     );
@@ -1114,28 +1385,24 @@ function CodeArea({ label, value, readOnly, invalid, onChange, onFocus }: {
 
 // ---------------------------------------------------------------- 미리보기 (학습 화면과 같은 렌더: 살균 · 소리 칩 · 수식 · CSS 가두기)
 
-function Preview({ d, draft, tpl, note }: { d: Detail; draft: Draft; tpl: DTpl | undefined; note?: number }) {
+function Preview({ d, draft, tpl, samples }: { d: Detail; draft: Draft; tpl: DTpl | undefined; samples: Sample[] | null }) {
   const [side, setSide] = useState<Side>("back");
   const [theme, setTheme] = useState<"light" | "dark">(() => (document.documentElement.dataset.theme === "dark" ? "dark" : "light"));
-  const [samples, setSamples] = useState<Sample[] | null>(null);
   const [pick, setPick] = useState<number | "names">(0);
   const [open, setOpen] = useState(false);
   const [html, setHtml] = useState<{ front: string; question: string; answer: string } | null>(null);
   const [error, setError] = useState<string>();
   useOverlayScope(open);
   useKey("Escape", () => setOpen(false), open, { modal: true });
-  useEffect(() => {
-    api.noteTypeSamples(d.id, note).then(setSamples, () => setSamples([]));
-  }, [d.id, note]);
   const sample = samples && pick !== "names" ? samples[pick] : undefined;
   const names = draft.fields.filter((f) => f.name).map((f) => f.name);
   const values = sample ? draft.fields.filter((f) => f.name).map((f) => (f.slot !== null ? (sample.slots[f.slot] ?? "") : `(${f.name})`)) : null;
-  const key = JSON.stringify([tpl?.qfmt, tpl?.afmt, names, values]);
+  const key = JSON.stringify([tpl?.qfmt, tpl?.afmt, names, values, tpl?.deck]);
   useEffect(() => {
     if (!tpl || samples === null) return;
     let live = true;
     api
-      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names)
+      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names, sample?.note_id, !d.cloze && tpl.deck !== null && !tpl.archived ? tpl.deck : undefined)
       .then(async (p) => {
         const parts = splitBack(p.back, p.front);
         const [front, question, answer] = (await Promise.all([renderCardHtml(p.front), renderCardHtml(parts.question), renderCardHtml(parts.answer)])).map(withMath);
@@ -1264,7 +1531,7 @@ function SaveConfirm({ impact, labels, busy, onBack, onSave }: {
       icon: "trash",
       tone: "warn",
       title: `"${f.name}" 필드를 지워요`,
-      text: `${f.notes ? `노트 ${n(f.notes)}개에 든 "${f.name}" 내용은 지우지 않고 숨겨요.` : `"${f.name}"에 내용이 든 노트는 없어요.`} 카드 추가 · 편집 칸과 내보내기에서 빠져요.`,
+      text: `${f.notes ? `노트 ${n(f.notes)}개에 든 "${f.name}" 내용은 지우지 않고 숨겨요.` : `"${f.name}"에 내용이 든 노트는 없어요.`} 카드 추가 · 편집 칸과 내보내기에서 빠지고, 숨긴 필드에서 되살릴 수 있어요.`,
     });
   if (impact.made)
     items.push({ icon: "plus", tone: "info", title: `카드 ${n(impact.made)}장이 새로 생겨요`, text: "앞면이 비지 않는 노트마다 새 카드 종류의 카드가 한 장씩 생겨요." });
@@ -1352,4 +1619,197 @@ function ConflictList({ list, onClose }: { list: NoteTypeConflict[]; onClose: ()
       </div>
     </Modal>
   );
+}
+
+// ---------------------------------------------------------------- NT9 다른 유형으로 옮기기 (C2 여러 장 선택 [⋯], NT75)
+
+const DRAWN_KINDS = ["io", "list", "choice"];
+
+/** 대응 고르기 칸. 옮기지 않음 · 없앰이면 주황 */
+function MapSelect({ value, options, none, label, onChange }: { value: number | null; options: [number, string][]; none: string; label: string; onChange: (v: number | null) => void }) {
+  return (
+    <span className={`ntm__select ${value === null ? "is-none" : ""}`}>
+      <select className="t-body-m" aria-label={label} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}>
+        {options.map(([v, l]) => (
+          <option key={v} value={v}>
+            {l}
+          </option>
+        ))}
+        <option value="">{none}</option>
+      </select>
+      <Icon name="chevron-down" size={16} scaled className="c-secondary" />
+    </span>
+  );
+}
+
+export function ChangeTypeDialog({ noteIds, onClose, onDone }: { noteIds: number[]; onClose: () => void; onDone: (toName: string) => void }) {
+  const [types, setTypes] = useState<NoteTypeRow[]>([]);
+  const [plan, setPlan] = useState<ChangePlan | null>(null);
+  const [from, setFrom] = useState<Detail | null>(null);
+  const [to, setTo] = useState<Detail | null>(null);
+  const [fields, setFields] = useState<[number, number | null][]>([]);
+  const [cards, setCards] = useState<[number, number | null][]>([]);
+  const [impact, setImpact] = useState<ChangeImpact | null>(null);
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  useKey("Escape", onClose, !busy, { modal: true });
+  const load = useCallback(
+    (target: number | null) =>
+      api.changeTypePlan(noteIds, target).then(
+        async (p) => {
+          const [f, t] = await Promise.all([api.noteTypeDetail(p.from), api.noteTypeDetail(p.to)]);
+          setFrom(f);
+          setTo(t);
+          setFields(p.fields);
+          setCards(p.card_map);
+          setPlan(p);
+          setError(undefined);
+        },
+        (e) => setError(errorText(e)),
+      ),
+    [noteIds],
+  );
+  useEffect(() => {
+    api.noteTypes().then(setTypes, () => {});
+    load(null);
+  }, [load]);
+  // 고른 대응으로 확인 창의 수를 다시 센다 (dry-run, 쓰지 않는다)
+  useEffect(() => {
+    if (!plan) return;
+    let live = true;
+    api.changeNoteType({ note_ids: noteIds, to: plan.to, fields, cards }, true).then(
+      (i) => live && (setImpact(i), setError(undefined)),
+      (e) => live && (setImpact(null), setError(errorText(e))),
+    );
+    return () => {
+      live = false;
+    };
+  }, [plan, fields, cards, noteIds]);
+  // 앱 기본 유형은 카드 추가 · 편집과 같은 칸 이름 (NT51: Front · Back 대신 질문 · 답변)
+  const showOf = (d: Detail | null): Show => {
+    const labels = d?.native_kind ? nativeLabels(d.native_kind) : undefined;
+    const map = new Map(labels && d ? d.fields.map((f, i) => [f.name, labels[i] ?? f.name]) : []);
+    return (x) => map.get(x) ?? x;
+  };
+  const [showFrom, showTo] = [showOf(from), showOf(to)];
+  const fromTpl = (ord: number) => {
+    if (!from) return "";
+    if (from.cloze) return `빈칸 ${ord + 1}`;
+    const i = from.templates.findIndex((t) => t.ord === ord);
+    return i < 0 ? `카드 ${ord + 1}` : tplTitle(from.templates[i], i, false, showFrom);
+  };
+  const toOptions: [number, string][] =
+    !to || !plan ? [] : to.cloze ? Array.from({ length: Math.max(1, plan.card_ords.length) }, (_, i) => [i, `빈칸 ${i + 1}`]) : to.templates.map((t, i) => [t.ord, tplTitle(t, i, false, showTo)]);
+  const toTpl = (ord: number) => toOptions.find(([o]) => o === ord)?.[1] ?? `카드 ${ord + 1}`;
+  const fromField = (slot: number) => showFrom(from?.fields.find((f) => f.slot === slot)?.name ?? "");
+  const toName = to ? typeLabel(to) : "";
+  const choices = types.filter((t) => t.id !== plan?.from && !DRAWN_KINDS.includes(t.native_kind ?? "") && t.templates > 0);
+  const setOne = <K extends number>(list: [K, number | null][], k: K, v: number | null) =>
+    // 새 자리 · 새 카드 종류는 한 번씩만: 같은 것을 고른 다른 줄은 비운다
+    list.map(([a, b]): [K, number | null] => (a === k ? [a, v] : v !== null && b === v ? [a, null] : [a, b]));
+  const free = to?.fields.some((f) => !fields.some(([, t]) => t === f.slot));
+  const lose = !!impact && impact.removed.length + impact.lost.length + impact.removed_notes > 0;
+  type Line = { icon: IconName; text: string };
+  const lines: Line[] = !impact
+    ? []
+    : [
+        ...impact.removed.map(([ord, count]): Line => ({ icon: "trash", text: `「${fromTpl(ord)}」의 카드 ${n(count)}장을 지워요 · 되돌릴 수 없어요. 이 카드들의 복습 기록은 학습 통계에만 남아요.` })),
+        ...(impact.removed_notes > 0 ? [{ icon: "trash" as const, text: `카드가 하나도 남지 않는 노트 ${n(impact.removed_notes)}개도 함께 지워요.` }] : []),
+        // 옮기지 못하는 칸은 한 줄로: "발음 · 예문 칸과 숨긴 필드 1개는 「빈칸」에 없어요. … (노트 3개)"
+        ...(impact.lost.length > 0 ? [{ icon: "alert" as const, text: lostLine(impact, free, toName, showFrom) }] : []),
+        ...(impact.unclozed > 0 ? [{ icon: "info" as const, text: "빈칸 표시는 글자로 바뀌어요." }] : []),
+        ...(impact.empty_fronts > 0 ? [{ icon: "alert" as const, text: `옮기면 카드 ${n(impact.empty_fronts)}장의 앞면이 비어요 · 학습에 나오지 않고, 필드를 채우면 다시 나와요.` }] : []),
+        ...(impact.made > 0 ? [{ icon: "plus" as const, text: `카드 ${n(impact.made)}장이 새로 생겨요.` }] : []),
+        ...(lose ? impact.kept.map(([a, b]): Line => ({ icon: "check", text: `「${fromTpl(a)}」의 복습 기록 · 일정은 「${toTpl(b)}」 카드로 이어져요.` })) : [{ icon: "check" as const, text: `카드 ${n(impact.cards)}장 · 복습 기록이 모두 이어져요.` }]),
+      ];
+  const run = async () => {
+    if (!plan || busy) return;
+    setBusy(true);
+    try {
+      await api.changeNoteType({ note_ids: noteIds, to: plan.to, fields, cards }, false);
+      onDone(toName);
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={`노트 ${n(noteIds.length)}개를 다른 유형으로 옮길까요?`}
+      sub={plan && from ? `고른 노트 ${n(plan.notes)}개 · 지금 유형 「${typeLabel(from)}」 · 카드 ${n(plan.cards)}장` : undefined}
+      onClose={onClose}
+      className="ntm"
+    >
+      {plan && from && to && (
+        <>
+          <label className="ntm__type">
+            <span className="t-label-m">옮길 유형</span>
+            <MapSelect value={plan.to} options={choices.map((t) => [t.id, typeLabel(t)])} none="—" label="옮길 유형" onChange={(v) => v !== null && load(v)} />
+          </label>
+          <section className="ntm__box" aria-label="필드">
+            <p className="ntm__head">
+              <span className="t-label-m">필드</span>
+              <span className="t-caption c-tertiary">같은 이름 칸으로 먼저 맞춰 두었어요</span>
+            </p>
+            {fields.map(([s, t]) => (
+              <div key={s} className="ntm__row">
+                <span className="t-body-m">{fromField(s)}</span>
+                <Icon name="arrow-right" size={16} className="c-tertiary" />
+                <MapSelect value={t} options={to.fields.map((f) => [f.slot, showTo(f.name)])} none="옮기지 않음" label={`${fromField(s)} 옮길 칸`} onChange={(v) => setFields(setOne(fields, s, v))} />
+              </div>
+            ))}
+          </section>
+          <section className="ntm__box" aria-label="카드 종류">
+            <p className="ntm__head">
+              <span className="t-label-m">카드 종류</span>
+              <span className="t-caption c-tertiary">복습 기록은 이어지는 카드로 함께 가요</span>
+            </p>
+            {cards.map(([o, t]) => (
+              <div key={o} className="ntm__row">
+                <span className="t-body-m">{fromTpl(o)}</span>
+                <Icon name="arrow-right" size={16} className="c-tertiary" />
+                <MapSelect value={t} options={toOptions} none="없앰" label={`${fromTpl(o)} 옮길 카드 종류`} onChange={(v) => setCards(setOne(cards, o, v))} />
+              </div>
+            ))}
+          </section>
+          {lines.length > 0 && (
+            <ul className={`ntm__lines ${lose ? "is-warn" : ""}`}>
+              {lines.map((x) => (
+                <li key={x.text}>
+                  <Icon name={x.icon} size={16} className={x.icon === "check" ? "c-success" : x.icon === "trash" ? "c-danger" : "c-warn"} />
+                  <span className="t-body-s">{x.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="ntm__backup t-caption c-tertiary">
+            <Icon name="download" size={14} className="c-success" />
+            옮기기 전에 이 기기 백업을 먼저 만들어요
+          </p>
+        </>
+      )}
+      {error && <p className="t-body-s c-danger">{error}</p>}
+      <div className="modal__actions">
+        <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+        <Button variant={lose ? "danger" : "primary"} size="M" label={`노트 ${n(noteIds.length)}개 옮기기`} busy={busy} busyLabel="옮기는 중" disabled={!impact} onClick={run} />
+      </div>
+    </Modal>
+  );
+}
+
+/** NT9 옮기지 못하는 칸 한 줄. free: 새 유형에 빈 칸이 남았다 (고르지 않아 옮기지 않는 것) */
+function lostLine(impact: ChangeImpact, free: boolean | undefined, toName: string, show: (n: string) => string) {
+  const named = impact.lost.filter(([raw]) => raw).map(([raw]) => show(raw));
+  const hidden = impact.lost.filter(([raw]) => !raw).length;
+  const what = [named.length > 0 && `${named.join(" · ")} 칸`, hidden > 0 && `숨긴 필드 ${n(hidden)}개`].filter(Boolean).join("과 ");
+  const last = hidden > 0 ? "개" : "칸";
+  return free
+    ? `옮기지 않는 칸이 있어요 · ${what}${eun(last)} 옮기지 않아요. 옮기면 그 칸에 쓴 내용은 지워져요 (노트 ${n(impact.lost_notes)}개)`
+    : `옮기지 못하는 칸이 있어요 · ${what}${eun(last)} 「${toName}」에 없어요. 옮기면 그 칸에 쓴 내용은 지워져요 (노트 ${n(impact.lost_notes)}개)`;
+}
+
+/** 겹치지 않는 필드 이름: "뒷면" → "뒷면 2" → "뒷면 3" … (fieldNameError 와 같은 규칙으로 본다) */
+function freeName(name: string, names: string[]) {
+  for (let i = 2; i < 100; i++) if (!fieldNameError(`${name} ${i}`, names)) return `${name} ${i}`;
+  return "";
 }

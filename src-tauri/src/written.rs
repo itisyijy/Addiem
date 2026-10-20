@@ -34,9 +34,9 @@ pub struct Keyword {
 
 /// 판정에서 지우는 글자. 띄어쓰기 말고도 "k-fold" · "평균·중앙값" 처럼 붙여 쓰거나 띄어 쓰는 기호
 const IGNORED: [char; 3] = ['-', '·', '_'];
-/// 키워드 끝에 붙여 쓴 조사 (와 "-거나" 같은 이음 어미). 긴 것부터 맞춘다
-const PARTICLES: [&str; 25] = [
-    "에서는", "으로는", "에서", "으로", "에게", "까지", "부터", "처럼", "보다", "이나", "이라", "와", "과", "을", "를", "이", "가", "은", "는", "의", "에",
+/// 키워드 끝에 붙여 쓴 조사 (와 "-거나" 같은 이음 어미, "성질이고" 의 "이고"). 긴 것부터 맞춘다
+const PARTICLES: [&str; 27] = [
+    "에서는", "으로는", "에서", "으로", "에게", "까지", "부터", "처럼", "보다", "이나", "이라", "이고", "이며", "와", "과", "을", "를", "이", "가", "은", "는", "의", "에",
     "로", "도", "만", "나",
 ];
 /// 여러 낱말 키워드에서 낱말 사이에 끼어도 되는 글자 수 ("회귀계수가 불안정" 의 "가", "변수를 제거" 의 "를")
@@ -149,7 +149,7 @@ pub struct Compare {
     keywords: Vec<KeywordHit>,
     hits: usize,
     /// 1 Again · 2 Hard · 3 Good. 키워드가 없으면 없다
-    suggest: Option<u8>,
+    pub(crate) suggest: Option<u8>,
     /// 내 답에서 맞은 핵심어 (초록 밑줄)
     mine_hits: Vec<(usize, usize)>,
     /// 정답에서 맞은 핵심어 (초록 밑줄) · 빠진 핵심어 (빨간 굵은 글씨)
@@ -186,14 +186,22 @@ pub(crate) fn compare(mine: &str, correct: &str, keywords: &[Keyword]) -> Compar
 
 // ------------------------------------------------------------------ J3 제안 칩 (순수 함수)
 
-/// 키워드로 쓰기에는 흔한 말
-const STOP: [&str; 29] = [
+/// 키워드로 쓰기에는 흔한 말. 제안 칩에서만 뺀다 (직접 넣은 핵심어 판정은 그대로).
+/// 셋째 줄은 어디에나 쓰는 일반 명사, 끝 줄은 부사("모두 실행되거나" 의 "모두"). 1자 말(것 · 수)은 noun_like 가 이미 뺀다
+const STOP: [&str; 45] = [
     "방법", "경우", "등", "때", "및", "또는", "그리고", "여러", "가지", "모든", "위해", "통해", "대해", "따라", "이상", "이하", "사용", "결과", "다음", "정도",
     "부분", "관련", "대한", "위한", "통한", "있음", "없음", "하나", "현상",
+    "성질", "과정", "특징", "내용", "의미", "종류",
+    "모두", "전혀", "매우", "가장", "항상", "다시", "서로", "함께", "바로", "주로",
 ];
-/// 용언 어미 (풀이말은 키워드가 아니다). 짧은 어미는 3자 이상 어절에서만 본다 ("제한" · "결함" 은 명사, "채움" 은 아니다)
-const VERB_ENDS: [&str; 15] = ["다", "움", "아", "하고", "되고", "하며", "되며", "하면", "되면", "해서", "하여", "하는", "되는", "있는", "없는"];
-const VERB_ENDS_LONG: [&str; 10] = ["한", "된", "할", "될", "던", "는", "함", "됨", "음", "게"];
+/// 용언 어미 (풀이말은 키워드가 아니다). 짧은 어미는 3자 이상 어절에서만 본다 ("제한" · "결함" 은 명사, "채움" 은 아니다).
+/// "-거나" 는 용언 줄기 뒤만 본다 ("제거나" 는 "제거" + 조사 "나")
+const VERB_ENDS: [&str; 22] = [
+    "다", "움", "아", "하고", "되고", "하며", "되며", "하면", "되면", "해서", "하여", "하는", "되는", "있는", "없는", "하거나", "되거나", "않거나", "있거나",
+    "없거나", "하지", "되지",
+];
+/// "히" 는 부사 끝 ("영구히" · "완전히")
+const VERB_ENDS_LONG: [&str; 11] = ["한", "된", "할", "될", "던", "는", "함", "됨", "음", "게", "히"];
 /// 조사를 뗀 뒤에 남은 용언 줄기 ("불안정해지는" → "불안정해지")
 const VERB_STEMS: [&str; 7] = ["하", "되", "있", "없", "않", "같", "지"];
 /// 1자 말 뒤의 확실한 조사 ("행을" → 버린다)
@@ -204,7 +212,12 @@ const PUNCT: &str = ",.;:()[]{}\"'·/—–~!?<>=+「」『』…";
 /// 어절이 키워드 후보인가 (조사를 뗀 말 word 로 본다)
 fn noun_like(raw: &str, word: &str) -> bool {
     let len = word.chars().count();
-    if len < 2 || (word == raw && len == 2 && raw.ends_with(SURE_PARTICLES)) {
+    // 1자 말 + 조사 ("행을", 2자 조사면 "것이고" · "수까지"). 1자 조사 와 · 과 · 로 · 나 는 "효과" · "사과" 때문에 SURE_PARTICLES 만
+    let one_char_plus = |p: &str| raw.strip_suffix(p).is_some_and(|r| r.chars().count() == 1);
+    if len < 2
+        || (word == raw && len == 2 && raw.ends_with(SURE_PARTICLES))
+        || (word == raw && PARTICLES.iter().filter(|p| p.chars().count() >= 2).any(|p| one_char_plus(p)))
+    {
         return false;
     }
     let verb = VERB_ENDS.iter().any(|e| word.ends_with(e) || raw.ends_with(e))
@@ -312,11 +325,12 @@ fn type_field(qfmt: &str) -> Option<String> {
     Some(rest[..rest.find("}}")?].rsplit(':').next()?.trim().to_string())
 }
 
-/// 카드의 서술형 여부 · 정답 글자 (줄 단위) · 노트 설정
+/// 카드의 서술형 여부 · 정답 글자 (줄 단위) · 노트 설정 · 질문 글자 (8.3 개념 관계 확인이 쓴다)
 struct CardInfo {
     written: bool,
     answer: String,
     setting: Setting,
+    question: String,
 }
 
 fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
@@ -335,6 +349,7 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
         )
         .map_err(err)?;
     let setting = load_setting(con, note_id)?;
+    let rendered = commands::render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), ord);
     let typed = q.as_deref().and_then(type_field);
     // type-in 이면 그 필드가 정답이다. 아니면 뒷면에서 답 부분 (앞면을 뺀 것)
     let html = match &typed {
@@ -343,7 +358,7 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
             // AU6 소리 표기는 정답 글자가 아니다
             names.get(&nt).and_then(|(_, n)| n.iter().position(|x| x == f)).and_then(|i| values.get(i)).map(|v| render::strip_sound(v)).unwrap_or_default()
         }
-        None => commands::answer_part(&commands::render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), ord).back).to_string(),
+        None => commands::answer_part(&rendered.back).to_string(),
     };
     // ---- C4 덱 기본값 (덱 담당): 노트 스위치 > 덱 "써서 답하기"(가장 가까운 위 덱까지) > {{type:}} 템플릿
     let deck_writes = || -> Res<bool> {
@@ -358,7 +373,7 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
             None => deck_writes()? || typed.is_some(),
         };
     // ---- 여기까지
-    Ok(CardInfo { written, answer: quality::html_lines(&html).join("\n"), setting })
+    Ok(CardInfo { written, answer: quality::html_lines(&html).join("\n"), setting, question: render::strip_tags(&rendered.front) })
 }
 
 /// R2 채점 보조가 보내는 모범 답안 (J2 비교 화면 오른쪽 칸과 같은 글자)
@@ -425,6 +440,70 @@ pub fn compare_written(state: State<AppState>, card_id: i64, answer: String) -> 
     save_answer(&con, card_id, &answer)?;
     let info = card_info(&con, card_id)?;
     Ok(compare(&answer, &info.answer, &info.setting.keywords))
+}
+
+// ------------------------------------------------------------------ 8.3 개념 관계 확인 (로컬 모델 · 보조 실행 파일, 선택)
+// 결과는 비교 화면에 참고로만 보인다. 평가 추천은 핵심어 검사만 쓴다 (디자인 J4, DECISIONS J6)
+
+#[derive(Serialize)]
+pub struct Concept {
+    relations: Vec<crate::llm::Relation>,
+    verdict: crate::llm::Verdict,
+    ms: u64,
+}
+
+/// 비교 화면이 뜬 뒤 백그라운드로. 관계를 뽑지 못하면 없다. 이 PC 에서 쓸 수 없거나 엔진이 멈추면 오류 (화면이 알리고 핵심어 채점 그대로).
+/// 새 확인 · llm_stop · 평가하면 앞의 확인은 멈춘다 (오류 "확인을 멈췄어요.")
+#[tauri::command]
+pub async fn concept_check(app: tauri::AppHandle, card_id: i64, answer: String) -> Res<Option<Concept>> {
+    use tauri::Manager;
+    let job = crate::llm::begin();
+    let started = std::time::Instant::now();
+    let st = app.state::<AppState>();
+    let (question, model, keywords) = {
+        let con = st.db.lock().map_err(err)?;
+        let info = card_info(&con, card_id)?;
+        (info.question, info.answer, info.setting.keywords)
+    };
+    let (dir, bin, mine) = (st.data_dir.clone(), crate::llm::engine_bin(&app), answer.clone());
+    let check = tauri::async_runtime::spawn_blocking(move || crate::llm::run(bin.as_deref(), &dir, job, &question, &model, &answer)).await.map_err(err)??;
+    Ok(check.map(|mut relations| {
+        guard(&mut relations, &keywords, &mine);
+        Concept { verdict: crate::llm::verdict(&relations), relations, ms: started.elapsed().as_millis() as u64 }
+    }))
+}
+
+/// 8.3 가드 (디자인 J4 노트, DECISIONS J16): 핵심어 검사에서 빠진(✗) 핵심어가 든 관계는 모델 판정과 상관없이 "missing"(안 보여요).
+/// 낱말 찾기는 핵심어 검사와 같은 규칙 (띄어쓰기 · 대소문자 · 조사 무시, 동의어 포함)
+pub(crate) fn guard(relations: &mut [crate::llm::Relation], keywords: &[Keyword], mine: &str) {
+    let m = fold(mine);
+    let missed: Vec<&Keyword> = keywords.iter().filter(|k| !k.word.trim().is_empty() && locate(&m, k).is_empty()).collect();
+    for r in relations.iter_mut() {
+        let rel = fold(&r.rel);
+        if missed.iter().any(|k| !locate(&rel, k).is_empty()) {
+            r.verdict = "missing".into();
+        }
+    }
+}
+
+/// 서술형 카드가 나오면 (답을 쓰는 동안): 엔진을 띄워 모델을 읽고 관계 뽑기 · 판정 앞부분을 미리 한다. 쓸 수 없으면 아무것도 하지 않는다
+#[tauri::command]
+pub async fn concept_prepare(app: tauri::AppHandle, card_id: i64, token: u64) -> Res<()> {
+    use tauri::Manager;
+    let st = app.state::<AppState>();
+    let bin = crate::llm::engine_bin(&app);
+    if !crate::llm::ready(&st.data_dir) || bin.is_none() || !crate::llm::cpu_ok() {
+        return Ok(());
+    }
+    let (question, model) = {
+        let con = st.db.lock().map_err(err)?;
+        let info = card_info(&con, card_id)?;
+        (info.question, info.answer)
+    };
+    let dir = st.data_dir.clone();
+    // 미리 하기의 실패는 알리지 않는다 (비교할 때 run 이 다시 띄우고 알린다)
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::llm::prepare(bin.as_deref(), &dir, &question, &model, token)).await;
+    Ok(())
 }
 
 // ------------------------------------------------------------------ 명령: 카드 만들기 · 편집 (J3)
@@ -608,6 +687,15 @@ mod tests {
         // 정한 묶음에 든 낱말은 따로 내지 않는다
         let text = "독립변수 간 상관이 높아 회귀계수 추정이 불안정해지는 현상";
         assert_eq!(suggest_from(text, &["회귀계수 추정".into(), "독립변수 간 상관".into()], 6), Vec::<String>::new());
+        // QA 2026-10-20: "모두 실행되거" · "전혀 실행되지" · "성질이고" 같은 조각을 내지 않는다 (어미 · 부사 · "이고")
+        let s = suggest_from("원자성은 트랜잭션이 모두 실행되거나 전혀 실행되지 않는 성질이고, 지속성은 커밋된 결과가 영구히 남는 성질이다.", &[], 6);
+        assert_eq!(s, ["원자성", "트랜잭션", "지속성"], "성질 · 결과 같은 일반 명사는 제안하지 않는다");
+        let s = suggest_from("정규화 과정의 특징은 이상 현상을 제거하는 것이고, 그 결과 테이블 수가 많아지는 경우가 많다", &[], 6);
+        assert_eq!(s, ["정규화", "테이블"], "과정 · 특징 · 결과 · 경우 · 것 · 수 는 빼고: {s:?}");
+        // 제안에서 뺀 일반 명사도 직접 넣은 핵심어로는 판정한다
+        assert_eq!(compare("트랜잭션의 성질", "", &[kw("성질", &[])]).hits, 1);
+        let s = suggest_from("입력을 검증하지 않거나 오류를 무시하면 시스템이 완전히 멈춘다", &[], 6);
+        assert_eq!(s, ["입력", "오류", "시스템"], "풀이말(검증하지 · 않거나 · 무시하면)과 부사(완전히)는 뺀다");
     }
 
     /// Q12: 써서 답하기 덱에서도 목록 · 선택형은 자기 방식으로 묻는다
@@ -624,6 +712,41 @@ mod tests {
         let ids: Vec<i64> = con.prepare("SELECT id FROM card ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert!(card_info(&con, ids[0]).unwrap().written, "일반 카드는 덱을 따른다");
         assert!(!card_info(&con, ids[1]).unwrap().written);
+    }
+
+    /// 8.3 가드: 핵심어 검사에서 빠진 말이 든 관계는 "안 보여요" (d9: 맞아 보여요 1 · 안 보여요 2)
+    #[test]
+    fn concept_guard_marks_relations_with_missed_keywords() {
+        use crate::llm::Relation;
+        let ok = |rel: &str| Relation { rel: rel.into(), verdict: "ok".into() };
+        let mut rels = vec![ok("클라이언트의 SYN 요청"), ok("서버의 SYN-ACK 응답"), ok("클라이언트의 ACK 연결 성립")];
+        let k = [kw("SYN", &[]), kw("SYN-ACK", &[]), kw("ACK", &[])];
+        guard(&mut rels, &k, "클라이언트가 SYN을 보내고 서버가 응답한다.");
+        assert_eq!(rels.iter().map(|r| r.verdict.as_str()).collect::<Vec<_>>(), ["ok", "missing", "missing"]);
+        // 동의어로 쓴 핵심어는 빠진 것이 아니다 · 핵심어가 없으면 그대로
+        let mut rels = vec![Relation { rel: "다중공선성 → 회귀계수 불안정".into(), verdict: "reversed".into() }];
+        guard(&mut rels, &[kw("다중공선성", &["VIF"])], "vif 가 높으면 계수가 흔들린다");
+        assert_eq!(rels[0].verdict, "reversed");
+        guard(&mut rels, &[], "");
+        assert_eq!(rels[0].verdict, "reversed");
+    }
+
+    /// 8.3: 개념 관계 확인에 넘기는 질문은 앞면 글자 ({{type:}} 칸 · 태그 없이)
+    #[test]
+    fn concept_question_is_the_front_text() {
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let ntid = crate::db::native_type_id(&con, "written").unwrap();
+        con.execute(
+            "INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 0, 0)",
+            params![ntid, serde_json::to_string(&["수요가 <b>늘면</b>?", "가격이 오른다", ""]).unwrap()],
+        )
+        .unwrap();
+        con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, 0, 0, 0)", params![con.last_insert_rowid(), deck]).unwrap();
+        let info = card_info(&con, con.last_insert_rowid()).unwrap();
+        assert_eq!(info.answer, "가격이 오른다");
+        assert!(info.question.contains("수요가 늘면?") && !info.question.contains('<') && !info.question.contains("{{"), "{}", info.question);
     }
 
     #[test]

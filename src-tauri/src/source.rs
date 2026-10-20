@@ -23,10 +23,12 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 
 /// 신호와 가중치 (post-mvp 5장). 하이라이트·밑줄·색은 사용자가 일부러 남긴 것이라 높고,
 /// 볼드는 원본 서식일 수 있어 낮다. 배열 순서가 곧 신뢰도 순이다 (I1 배지 순서).
-/// figure · table: 8.4 그림 · 표로 만든 카드의 영역 (IT9). 강조가 아니라 가중치 0, 빠진 범위 · 분석에서 뺀다
-pub const SIGNALS: [(&str, f64); 7] =
-    [("highlight", 3.0), ("underline", 3.0), ("red", 3.0), ("star", 2.0), ("bold", 1.0), ("figure", 0.0), ("table", 0.0)];
-const SIGNAL_LABEL: [&str; 7] = ["하이라이트", "밑줄", "붉은 글씨", "★", "볼드", "그림", "표"];
+/// figure · table: 8.4 그림 · 표로 만든 카드의 영역 (IT9). 강조가 아니라 가중치 0, 빠진 범위 · 분석에서 뺀다.
+/// heading: 8.4 목차 제목 (OT1). 강조와 따로 둔 행이고 가중치 0 (동기화로 받은 옛 앱이 이 행에 카드를 자동으로 이어도 점수가 늘지 않는다)
+pub const SIGNALS: [(&str, f64); 8] =
+    [("highlight", 3.0), ("underline", 3.0), ("red", 3.0), ("star", 2.0), ("bold", 1.0), ("figure", 0.0), ("table", 0.0), ("heading", 0.0)];
+const SIGNAL_LABEL: [&str; 8] = ["하이라이트", "밑줄", "붉은 글씨", "★", "볼드", "그림", "표", "목차"];
+const HEADING: &str = "heading";
 
 /// 자동 연결 기준 (multilingual-e5-small 코사인 유사도). 이보다 낮으면 잇지 않고 비워 둔다 (억지 연결 금지, post-mvp 6장).
 /// 실측 (2026-10-14, 한국어 카드 20장 · 강조 구간 12곳): 맞는 짝 0.89~0.99, 틀린 짝 0.85~0.875 (짧은 제목에 끌림).
@@ -41,6 +43,11 @@ fn sorted_signals<S: AsRef<str>>(signals: &[S]) -> Vec<&'static str> {
 /// 8.4 그림 · 표 영역 구간인가
 fn is_region<S: AsRef<str>>(signals: &[S]) -> bool {
     signals.iter().any(|s| matches!(s.as_ref(), "figure" | "table"))
+}
+
+/// 8.4 목차 제목 구간인가
+fn is_heading<S: AsRef<str>>(signals: &[S]) -> bool {
+    signals.iter().any(|s| s.as_ref() == HEADING)
 }
 
 fn weight_of(signals: &[&str]) -> f64 {
@@ -63,15 +70,18 @@ pub struct Material {
     linked: i64,
     /// R1-a 빠진 범위: 강조됐는데 이어진 카드가 없는 구간 수 (끊은 자동 연결은 없는 것으로 본다)
     pub(crate) gaps: i64,
+    /// 8.4 목차 제목 수
+    headings: i64,
 }
 
-// 강조 수 · 연결 수 · 빠진 범위는 글자 강조만 센다. 그림 · 표 영역(IT13)은 [그림·표 N] 탭에서만
+// 강조 수 · 연결 수 · 빠진 범위는 글자 강조만 센다. 그림 · 표 영역(IT13)은 [그림·표 N] 탭에서만, 목차 제목(OT1)은 [목차 N] 탭에서만
 const MATERIAL_SQL: &str = "SELECT m.id, m.deck_id, m.file_name, m.kind, m.pages, m.status,
-        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals NOT IN ('figure','table')),
+        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals NOT IN ('figure','table','heading')),
         (SELECT count(DISTINCT s.id) FROM source_segment s JOIN source_link l ON l.segment_id = s.id
-         WHERE s.material_id = m.id AND l.method != 'rejected' AND s.signals NOT IN ('figure','table')),
-        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals NOT IN ('figure','table')
-         AND NOT EXISTS (SELECT 1 FROM source_link l WHERE l.segment_id = s.id AND l.method != 'rejected'))
+         WHERE s.material_id = m.id AND l.method != 'rejected' AND s.signals NOT IN ('figure','table','heading')),
+        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals NOT IN ('figure','table','heading')
+         AND NOT EXISTS (SELECT 1 FROM source_link l WHERE l.segment_id = s.id AND l.method != 'rejected')),
+        (SELECT count(*) FROM source_segment s WHERE s.material_id = m.id AND s.signals = 'heading')
      FROM source_material m";
 
 fn material_row(r: &rusqlite::Row) -> rusqlite::Result<Material> {
@@ -85,6 +95,7 @@ fn material_row(r: &rusqlite::Row) -> rusqlite::Result<Material> {
         segments: r.get(6)?,
         linked: r.get(7)?,
         gaps: r.get(8)?,
+        headings: r.get(9)?,
     })
 }
 
@@ -93,12 +104,20 @@ pub(crate) fn subtree(con: &Connection, deck_id: i64) -> Res<String> {
     Ok(descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
 }
 
+/// 자료 · 연결 순서는 기기마다 다른 로컬 id 대신 동기화로 같은 값으로 (만든 시각 → uid, Q7). id 는 uid 가 비었을 때만
+const MATERIAL_ORDER: &str = "m.created_at, m.uid, m.id";
+const LINK_ORDER: &str = "l.created_at, l.uid, l.id";
+
 /// 이 덱과 하위 덱에 붙은 자료
 #[tauri::command]
 pub fn source_list(state: State<AppState>, deck_id: i64) -> Res<Vec<Material>> {
     let con = state.db.lock().map_err(err)?;
-    let ids = subtree(&con, deck_id)?;
-    let mut st = con.prepare(&format!("{MATERIAL_SQL} WHERE m.deck_id IN ({ids}) ORDER BY m.id")).map_err(err)?;
+    materials_in(&con, deck_id)
+}
+
+fn materials_in(con: &Connection, deck_id: i64) -> Res<Vec<Material>> {
+    let ids = subtree(con, deck_id)?;
+    let mut st = con.prepare(&format!("{MATERIAL_SQL} WHERE m.deck_id IN ({ids}) ORDER BY {MATERIAL_ORDER}")).map_err(err)?;
     let rows = st.query_map([], material_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     Ok(rows)
 }
@@ -120,7 +139,7 @@ pub fn source_add(state: State<AppState>, deck_id: i64, path: String) -> Res<Mat
         return Err("200MB가 넘는 자료는 넣을 수 없어요.".into());
     }
     let bytes = std::fs::read(src).map_err(|_| "파일을 읽을 수 없어요.".to_string())?;
-    let slides = if kind == "pptx" { Some(pptx_slides(&bytes)) } else { None };
+    let slides = if kind == "pptx" { Some(pptx_read(&bytes)) } else { None };
     let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("자료.{kind}"));
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
@@ -139,8 +158,9 @@ pub fn source_add(state: State<AppState>, deck_id: i64, path: String) -> Res<Mat
     tx.execute("UPDATE source_material SET rel_path = ?1 WHERE id = ?2", params![rel, id]).map_err(err)?;
     if let Some(slides) = slides {
         // 열 수 없는 PPTX 도 목록에는 남겨 "글자를 읽을 수 없어요"로 알린다
-        let slides = slides.unwrap_or_default();
-        let segs = pptx_segments(&slides);
+        let (slides, sections) = slides.unwrap_or_default();
+        let mut segs = pptx_segments(&slides);
+        segs.extend(pptx_headings(&slides, &sections)); // 8.4 목차: 강조 구간 뒤에 넣어 강조 구간 순서 · id 는 전과 같다
         let readable = slides.iter().flatten().any(|p| !p.text.is_empty());
         save_segments(&tx, id, slides.len() as i64, &segs, readable)?;
     }
@@ -190,6 +210,17 @@ pub struct NewSegment {
 
 fn save_segments(con: &Connection, material_id: i64, pages: i64, segs: &[NewSegment], readable: bool) -> Res<()> {
     con.execute("DELETE FROM source_segment WHERE material_id = ?1", [material_id]).map_err(err)?;
+    insert_segments(con, material_id, segs, false)?;
+    con.execute(
+        "UPDATE source_material SET pages = ?1, status = ?2, updated_at = ?3 WHERE id = ?4",
+        params![pages, if readable { "ready" } else { "unsupported" }, now_ms(), material_id],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+/// 알 수 없는 신호뿐이거나 글이 빈 구간은 버린다. headings: 목차 제목 구간만 받는다 (목차 다시 읽기)
+fn insert_segments(con: &Connection, material_id: i64, segs: &[NewSegment], headings: bool) -> Res<()> {
     let mut st = con
         .prepare(
             "INSERT INTO source_segment (material_id, page, ord, text, signals, weight, rects, before_text, after_text)
@@ -198,18 +229,13 @@ fn save_segments(con: &Connection, material_id: i64, pages: i64, segs: &[NewSegm
         .map_err(err)?;
     for s in segs {
         let signals = sorted_signals(&s.signals);
-        if signals.is_empty() || s.text.trim().is_empty() {
+        if signals.is_empty() || s.text.trim().is_empty() || (headings && signals != [HEADING]) {
             continue;
         }
         let rects = s.rects.as_ref().map(|r| serde_json::to_string(r).unwrap_or_default());
         st.execute(params![material_id, s.page, s.ord, s.text.trim(), signals.join(","), weight_of(&signals), rects, s.before, s.after])
             .map_err(err)?;
     }
-    con.execute(
-        "UPDATE source_material SET pages = ?1, status = ?2, updated_at = ?3 WHERE id = ?4",
-        params![pages, if readable { "ready" } else { "unsupported" }, now_ms(), material_id],
-    )
-    .map_err(err)?;
     Ok(())
 }
 
@@ -225,6 +251,206 @@ pub fn source_save_pdf(state: State<AppState>, material_id: i64, pages: i64, seg
         tx.commit().map_err(err)?;
     }
     material(&con, material_id)
+}
+
+// ------------------------------------------------------------------ 8.4 목차 (DECISIONS OT)
+
+/// 제목 구간의 글: 단계만큼 "#" + 띄어쓰기 + 제목 ("## 3.2 요약"). 새 열 없이 단계를 담는다 (OT2). PDF 는 화면(outline.ts headingText)이 같게 쓴다
+fn heading_text(level: usize, title: &str) -> String {
+    format!("{} {}", "#".repeat(level.clamp(1, 6)), title.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// "## 3.2 요약" → (2, "3.2 요약"). 표시가 없으면 1단계 그대로
+fn heading_of(text: &str) -> (usize, &str) {
+    let level = text.bytes().take_while(|b| *b == b'#').count();
+    match text[level..].strip_prefix(' ') {
+        Some(title) if (1..=6).contains(&level) => (level, title),
+        _ => (1, text),
+    }
+}
+
+/// 핵심 범위로 보는 제목 낱말: 하위 덱 이름 규칙(import.rs deck_name_level)과 같은 낱말 (OT4)
+const CORE_WORDS: [&str; 8] = ["요약", "핵심", "정리", "기출", "필수", "summary", "core", "essential"];
+/// 제목에 남긴 사용자 표시. 볼드는 제목 서식이라 뺀다
+const MARKS: [&str; 4] = ["highlight", "underline", "red", "star"];
+/// 목차 근거로 제안하려면 핵심 범위와 이어진 카드가 이만큼 (OT5)
+const OUTLINE_MIN_CARDS: usize = 3;
+const OUTLINE_HEAD: &str = "목차 · ";
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Section {
+    /// 제목 구간 id
+    id: i64,
+    level: usize,
+    title: String,
+    page: i64,
+    /// 끝나는 쪽 (다음 같은 · 윗 단계 제목 앞)
+    end_page: i64,
+    /// 구간 안(아래 단계 포함) 강조 구간 수 · 그 구간들과 이어진 카드 수
+    segments: usize,
+    cards: usize,
+    /// 핵심 범위면 까닭 ("제목에 '요약'" · "제목이 하이라이트로 강조돼 있어요")
+    core: Option<String>,
+}
+
+#[derive(Serialize, Debug, Default)]
+pub struct Outline {
+    sections: Vec<Section>,
+    /// 핵심 범위가 강조 구간의 절반을 넘어 (문서 제목 · 머리글처럼 전체를 덮는 제목) 이 자료는 목차로 가려내지 않았다. 가장 넓게 덮은 제목
+    wide: Option<String>,
+    /// 읽은 곳: outline (PDF 목차) · size (목차 없는 PDF 의 큰 글자 줄, 제목 구간에 줄 위치가 있다) ·
+    /// slide (PPTX 제목과 구역) · slide_title (구역 없는 PPTX 의 제목) · slide_section (제목 자리 없는 PPTX 의 구역)
+    source: String,
+    /// 자료를 읽은 때 (source_material.updated_at, ms)
+    read_at: i64,
+    /// 핵심 범위 안 강조 구간 id → 그 범위의 구간 번호 (가장 안쪽 핵심 범위)
+    #[serde(skip)]
+    core: HashMap<i64, usize>,
+}
+
+/// 띄어쓰기를 빼고 소문자로 (제목과 강조 구간 글 맞추기)
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
+}
+
+/// 제목이 핵심 범위인 까닭 (OT4): 핵심 낱말이 들었거나, 같은 쪽에서 제목 글과 맞는 강조 구간에 사용자 표시가 있다
+fn core_reason(title: &str, page: i64, texts: &[&Segment]) -> Option<String> {
+    let lower = title.to_lowercase();
+    // 영어 낱말은 낱말 단위로 ("Model Score" 의 core 를 잡지 않게)
+    let has = |w: &str| if w.is_ascii() { lower.split(|c: char| !c.is_alphanumeric()).any(|x| x == w) } else { lower.contains(w) };
+    if let Some(w) = CORE_WORDS.iter().find(|w| has(w)) {
+        return Some(format!("제목에 '{w}'"));
+    }
+    let t = squash(title);
+    texts.iter().filter(|s| s.page == page).find_map(|s| {
+        let x = squash(&s.text);
+        let (short, long) = if x.chars().count() <= t.chars().count() { (&x, &t) } else { (&t, &x) };
+        // 한쪽이 다른 쪽에 들고 짧은 쪽이 긴 쪽의 절반 이상 (본문 문장 속 같은 낱말은 제목 표시가 아니다)
+        let n = short.chars().count();
+        let same = n >= 2 && long.contains(short.as_str()) && n * 2 >= long.chars().count();
+        let mark = SIGNALS.iter().position(|g| MARKS.contains(&g.0) && s.signals.iter().any(|x| x == g.0))?;
+        same.then(|| format!("제목이 {}로 강조돼 있어요", SIGNAL_LABEL[mark]))
+    })
+}
+
+/// 구간 = 제목부터 다음 같은 · 윗 단계 제목 앞까지 (OT3). 순서는 쪽 → 쪽 안 순서, 같은 자리면 제목이 먼저 (윗 단계부터).
+/// 두 기기가 따로 다시 읽어 같은 자리 같은 제목이 둘이면 하나로 본다
+fn outline(segs: &[Segment], pages: i64) -> Outline {
+    let level = |s: &Segment| if is_heading(&s.signals) { heading_of(&s.text).0 } else { 0 };
+    let text = |s: &Segment| !is_heading(&s.signals) && !is_region(&s.signals);
+    let mut items: Vec<&Segment> = segs.iter().collect();
+    items.sort_by_key(|s| (s.page, s.ord, !is_heading(&s.signals), level(s)));
+    items.dedup_by(|a, b| is_heading(&a.signals) && is_heading(&b.signals) && (a.page, a.ord, &a.text) == (b.page, b.ord, &b.text));
+    let texts: Vec<&Segment> = items.iter().filter(|s| text(s)).copied().collect();
+    // 화면 단계는 가장 얕은 제목을 1단계로 당긴다 (구역 없는 PPTX 는 제목이 모두 2단계로 저장된다, QA L6).
+    // 구간 끝은 저장된 단계끼리 견주므로 구간 · 핵심 범위는 그대로다
+    let base = items.iter().filter(|s| is_heading(&s.signals)).map(|s| level(s)).min().unwrap_or(1) - 1;
+    let mut out = Outline::default();
+    let mut ranges: Vec<(usize, Vec<i64>)> = vec![]; // 핵심 범위 구간 번호 · 그 안 강조 구간
+    for (i, h) in items.iter().enumerate() {
+        if !is_heading(&h.signals) {
+            continue;
+        }
+        let (lv, title) = heading_of(&h.text);
+        let end = items[i + 1..].iter().position(|s| is_heading(&s.signals) && level(s) <= lv).map_or(items.len(), |k| i + 1 + k);
+        let inside: Vec<&Segment> = items[i + 1..end].iter().filter(|s| text(s)).copied().collect();
+        // 다음 제목이 그 쪽 맨 앞(앞에 제목뿐)이면 끝나는 쪽은 그 앞 쪽
+        let end_page = match items.get(end) {
+            Some(b) if items[..end].iter().rev().take_while(|s| s.page == b.page).all(|s| is_heading(&s.signals)) => b.page - 1,
+            Some(b) => b.page,
+            None => pages,
+        };
+        let core = core_reason(title, h.page, &texts);
+        if core.is_some() {
+            ranges.push((out.sections.len(), inside.iter().map(|s| s.id).collect()));
+        }
+        out.sections.push(Section {
+            id: h.id,
+            level: lv - base,
+            title: title.to_string(),
+            page: h.page,
+            end_page: end_page.max(h.page),
+            segments: inside.len(),
+            cards: inside.iter().flat_map(|s| s.links.iter().map(|l| l.card_id)).collect::<std::collections::HashSet<_>>().len(),
+            core,
+        });
+    }
+    let covered: std::collections::HashSet<i64> = ranges.iter().flat_map(|r| r.1.iter().copied()).collect();
+    if covered.len() * 2 > texts.len() {
+        out.wide = ranges.iter().max_by_key(|r| (r.1.len(), std::cmp::Reverse(r.0))).map(|r| out.sections[r.0].title.clone());
+        out.sections.iter_mut().for_each(|s| s.core = None);
+        return out;
+    }
+    // 안쪽 핵심 범위가 뒤에 오므로 덮어쓰면 가장 안쪽 범위가 남는다
+    for (k, ids) in ranges {
+        for id in ids {
+            out.core.insert(id, k);
+        }
+    }
+    out
+}
+
+fn outline_of(con: &Connection, material_id: i64) -> Res<Outline> {
+    let (pages, kind, read_at): (i64, String, i64) = con
+        .query_row("SELECT pages, kind, updated_at FROM source_material WHERE id = ?1", [material_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(err)?;
+    let segs = segments_of(con, material_id)?;
+    let mut out = outline(&segs, pages);
+    // 큰 글자 줄로 읽은 제목만 줄 위치(rects)를 남긴다 (pdf.ts readPdf)
+    let sized = segs.iter().any(|s| is_heading(&s.signals) && s.rects.is_some());
+    // PPTX 는 구역이 1단계, 슬라이드 제목이 2단계로 저장된다 (pptx_headings)
+    let has = |lv: usize| segs.iter().any(|s| is_heading(&s.signals) && heading_of(&s.text).0 == lv);
+    out.source = match (kind == "pptx", has(1), has(2)) {
+        (true, true, false) => "slide_section",
+        (true, false, true) => "slide_title",
+        (true, ..) => "slide",
+        _ if sized => "size",
+        _ => "outline",
+    }
+    .into();
+    out.read_at = read_at;
+    Ok(out)
+}
+
+/// I1 [목차 N] 탭. 제목 구간이 없으면 빈 목록
+#[tauri::command]
+pub fn source_outline(state: State<AppState>, material_id: i64) -> Res<Outline> {
+    let con = state.db.lock().map_err(err)?;
+    outline_of(&con, material_id)
+}
+
+/// [목차 다시 읽기]: 이 버전 전에 읽은 자료에 제목 구간을 채운다 (OT6). 제목 구간만 바꾼다: 강조 구간 · 카드 연결 · 기출 표시는 그대로.
+/// PDF 는 화면이 pdf.js 로 읽은 제목(headings)을 보내고, PPTX 는 비워 보내면 파일에서 다시 읽는다
+#[tauri::command]
+pub fn source_save_outline(state: State<AppState>, material_id: i64, headings: Option<Vec<NewSegment>>) -> Res<Outline> {
+    let headings = match headings {
+        Some(h) => h,
+        None => {
+            let mut p = open_pptx(&state, material_id)?;
+            let slides = pptx_paras(&mut p);
+            pptx_headings(&slides, &p.sections)
+        }
+    };
+    let mut con = state.db.lock().map_err(err)?;
+    let tx = con.transaction().map_err(err)?;
+    save_headings(&tx, material_id, &headings)?;
+    tx.commit().map_err(err)?;
+    outline_of(&con, material_id)
+}
+
+/// 읽은(ready) 자료의 제목 구간만 바꾼다. 같은 제목이면 아무것도 쓰지 않는다 (동기화 변경이 불지 않게)
+fn save_headings(con: &Connection, material_id: i64, headings: &[NewSegment]) -> Res<()> {
+    let ready: bool = con.query_row("SELECT status = 'ready' FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).map_err(err)?;
+    let mut st = con.prepare("SELECT page, ord, text FROM source_segment WHERE material_id = ?1 AND signals = 'heading' ORDER BY page, ord, text").map_err(err)?;
+    let old: Vec<(i64, i64, String)> = st.query_map([material_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let mut new: Vec<(i64, i64, String)> =
+        headings.iter().filter(|h| sorted_signals(&h.signals) == [HEADING] && !h.text.trim().is_empty()).map(|h| (h.page, h.ord, h.text.trim().to_string())).collect();
+    new.sort();
+    if !ready || old == new {
+        return Ok(());
+    }
+    con.execute("DELETE FROM source_segment WHERE material_id = ?1 AND signals = 'heading'", [material_id]).map_err(err)?;
+    insert_segments(con, material_id, headings, true)
 }
 
 #[derive(Serialize)]
@@ -276,10 +502,10 @@ pub(crate) fn segments_of(con: &Connection, material_id: i64) -> Res<Vec<Segment
     let mut st = con.prepare(&format!("{SEGMENT_SQL} WHERE material_id = ?1 ORDER BY page, ord")).map_err(err)?;
     let mut segs: Vec<Segment> = st.query_map([material_id], segment_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     let mut st = con
-        .prepare(
+        .prepare(&format!(
             "SELECT l.segment_id, l.card_id, l.method, l.origin FROM source_link l JOIN source_segment s ON s.id = l.segment_id
-             WHERE s.material_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, l.id",
-        )
+             WHERE s.material_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, {LINK_ORDER}",
+        ))
         .map_err(err)?;
     let mut links: HashMap<i64, Vec<Link>> = HashMap::new();
     for row in st.query_map([material_id], |r| Ok((r.get::<_, i64>(0)?, Link { card_id: r.get(1)?, method: r.get(2)?, origin: r.get(3)? }))).map_err(err)? {
@@ -447,8 +673,10 @@ fn region_cards(con: &mut Connection, deck_id: i64, region: &Region, cards: &[cr
 /// R8 넣을 곳: 같은 자료에서 쪽이 가장 가까운 "카드가 있는 구간"의 카드 덱 (rag 초안 · IT 그림 · 표)
 pub(crate) fn nearest_deck(con: &Connection, material_id: i64, page: i64) -> Res<Option<i64>> {
     con.query_row(
-        "SELECT c.deck_id FROM source_segment s JOIN source_link l ON l.segment_id = s.id AND l.method != 'rejected'
-         JOIN card c ON c.id = l.card_id WHERE s.material_id = ?1 ORDER BY abs(s.page - ?2), s.page, s.ord LIMIT 1",
+        &format!(
+            "SELECT c.deck_id FROM source_segment s JOIN source_link l ON l.segment_id = s.id AND l.method != 'rejected'
+             JOIN card c ON c.id = l.card_id WHERE s.material_id = ?1 ORDER BY abs(s.page - ?2), s.page, s.ord, {LINK_ORDER} LIMIT 1"
+        ),
         params![material_id, page],
         |r| r.get(0),
     )
@@ -488,18 +716,24 @@ pub fn source_segment(state: State<AppState>, segment_id: i64) -> Res<CardSource
 #[tauri::command]
 pub fn source_for_card(state: State<AppState>, card_id: i64) -> Res<Option<CardSource>> {
     let con = state.db.lock().map_err(err)?;
+    for_card(&con, card_id)
+}
+
+fn for_card(con: &Connection, card_id: i64) -> Res<Option<CardSource>> {
     let hit: Option<(i64, i64, String)> = con
         .query_row(
-            "SELECT s.material_id, s.id, l.method FROM source_link l JOIN source_segment s ON s.id = l.segment_id
-             WHERE l.card_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, l.id LIMIT 1",
+            &format!(
+                "SELECT s.material_id, s.id, l.method FROM source_link l JOIN source_segment s ON s.id = l.segment_id
+                 WHERE l.card_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, {LINK_ORDER} LIMIT 1"
+            ),
             [card_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(err)?;
     let Some((material_id, segment_id, method)) = hit else { return Ok(None) };
-    let segment = segments_of(&con, material_id)?.into_iter().find(|s| s.id == segment_id).ok_or("구간을 찾을 수 없어요.")?;
-    Ok(Some(CardSource { material: material(&con, material_id)?, segment, method }))
+    let segment = segments_of(con, material_id)?.into_iter().find(|s| s.id == segment_id).ok_or("구간을 찾을 수 없어요.")?;
+    Ok(Some(CardSource { material: material(con, material_id)?, segment, method }))
 }
 
 /// I1 "분석 뒤에 추가한 카드 N장". 분석 시각을 따로 두지 않고 이 기기의 임베딩 캐시로 센다
@@ -533,14 +767,24 @@ pub struct Para {
     pub signals: Vec<&'static str>,
     /// 표 칸 안 문단 (I2 패널은 표를 따로 그려서 뺀다)
     pub cell: bool,
+    /// 8.4 목차: 제목 자리(p:ph type title · ctrTitle) 안 문단인가 · 런 글자 크기(sz)의 가장 큰 값 pt (적어 두지 않았으면 0)
+    #[serde(skip)]
+    pub title: bool,
+    #[serde(skip)]
+    pub size: f64,
 }
 
-/// 열어 둔 PPTX: 슬라이드 경로 (presentation.xml 의 sldIdLst 순서, 파일 이름 순서와 다를 수 있다) · 슬라이드 크기 (EMU)
+/// 열어 둔 PPTX: 슬라이드 경로 (presentation.xml 의 sldIdLst 순서, 파일 이름 순서와 다를 수 있다) · 슬라이드 크기 (EMU) ·
+/// 구역 (p14:section 이름과 슬라이드 수, 순서대로)
 struct Pptx<R> {
     zip: zip::ZipArchive<R>,
     slides: Vec<String>,
     size: (f64, f64),
+    sections: Sections,
 }
+
+/// 구역 이름 · 그 안 슬라이드 수 (순서대로)
+type Sections = Vec<(String, usize)>;
 
 fn zip_text<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Option<String> {
     let mut s = String::new();
@@ -591,14 +835,51 @@ fn pptx_open<R: Read + Seek>(r: R) -> Res<Pptx<R>> {
         .and_then(|v| Some((v[0].parse::<f64>().ok()?, v[1].parse::<f64>().ok()?)))
         .filter(|(w, h)| *w > 0.0 && *h > 0.0)
         .unwrap_or((9144000.0, 6858000.0));
-    Ok(Pptx { zip, slides, size })
+    let sections = pptx_sections(&pres);
+    Ok(Pptx { zip, slides, size, sections })
+}
+
+/// 구역 (p14:sectionLst 의 p14:section): 이름과 그 안 슬라이드 수, 순서대로. 구역을 쓰지 않은 파일은 비어 있다
+fn pptx_sections(pres: &str) -> Sections {
+    let mut reader = quick_xml::Reader::from_str(pres);
+    let mut out: Sections = vec![];
+    let mut in_lst = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.local_name().as_ref() == "sectionLst" => in_lst = true,
+            Ok(Event::End(e)) if e.local_name().as_ref() == "sectionLst" => in_lst = false,
+            Ok(Event::Start(e) | Event::Empty(e)) if in_lst => match e.local_name().as_ref() {
+                "section" => out.push((e.attributes().flatten().find(|a| a.key.as_ref() == "name").and_then(|a| attr_value(&a)).unwrap_or_default(), 0)),
+                "sldId" => {
+                    if let Some(last) = out.last_mut() {
+                        last.1 += 1;
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+fn pptx_paras<R: Read + Seek>(p: &mut Pptx<R>) -> Vec<Vec<Para>> {
+    let slides = std::mem::take(&mut p.slides);
+    let out = slides.iter().map(|s| zip_text(&mut p.zip, s).map(|x| parse_slide(&x)).unwrap_or_default()).collect();
+    p.slides = slides;
+    out
 }
 
 /// 슬라이드별 문단과 강조 신호
 pub fn pptx_slides(bytes: &[u8]) -> Res<Vec<Vec<Para>>> {
+    Ok(pptx_paras(&mut pptx_open(std::io::Cursor::new(bytes))?))
+}
+
+/// 슬라이드별 문단 · 구역 (source_add)
+fn pptx_read(bytes: &[u8]) -> Res<(Vec<Vec<Para>>, Sections)> {
     let mut p = pptx_open(std::io::Cursor::new(bytes))?;
-    let slides = std::mem::take(&mut p.slides);
-    Ok(slides.iter().map(|s| zip_text(&mut p.zip, s).map(|x| parse_slide(&x)).unwrap_or_default()).collect())
+    Ok((pptx_paras(&mut p), std::mem::take(&mut p.sections)))
 }
 
 fn attr_value(a: &quick_xml::events::attributes::Attribute) -> Option<String> {
@@ -673,6 +954,7 @@ fn parse_slide(xml: &str) -> Vec<Para> {
         underline: bool,
         red: bool,
         highlight: bool,
+        size: f64,
     }
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut paras = vec![];
@@ -680,12 +962,15 @@ fn parse_slide(xml: &str) -> Vec<Para> {
     let mut run = Run::default();
     let (mut in_rpr, mut in_fill, mut in_hl, mut in_t) = (false, false, false, false);
     let mut in_tbl = 0usize;
+    // 8.4 목차: 도형(p:sp) 깊이와 제목 자리인 도형의 깊이
+    let (mut sp, mut title_sp) = (0usize, None::<usize>);
     let mark = |p: &mut Para, run: Run| {
         for (on, sig) in [(run.highlight, "highlight"), (run.underline, "underline"), (run.red, "red"), (run.bold, "bold")] {
             if on && !p.signals.contains(&sig) {
                 p.signals.push(sig);
             }
         }
+        p.size = p.size.max(run.size);
     };
     loop {
         let ev = match reader.read_event() {
@@ -700,12 +985,15 @@ fn parse_slide(xml: &str) -> Vec<Para> {
                     e.attributes().flatten().find(|a| a.key.as_ref() == k).and_then(|a| attr_value(&a))
                 };
                 match e.local_name().as_ref() {
-                    "p" if open => cur = Some(Para { cell: in_tbl > 0, ..Default::default() }),
+                    "p" if open => cur = Some(Para { cell: in_tbl > 0, title: title_sp.is_some() && in_tbl == 0, ..Default::default() }),
                     "tbl" if open => in_tbl += 1,
+                    "sp" if open => sp += 1,
+                    "ph" if sp > 0 && attr("type").is_some_and(|t| t == "title" || t == "ctrTitle") => title_sp = Some(sp),
                     "r" | "fld" => run = Run::default(),
                     "rPr" => {
                         run.bold = attr("b").is_some_and(|v| v == "1" || v == "true");
                         run.underline = attr("u").is_some_and(|v| v != "none");
+                        run.size = attr("sz").and_then(|v| v.parse::<f64>().ok()).map_or(0.0, |v| v / 100.0);
                         in_rpr = open;
                     }
                     "solidFill" if in_rpr && !in_hl => in_fill = open,
@@ -738,6 +1026,12 @@ fn parse_slide(xml: &str) -> Vec<Para> {
                 }
                 "rPr" => in_rpr = false,
                 "tbl" => in_tbl = in_tbl.saturating_sub(1),
+                "sp" => {
+                    if title_sp == Some(sp) {
+                        title_sp = None;
+                    }
+                    sp = sp.saturating_sub(1);
+                }
                 "solidFill" => in_fill = false,
                 "highlight" => in_hl = false,
                 "t" => in_t = false,
@@ -785,6 +1079,51 @@ fn pptx_segments(slides: &[Vec<Para>]) -> Vec<NewSegment> {
                 before: j.checked_sub(1).map(|k| paras[k].text.clone()),
                 after: paras.get(j + 1).map(|p| p.text.clone()),
             });
+        }
+    }
+    out
+}
+
+/// 8.4 목차 (OT1): 구역 이름은 1단계, 슬라이드 제목은 2단계. 쪽 안 순서는 -1 (그 슬라이드의 강조 구간보다 앞).
+/// 제목 자리가 없는 슬라이드는 글자 크기(sz)가 본문(크기를 적은 문단의 중앙값)의 1.3배 이상인 가장 큰 문단을 제목으로 본다
+fn pptx_headings(slides: &[Vec<Para>], sections: &[(String, usize)]) -> Vec<NewSegment> {
+    let head = |i: usize, level: usize, title: &str| NewSegment {
+        page: i as i64 + 1,
+        ord: -1,
+        text: heading_text(level, title),
+        signals: vec![HEADING.into()],
+        rects: None,
+        before: None,
+        after: None,
+    };
+    // 구역은 슬라이드를 순서대로 나눈다. 수가 맞지 않으면(읽지 못한 슬라이드) 구역을 쓰지 않는다
+    let mut starts = HashMap::new();
+    if sections.iter().map(|s| s.1).sum::<usize>() == slides.len() {
+        let mut at = 0;
+        for (name, n) in sections {
+            if *n > 0 && !name.trim().is_empty() {
+                starts.insert(at, name.as_str());
+            }
+            at += n;
+        }
+    }
+    let mut sizes: Vec<f64> = slides.iter().flatten().filter(|p| p.size > 0.0 && !p.title && !p.cell).map(|p| p.size).collect();
+    sizes.sort_by(f64::total_cmp);
+    let body = sizes.get(sizes.len() / 2).copied();
+    let mut out = vec![];
+    for (i, paras) in slides.iter().enumerate() {
+        if let Some(name) = starts.get(&i) {
+            out.push(head(i, 1, name));
+        }
+        let mut title = paras.iter().filter(|p| p.title).map(|p| p.text.as_str()).collect::<Vec<_>>().join(" ");
+        if title.is_empty()
+            && let Some(b) = body
+            && let Some(p) = paras.iter().filter(|p| !p.cell && p.size >= b * 1.3 && p.text.chars().count() <= 60).max_by(|x, y| x.size.total_cmp(&y.size))
+        {
+            title = p.text.clone();
+        }
+        if !title.trim().is_empty() {
+            out.push(head(i, 2, &title));
         }
     }
     out
@@ -1263,14 +1602,14 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         let ids = subtree(&con, deck_id)?;
         let cards = card_texts(&con, &ids)?;
         let mut st = con
-            .prepare(&format!("SELECT id, file_name FROM source_material WHERE deck_id IN ({ids}) AND status = 'ready' ORDER BY id"))
+            .prepare(&format!("SELECT m.id, m.file_name FROM source_material m WHERE m.deck_id IN ({ids}) AND m.status = 'ready' ORDER BY {MATERIAL_ORDER}"))
             .map_err(err)?;
         let materials: Vec<(i64, String)> =
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
         let mut segs = vec![];
         for (m, _) in &materials {
-            // 그림 · 표 영역은 강조가 아니라 자동 연결 · 중요도 제안에 넣지 않는다
-            segs.push(segments_of(&con, *m)?.into_iter().filter(|s| !is_region(&s.signals)).collect::<Vec<_>>());
+            // 그림 · 표 영역은 강조가 아니라 자동 연결 · 중요도 제안에 넣지 않는다. 목차 제목도 (짧은 제목에 카드가 끌린다, AUTO_LINK)
+            segs.push(segments_of(&con, *m)?.into_iter().filter(|s| !is_region(&s.signals) && !is_heading(&s.signals)).collect::<Vec<_>>());
         }
         (ids, cards, materials, segs)
     };
@@ -1321,10 +1660,10 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
     // 하위 덱 점수: 카드마다 이어진 구간 가중치 합의 평균. 근거 문장에 쓸 자료 이름과 신호도 모은다 (그림 · 표 영역은 강조가 아니라 뺀다)
     let mut st = con
         .prepare(&format!(
-            "SELECT c.deck_id, c.id, s.weight, m.file_name, s.signals FROM card c
+            "SELECT c.deck_id, c.id, s.weight, m.file_name, s.signals, s.id FROM card c
              JOIN source_link l ON l.card_id = c.id AND l.method != 'rejected'
              JOIN source_segment s ON s.id = l.segment_id JOIN source_material m ON m.id = s.material_id
-             WHERE c.deck_id IN ({ids}) AND m.deck_id IN ({ids}) AND s.signals NOT IN ('figure','table')"
+             WHERE c.deck_id IN ({ids}) AND m.deck_id IN ({ids}) AND s.signals NOT IN ('figure','table','heading')"
         ))
         .map_err(err)?;
     #[derive(Default)]
@@ -1333,18 +1672,26 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
         weight: f64,
         files: HashMap<String, std::collections::HashSet<i64>>,
         signals: HashMap<String, usize>,
+        /// 8.4 목차: 핵심 범위 제목 → 그 범위 강조 구간과 이어진 카드
+        core: HashMap<String, std::collections::HashSet<i64>>,
     }
+    let core = core_ranges(con, ids)?;
     let mut acc: HashMap<i64, Acc> = HashMap::new();
     let rows = st
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?)))
+        .query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?))
+        })
         .map_err(err)?;
     for row in rows {
-        let (deck, card, w, file, signals) = row.map_err(err)?;
+        let (deck, card, w, file, signals, seg) = row.map_err(err)?;
         let a = acc.entry(deck).or_default();
         a.cards.insert(card);
         a.weight += w;
         a.files.entry(file).or_default().insert(card);
         *a.signals.entry(signals.split(',').next().unwrap_or_default().to_string()).or_default() += 1;
+        if let Some(title) = core.get(&seg) {
+            a.core.entry(title.clone()).or_default().insert(card);
+        }
     }
     drop(st);
     // 8.4 기출은 여기서 더하지 않는다. 기출 비율 규칙이 따로 제안하고 근거 줄을 붙인다 (exam::suggest_all, N3)
@@ -1371,7 +1718,7 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
         [],
     )
     .map_err(err)?;
-    let mut suggested = 0;
+    let mut out: Vec<(i64, i64, String)> = vec![];
     for (deck, level, pct) in picks {
         let Some(a) = acc.get(&deck) else { continue };
         let (file, _) = a.files.iter().max_by_key(|(name, c)| (c.len(), std::cmp::Reverse((*name).clone()))).map(|(n, c)| (n.clone(), c.len())).unwrap_or_default();
@@ -1383,6 +1730,28 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
         } else {
             format!("자료 · {}장만 강조 구간과 연결 (덱 안 하위 {pct}%)", a.cards.len())
         };
+        out.push((deck, level, reason));
+    }
+    // 8.4 목차 (OT5): 자료와 이어진 카드의 절반 이상(3장 이상)이 핵심 범위와 이어진 덱은 핵심. 순위 제안이 핵심이면 줄을 더하고,
+    // 보충이면 목차가 이긴다 (기출과 같다, N3). 제목 구간이 없는 자료는 core 가 비어 위 결과 그대로다
+    let mut decks: Vec<(&i64, &Acc)> = acc.iter().filter(|(_, a)| !a.core.is_empty()).collect();
+    decks.sort_by_key(|d| *d.0);
+    for (deck, a) in decks {
+        let cards: std::collections::HashSet<i64> = a.core.values().flatten().copied().collect();
+        if cards.len() < OUTLINE_MIN_CARDS || cards.len() * 2 < a.cards.len() {
+            continue;
+        }
+        let Some((label, top)) = a.core.iter().max_by_key(|(t, c)| (c.len(), std::cmp::Reverse((*t).clone()))) else { continue };
+        let more = if a.core.len() > 1 { format!(" · 다른 핵심 범위 {}곳과도 연결", a.core.len() - 1) } else { String::new() };
+        let line = format!("{OUTLINE_HEAD}이 하위 덱 카드 {}장이 {label}{more}", top.len());
+        match out.iter_mut().find(|o| o.0 == *deck) {
+            Some(o) if o.1 == 2 => o.2 = format!("{}\n{line}", o.2),
+            Some(o) => *o = (*deck, 2, line),
+            None => out.push((*deck, 2, line)),
+        }
+    }
+    let mut suggested = 0;
+    for (deck, level, reason) in out {
         suggested += con
             .execute(
                 "UPDATE deck SET importance = ?1, importance_source = 'material', importance_reason = ?2 WHERE id = ?3 AND importance_source = 'default'",
@@ -1391,6 +1760,35 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
             .map_err(err)?;
     }
     Ok(suggested)
+}
+
+/// 하위 덱 자료들의 핵심 범위: 강조 구간 id → 그 범위를 말하는 글 ("a.pdf의 '3장 요약' 구간과 연결됐어요. … (22–24쪽)").
+/// 제목 구간이 있는 자료만 읽는다
+fn core_ranges(con: &Connection, ids: &str) -> Res<HashMap<i64, String>> {
+    let mut st = con
+        .prepare(&format!(
+            "SELECT m.id, m.file_name FROM source_material m WHERE m.deck_id IN ({ids})
+             AND EXISTS (SELECT 1 FROM source_segment s WHERE s.material_id = m.id AND s.signals = 'heading') ORDER BY m.id"
+        ))
+        .map_err(err)?;
+    let rows: Vec<(i64, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let mut core = HashMap::new();
+    for (m, file) in rows {
+        let o = outline_of(con, m)?;
+        let labels: Vec<String> = o
+            .sections
+            .iter()
+            .map(|s| {
+                let title = if s.title.chars().count() > 30 { format!("{}…", s.title.chars().take(30).collect::<String>()) } else { s.title.clone() };
+                let range = if s.end_page > s.page { format!("{}–{}", s.page, s.end_page) } else { s.page.to_string() };
+                let range = if o.source.starts_with("slide") { format!("슬라이드 {range}") } else { format!("{range}쪽") };
+                let size = if o.source == "size" { " · 목차가 없는 PDF라 큰 글자 줄로 읽은 제목이에요" } else { "" };
+                format!("{file}의 '{title}' 구간과 연결됐어요. 목차에서 핵심 범위로 본 구간이에요 ({range}){size}")
+            })
+            .collect();
+        core.extend(o.core.into_iter().map(|(seg, k)| (seg, labels[k].clone())));
+    }
+    Ok(core)
 }
 
 #[cfg(test)]
@@ -1466,10 +1864,10 @@ mod tests {
         let slides = pptx_slides(&tiny_pptx()).unwrap();
         assert_eq!(slides.len(), 2);
         // presentation.xml 순서: slide2 가 1쪽
-        assert_eq!(slides[0], vec![Para { text: "★ 기출 & 핵심".into(), signals: vec!["underline", "star"], cell: false }]);
+        assert_eq!(slides[0], vec![Para { text: "★ 기출 & 핵심".into(), signals: vec!["underline", "star"], ..Default::default() }]);
         let s = &slides[1];
         assert_eq!(s[0].signals, Vec::<&str>::new());
-        assert_eq!(s[1], Para { text: "로지스틱 회귀 — 종속변수가 범주형".into(), signals: vec!["bold"], cell: false });
+        assert_eq!(s[1], Para { text: "로지스틱 회귀 — 종속변수가 범주형".into(), signals: vec!["bold"], ..Default::default() });
         assert_eq!(s[2].signals, vec!["red"]);
         assert_eq!(s[3].signals, vec!["highlight"]);
         assert_eq!(s[4].signals, Vec::<&str>::new());
@@ -1722,5 +2120,345 @@ mod tests {
         let picks = rank(&[d(1, 2, 0.6), d(2, 5, 1.5), d(3, 1, 0.1), d(4, 3, 0.9), d(5, 2, 0.5), d(6, 0, 0.0)]);
         // 연결 있는 5개: 상위 1개 핵심(20%), 하위 1개 보충. 연결 없는 덱 6 은 순위에 넣지 않는다
         assert_eq!(picks, vec![(2, 2, 20), (3, 0, 20)]);
+    }
+
+    // ------------------------------------------------------------------ 8.4 목차 (OT)
+
+    #[test]
+    fn heading_text_round_trip() {
+        assert_eq!(heading_text(2, " 3.2  요약 "), "## 3.2 요약");
+        assert_eq!(heading_of("## 3.2 요약"), (2, "3.2 요약"));
+        // 제목이 # 로 시작해도 앞 표시 한 덩어리만 단계다
+        assert_eq!(heading_of(&heading_text(1, "# of samples")), (1, "# of samples"));
+        assert_eq!(heading_of("표시 없음"), (1, "표시 없음"));
+        assert_eq!(heading_of("####### 일곱"), (1, "####### 일곱"));
+        assert_eq!(heading_text(9, "깊음"), "###### 깊음");
+        // 핵심 낱말: 한국어는 글 안 어디든, 영어는 낱말 단위
+        assert_eq!(core_reason("3장 요약정리", 1, &[]).as_deref(), Some("제목에 '요약'"));
+        assert_eq!(core_reason("Key Summary", 1, &[]).as_deref(), Some("제목에 'summary'"));
+        assert_eq!(core_reason("Model Score", 1, &[]), None);
+    }
+
+    /// 구역 둘(소개 1장 · 핵심 정리 2장), 슬라이드 셋: 제목 자리 · 제목 자리 없이 큰 글자 · 두 문단짜리 가운데 제목
+    fn outline_pptx() -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(vec![]);
+        let mut z = zip::ZipWriter::new(&mut buf);
+        let opt = zip::write::SimpleFileOptions::default();
+        let sp = |ph: &str, body: &str| format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"/><p:cNvSpPr/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:txBody>{body}</p:txBody></p:sp>"#);
+        let para = |sz: u32, extra: &str, t: &str| format!(r#"<a:p><a:r><a:rPr lang="ko" sz="{sz}">{extra}</a:rPr><a:t>{t}</a:t></a:r></a:p>"#);
+        let slide = |shapes: String| format!(r#"<p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>{shapes}</p:spTree></p:cSld></p:sld>"#);
+        let s1 = slide(format!(
+            "{}{}",
+            sp(r#"<p:ph type="title"/>"#, r#"<a:p><a:r><a:t>1장 개요</a:t></a:r></a:p>"#),
+            sp("", &format!("{}{}", para(1800, "", "본문 첫 줄"), para(1800, "<a:highlight><a:srgbClr val=\"FFFF00\"/></a:highlight>", "하이라이트 본문")))
+        ));
+        let s2 = slide(sp("", &format!("{}{}{}", para(4000, "", "회귀 요약"), para(1800, "", "본문"), para(2000, "", "조금 큰 본문"))));
+        let s3 = slide(format!(
+            "{}{}",
+            sp(r#"<p:ph type="ctrTitle"/>"#, r#"<a:p><a:r><a:t>3장</a:t></a:r></a:p><a:p><a:r><a:rPr u="sng"/><a:t>부록</a:t></a:r></a:p>"#),
+            sp(r#"<p:ph type="body" idx="1"/>"#, &para(1800, "", "제목 아님"))
+        ));
+        let files = [
+            (
+                "ppt/presentation.xml",
+                r#"<p:presentation xmlns:p="p" xmlns:r="r" xmlns:p14="p14"><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/><p:sldId id="258" r:id="rId3"/></p:sldIdLst>
+                   <p:extLst><p:ext uri="{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"><p14:sectionLst>
+                   <p14:section name="소개" id="{A}"><p14:sldIdLst><p14:sldId id="256"/></p14:sldIdLst></p14:section>
+                   <p14:section name="핵심 정리" id="{B}"><p14:sldIdLst><p14:sldId id="257"/><p14:sldId id="258"/></p14:sldIdLst></p14:section>
+                   </p14:sectionLst></p:ext></p:extLst></p:presentation>"#
+                    .to_string(),
+            ),
+            (
+                "ppt/_rels/presentation.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/><Relationship Id="rId2" Target="slides/slide2.xml"/><Relationship Id="rId3" Target="slides/slide3.xml"/></Relationships>"#.to_string(),
+            ),
+            ("ppt/slides/slide1.xml", s1),
+            ("ppt/slides/slide2.xml", s2),
+            ("ppt/slides/slide3.xml", s3),
+        ];
+        for (name, body) in files {
+            z.start_file(name, opt).unwrap();
+            z.write_all(body.as_bytes()).unwrap();
+        }
+        z.finish().unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn pptx_titles_sizes_sections() {
+        let (slides, sections) = pptx_read(&outline_pptx()).unwrap();
+        assert_eq!(sections, vec![("소개".to_string(), 1), ("핵심 정리".to_string(), 2)]);
+        assert_eq!(slides[0].iter().map(|p| (p.text.as_str(), p.title, p.size)).collect::<Vec<_>>(), vec![("1장 개요", true, 0.0), ("본문 첫 줄", false, 18.0), ("하이라이트 본문", false, 18.0)]);
+        assert_eq!(slides[2].iter().map(|p| (p.title, p.cell)).collect::<Vec<_>>(), vec![(true, false), (true, false), (false, false)]);
+        let heads = pptx_headings(&slides, &sections);
+        let got: Vec<(i64, i64, &str)> = heads.iter().map(|h| (h.page, h.ord, h.text.as_str())).collect();
+        // 본문 중앙값 18pt 의 1.3배(23.4pt) 이상만 큰 글자 제목. 20pt 는 아니다. 가운데 제목은 두 문단을 잇는다
+        assert_eq!(got, vec![(1, -1, "# 소개"), (1, -1, "## 1장 개요"), (2, -1, "# 핵심 정리"), (2, -1, "## 회귀 요약"), (3, -1, "## 3장 부록")]);
+        assert!(heads.iter().all(|h| h.signals == ["heading"] && h.rects.is_none()));
+        // 강조 구간은 전과 같다 (제목은 따로 붙는다): 하이라이트 본문 · 밑줄 "부록"
+        let segs = pptx_segments(&slides);
+        assert_eq!(segs.iter().map(|s| (s.page, s.ord, s.text.as_str())).collect::<Vec<_>>(), vec![(1, 2, "하이라이트 본문"), (3, 1, "부록")]);
+        // 구역 수가 슬라이드 수와 맞지 않으면 구역을 쓰지 않는다. 구역 없는 파일(tiny_pptx)은 제목 자리가 없어 제목도 없다
+        assert!(pptx_headings(&slides, &[("소개".into(), 1)]).iter().all(|h| !h.text.starts_with("# ")));
+        let (plain, none) = pptx_read(&tiny_pptx()).unwrap();
+        assert!(none.is_empty() && pptx_headings(&plain, &none).is_empty());
+    }
+
+    /// 자료 하나 (PDF 10쪽) · 하위 덱 2..=6 의 카드. (덱, 카드 수) 대로 만들고 카드 id 를 돌려준다
+    fn outline_db(decks: &[(i64, i64)]) -> (Connection, HashMap<i64, Vec<i64>>) {
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute_batch(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, '시험', 0, 0);
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, pages, status, created_at, updated_at) VALUES (1, 1, 'a.pdf', 'sources/1.pdf', 'pdf', 10, 'ready', 0, 0);",
+        )
+        .unwrap();
+        let nt: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Basic'", [], |r| r.get(0)).unwrap();
+        let mut cards = HashMap::new();
+        let mut id = 0;
+        for (deck, n) in decks {
+            con.execute("INSERT INTO deck (id, parent_id, name, created_at, updated_at) VALUES (?1, 1, ?1, 0, 0)", [deck]).unwrap();
+            for _ in 0..*n {
+                id += 1;
+                con.execute("INSERT INTO note (id, note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, '[\"q\",\"a\"]', 0, 0)", params![id, nt]).unwrap();
+                con.execute("INSERT INTO card (id, note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?1, ?2, 0, 0, 0)", [id, *deck]).unwrap();
+                cards.entry(*deck).or_insert_with(Vec::new).push(id);
+            }
+        }
+        (con, cards)
+    }
+
+    fn add_seg(con: &Connection, page: i64, ord: i64, text: &str, signals: &str) -> i64 {
+        let w = weight_of(&sorted_signals(&signals.split(',').collect::<Vec<_>>()));
+        con.execute(
+            "INSERT INTO source_segment (material_id, page, ord, text, signals, weight) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            params![page, ord, text, signals, w],
+        )
+        .unwrap();
+        con.last_insert_rowid()
+    }
+
+    #[test]
+    fn sections_and_core_ranges() {
+        let (con, cards) = outline_db(&[(2, 3)]);
+        // 강조 구간을 먼저 넣고 제목을 나중에 넣는다 (다시 읽기와 같은 행 순서): 같은 자리면 제목이 먼저여야 한다
+        let bold = add_seg(&con, 1, 0, "개요 굵게", "bold");
+        add_seg(&con, 2, 0, "빅데이터 정의", "highlight");
+        add_seg(&con, 2, 1, "다른 강조", "underline");
+        add_seg(&con, 2, 2, "또 다른 강조", "bold");
+        let star = add_seg(&con, 3, 0, "3V ★", "star");
+        let sum1 = add_seg(&con, 5, 1, "요약 1", "red");
+        add_seg(&con, 6, 0, "요약 2", "highlight");
+        add_seg(&con, 7, 0, "요약 3", "bold");
+        let marked = add_seg(&con, 7, 2, "3장 회귀", "highlight");
+        add_seg(&con, 8, 0, "회귀식", "bold");
+        add_seg(&con, 9, 0, "그림 · 9쪽", "figure");
+        for (page, ord, text) in [(1, 0, "# 1장 개요"), (3, 0, "## 1.1 특징"), (5, 0, "# 2장 요약"), (5, 0, "# 2장 요약"), (7, 2, "# 3장 회귀")] {
+            add_seg(&con, page, ord, text, "heading");
+        }
+        link(&con, sum1, cards[&2][0]).unwrap();
+        link(&con, sum1, cards[&2][1]).unwrap();
+        link(&con, bold, cards[&2][2]).unwrap();
+        link(&con, star, cards[&2][2]).unwrap();
+        let o = outline_of(&con, 1).unwrap();
+        let rows: Vec<_> =
+            o.sections.iter().map(|s| (s.level, s.title.as_str(), s.page, s.end_page, s.segments, s.cards, s.core.as_deref())).collect();
+        assert_eq!(
+            rows,
+            vec![
+                // 볼드는 제목 서식이라 핵심 표시가 아니다. 아래 단계(1.1)의 강조 · 카드도 센다
+                (1, "1장 개요", 1, 4, 5, 1, None),
+                (2, "1.1 특징", 3, 4, 1, 1, None),
+                // 같은 자리 같은 제목 둘은 하나로. 7쪽 3장 제목 앞에 강조가 있어 7쪽까지
+                (1, "2장 요약", 5, 7, 3, 2, Some("제목에 '요약'")),
+                (1, "3장 회귀", 7, 10, 2, 0, Some("제목이 하이라이트로 강조돼 있어요")),
+            ]
+        );
+        assert_eq!((o.wide.as_deref(), o.source.as_str()), (None, "outline"));
+        // 핵심 범위는 강조 구간 10곳 중 5곳 (그림 영역은 세지 않는다). 절반을 넘지 않아 쓴다
+        assert_eq!(o.core.len(), 5);
+        assert_eq!((o.core[&sum1], o.core[&marked]), (2, 3));
+        // 개수 · 빠진 범위는 제목을 세지 않는다
+        let m = material(&con, 1).unwrap();
+        assert_eq!((m.segments, m.headings, m.gaps), (10, 5, 7));
+
+        // 절반을 넘으면 (자료 전체를 덮는 "요약 노트" 같은 제목) 핵심 범위를 두지 않는다
+        add_seg(&con, 1, 0, "# 핵심 요약 노트", "heading");
+        let o = outline_of(&con, 1).unwrap();
+        assert!(o.core.is_empty() && o.sections.iter().all(|s| s.core.is_none()));
+        assert_eq!(o.wide.as_deref(), Some("핵심 요약 노트"), "가장 넓게 덮은 제목");
+        // 큰 글자 줄로 읽은 제목은 줄 위치가 있다
+        con.execute("UPDATE source_segment SET rects = '[[0,0,1,0.1]]' WHERE signals = 'heading'", []).unwrap();
+        assert_eq!(outline_of(&con, 1).unwrap().source, "size");
+    }
+
+    /// (덱, 중요도, 출처, 근거) 전부
+    fn deck_rows(con: &Connection) -> Vec<(i64, i64, String, Option<String>)> {
+        let mut st = con.prepare("SELECT id, importance, importance_source, importance_reason FROM deck ORDER BY id").unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap()
+    }
+
+    #[test]
+    fn outline_suggestion_and_regression() {
+        // 덱 2: 하이라이트(1쪽) 4장 · 덱 3: 볼드 2장/4 · 덱 4: 볼드 3장/4 · 덱 5: 볼드(5 · 6쪽) 3장/10 · 덱 6: 하이라이트(8쪽) 4장
+        let (con, cards) = outline_db(&[(2, 4), (3, 4), (4, 4), (5, 10), (6, 4)]);
+        let s1 = add_seg(&con, 1, 0, "핵심 강조", "highlight");
+        let s2 = add_seg(&con, 2, 0, "볼드 둘", "bold");
+        let s3 = add_seg(&con, 3, 0, "볼드 셋", "bold");
+        let s4 = add_seg(&con, 5, 0, "요약 볼드", "bold");
+        let s5 = add_seg(&con, 6, 0, "요약 볼드 둘", "bold");
+        let s6 = add_seg(&con, 8, 0, "다른 강조", "highlight");
+        let links = [(2, vec![s1; 4]), (3, vec![s2; 2]), (4, vec![s3; 3]), (5, vec![s4, s4, s5]), (6, vec![s6; 4])];
+        for (deck, segs) in &links {
+            for (i, s) in segs.iter().enumerate() {
+                link(&con, *s, cards[deck][i]).unwrap();
+            }
+        }
+        let ids = "1,2,3,4,5,6";
+        // 오늘의 결과 (제목 구간 없음): 덱 2 핵심 · 덱 5 보충
+        assert_eq!(suggest(&con, ids).unwrap(), 2);
+        let before = deck_rows(&con);
+        let core2 = "자료 · 4장이 a.pdf의 하이라이트 구간과 연결 (덱 안 상위 20%)";
+        assert_eq!(before[1], (2, 2, "material".into(), Some(core2.into())));
+        assert_eq!(before[4], (5, 0, "material".into(), Some("자료 · 3장만 강조 구간과 연결 (덱 안 하위 20%)".into())));
+        // 핵심 범위가 없는 제목만 있으면 바이트 단위로 같다
+        add_seg(&con, 2, 0, "# 1장", "heading");
+        add_seg(&con, 7, 0, "# 3장", "heading");
+        assert_eq!(suggest(&con, ids).unwrap(), 2);
+        assert_eq!(deck_rows(&con), before);
+
+        // 핵심 범위: 1쪽 "핵심 정리"(1쪽만) · 5쪽 "2장 요약"(5–6쪽)
+        add_seg(&con, 1, 0, "# 핵심 정리", "heading");
+        add_seg(&con, 5, 0, "# 2장 요약", "heading");
+        assert_eq!(suggest(&con, ids).unwrap(), 2);
+        let rows = deck_rows(&con);
+        let outline2 = "목차 · 이 하위 덱 카드 4장이 a.pdf의 '핵심 정리' 구간과 연결됐어요. 목차에서 핵심 범위로 본 구간이에요 (1쪽)";
+        let outline5 = "목차 · 이 하위 덱 카드 3장이 a.pdf의 '2장 요약' 구간과 연결됐어요. 목차에서 핵심 범위로 본 구간이에요 (5–6쪽)";
+        // 순위 제안이 핵심이면 줄을 더하고, 보충이면 목차가 이긴다. 나머지 덱은 그대로
+        assert_eq!(rows[1], (2, 2, "material".into(), Some(format!("{core2}\n{outline2}"))));
+        assert_eq!(rows[4], (5, 2, "material".into(), Some(outline5.into())));
+        assert_eq!([&rows[0], &rows[2], &rows[3], &rows[5]], [&before[0], &before[2], &before[3], &before[5]]);
+        // 기출 근거를 다시 붙여도 목차 줄은 남는다
+        assert_eq!(crate::exam::suggest_all(&con).unwrap(), 0);
+        // 사용자가 정한 덱은 덮지 않는다 (6.5.1)
+        con.execute("UPDATE deck SET importance = 1, importance_source = 'user', importance_reason = NULL WHERE id = 5", []).unwrap();
+        suggest(&con, ids).unwrap();
+        assert_eq!(deck_rows(&con)[4], (5, 1, "user".into(), None));
+        // 핵심 범위와 이어진 카드가 3장보다 적거나 자료와 이어진 카드의 절반보다 적으면 목차 근거를 붙이지 않는다
+        con.execute("UPDATE deck SET importance_source = 'default' WHERE id = 5", []).unwrap();
+        for c in &cards[&5][3..9] {
+            link(&con, s6, *c).unwrap();
+        }
+        suggest(&con, ids).unwrap();
+        assert!(deck_rows(&con)[4].3.as_deref().is_none_or(|r| !r.contains(OUTLINE_HEAD)));
+    }
+
+    #[test]
+    fn rereading_outline_keeps_segments_and_links() {
+        let (con, cards) = outline_db(&[(2, 1)]);
+        let s = add_seg(&con, 3, 0, "강조", "highlight");
+        link(&con, s, cards[&2][0]).unwrap();
+        let head = |page, ord, text: &str, signal: &str| NewSegment { page, ord, text: text.into(), signals: vec![signal.into()], rects: None, before: None, after: None };
+        let ids = |con: &Connection| -> Vec<i64> {
+            let mut st = con.prepare("SELECT id FROM source_segment ORDER BY id").unwrap();
+            st.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        // 제목만 들어간다 (강조 신호가 섞인 구간은 버린다). 강조 구간 · 연결은 그대로
+        save_headings(&con, 1, &[head(1, 0, "# 1장", "heading"), head(3, 0, "# 2장 요약", "heading"), head(2, 0, "몰래 강조", "highlight")]).unwrap();
+        let first = ids(&con);
+        assert_eq!(first.len(), 3);
+        assert_eq!(segments_of(&con, 1).unwrap().iter().find(|x| x.id == s).unwrap().links.len(), 1);
+        // 같은 제목이면 쓰지 않는다 (행 id 그대로, 동기화 변경 없음). 다르면 제목만 바꾼다
+        save_headings(&con, 1, &[head(3, 0, "# 2장 요약", "heading"), head(1, 0, "# 1장", "heading")]).unwrap();
+        assert_eq!(ids(&con), first);
+        save_headings(&con, 1, &[head(1, 0, "# 1장 개요", "heading")]).unwrap();
+        let texts: Vec<String> = segments_of(&con, 1).unwrap().into_iter().map(|x| x.text).collect();
+        assert_eq!(texts, vec!["# 1장 개요", "강조"]);
+        // 아직 읽지 않은 자료는 받지 않는다 (처음 읽기가 모두 넣는다)
+        con.execute("UPDATE source_material SET status = 'pending'", []).unwrap();
+        save_headings(&con, 1, &[head(1, 0, "# 다른 제목", "heading")]).unwrap();
+        assert_eq!(segments_of(&con, 1).unwrap()[0].text, "# 1장 개요");
+    }
+
+    #[test]
+    fn grading_context_skips_headings() {
+        // R2 채점 문맥 후보 SQL (rag.rs similar_segments) 을 모델 없이 그대로 돌린다: 목차 제목만 빠지고 그림 · 표는 지금처럼 남는다
+        let sql = include_str!("rag.rs").lines().find(|l| l.contains("SELECT s.id, s.text FROM source_segment s")).unwrap().trim().trim_matches('"').replace("{ids}", "1");
+        let (con, _) = outline_db(&[]);
+        let a = add_seg(&con, 1, 0, "강조", "highlight");
+        let f = add_seg(&con, 1, 1, "그림 · 1쪽", "figure");
+        add_seg(&con, 1, -1, "## 3장 요약", "heading");
+        let mut st = con.prepare(&sql).unwrap();
+        let mut got: Vec<i64> = st.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        got.sort();
+        assert_eq!(got, vec![a, f]);
+    }
+
+    #[test]
+    fn outline_levels_start_at_one() {
+        // 구역 없는 PPTX: 제목이 모두 2단계("## ")로 저장된다. 화면 단계만 1부터, 구간 · 끝 쪽 · 핵심 범위는 1단계로 저장한 것과 같다
+        let build = |marks: [&str; 3]| {
+            let (con, _) = outline_db(&[]);
+            add_seg(&con, 1, 0, "강조 하나", "highlight");
+            add_seg(&con, 2, 0, "요약 강조", "highlight");
+            add_seg(&con, 3, 0, "세부 강조", "bold");
+            add_seg(&con, 4, 0, "다른 강조", "red");
+            for (i, (page, title)) in [(1, "소개"), (2, "자료구조 요약"), (3, "세부")].into_iter().enumerate() {
+                add_seg(&con, page, -1, &format!("{} {title}", marks[i]), "heading");
+            }
+            add_seg(&con, 4, -1, &format!("{} 트리", marks[0]), "heading");
+            let o = outline_of(&con, 1).unwrap();
+            let rows: Vec<_> = o.sections.iter().map(|s| (s.level, s.title.clone(), s.page, s.end_page, s.segments, s.core.clone())).collect();
+            let mut core: Vec<(String, usize)> = segments_of(&con, 1).unwrap().into_iter().filter_map(|s| o.core.get(&s.id).map(|k| (s.text, *k))).collect();
+            core.sort();
+            (rows, core)
+        };
+        let deep = build(["##", "##", "###"]);
+        // PPTX 출처 줄: 제목만 · 구역만 · 둘 다
+        let (con, _) = outline_db(&[]);
+        con.execute("UPDATE source_material SET kind = 'pptx'", []).unwrap();
+        add_seg(&con, 1, -1, "## 스택", "heading");
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide_title");
+        add_seg(&con, 1, -1, "# 기초", "heading");
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide");
+        con.execute("DELETE FROM source_segment WHERE text = '## 스택'", []).unwrap();
+        assert_eq!(outline_of(&con, 1).unwrap().source, "slide_section");
+        assert_eq!(deep, build(["#", "#", "##"]));
+        assert_eq!(deep.0.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 1, 2, 1]);
+        assert_eq!(deep.0[1], (1, "자료구조 요약".to_string(), 2, 3, 2, Some("제목에 '요약'".to_string())));
+        assert_eq!(deep.1, vec![("세부 강조".to_string(), 1), ("요약 강조".to_string(), 1)]);
+    }
+
+    #[test]
+    fn order_follows_shared_creation_not_local_id() {
+        // 다른 기기에서 먼저 만든 자료가 동기화로 나중에 들어오면 이 기기의 id 가 더 크다 (Q7). 목록 · 연결 순서는 만든 시각 → uid
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute_batch(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'D', 0, 0);
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, status, created_at, updated_at, uid) VALUES
+               (1, 1, '나중.pdf', 'sources/1.pdf', 'pdf', 'ready', 200, 0, 'b'), (2, 1, '먼저.pdf', 'sources/2.pdf', 'pdf', 'ready', 100, 0, 'a'),
+               (3, 1, '같은 시각.pdf', 'sources/3.pdf', 'pdf', 'ready', 100, 0, '0');
+             INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight) VALUES (1, 2, 1, 0, '가', 'highlight', 3), (2, 2, 2, 0, '나', 'highlight', 3);",
+        )
+        .unwrap();
+        let names: Vec<String> = materials_in(&con, 1).unwrap().into_iter().map(|m| m.file_name).collect();
+        assert_eq!(names, ["같은 시각.pdf", "먼저.pdf", "나중.pdf"]);
+        let nt: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Basic'", [], |r| r.get(0)).unwrap();
+        for id in [1, 2] {
+            con.execute("INSERT INTO note (id, note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, '[\"q\",\"a\"]', 0, 0)", params![id, nt]).unwrap();
+            con.execute("INSERT INTO card (id, note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?1, 1, 0, 0, 0)", [id]).unwrap();
+        }
+        // 직접 연결 둘: id 는 카드 1 · 2쪽 구간이 먼저지만 만든 것은 카드 2 · 1쪽 구간이 먼저
+        con.execute_batch(
+            "INSERT INTO source_link (id, segment_id, card_id, method, created_at, uid) VALUES (1, 1, 1, 'manual', 300, 'y'), (2, 1, 2, 'manual', 100, 'x'),
+               (3, 2, 1, 'manual', 50, 'w');",
+        )
+        .unwrap();
+        let links: Vec<i64> = segments_of(&con, 2).unwrap()[0].links.iter().map(|l| l.card_id).collect();
+        assert_eq!(links, [2, 1]);
+        // I2 원자료 · 넣을 곳 기본값도 먼저 만든 연결
+        assert_eq!(for_card(&con, 1).unwrap().unwrap().segment.id, 2);
+        con.execute("INSERT INTO deck (id, parent_id, name, created_at, updated_at) VALUES (2, 1, '하위', 0, 0)", []).unwrap();
+        con.execute("UPDATE card SET deck_id = 2 WHERE id = 2", []).unwrap();
+        assert_eq!(nearest_deck(&con, 2, 1).unwrap(), Some(2));
     }
 }

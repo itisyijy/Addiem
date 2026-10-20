@@ -18,6 +18,7 @@ import { RichField, makeCloze, toCloze, fromCloze, tagRefs, TYPE_LABEL, type Fie
 import { CramHint, KeywordEditor } from "./StudyParts";
 import { SegmentPanel, SourcePanel } from "./SourcePanel";
 import { useGrade } from "./GradeAssist";
+import { useConcept } from "./ConceptCheck";
 import { ExamField, examHint } from "./Exam";
 import { cardSource } from "../sourceApi";
 import { ChoiceEditor, lastOn, ListEditor, RecallFace, recallTip } from "./Recall";
@@ -376,6 +377,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const gradeOk = useRef(false);
   const [srcSeg, setSrcSeg] = useState<number | null>(null);
   const grade = useGrade({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, confirmed: gradeOk, openSegment: setSrcSeg });
+  // 8.3 개념 관계 확인 (로컬 모델을 받았고 이 PC 에서 쓸 수 있을 때 비교 화면에서 저절로, 참고용)
+  const concept = useConcept({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, writing: phase === "q" && !!card?.written?.written, toastBusy: !!rated || !!toast });
 
   const finish = useCallback(
     async (completed: boolean) => {
@@ -626,7 +629,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   };
 
   // R2: 결과가 오기 전에 평가하면 채점 보조 요청을 멈추고 결과는 버린다
-  const rate = (r: Rating) => (grade.stop(), rate2(r));
+  const rate = (r: Rating) => (grade.stop(), concept.stop(), rate2(r));
   const rate2 = (r: Rating) =>
     guard(async () => {
       const c = card!;
@@ -1093,6 +1096,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                             </p>
                           </div>
                         </div>
+                        {concept.slot}
                         {grade.slot}
                       </>
                     ) : (
@@ -1153,6 +1157,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
                       if (matchAction("save", e.nativeEvent) >= 0) {
                         e.preventDefault();
                         reveal();
+                      } else if (!typed && last && matchAction("undo", e.nativeEvent) >= 0) {
+                        // 다음 카드가 서술형이면 입력 칸에 초점이 와 있다. 칸이 비었으면 되돌릴 글이 없으니 토스트의 Ctrl Z = 평가 되돌리기 (QA Q5 L2)
+                        e.preventDefault();
+                        undo();
                       } else if (e.key === "Escape") {
                         e.preventDefault();
                         e.currentTarget.blur();

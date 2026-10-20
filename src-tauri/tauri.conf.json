@@ -30,7 +30,8 @@
     "targets": ["nsis"],
     "publisher": "itisyijy",
     "resources": {
-      "resources/tts/": "tts/"
+      "resources/tts/": "tts/",
+      "resources/llm/": "llm/"
     },
     "icon": [
       "icons/32x32.png",

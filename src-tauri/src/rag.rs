@@ -434,7 +434,7 @@ const SIMILAR_SEGMENT: f32 = 0.8;
 /// 이 카드에 연결된 구간: 직접 연결 > 자동 연결(유사도 순), 최대 3개
 pub(crate) fn linked_segments(con: &Connection, card_id: i64) -> Res<Vec<(i64, &'static str)>> {
     let mut st = con
-        .prepare("SELECT segment_id, method FROM source_link WHERE card_id = ?1 AND method != 'rejected' ORDER BY method = 'manual' DESC, score DESC, id LIMIT ?2")
+        .prepare("SELECT segment_id, method FROM source_link WHERE card_id = ?1 AND method != 'rejected' ORDER BY method = 'manual' DESC, score DESC, created_at, uid, id LIMIT ?2")
         .map_err(err)?;
     let rows = st.query_map(params![card_id, MAX_CONTEXT as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?;
     rows.map(|r| r.map(|(id, m)| (id, if m == "manual" { "manual" } else { "auto" })).map_err(err)).collect()
@@ -450,7 +450,7 @@ fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<(i64,
         let ids = source::subtree(&con, root_of(&con, deck)?)?;
         let mut st = con
             .prepare(&format!(
-                "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready'"
+                "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready' AND s.signals <> 'heading'"
             ))
             .map_err(err)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
@@ -712,6 +712,13 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(linked_segments(&con, card).unwrap(), vec![(20, "manual"), (13, "auto"), (11, "auto")]);
+        // 직접 연결끼리는 먼저 만든 것부터 (로컬 id 는 기기마다 다르다, Q7): 나중에 넣은 행이라도 만든 시각이 앞서면 먼저
+        con.execute_batch(&format!(
+            "INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight) VALUES (23, 1, 23, 0, 'z', 'bold', 1);
+             INSERT INTO source_link (segment_id, card_id, method, score, created_at) VALUES (23, {card}, 'manual', NULL, -1);"
+        ))
+        .unwrap();
+        assert_eq!(linked_segments(&con, card).unwrap(), vec![(23, "manual"), (20, "manual"), (13, "auto")]);
     }
 
     #[test]

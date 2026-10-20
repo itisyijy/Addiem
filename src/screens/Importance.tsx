@@ -12,7 +12,7 @@ const GROUP_OVER = 12; // 하위 덱이 이보다 많으면 과목별로 묶어�
 const suggested = (d: BoardDeck) => d.source !== "user" && d.source !== "default";
 const cardsOf = (ds: BoardDeck[]) => ds.reduce((s, d) => s + d.cards, 0);
 
-/** 제안 근거 툴팁. 근거는 줄마다 하나 ("기출 · …", "자료 · …"). 사실만 쓴다 (N3) */
+/** 제안 근거 툴팁. 근거는 줄마다 하나 ("기출 · …", "자료 · …", "목차 · …"). 사실만 쓴다 (N3) */
 function ReasonTip({ level, reason }: { level: Level; reason: string }) {
   const lines = reason.split("\n").filter(Boolean);
   return (
@@ -194,7 +194,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
           <span className="t-label-m c-primary">{name}</span>
           <span className="t-caption">{caption}</span>
         </span>
-        {[...new Set(kids.filter(suggested).flatMap((d) => sourcesOf(d.source, d.reason)))].filter((s) => s === "exam" || s === "material").map((s) => (
+        {[...new Set(kids.filter(suggested).flatMap((d) => sourcesOf(d.source, d.reason)))].filter((s) => s === "exam" || s === "material" || s === "outline").map((s) => (
           <SourceTag key={s} source={s} />
         ))}
         {sug && <span className="t-label-s c-accent">제안</span>}

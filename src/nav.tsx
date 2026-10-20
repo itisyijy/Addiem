@@ -1,6 +1,7 @@
 // 화면 전환과 단축키. 데스크톱 앱이라 URL 라우팅을 쓰지 않는다
 import { createContext, useContext, useEffect, useRef } from "react";
 import type { AnkiPreview, ImportResult, SessionSummary, UpdateSummary } from "./api";
+import type { UndoSummary } from "./api";
 import type { Draft, DraftAmount } from "./sourceApi";
 import type { MixRun, MixStats } from "./written";
 import { matchAction, type ActionId } from "./keys";
@@ -11,11 +12,12 @@ export type Route =
   | { name: "import"; pick?: boolean; path?: string } // B2. pick: 단축키 I 로 들어오면 파일 선택 창을 바로 연다. path: 그 파일을 다시 살펴본다 (B2-u [방식 바꾸기])
   | { name: "deckUpdate"; path: string; info: AnkiPreview; summary: UpdateSummary; pulled: boolean } // B2-u 요약 · B2-k · B2-kt · B2-p (pulled: 다른 기기 변경을 받고 판정했다)
   | { name: "updateResult"; summary: UpdateSummary; info: AnkiPreview } // B3-u
+  | { name: "updateUndone"; undo: UndoSummary } // DU2-u2 이 업데이트를 되돌린 결과
   | { name: "importJson"; deckId?: number } // B2-j
   | { name: "importResult"; result: ImportResult } // B3
   | { name: "importance"; deckId: number; next?: number[] } // B4. next: 가져오기 뒤 이어서 볼 최상위 덱
   | { name: "deck"; deckId: number } // C1
-  | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean; edit?: number } // C2. deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w). edit: 노트 유형 편집기에서 돌아왔다 (그 카드의 편집 창을 다시 연다, NT53)
+  | { name: "cards"; deckId: number | null; buriedOnly?: boolean; cardIds?: number[]; weakOnly?: boolean; edit?: number; query?: string } // C2. query: 처음 검색 글자 ("tag:…"). deckId 가 null 이면 모든 덱. cardIds: 이 카드들만. weakOnly: 약한 챕터만 (C1-w). edit: 노트 유형 편집기에서 돌아왔다 (그 카드의 편집 창을 다시 연다, NT53)
   | { name: "addCard"; deckId: number } // C3
   | { name: "deckSettings"; deckId: number } // C4
   | { name: "sources"; deckId: number; materialId?: number; segmentId?: number; link?: boolean; gaps?: boolean } // I1 자료. I2 패널에서 오면 그 구간 (link: 카드 잇기 칸을 연 채로). gaps: R1-a 빠진 범위로

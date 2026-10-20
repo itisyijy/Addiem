@@ -15,6 +15,7 @@ import { Cards } from "./screens/Cards";
 import { DeckSettings } from "./screens/DeckSettings";
 import { Import, ImportResultScreen } from "./screens/Import";
 import { DeckUpdate, UpdateResultScreen } from "./screens/DeckUpdate";
+import { UndoResultScreen } from "./screens/DeckUpdate";
 import { Importance } from "./screens/Importance";
 import { Settings } from "./screens/Settings";
 import { Recover } from "./screens/Recover";
@@ -103,12 +104,13 @@ function Screen({ route }: { route: Route }) {
     case "cards":
       return (
         <Cards
-          key={`${route.deckId}-${route.buriedOnly}-${route.cardIds}-${route.weakOnly}`}
+          key={`${route.deckId}-${route.buriedOnly}-${route.cardIds}-${route.weakOnly}-${route.query ?? ""}`}
           deckId={route.deckId}
           buriedOnly={route.buriedOnly}
           cardIds={route.cardIds}
           weakOnly={route.weakOnly}
           edit={route.edit}
+          query={route.query}
         />
       );
     case "import":
@@ -117,6 +119,8 @@ function Screen({ route }: { route: Route }) {
       return <DeckUpdate {...route} />;
     case "updateResult":
       return <UpdateResultScreen summary={route.summary} info={route.info} />;
+    case "updateUndone":
+      return <UndoResultScreen undo={route.undo} />;
     case "importJson":
       return <Import key={`json-${route.deckId}`} tab="json" deckId={route.deckId ?? null} />;
     case "importResult":

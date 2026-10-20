@@ -1,0 +1,34 @@
+[package]
+name = "neoanki-llm"
+version = "0.1.0"
+description = "Neo-Anki 8.3 개념 관계 확인 추론 엔진 (본체와 따로 AVX2 로 빌드하는 보조 실행 파일, tools/build_llm.ps1)"
+authors = ["itisyijy"]
+edition = "2024"
+
+# 본체(src-tauri)와 같은 고정 버전. 새로 받는 크레이트는 없다 (Cargo.lock 은 본체 것에서 쓰는 것만 남겼다)
+[dependencies]
+candle-core = "=0.11.0"
+candle-transformers = "=0.11.0"
+tokenizers = { version = "=0.22.2", default-features = false, features = ["onig"] }
+serde_json = "1"
+
+# 본체와 같게: 디버그 빌드에서도 행렬곱 크레이트는 최적화한다 (테스트 · 개발용 실행이 쓸 만하게)
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.candle-transformers]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.tokenizers]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

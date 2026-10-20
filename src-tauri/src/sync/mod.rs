@@ -833,6 +833,10 @@ fn local_backup(sh: &Shared, suffix: &str) -> Result<Option<PathBuf>, SyncError>
         let path = crate::commands::write_backup(c, &data_dir).map_err(store::other)?;
         let to = path.with_file_name(format!("neoanki-{suffix}-{}.zip", chrono::Local::now().format("%Y%m%d-%H%M%S")));
         std::fs::rename(&path, &to).map_err(store::other)?;
+        // 자동 백업 보관 (사용자 결정 2026-10-20, commands::prune_auto_backups)
+        if let Some(dir) = to.parent() {
+            crate::commands::prune_auto_backups(c, dir, crate::db::now_ms());
+        }
         Ok(Some(to))
     })
 }
@@ -1369,7 +1373,17 @@ pub struct Version {
     pub current: bool,
     /// 자동으로 맞출 때 이긴 버전 (나중에 고친 쪽)
     pub winner: bool,
+    /// [이 버전으로 바꾸기]를 쓸 수 있다. 그 버전이 지금과 다른 노트 유형의 내용이면 false (K41: 유형을 옮기는 사이 고친 내용은 옛 유형 자리 배열이라 넣으면 필드가 뒤섞인다)
+    pub usable: bool,
 }
+
+/// 그 K7 버전을 지금 노트에 넣어도 되나: 기록된 노트 유형이 없거나(이 기능 전 기록) 지금 유형과 같다
+fn same_type(recorded: Option<&str>, now: &str) -> bool {
+    recorded.is_none_or(|t| t == now)
+}
+
+/// K41 막는 문구
+pub(crate) const OTHER_TYPE: &str = "노트 유형이 바뀐 뒤라 이 버전으로 바꿀 수 없어요. 글을 복사해 직접 고쳐 주세요.";
 
 #[derive(Serialize)]
 pub struct ConflictView {
@@ -1392,14 +1406,17 @@ fn text(html: &str) -> String {
 }
 
 /// 노트 한 버전을 카드 첫 장으로 그린다: [앞면, 답]. 템플릿을 모르면 필드 그대로
-fn render_note(c: &Connection, note_uid: &str, fields: &str) -> Vec<String> {
+/// ty: 그 버전의 노트 유형 uid (지금 유형과 다르면 그 유형의 자리 이름으로 그린다, K41). 없으면 지금 노트 유형.
+/// 그 유형을 모르면("?", 지운 유형) 틀 없이 필드 값만 보여 준다: 지금 유형의 틀에 넣으면 자리가 뒤섞여 보인다
+fn render_note(c: &Connection, note_uid: &str, fields: &str, ty: Option<&str>) -> Vec<String> {
     let values: Vec<String> = serde_json::from_str(fields).unwrap_or_default();
     let tpl: Option<(String, String, String, i64)> = c
         .query_row(
             "SELECT nt.fields, t.qfmt, t.afmt, coalesce((SELECT min(template_ord) FROM card WHERE note_id = n.id), 0)
-             FROM note n JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id
+             FROM note n JOIN note_type nt ON nt.id = CASE WHEN ?2 IS NULL THEN n.note_type_id ELSE (SELECT id FROM note_type WHERE uid = ?2) END
+             JOIN card_template t ON t.note_type_id = nt.id
              WHERE n.uid = ?1 ORDER BY t.ord LIMIT 1",
-            [note_uid],
+            rusqlite::params![note_uid, ty],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
@@ -1425,20 +1442,37 @@ pub fn sync_conflicts(state: State<SyncState>) -> Res<Vec<ConflictView>> {
             let mut st = c
                 .prepare(
                     "SELECT x.id, x.winner_device, x.winner_at, x.winner_fields, x.loser_device, x.loser_at, x.loser_fields, n.fields,
-                            (SELECT deck_id FROM card WHERE note_id = n.id ORDER BY template_ord LIMIT 1), x.note_uid, x.resolved
+                            (SELECT deck_id FROM card WHERE note_id = n.id ORDER BY template_ord LIMIT 1), x.note_uid, x.resolved,
+                            x.winner_type, x.loser_type, (SELECT uid FROM note_type WHERE id = n.note_type_id)
                      FROM sync_conflict x JOIN note n ON n.uid = x.note_uid WHERE x.at > ?1 ORDER BY x.id DESC",
                 )
                 .map_err(store::other)?;
-            type Row = (i64, String, i64, String, String, i64, String, String, Option<i64>, String, i64);
+            type Row = (i64, String, i64, String, String, i64, String, String, Option<i64>, String, i64, Option<String>, Option<String>, String);
             let rows: Vec<Row> = st
-                .query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)))
+                .query_map([since], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?))
+                })
                 .map_err(store::other)?
                 .filter_map(Result::ok)
                 .collect();
             let mut out = vec![];
-            for (id, wd, wa, wf, ld, la, lf, now, deck, uid, picked) in rows {
-                let mut a = Version { device: name(&wd), at: wa, fields: render_note(c, &uid, &wf), current: wf == now, winner: true };
-                let mut b = Version { device: name(&ld), at: la, fields: render_note(c, &uid, &lf), current: lf == now && wf != now, winner: false };
+            for (id, wd, wa, wf, ld, la, lf, now, deck, uid, picked, wt, lt, ty) in rows {
+                let mut a = Version {
+                    device: name(&wd),
+                    at: wa,
+                    fields: render_note(c, &uid, &wf, wt.as_deref()),
+                    current: wf == now,
+                    winner: true,
+                    usable: same_type(wt.as_deref(), &ty),
+                };
+                let mut b = Version {
+                    device: name(&ld),
+                    at: la,
+                    fields: render_note(c, &uid, &lf, lt.as_deref()),
+                    current: lf == now && wf != now,
+                    winner: false,
+                    usable: same_type(lt.as_deref(), &ty),
+                };
                 if b.current {
                     std::mem::swap(&mut a, &mut b);
                 }
@@ -1451,7 +1485,7 @@ pub fn sync_conflicts(state: State<SyncState>) -> Res<Vec<ConflictView>> {
                     path.insert(0, n);
                     d = p;
                 }
-                let question = render_note(c, &uid, &now).into_iter().next().unwrap_or_default();
+                let question = render_note(c, &uid, &now, None).into_iter().next().unwrap_or_default();
                 out.push(ConflictView { id, question, deck_path: path, versions: [a, b], picked: picked != 0 });
             }
             Ok(out)
@@ -1462,19 +1496,27 @@ pub fn sync_conflicts(state: State<SyncState>) -> Res<Vec<ConflictView>> {
 /// K7 [이 버전으로 바꾸기]: 다른 쪽 내용으로 고친다. 이것도 새 변경 하나로 동기화된다
 #[tauri::command]
 pub fn sync_conflict_use(state: State<SyncState>, id: i64) -> Res<()> {
-    state
-        .0
-        .with_db(|c| {
-            let (note, wf, lf): (String, String, String) =
-                c.query_row("SELECT note_uid, winner_fields, loser_fields FROM sync_conflict WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(store::other)?;
-            let now: String = c.query_row("SELECT fields FROM note WHERE uid = ?1", [&note], |r| r.get(0)).map_err(store::other)?;
-            let other = if now == wf { lf } else { wf };
-            c.execute("UPDATE note SET fields = ?2, updated_at = ?3 WHERE uid = ?1", rusqlite::params![note, other, crate::db::now_ms()]).map_err(store::other)?;
-            c.execute("UPDATE sync_conflict SET resolved = 1 WHERE id = ?1", [id]).map_err(store::other)?;
-            Ok(())
-        })
-        .map_err(err)?;
+    state.0.with_db(|c| use_conflict(c, id)).map_err(err)?;
     refresh(&state.0);
+    Ok(())
+}
+
+/// sync_conflict_use 의 본체. 그 버전이 지금과 다른 노트 유형의 내용이면 넣지 않는다 (K41, OTHER_TYPE)
+pub(crate) fn use_conflict(c: &Connection, id: i64) -> Result<(), SyncError> {
+    let (note, wf, lf, wt, lt): (String, String, String, Option<String>, Option<String>) = c
+        .query_row("SELECT note_uid, winner_fields, loser_fields, winner_type, loser_type FROM sync_conflict WHERE id = ?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .map_err(store::other)?;
+    let (now, ty): (String, String) = c
+        .query_row("SELECT n.fields, nt.uid FROM note n JOIN note_type nt ON nt.id = n.note_type_id WHERE n.uid = ?1", [&note], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(store::other)?;
+    let (other, other_type) = if now == wf { (lf, lt) } else { (wf, wt) };
+    if !same_type(other_type.as_deref(), &ty) {
+        return Err(store::other(OTHER_TYPE));
+    }
+    c.execute("UPDATE note SET fields = ?2, updated_at = ?3 WHERE uid = ?1", rusqlite::params![note, other, crate::db::now_ms()]).map_err(store::other)?;
+    c.execute("UPDATE sync_conflict SET resolved = 1 WHERE id = ?1", [id]).map_err(store::other)?;
     Ok(())
 }
 

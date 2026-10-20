@@ -3,8 +3,9 @@
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { sourceApi, type NewSegment, type Rect, type Signal } from "./sourceApi";
+import { isHeading, sourceApi, type NewSegment, type Rect, type Signal } from "./sourceApi";
 import { layoutOf, type Layout } from "./figures";
+import { headingSegments, headingsOf, outlineOf, type PageLine } from "./outline";
 
 // 한글 PDF 는 내장 CMap(KSCms-UHC-H 등)을 쓰는 일이 많다. connect-src 가 ipc 만 열려 있어 fetch 대신
 // 작은 JS 조각(data URL)으로 묶어 필요할 때만 불러온다. ?inline 만으로는 모르는 확장자를 자산으로 보지 않아 ?url&inline
@@ -182,11 +183,14 @@ function linesOf(items: TextItem[], page: PDFPageProxy): Line[] {
   return lines.map((l) => ({ ...l, text: l.text.replace(/\s+/g, " ").trim() })).filter((l) => l.text);
 }
 
-/** PDF 전체를 읽어 강조 구간을 만든다. 글자가 거의 없으면(스캔본) readable=false */
+/** PDF 전체를 읽어 강조 구간과 8.4 목차 제목 구간을 만든다. 글자가 거의 없으면(스캔본) readable=false */
 export async function readPdf(materialId: number): Promise<{ pages: number; segments: NewSegment[]; readable: boolean }> {
   const { OPS } = await pdfjs();
   const doc = await openPdf(materialId);
   const segments: NewSegment[] = [];
+  // 8.4 목차: 쪽마다 줄 (큰 글자 줄 찾기) · 강조 구간이 시작한 줄 (제목의 쪽 안 순서)
+  const pageLines: PageLine[][] = [];
+  const starts: number[][] = [];
   let chars = 0;
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
@@ -220,18 +224,22 @@ export async function readPdf(materialId: number): Promise<{ pages: number; segm
       if (l.bold) out.add("bold");
       return [...out];
     });
+    const rectOf = (l: Line): Rect => {
+      const [a, b] = vp.convertToViewportPoint(l.box[0], l.box[1]);
+      const [c, d] = vp.convertToViewportPoint(l.box[2], l.box[3]);
+      const [x0, x1, y0, y1] = [Math.min(a, c), Math.max(a, c), Math.min(b, d), Math.max(b, d)];
+      return [x0 / vp.width, y0 / vp.height, (x1 - x0) / vp.width, (y1 - y0) / vp.height];
+    };
+    pageLines.push(lines.map((l) => ({ text: l.text, size: l.size, rect: rectOf(l) })));
+    starts.push([]);
     // 같은 신호가 이어지는 줄(두 줄짜리 하이라이트)은 한 구간으로
     let ord = 0;
     for (let i = 0; i < lines.length; i++) {
       if (!sigs[i].length) continue;
       let j = i;
       while (j + 1 < lines.length && sigs[j + 1].join() === sigs[i].join() && !hasStar(lines[j + 1].text)) j++;
-      const rects = lines.slice(i, j + 1).map((l) => {
-        const [a, b] = vp.convertToViewportPoint(l.box[0], l.box[1]);
-        const [c, d] = vp.convertToViewportPoint(l.box[2], l.box[3]);
-        const [x0, x1, y0, y1] = [Math.min(a, c), Math.max(a, c), Math.min(b, d), Math.max(b, d)];
-        return [x0 / vp.width, y0 / vp.height, (x1 - x0) / vp.width, (y1 - y0) / vp.height] as Rect;
-      });
+      const rects = lines.slice(i, j + 1).map(rectOf);
+      starts[p - 1].push(i);
       segments.push({
         page: p,
         ord: ord++,
@@ -248,5 +256,12 @@ export async function readPdf(materialId: number): Promise<{ pages: number; segm
     }
     page.cleanup();
   }
+  // 강조 구간 뒤에 붙여 강조 구간의 순서 · id 는 전과 같다. 목차를 못 읽으면 큰 글자 줄로
+  const outline = await outlineOf(doc).catch(() => []);
+  segments.push(...headingSegments(headingsOf(outline, pageLines), starts));
   return { pages: doc.numPages, segments, readable: chars >= 20 };
 }
+
+/** [목차 다시 읽기] (OT6): 이 버전 전에 읽은 PDF 의 제목 구간만. 쪽 안 순서를 처음 읽기와 맞추려고 같은 길로 읽는다
+ * ponytail: 처음 읽기를 통째로 다시 해 쪽 수만큼 걸린다. 느리다는 말이 나오면 글자 · 강조 시작 줄만 읽는 길로 */
+export const readOutline = async (materialId: number) => (await readPdf(materialId)).segments.filter(isHeading);

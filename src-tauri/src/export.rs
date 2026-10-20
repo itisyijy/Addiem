@@ -348,7 +348,8 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
         } else {
             let map: HashMap<String, String> = names.into_iter().zip(fields.iter().cloned()).filter(|(k, _)| !k.is_empty()).collect();
             let shown = render_card(&q, &a.unwrap_or_default(), &map, ord as u32);
-            (shown.front, crate::commands::answer_part(&shown.back).to_string())
+            // 힌트 상자({{hint:}})는 칸 글자에 이름 · 내용이 섞이므로 뺀다 (카드 목록과 같다, Q4 L6)
+            (crate::render::drop_hints(&shown.front), crate::render::drop_hints(crate::commands::answer_part(&shown.back)))
         };
         let text = |s: String| if plain_text { strip_tags(&s) } else { s };
         let level: Option<i64> = r.get(6).map_err(err)?;
@@ -396,6 +397,12 @@ pub fn reveal_file(path: String) -> Res<()> {
     };
     cmd.spawn().map_err(err)?;
     Ok(())
+}
+
+/// 실제 Anki 검증 하네스(qa_real_anki.rs)가 앱과 같은 내보내기를 부른다
+#[cfg(test)]
+pub(crate) fn export_for_qa(con: &Connection, data_dir: &Path, deck_id: i64, path: &Path, with_history: bool) -> Res<ExportResult> {
+    export(con, data_dir, deck_id, path, with_history, &Job { emit: &|_, _, _| {}, cancelled: &|| false })
 }
 
 /// 임시 파일에 다 쓴 뒤 이름을 바꾼다. 실패하면 임시 파일만 지우고 대상 파일은 건드리지 않는다
@@ -619,7 +626,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let mut used = HashSet::new();
     let mut models: HashMap<i64, Model> = HashMap::new();
     for ntid in notes.iter().map(|n| n.note_type_id).collect::<BTreeSet<_>>() {
-        models.insert(ntid, model(con, ntid, root_did, &mut used)?);
+        models.insert(ntid, model(con, ntid, root_did, &mut used, &deck_map)?);
     }
     // 카드 종류가 없는 카드는 뺀다 (동기화로 남은 고아 카드 · 템플릿이 하나도 없는 유형). Anki 는 그런 유형이 든 패키지를 통째로 거부하고,
     // 다시 센 ord 로 다른 카드 종류에 붙으면 앞면이 빈 카드가 된다. 카드가 모두 빠진 노트 · 유형도 뺀다 (Q2-01 · Q2-02)
@@ -634,6 +641,11 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     notes.retain(|n| kept.contains(&n.id));
     let kept: HashSet<i64> = notes.iter().map(|n| n.note_type_id).collect();
     models.retain(|t, _| kept.contains(t));
+    // 왕복 기준 (DU55): 만든 사람이 없는 유형만 (사용자 유형은 내보낸 정의, 앱 기본 유형은 내보낸 모델 id)
+    for (ntid, m) in &models {
+        let our_ord = |a: u32| m.ords.iter().find(|(_, x)| **x == a as i64).map_or(a, |(o, _)| *o as u32);
+        crate::import::deck_update::exported_type_origin(con, *ntid, &m.json, &m.slots, our_ord)?;
+    }
 
     // 컬렉션 생성일. 복습 기한이 이날부터의 일수라 가장 이른 날로 둔다 (음수 기한을 피한다)
     let crt_day = db::study_day(cards.iter().flat_map(|c| [Some(c.created_at), c.due_at]).flatten().min().unwrap_or(now));
@@ -669,6 +681,8 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         note_ids.insert(n.id, id);
         // 기출 표시를 태그로 (N20). Anki 에서 보이고, 다시 가져오면 같은 표시가 된다
         let tags = crate::exam::to_tags(&n.tags, n.exam_hits, n.exam_names.clone());
+        // 왕복 기준 (DU55): 앱에서 만든 노트만, 처음 내보낼 때의 값. 만든 사람의 원본은 덮지 않는다
+        crate::import::deck_update::exported_note_origin(con, n.id, &stored, &tags)?;
         let tags = with_source_tags(&tags, sources.get(&n.id).map_or(&[][..], Vec::as_slice));
         let guid = match &n.anki_guid {
             // 같은 guid 가 이미 나갔으면 이 노트는 새 guid 로 (Anki 는 같은 guid 를 한 노트로 본다)
@@ -906,7 +920,8 @@ impl Model {
 
 /// 노트 유형 -> Anki 모델. 원본 JSON(anki_raw)이 있으면 그대로 쓰고, 없으면 스키마 11 기본값으로 만든다.
 /// id 는 Anki 에서 온 유형이면 그 id, 아니면 만든 시각(ms) + 행 번호 (기본 유형 셋은 만든 시각이 같다)
-fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<Model> {
+/// deck_map: 내보내는 우리 덱 → Anki 덱 id. 카드 종류의 덱(NT76)이 그 안에 있으면 템플릿 did 로 쓴다 (없으면 null)
+fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>, deck_map: &HashMap<i64, i64>) -> Res<Model> {
     let (name, css, created, updated, anki_id, raw, kind): (String, String, i64, i64, Option<i64>, Option<String>, Option<String>) = con
         .query_row(
             "SELECT name, css, created_at, updated_at, anki_model_id, anki_raw, native_kind FROM note_type WHERE id = ?1",
@@ -933,6 +948,8 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
     let (slots, fields): (Vec<usize>, Vec<String>) = nt.visible().into_iter().unzip();
     let tmpls: Vec<(i64, String, String, String)> =
         nt.templates.iter().enumerate().map(|(i, t)| (i as i64, t.name.clone(), t.qfmt.clone(), t.afmt.clone())).collect();
+    // 빈칸 유형은 쓰지 않는다 (NT77): did 는 늘 null
+    let tdid = |i: usize| nt.templates.get(i).filter(|_| !nt.cloze()).and_then(|t| t.deck).and_then(|d| deck_map.get(&d).copied());
     let cloze = nt.cloze();
     let ords: HashMap<i64, i64> = if cloze { HashMap::new() } else { nt.templates.iter().enumerate().map(|(i, t)| (t.ord as i64, i as i64)).collect() };
     let io = tmpls.iter().any(|t| crate::occlusion::is_template(&t.2));
@@ -950,7 +967,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>) -> Res<
     let mut json = json!({
         "id": id, "name": name, "type": i64::from(cloze), "mod": updated / 1000, "usn": -1, "sortf": 0, "did": did,
         "tmpls": tmpls.iter().map(|(ord, n, q, a)| json!({
-            "name": n, "ord": ord, "qfmt": q, "afmt": a, "did": null, "bqfmt": "", "bafmt": "",
+            "name": n, "ord": ord, "qfmt": q, "afmt": a, "did": tdid(*ord as usize), "bqfmt": "", "bafmt": "",
         })).collect::<Vec<_>>(),
         "flds": fields.iter().enumerate().map(|(i, f)| json!({
             "name": f, "ord": i, "sticky": false, "rtl": false, "font": "Arial", "size": 20, "media": [],
@@ -1364,7 +1381,7 @@ mod tests {
         assert_eq!((qfmt.as_str(), afmt.as_str()), (r#"<div class="nt-l nt-center">{{질문}}</div>"#, r#"{{FrontSide}}<hr id=answer><div class="nt-m nt-left">{{답변}}</div>"#));
         let edit = nt::TypeEdit {
             fields: vec![field(0, "질문"), field(1, "답변")],
-            templates: vec![nt::TemplateEdit { ord: Some(0), name: None, qfmt: qfmt.clone(), afmt: afmt.clone() }],
+            templates: vec![nt::TemplateEdit { ord: Some(0), name: None, qfmt: qfmt.clone(), afmt: afmt.clone(), deck: None, deck_gone: None }],
             css: String::new(),
         };
         nt::apply_edit(&con, id, &edit).unwrap();
@@ -1529,6 +1546,29 @@ mod tests {
         let lines: Vec<&str> = text.split("\r\n").skip(1).filter(|l| !l.is_empty()).collect();
         assert_eq!(lines, [r#""별","star""#, r#""White clouds.","cloud""#], "만든 시각 순, 예문 앞면이 비면 다음 카드 종류");
         assert_eq!((rows, empty), (2, 1));
+    }
+
+    #[test]
+    fn csv_cells_leave_hint_boxes_out() {
+        // Q4 L6: {{hint:}} 는 화면에서 펼치기 상자라 CSV 칸에 이름 · 내용이 섞이지 않게 뺀다 (카드 목록과 같다)
+        use crate::notetype as nt;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-csvhint-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let con = a.db.lock().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('특수', 0, 0)", []).unwrap();
+        let root = con.last_insert_rowid();
+        let id = nt::anki_clone(&con, "basic", Some("힌트 유형"));
+        nt::add_field(&con, id, "Hint").unwrap();
+        nt::save_template(&con, id, 0, None, "{{Front}} {{hint:Hint}}", "{{FrontSide}}<hr id=answer>{{Back}}{{hint:Hint}}").unwrap();
+        con.execute("INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, 1, 1)", params![id, json!(["특수1", "뒷면", "힌트1"]).to_string()]).unwrap();
+        let n = con.last_insert_rowid();
+        con.execute("INSERT INTO card (note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?2, 0, 0, 0)", params![n, root]).unwrap();
+        for plain in [true, false] {
+            let (text, ..) = csv_text(&con, root, &["front".to_string(), "back".to_string()], plain).unwrap();
+            let line = text.split("\r\n").nth(1).unwrap_or_default().to_string();
+            assert!(!line.contains("힌트1") && !line.contains("Hint") && !line.contains("details"), "plain={plain}: {line}");
+            assert!(line.contains("특수1") && line.contains("뒷면"), "plain={plain}: {line}");
+        }
     }
 
     #[test]
@@ -1987,5 +2027,286 @@ mod tests {
         let root: i64 = con.query_row("SELECT id FROM deck WHERE parent_id IS NULL AND name = 'QA'", [], |r| r.get(0)).unwrap();
         let r = export(&con, &a.data_dir, root, &out, true, &QUIET).unwrap();
         println!("export: {}", serde_json::to_value(r).unwrap());
+    }
+
+    // ---------------------------------------------------------------- DU55 Anki 왕복 기준
+
+    /// "Anki 에서 고친" 패키지: collection.anki2 를 꺼내 SQL 을 돌리고 다시 묶는다 (미디어는 그대로)
+    #[test]
+    fn card_type_deck_round_trips_as_template_did() {
+        // NT76: 카드 종류의 덱은 Anki 템플릿 did (deck override). 내보낼 때 그 덱의 Anki 덱 id, 가져올 때 이번 패키지의 그 덱. 패키지에 없는 덱이면 비운다
+        use crate::notetype as nt;
+        use std::io::Read;
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-tdid-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let out = tmp.0.join("앞뒤.apkg");
+        {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('내 덱', 0, 0)", []).unwrap();
+            let root = con.last_insert_rowid();
+            con.execute("INSERT INTO deck (name, parent_id, created_at, updated_at) VALUES ('뜻 → 단어', ?1, 0, 0)", [root]).unwrap();
+            let sub = con.last_insert_rowid();
+            let id = nt::anki_clone(&con, "reversed", Some("앞뒤"));
+            nt::set_template_deck(&con, id, 1, Some(sub)).unwrap();
+            nt::add_note(&con, &nt::TypedNote { deck_id: root, note_type_id: id, values: vec!["apple".into(), "사과".into()], importance: None }).unwrap();
+            export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
+        }
+        let col = tmp.0.join("col.anki2");
+        let mut raw = vec![];
+        zip::ZipArchive::new(File::open(&out).unwrap()).unwrap().by_name("collection.anki2").unwrap().read_to_end(&mut raw).unwrap();
+        std::fs::write(&col, raw).unwrap();
+        let (models, sub_did): (String, i64) = {
+            let c = Connection::open(&col).unwrap();
+            (c.query_row("SELECT models FROM col", [], |r| r.get(0)).unwrap(), c.query_row("SELECT did FROM cards WHERE ord = 1", [], |r| r.get(0)).unwrap())
+        };
+        let m: Value = serde_json::from_str(&models).unwrap();
+        let t = m.as_object().unwrap().values().find(|v| v["name"] == "앞뒤").unwrap();
+        assert_eq!((t["tmpls"][0]["did"].clone(), t["tmpls"][1]["did"].as_i64()), (Value::Null, Some(sub_did)), "카드 종류 2 의 did = 그 카드가 든 덱");
+        // 다시 가져오면 이번 패키지의 그 덱, 새 노트의 카드 2 도 그 덱으로
+        let b = state(&tmp.0.join("b"));
+        crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
+        {
+            let con = b.db.lock().unwrap();
+            let id: i64 = con.query_row("SELECT id FROM note_type WHERE name = '앞뒤'", [], |r| r.get(0)).unwrap();
+            let sub: i64 = con.query_row("SELECT id FROM deck WHERE name = '뜻 → 단어'", [], |r| r.get(0)).unwrap();
+            let root: i64 = con.query_row("SELECT id FROM deck WHERE name = '내 덱'", [], |r| r.get(0)).unwrap();
+            assert_eq!(nt::load(&con, id).unwrap().templates.iter().map(|t| t.deck).collect::<Vec<_>>(), [None, Some(sub)]);
+            nt::add_note(&con, &nt::TypedNote { deck_id: root, note_type_id: id, values: vec!["pear".into(), "배".into()], importance: None }).unwrap();
+            assert_eq!(strings(&con, "SELECT c.template_ord || ':' || d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = (SELECT max(id) FROM note) ORDER BY 1"), ["0:내 덱", "1:뜻 → 단어"]);
+        }
+        // 패키지에 없는 덱을 가리키면 비워 두고 알리지 않는다
+        let odd = tmp.0.join("없는 덱.apkg");
+        let tid = m.as_object().unwrap().iter().find(|(_, v)| v["name"] == "앞뒤").unwrap().0.clone();
+        edit_apkg(&out, &odd, &format!("UPDATE col SET models = json_set(models, '$.\"{tid}\".tmpls[1].did', 424242)"));
+        let c = state(&tmp.0.join("c"));
+        let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &c, odd.to_str().unwrap(), false, &mut vec![]).unwrap()).unwrap();
+        let con = c.db.lock().unwrap();
+        let id: i64 = con.query_row("SELECT id FROM note_type WHERE name = '앞뒤'", [], |r| r.get(0)).unwrap();
+        assert_eq!(nt::load(&con, id).unwrap().templates[1].deck, None);
+        assert_eq!(res["issues"], json!([]), "가져오기 요약에 알리지 않는다");
+        assert_eq!(nt::load(&con, id).unwrap().templates[1].deck_name, None, "패키지에 없는 덱은 이름도 모른다");
+    }
+
+    fn edit_apkg(src: &Path, dst: &Path, sql: &str) {
+        use std::io::Read;
+        let mut zip = zip::ZipArchive::new(File::open(src).unwrap()).unwrap();
+        let col = dst.with_extension("anki2");
+        let mut raw = vec![];
+        zip.by_name("collection.anki2").unwrap().read_to_end(&mut raw).unwrap();
+        std::fs::write(&col, raw).unwrap();
+        Connection::open(&col).unwrap().execute_batch(sql).unwrap();
+        let mut out = zip::ZipWriter::new(File::create(dst).unwrap());
+        for i in 0..zip.len() {
+            let mut e = zip.by_index(i).unwrap();
+            let name = e.name().unwrap().to_string();
+            let mut b = vec![];
+            e.read_to_end(&mut b).unwrap();
+            out.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(if name == "collection.anki2" { std::fs::read(&col).unwrap() } else { b }.as_slice()).unwrap();
+        }
+        out.finish().unwrap();
+        let _ = std::fs::remove_file(col);
+    }
+
+    fn update(s: &AppState, p: &Path, dry: bool) -> crate::import::deck_update::UpdateSummary {
+        use crate::import::deck_update::{self, Choices, Req};
+        let choices = Choices::default();
+        let req = Req { path: p, selected: None, choices: &choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false };
+        let mut con = s.db.lock().unwrap();
+        if dry { deck_update::run(&mut con, &s.data_dir, &req, true, &mut vec![]).unwrap() } else { deck_update::apply(&mut con, &s.data_dir, &req).unwrap() }
+    }
+
+    #[test]
+    fn my_deck_round_trip_through_anki_uses_the_export_as_base() {
+        // DU55 (A): 앱에서 만든 노트는 처음 내보낼 때의 값이 원본. Anki 에서만 고친 노트는 "새 버전", 내보낸 뒤 앱에서만 고친 노트는 "내 것",
+        // 둘 다 고쳤으면 충돌(기본 내 것). 앱 기본 유형은 내보낸 모델 id 로 찾고 정의는 건드리지 않는다
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let out = tmp.0.join("내 덱.apkg");
+        let (deck, basic, before_type, before_types) = {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('내 덱', 0, 0)", []).unwrap();
+            let deck = con.last_insert_rowid();
+            for (q, b) in [("Anki 에서 고칠 것", "답1"), ("앱에서 고칠 것", "답2"), ("둘 다 고칠 것", "답3"), ("그대로", "답4")] {
+                insert_note(&con, &NewCard { deck_id: deck, kind: "basic".into(), front: q.into(), back: b.into(), importance: None }, "", None).unwrap();
+            }
+            let basic = db::native_type_id(&con, "basic").unwrap();
+            let dump = |sql: &str| strings(&con, sql).join("\n");
+            let ty = dump(&format!("SELECT name || fields || css || coalesce(native_kind, '') || user_made || coalesce(anki_model_id, '') FROM note_type WHERE id = {basic} UNION ALL SELECT ord || name || qfmt || afmt FROM card_template WHERE note_type_id = {basic}"));
+            (deck, basic, ty, dump("SELECT count(*) || '' FROM note_type"))
+        };
+        {
+            let con = a.db.lock().unwrap();
+            export(&con, &a.data_dir, deck, &out, false, &QUIET).unwrap();
+            assert_eq!(strings(&con, "SELECT count(*) || '' FROM note WHERE origin IS NULL"), ["0"], "앱에서 만든 노트에 원본");
+            let m: String = con.query_row("SELECT origin FROM note_type WHERE id = ?1", [basic], |r| r.get(0)).unwrap();
+            assert!(m.starts_with(r#"{"m":["#), "앱 기본 유형은 내보낸 모델 id 만: {m}");
+            // 다시 내보내도 원본은 그대로 (처음 것)
+            let before: Vec<String> = strings(&con, "SELECT origin FROM note ORDER BY id");
+            con.execute("UPDATE note SET fields = '[\"앱에서 고칠 것\",\"답2 (앱)\"]', updated_at = 5 WHERE fields LIKE '%앱에서 고칠 것%'", []).unwrap();
+            con.execute("UPDATE note SET fields = '[\"둘 다 고칠 것\",\"답3 (앱)\"]', updated_at = 5 WHERE fields LIKE '%둘 다 고칠 것%'", []).unwrap();
+            export(&con, &a.data_dir, deck, &tmp.0.join("두 번째.apkg"), false, &QUIET).unwrap();
+            assert_eq!(strings(&con, "SELECT origin FROM note ORDER BY id"), before, "다시 내보내도 처음 원본");
+        }
+        // Anki 에서 고쳤다 (첫 번째 내보낸 사본)
+        let back = tmp.0.join("Anki 에서.apkg");
+        edit_apkg(
+            &out,
+            &back,
+            "UPDATE notes SET flds = replace(flds, '답1', '답1 (Anki)') WHERE flds LIKE 'Anki 에서 고칠 것%';
+             UPDATE notes SET flds = replace(flds, '답3', '답3 (Anki)') WHERE flds LIKE '둘 다 고칠 것%';",
+        );
+        let r = update(&a, &back, true);
+        assert_eq!((r.changed, r.mine_kept, r.conflicts.len(), r.same, r.no_base, r.other_type, r.new_notes), (1, 1, 1, 1, 0, 0, 0));
+        assert!(r.types.is_empty(), "앱 기본 유형은 바뀌는 것이 없다");
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["hint"]["known_decks"], serde_json::json!(["내 덱"]), "같은 Anki 덱 id 가 없어도 이미 있는 노트의 덱 이름 (Q4 L4)");
+        assert_eq!((v["conflicts"][0]["native_kind"].as_str(), v["conflicts"][0]["fields"][0]["name"].as_str()), (Some("basic"), Some("Back")), "화면이 칸 이름(답변)으로 바꾼다");
+        update(&a, &back, false);
+        let con = a.db.lock().unwrap();
+        let backs = strings(&con, "SELECT json_extract(fields, '$[1]') FROM note ORDER BY id");
+        assert_eq!(backs, ["답1 (Anki)", "답2 (앱)", "답3 (앱)", "답4"], "Anki 수정은 들어오고 앱 수정은 지킨다 (충돌은 내 것)");
+        // 앱 기본 유형은 그대로: 정의 · 목록 행 · 숨긴 필드 · 새 유형 없음
+        let dump = |sql: &str| strings(&con, sql).join("\n");
+        assert_eq!(dump(&format!("SELECT name || fields || css || coalesce(native_kind, '') || user_made || coalesce(anki_model_id, '') FROM note_type WHERE id = {basic} UNION ALL SELECT ord || name || qfmt || afmt FROM card_template WHERE note_type_id = {basic}")), before_type);
+        assert_eq!(dump("SELECT count(*) || '' FROM note_type"), before_types, "새 \"Basic\" 이 생기지 않는다");
+        let row = serde_json::to_value(crate::notetype::list(&con).unwrap().into_iter().find(|t| serde_json::to_value(t).unwrap()["id"] == basic).unwrap()).unwrap();
+        assert_eq!((row["native_kind"].as_str(), row["user_made"].as_bool()), (Some("basic"), Some(false)), "가져온 유형으로 보이지 않는다");
+        assert!(serde_json::to_value(crate::notetype::detail(&con, basic).unwrap()).unwrap()["hidden"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn shared_deck_base_survives_my_export() {
+        // 코디네이터 고정 테스트 (DU55): 공유 덱 v1 → 앱에서 고침 → 내 덱 내보내기 → 만든 사람의 v2 업데이트 = 내 수정을 지킨다.
+        // 내보내기는 가져온 노트의 원본(만든 사람 기준)을 덮지 않는다
+        use crate::import::deck_update::testpkg::{self, Model, note};
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55s-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let model = || Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")], css: "" };
+        let (p1, p2) = (tmp.0.join("v1.apkg"), tmp.0.join("v2.apkg"));
+        testpkg::write(&p1, &[model()], &[(1, "공유덱")], &[note(1, "g1", 7, &["Q", "A"], &[(1, 0)]), note(2, "g2", 7, &["Q2", "A2"], &[(1, 0)])], &[]);
+        crate::import::run_import_anki(&|_, _, _| {}, &a, p1.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let origins = |a: &AppState| strings(&a.db.lock().unwrap(), "SELECT * FROM (SELECT origin FROM note ORDER BY id) UNION ALL SELECT origin FROM note_type WHERE anki_model_id = 7");
+        let before = origins(&a);
+        {
+            let con = a.db.lock().unwrap();
+            let id: i64 = con.query_row("SELECT id FROM note WHERE anki_guid = 'g1'", [], |r| r.get(0)).unwrap();
+            crate::commands::save_note_fields(&con, id, &["Q".into(), "A (내 수정)".into()]).unwrap();
+            let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = '공유덱'", [], |r| r.get(0)).unwrap();
+            export(&con, &a.data_dir, deck, &tmp.0.join("내보냄.apkg"), true, &QUIET).unwrap();
+        }
+        assert_eq!(origins(&a), before, "가져온 노트 · 유형의 원본은 그대로");
+        testpkg::write(&p2, &[model()], &[(1, "공유덱")], &[note(1, "g1", 7, &["Q", "A v2"], &[(1, 0)]), note(2, "g2", 7, &["Q2", "A2 v2"], &[(1, 0)])], &[]);
+        let r = update(&a, &p2, false);
+        assert_eq!((r.conflicts.len(), r.changed), (1, 1));
+        let con = a.db.lock().unwrap();
+        assert_eq!(strings(&con, "SELECT json_extract(fields, '$[1]') FROM note ORDER BY id"), ["A (내 수정)", "A2 v2"], "내 수정은 충돌로 지키고 (기본 내 것), 고치지 않은 노트만 새 버전");
+    }
+
+    #[test]
+    fn reimport_from_anki_never_resets_study_state() {
+        // 사용자 결정 2026-10-19 ②: 복습 기록 병합은 미룬다. 지금 길(업데이트 · 새 노트만 더하기)이 이미 있는 카드의 일정 · 상태를 덮거나 초기화하지 않고,
+        // Anki 카드 ↔ 우리 카드가 노트 guid + 카드 순서로 이어지는지 고정한다 (내보내기는 카드 id 를 남기지 않는다: anki_card_id 는 신규 순서에 쓰인다)
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55r-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let out = tmp.0.join("내 덱.apkg");
+        let schedule = |a: &AppState| strings(&a.db.lock().unwrap(), "SELECT id || state || coalesce(due_at, '') || coalesce(stability, '') || reps || lapses FROM card ORDER BY id");
+        let card = {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('내 덱', 0, 0)", []).unwrap();
+            let deck = con.last_insert_rowid();
+            insert_note(&con, &NewCard { deck_id: deck, kind: "reversed".into(), front: "앞".into(), back: "뒤".into(), importance: None }, "", None).unwrap();
+            let card: i64 = con.query_row("SELECT id FROM card WHERE template_ord = 1", [], |r| r.get(0)).unwrap();
+            con.execute("UPDATE card SET state = 'review', due_at = ?2, stability = 9.5, difficulty = 5.0, reps = 4, interval_days = 6, last_reviewed_at = ?3 WHERE id = ?1", params![card, now_ms() + 6 * DAY_MS, now_ms() - DAY_MS]).unwrap();
+            con.execute("INSERT INTO review_log (card_id, reviewed_at, rating, prev_state, fed_to_scheduler) VALUES (?1, ?2, 3, 'review', 1)", params![card, now_ms() - DAY_MS]).unwrap();
+            export(&con, &a.data_dir, deck, &out, true, &QUIET).unwrap();
+            assert_eq!(strings(&con, "SELECT count(*) || '' FROM card WHERE anki_card_id IS NOT NULL"), ["0"], "카드 id 를 쓰지 않는다 (신규 순서가 바뀌지 않게)");
+            card
+        };
+        let before = schedule(&a);
+        // Anki 에서 그 카드를 한 번 더 공부하고(기록 + 일정) 내용도 고쳤다
+        let back = tmp.0.join("Anki 에서.apkg");
+        edit_apkg(
+            &out,
+            &back,
+            "INSERT INTO revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) SELECT (SELECT max(id) FROM revlog) + 86400000, id, -1, 3, 15, 6, 2500, 5000, 1 FROM cards WHERE ord = 1;
+             UPDATE cards SET ivl = 15, due = due + 9, reps = reps + 1 WHERE ord = 1;
+             UPDATE notes SET flds = replace(flds, '뒤', '뒤 (Anki)');",
+        );
+        // 업데이트: 내용만, 일정 · 상태 · 기록 그대로 (DU12 · DU23)
+        let r = update(&a, &back, false);
+        assert_eq!((r.changed, r.reviews_skipped), (1, 2));
+        assert_eq!(schedule(&a), before, "업데이트는 일정 · 상태를 쓰지 않는다");
+        // 새 노트만 더하기 + 기록 옮기기 (I79): 기록은 guid + 순서로 같은 카드에 붙고, 이미 있는 카드의 일정은 덮지 않는다. 두 번 가져와도 한 번
+        for _ in 0..2 {
+            crate::import::run_import_anki(&|_, _, _| {}, &a, back.to_str().unwrap(), true, &mut vec![]).unwrap();
+        }
+        let con = a.db.lock().unwrap();
+        assert_eq!(strings(&con, &format!("SELECT count(*) || '' FROM review_log WHERE card_id = {card}")), ["2"], "같은 카드에 Anki 기록 하나 더 (중복 없음)");
+        assert_eq!(strings(&con, "SELECT count(*) || '' FROM review_log WHERE card_id IS NULL"), ["0"]);
+        drop(con);
+        assert_eq!(schedule(&a), before, "기록을 옮겨도 일정 · 상태는 그대로");
+        assert_eq!(strings(&a.db.lock().unwrap(), "SELECT count(*) || '' FROM note"), ["1"], "같은 노트가 두 벌 되지 않는다");
+    }
+
+    #[test]
+    fn my_note_type_round_trip_takes_the_template_changed_in_anki() {
+        // DU55: 사용자 유형은 처음 내보낼 때의 정의가 원본. Anki 에서 고친 카드 종류 앞면은 "새 버전"으로 들어온다 (충돌이 아니다)
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55t-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let out = tmp.0.join("내 유형.apkg");
+        let (ntid, deck) = {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('내 덱', 0, 0)", []).unwrap();
+            let deck = con.last_insert_rowid();
+            let ntid = crate::notetype::anki_clone(&con, "basic", Some("내 유형"));
+            crate::notetype::add_note(&con, &crate::notetype::TypedNote { deck_id: deck, note_type_id: ntid, values: vec!["Q".into(), "A".into()], importance: None }).unwrap();
+            export(&con, &a.data_dir, deck, &out, false, &QUIET).unwrap();
+            let o: Value = serde_json::from_str(&con.query_row("SELECT origin FROM note_type WHERE id = ?1", [ntid], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+            assert_eq!(o["f"], json!([["Front", 0], ["Back", 1]]), "내보낸 필드 (Anki 순서, 우리 자리)");
+            (ntid, deck)
+        };
+        let back = tmp.0.join("Anki 에서.apkg");
+        edit_apkg(&out, &back, r#"UPDATE col SET models = (SELECT json_set(models, '$."' || key || '".tmpls[0].qfmt', '<b>{{Front}}</b>') FROM json_each(col.models));"#);
+        let r = update(&a, &back, false);
+        assert_eq!((r.conflicts.len(), r.kept_looks, r.types.len()), (0, 0, 1));
+        assert_eq!(serde_json::to_value(&r.types[0]).unwrap()["updated_looks"], json!(["Card 1"]));
+        let con = a.db.lock().unwrap();
+        assert_eq!(strings(&con, &format!("SELECT qfmt FROM card_template WHERE note_type_id = {ntid}")), ["<b>{{Front}}</b>"]);
+        // 다시 내보내도 원본은 업데이트가 쓴 것 (내보내기는 이미 있는 원본을 덮지 않는다)
+        let o = strings(&con, &format!("SELECT origin FROM note_type WHERE id = {ntid}"));
+        export(&con, &a.data_dir, deck, &tmp.0.join("again.apkg"), false, &QUIET).unwrap();
+        assert_eq!(strings(&con, &format!("SELECT origin FROM note_type WHERE id = {ntid}")), o);
+    }
+
+    #[test]
+    fn types_without_a_model_id_are_found_again_by_the_exported_id() {
+        // 코디네이터 QA (실제 Anki): 모델 id 가 남지 않는 유형(앱 기본 · 모델 id 없는 사용자 유형)을 내보냈다 다시 가져오면 새 유형이 생겼다.
+        // 내보낸 id 를 origin "m" 에 남기고 가져오기 · 업데이트가 모델 id 다음에 그것으로 찾는다
+        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55m-{}-{}", std::process::id(), now_ms())));
+        let a = state(&tmp.0.join("a"));
+        let out = tmp.0.join("덱.apkg");
+        let (deck, mine) = {
+            let con = a.db.lock().unwrap();
+            con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('덱', 0, 0)", []).unwrap();
+            let deck = con.last_insert_rowid();
+            let mine = crate::notetype::anki_clone(&con, "basic", Some("내 유형"));
+            con.execute("UPDATE note_type SET anki_model_id = NULL WHERE id = ?1", [mine]).unwrap(); // 모델 id 가 없는 예전 사용자 유형
+            crate::notetype::add_note(&con, &crate::notetype::TypedNote { deck_id: deck, note_type_id: mine, values: vec!["Q".into(), "A".into()], importance: None }).unwrap();
+            insert_note(&con, &NewCard { deck_id: deck, kind: "basic".into(), front: "기본".into(), back: "답".into(), importance: None }, "", None).unwrap();
+            export(&con, &a.data_dir, deck, &out, false, &QUIET).unwrap();
+            let o: Value = serde_json::from_str(&con.query_row("SELECT origin FROM note_type WHERE id = ?1", [mine], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+            assert!(o["m"].as_array().is_some_and(|m| m.len() == 1) && o["f"].is_array(), "정의와 내보낸 id: {o}");
+            (deck, mine)
+        };
+        let types = || strings(&a.db.lock().unwrap(), "SELECT count(*) || '' FROM note_type");
+        let before = types();
+        // 새 노트만 더하기 (기록 옮기기) · 업데이트 모두 같은 유형으로
+        crate::import::run_import_anki(&|_, _, _| {}, &a, out.to_str().unwrap(), true, &mut vec![]).unwrap();
+        assert_eq!(types(), before, "새 유형이 생기지 않는다");
+        let r = update(&a, &out, false);
+        assert_eq!((r.other_type, r.same, r.new_notes), (0, 2, 0));
+        assert_eq!(types(), before);
+        let _ = (deck, mine);
     }
 }

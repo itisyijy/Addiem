@@ -112,3 +112,63 @@
 .split__input:focus-visible { outline: none; } /* 테두리가 초점을 보여준다 */
 /* 글자만 옮겨서 잃는 그림·서식 안내 (원래 카드에 있을 때만) */
 .split__lost { color: var(--status-warn-fg); }
+
+/* ---------------------------------------------------------------- 8.2 CQ1 답이 안 맞아 보임 · 서식 제안 · 최근 고친 카드 */
+.quality__reason { overflow-wrap: anywhere; }
+.quality__fixed { display: flex; flex-direction: column; }
+.quality__fixed-head { display: flex; align-items: center; gap: 8px; padding: 14px 20px 10px; }
+.quality__fixed .quality__row { padding: 10px 20px; border-top: 1px solid var(--border-default); border-bottom: none; }
+.quality__fixed .quality__text { gap: 2px; }
+
+/* ---------------------------------------------------------------- CQ2 · CQ3 고쳐 쓰기 전후 비교 (G2 틀: 지금 카드 → 고친 카드) */
+.modal.split.rewrite { gap: 16px; padding: 24px 28px; }
+.rewrite__cols { display: flex; align-items: flex-start; gap: 16px; }
+.rewrite__card {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border-radius: 16px;
+  overflow-wrap: anywhere;
+  max-height: calc(100vh - 420px);
+  overflow-y: auto;
+}
+/* 낮은 창(1180×640)에서도 손보는 칸이 눌리지 않게: 줄어들지 않고 카드가 스크롤된다 (QA M1) */
+.rewrite__card > * { flex-shrink: 0; }
+.rewrite__card--before { background: var(--bg-subtle); }
+/* 2px 테두리. 안쪽 여백을 줄여 글자 자리를 맞춘다 */
+.rewrite__card--after { padding: 16px; border: 2px solid var(--accent-default); background: var(--bg-surface); cursor: text; }
+.rewrite__card--after.is-editing { cursor: auto; }
+.rewrite__card--plain { padding: 0; }
+.rewrite__card--check { border: 1px dashed var(--border-strong); background: var(--bg-surface); }
+.rewrite__arrow { display: inline-flex; flex-shrink: 0; padding-top: 120px; }
+.rewrite__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rewrite__text { white-space: normal; }
+.rewrite__text del { color: var(--text-tertiary); text-decoration: line-through; }
+.rewrite__text ins { text-decoration: underline; text-underline-offset: 3px; }
+.rewrite__nl { color: var(--accent-default); text-decoration: none; }
+.rewrite__input { margin-left: 0; }
+.rewrite__actions { display: inline-flex; gap: 8px; }
+.rewrite__locked { color: var(--status-warn-fg); }
+.rewrite__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--status-warn-bg);
+  color: var(--text-primary);
+}
+.rewrite__warn .icon { flex-shrink: 0; margin-top: 2px; color: var(--status-warn-fg); }
+.rewrite__evidence { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: 12px; background: var(--bg-subtle); }
+.rewrite__evidence > .icon { flex-shrink: 0; margin-top: 2px; }
+.rewrite__evidence-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.rewrite__evidence .btn { flex-shrink: 0; }
+.rewrite__evidence.is-warn { align-items: center; background: var(--status-warn-bg); color: var(--status-warn-fg); }
+/* 제목 아래 "보낸 것 · …"을 누르면 보낸 글 그대로 (L4 결) */
+.rewrite__sent { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.rewrite__sent:hover { color: var(--text-primary); }
+.ai-confirm.rewrite__peek { position: static; width: auto; }
+.split.has-panel .rewrite__cols { flex: 1; min-height: 0; }

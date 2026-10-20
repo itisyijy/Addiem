@@ -919,6 +919,10 @@ fn later_edit_wins_even_when_it_syncs_first() {
     assert_eq!(a.dump(), b.dump());
     assert_eq!(a.conflicts().last().unwrap(), &(b.me(), t + 4000, b2.clone(), a.me(), t + 3000, a2.clone()));
     assert_eq!(b.conflicts().last().unwrap(), &(b.me(), t + 4000, b2.clone(), a.me(), t + 3000, a2.clone()));
+    // 같은 노트 유형의 두 버전이라 [이 버전으로 바꾸기]를 쓸 수 있다 (K41 막기는 유형이 다를 때만)
+    let id = a.n("SELECT max(id) FROM sync_conflict");
+    crate::sync::use_conflict(&a.con(), id).unwrap();
+    assert_eq!(a.fields(&note), a2);
 }
 
 #[test]
@@ -1604,6 +1608,50 @@ fn field_renamed_while_note_edited_elsewhere() {
 }
 
 #[test]
+fn hidden_field_restored_while_note_edited_elsewhere() {
+    // NT74: A 가 숨긴 필드를 되살리는 사이 B 가 노트를 고쳤다. 되살리기는 그 자리 이름만 다시 붙이는 것이라 (자리 id 그대로) 이름 바꾸기와 같이 합쳐진다
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (id, note) = user_type(&env, &a, &b);
+    nt::add_field(&a.con(), id, "메모").unwrap();
+    edit_note(&a, &note, &["질문", "답", "메모 값"]);
+    nt::delete_field(&a.con(), id, 2).unwrap();
+    env.sync(&a);
+    env.sync(&b);
+    assert_eq!(type_of(&b, &note).visible().len(), 2, "B 에서도 숨겨졌다");
+    let t = db::now_ms();
+    a.at(t + 1000, || nt::restore_field(&a.con(), id, 2, "메모").unwrap());
+    b.at(t + 2000, || edit_note(&b, &note, &["질문", "B 의 답", "메모 값"]));
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        let t = type_of(d, &note);
+        assert_eq!(t.slots, ["Front", "Back", "메모"]);
+        let map = t.field_map(&serde_json::from_str::<Vec<String>>(&d.fields(&note)).unwrap());
+        assert_eq!((map["Back"].as_str(), map["메모"].as_str()), ("B 의 답", "메모 값"), "숨긴 동안의 값이 그대로 돌아온다");
+    }
+    // 한계 (NT74): 되살린 뒤 올리기 전에 다른 기기가 같은 유형의 다른 필드 이름을 나중에 바꾸면, 같은 자리 id 끼리는 나중 쪽 이름 배열이 이겨
+    // 되살린 이름이 다시 "" (숨김)이 된다. 값은 노트에 남아 다시 되살릴 수 있다
+    nt::delete_field(&a.con(), id, 2).unwrap();
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    let b_id = b.id("note_type", &a.uid("note_type", id)).unwrap();
+    let t = db::now_ms();
+    a.at(t + 1000, || nt::restore_field(&a.con(), id, 2, "메모").unwrap());
+    b.at(t + 2000, || nt::rename_field(&b.con(), b_id, 0, "질문칸").unwrap());
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(type_of(&a, &note).slots, ["질문칸", "Back", ""]);
+    assert_eq!(a.fields(&note), json!(["질문", "B 의 답", "메모 값"]).to_string());
+}
+
+#[test]
 fn template_added_while_note_edited_elsewhere() {
     let env = Env::new();
     let (a, b, _) = pair(&env);
@@ -2077,3 +2125,340 @@ fn deck_update_origin_follows_and_the_other_device_judges_with_it() {
     assert_eq!(a.n("SELECT count(*) FROM note WHERE anki_guid = 'g3'"), 0, "지운 기기에 되살아나지 않는다");
     assert_eq!(a.dump(), c.dump());
 }
+
+#[test]
+fn deck_update_original_values_follow_to_the_other_device() {
+    // DU53: 원본 글("v")도 note.origin 열로 따라가, 다른 기기의 충돌 검토가 [원본 보기]를 보인다
+    use crate::import::deck_update::testpkg::{self, Model, note};
+    use crate::import::deck_update::{self, Choices, Req};
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let b = Dev::new("데스크톱");
+    let pkg = |d: &Dev, name: &str, back: &str| {
+        let model = Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")], css: "" };
+        let p = d.dir.join(name);
+        testpkg::write(&p, &[model], &[(1, "공유덱")], &[note(1, "g1", 7, &["Q1", back], &[(1, 0)])], &[]);
+        p
+    };
+    let run = |d: &Dev, p: &std::path::Path, dry: bool| {
+        let choices = Choices::default();
+        deck_update::run(&mut d.con(), &d.dir, &Req { path: p, selected: None, choices: &choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false }, dry, &mut vec![]).unwrap()
+    };
+    run(&a, &pkg(&a, "v1.apkg", "A1"), false);
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    engine::join(&b.db, &env.cx(&b), Join::Take, json!({})).unwrap();
+    let t = db::now_ms();
+    b.edit_at(t + 1000, "UPDATE note SET fields = ?1, updated_at = ?2 WHERE anki_guid = 'g1'", params![json!(["Q1", "A1 (B)"]).to_string(), t + 1000]);
+    let r = run(&b, &pkg(&b, "v2.apkg", "A1 v2"), true);
+    let conflict = serde_json::to_value(&r.conflicts).unwrap();
+    assert_eq!(conflict[0]["fields"][0]["base"], json!("A1"), "A 가 받은 원본 글이 B 에도 있다");
+    // B 가 적용하면 새 원본 글이 A 로 따라간다
+    b.at(t + 2000, || run(&b, &pkg(&b, "v2.apkg", "A1 v2"), false));
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.dump(), b.dump());
+    let origin: String = a.con().query_row("SELECT origin FROM note WHERE anki_guid = 'g1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<J>(&origin).unwrap()["v"], json!(["Q1", "A1 v2"]));
+}
+
+#[test]
+fn native_type_export_mark_follows_without_a_second_type() {
+    // DU55: 앱 기본 유형에 남긴 내보낸 모델 id ("m") 는 origin 열로 따라가고, 자연 키(native_kind)는 그대로라 유형이 두 벌 되지 않는다.
+    // 다른 기기도 그 파일을 다시 가져오면 같은 앱 기본 유형으로 찾는다
+    use crate::import::deck_update;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let basic = db::native_type_id(&a.con(), "basic").unwrap();
+    deck_update::exported_type_origin(&a.con(), basic, &json!({ "id": 4242 }), &[0, 1], |o| o).unwrap();
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE native_kind = 'basic'"), 1);
+        assert_eq!(d.n("SELECT count(*) FROM note_type WHERE native_kind = 'basic' AND anki_model_id IS NULL AND user_made = 0"), 1, "모델 id · 사용자 유형 표시는 그대로");
+        let found = deck_update::type_of_model(&d.con(), 4242).unwrap();
+        assert_eq!(found.map(|(id, native)| (d.uid("note_type", id), native)), Some((a.uid("note_type", basic), true)));
+    }
+}
+
+#[test]
+fn update_undo_syncs_as_ordinary_edits() {
+    // DU57: 되돌리기는 보통 편집이라 다른 기기에도 간다. 다른 기기에서 공부한 새 카드(받은 뒤)는 남는다
+    use crate::import::deck_update::testpkg::{self, Model, note};
+    use crate::import::deck_update::{self, Choices, Req};
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let b = Dev::new("데스크톱");
+    let pkg = |name: &str, notes: &[testpkg::Note]| {
+        let model = Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")], css: "" };
+        let p = a.dir.join(name);
+        testpkg::write(&p, &[model], &[(1, "공유덱")], notes, &[]);
+        p
+    };
+    let run = |d: &Dev, p: &std::path::Path| {
+        let choices = Choices::default();
+        deck_update::run(&mut d.con(), &d.dir, &Req { path: p, selected: None, choices: &choices, voices: &[], emit: &|_, _, _| {}, cancel: &|| false }, false, &mut vec![]).unwrap()
+    };
+    run(&a, &pkg("v1.apkg", &[note(1, "g1", 7, &["Q1", "A1"], &[(1, 0)])]));
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    engine::join(&b.db, &env.cx(&b), Join::Take, json!({})).unwrap();
+    let t = db::now_ms();
+    let v2 = pkg("v2.apkg", &[note(1, "g1", 7, &["Q1", "A1 v2"], &[(1, 0)]), note(2, "g2", 7, &["Q2", "A2"], &[(1, 0)]), note(3, "g3", 7, &["Q3", "A3"], &[(1, 0)])]);
+    let r = a.at(t + 1000, || run(&a, &v2));
+    env.sync(&a);
+    env.sync(&b);
+    // B 가 받은 새 노트 g2 를 공부했다
+    b.edit_at(t + 2000, "UPDATE card SET state = 'review', reps = 1, due_at = 7 WHERE note_id = (SELECT id FROM note WHERE anki_guid = 'g2')", params![]);
+    env.sync(&b);
+    env.sync(&a);
+    let u = a.at(t + 3000, || deck_update::undo(&mut a.con(), r.batch.unwrap(), false).unwrap());
+    let u = serde_json::to_value(&u).unwrap();
+    assert_eq!((&u["reverted_notes"], &u["kept_cards"], &u["archived_notes"]), (&json!(1), &json!(1), &json!(1)));
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    let g = |guid: &str| b.con().query_row("SELECT json_extract(n.fields, '$[1]') || c.state FROM note n JOIN card c ON c.note_id = n.id WHERE n.anki_guid = ?1", [guid], |r| r.get::<_, String>(0)).unwrap();
+    assert_eq!((g("g1"), g("g2"), g("g3")), ("A1new".to_string(), "A2review".to_string(), "A3suspended".to_string()), "B 에도: 되돌린 내용 · 공부한 카드 그대로 · 보관");
+    assert_eq!(b.n("SELECT count(*) FROM update_journal"), 0, "되돌리기 기록은 기기 안에만");
+}
+
+// ---------------------------------------------------------------- NT75 · K41 다른 유형으로 옮기기 ∥ 동기화
+
+/// A 에 옮길 유형(양방향 복제, 카드 종류 둘) · 새 유형과 노트 하나, 두 기기가 맞춘 상태. (옮길 유형 id, 새 유형 id, 노트 uid). make: 새 유형을 만든다
+fn move_setup(env: &Env, a: &Dev, b: &Dev, make: impl Fn(&Connection) -> i64, values: &[&str]) -> (i64, i64, String) {
+    use crate::notetype as nt;
+    let from = nt::anki_clone(&a.con(), "reversed", Some("옮길 유형"));
+    let to = make(&a.con());
+    let note = typed_note(a, from, values);
+    for d in [a, b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    (from, to, note)
+}
+
+fn move_note(d: &Dev, note_uid: &str, to: i64, fields: Vec<(usize, Option<usize>)>, cards: Vec<(u32, Option<u32>)>) {
+    let id = d.id("note", note_uid).unwrap();
+    crate::notetype::change_type(&d.con(), &crate::notetype::ChangeType { note_ids: vec![id], to, fields, cards }).unwrap();
+}
+
+/// 그 노트의 (카드 uid, ord) 를 ord 순서로
+fn cards_of(d: &Dev, note_uid: &str) -> Vec<(String, i64)> {
+    let con = d.con();
+    let mut st = con.prepare("SELECT c.uid, c.template_ord FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 ORDER BY c.template_ord").unwrap();
+    st.query_map([note_uid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+}
+
+#[test]
+fn moved_note_keeps_the_new_layout_when_edited_elsewhere() {
+    // K41 ①: A 가 노트를 다른 유형으로 옮기는(필드 자리를 맞바꾼다) 사이 B 가 옛 유형 자리로 노트를 고쳤다. 내용은 유형을 정한 쪽(A) 것이고
+    // B 의 수정은 K7 에 남는다 (나중에 고쳤어도). 어느 쪽이 먼저 맞추든 같다
+    use crate::notetype as nt;
+    for b_first in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (_, to, note) = move_setup(&env, &a, &b, |c| nt::anki_clone(c, "basic", Some("새 유형")), &["질문", "답"]);
+        let first = cards_of(&a, &note)[0].0.clone();
+        let t = db::now_ms();
+        a.at(t + 1000, || move_note(&a, &note, to, vec![(0, Some(1)), (1, Some(0))], vec![(0, Some(0)), (1, None)]));
+        b.at(t + 2000, || edit_note(&b, &note, &["질문 (B)", "답"]));
+        let order = if b_first { [&b, &a, &b, &a] } else { [&a, &b, &a, &b] };
+        for d in order {
+            env.sync(d);
+        }
+        assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
+        for d in [&a, &b] {
+            let ty = type_of(d, &note);
+            assert_eq!(ty.name, "새 유형");
+            assert_eq!(d.fields(&note), json!(["답", "질문"]).to_string(), "새 유형 자리 (b_first={b_first})");
+            assert_eq!(cards_of(d, &note), [(first.clone(), 0)], "같은 카드가 새 유형의 카드로, 대응 없는 카드는 지운다");
+            assert_eq!(orphans(d), 0);
+        }
+        let kept = |d: &Dev| d.conflicts().iter().filter(|c| c.5.contains("질문 (B)") || c.2.contains("질문 (B)")).count();
+        assert!(kept(&a) + kept(&b) >= 1, "B 의 수정은 기록에 남는다 (b_first={b_first})");
+        // 그 기록의 [이 버전으로 바꾸기]는 옛 유형 자리 배열을 새 유형에 넣지 않는다: 막고 (화면은 글만), 노트 내용은 그대로
+        for d in [&a, &b] {
+            let con = d.con();
+            let ids: Vec<i64> = con
+                .prepare("SELECT id FROM sync_conflict WHERE winner_fields LIKE '%질문 (B)%' OR loser_fields LIKE '%질문 (B)%'")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            for id in ids {
+                let e = crate::sync::use_conflict(&con, id).unwrap_err();
+                assert!(e.to_string().contains("노트 유형이 바뀐 뒤라"), "{e} (b_first={b_first})");
+                let (fields, resolved): (String, i64) = con
+                    .query_row("SELECT n.fields, x.resolved FROM note n, sync_conflict x WHERE n.uid = ?1 AND x.id = ?2", params![note, id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .unwrap();
+                assert_eq!((fields, resolved), (json!(["답", "질문"]).to_string(), 0));
+            }
+        }
+    }
+}
+
+#[test]
+fn swapped_card_types_follow_while_reviewed_elsewhere() {
+    // K41 ②: 카드 종류를 맞바꿔 옮겼다 (카드 1 → 카드 2, 카드 2 → 카드 1). 받는 기기는 같은 노트의 다른 카드가 아직 그 번호에 있어
+    // 잠시 비켜 두고 쓴다. 그 사이 B 가 공부한 카드는 그 일정 그대로 새 번호로 간다
+    use crate::notetype as nt;
+    for b_first in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (_, to, note) = move_setup(&env, &a, &b, |c| nt::anki_clone(c, "reversed", Some("새 유형")), &["질문", "답"]);
+        let before = cards_of(&a, &note);
+        let t = db::now_ms();
+        a.at(t + 1000, || move_note(&a, &note, to, vec![(0, Some(0)), (1, Some(1))], vec![(0, Some(1)), (1, Some(0))]));
+        b.edit_at(t + 2000, "UPDATE card SET state = 'review', reps = 2, due_at = 77, stability = 4.5 WHERE uid = ?1", [&before[0].0]);
+        let order = if b_first { [&b, &a, &b, &a] } else { [&a, &b, &a, &b] };
+        for d in order {
+            env.sync(d);
+        }
+        assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
+        for d in [&a, &b] {
+            assert_eq!(cards_of(d, &note), [(before[1].0.clone(), 0), (before[0].0.clone(), 1)], "맞바꾼 번호 (b_first={b_first})");
+            let s: String = d.con().query_row("SELECT state || reps || due_at FROM card WHERE uid = ?1", [&before[0].0], |r| r.get(0)).unwrap();
+            assert_eq!(s, "review277", "B 가 공부한 일정이 그 카드에 그대로");
+        }
+    }
+}
+
+#[test]
+fn card_dropped_by_a_move_and_reviewed_elsewhere() {
+    // K41 ③: A 가 옮기며 카드 종류 2 의 카드를 지웠고, B 는 그 사이 그 카드를 공부했다 (지우기보다 나중 수정이라 K29 로는 남는다).
+    // 새 유형(카드 종류 하나)에는 그 번호가 없어 두 기기 모두에서 빠지고 (고아 카드가 없다), 복습 기록은 통계에 남는다
+    use crate::notetype as nt;
+    for b_first in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (_, to, note) = move_setup(&env, &a, &b, |c| nt::anki_clone(c, "basic", Some("새 유형")), &["질문", "답"]);
+        let cards = cards_of(&a, &note);
+        let t = db::now_ms();
+        a.at(t + 1000, || move_note(&a, &note, to, vec![(0, Some(0)), (1, Some(1))], vec![(0, Some(0)), (1, None)]));
+        b.at(t + 2000, || b.review(&env.fsrs, b.id("card", &cards[1].0).unwrap(), 3, t + 2000));
+        let order = if b_first { [&b, &a, &b, &a] } else { [&a, &b, &a, &b] };
+        for d in order {
+            env.sync(d);
+        }
+        assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
+        for d in [&a, &b] {
+            assert_eq!(cards_of(d, &note), [cards[0].clone()], "새 유형에 없는 번호의 카드는 남지 않는다 (b_first={b_first})");
+            assert_eq!(orphans(d), 0);
+            assert_eq!(d.n("SELECT count(*) FROM review_log WHERE card_id IS NULL"), 1, "B 의 복습 기록은 통계에 남는다");
+        }
+    }
+}
+
+#[test]
+fn card_made_in_the_old_type_elsewhere_does_not_stay() {
+    // K41 ④ (K40 과 섞임): A 가 옮기는 사이 B 가 옛 유형으로 노트를 고쳐 새 카드(옛 유형의 카드 종류 2)를 만들었다. B 의 수정은 지고(K41 ①),
+    // 새 유형에 그 번호가 없어 그 카드는 어느 기기에도 남지 않는다
+    use crate::notetype as nt;
+    for b_first in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (_, to, note) = move_setup(&env, &a, &b, |c| nt::anki_clone(c, "basic", Some("새 유형")), &["질문", ""]);
+        assert_eq!(cards_of(&a, &note).len(), 1, "뒷면이 비어 카드 2 는 아직 없다");
+        let t = db::now_ms();
+        a.at(t + 1000, || move_note(&a, &note, to, vec![(0, Some(0)), (1, Some(1))], vec![(0, Some(0))]));
+        b.at(t + 2000, || edit_note(&b, &note, &["질문", "답 (B)"]));
+        assert_eq!(cards_of(&b, &note).len(), 2, "B 에 옛 유형의 카드 2 가 생겼다");
+        let order = if b_first { [&b, &a, &b, &a] } else { [&a, &b, &a, &b] };
+        for d in order {
+            env.sync(d);
+        }
+        assert_eq!(a.dump(), b.dump(), "b_first={b_first}");
+        for d in [&a, &b] {
+            assert_eq!(type_of(d, &note).name, "새 유형");
+            assert_eq!(cards_of(d, &note).len(), 1, "b_first={b_first}");
+            assert_eq!(d.fields(&note), json!(["질문", ""]).to_string());
+            assert_eq!(orphans(d), 0);
+        }
+    }
+}
+
+#[test]
+fn card_type_deck_follows_to_the_other_device() {
+    // K42 · NT76: A 가 카드 종류에 덱을 정하면 B 에서 만든 새 노트의 그 카드도 그 덱 (덱 uid 로 간다).
+    // 이미 있는 카드는 옮기지 않는다. 그 덱을 지우면 두 기기 모두 카드 종류의 덱이 빈다 (FK SET NULL)
+    use crate::notetype as nt;
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let (ta, note) = user_type(&env, &a, &b);
+    let rev = a.deck("뒤집기", None);
+    {
+        let con = a.con();
+        let ord = nt::add_template(&con, ta, Some("뒤집기"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap().ord;
+        nt::set_template_deck(&con, ta, ord, Some(rev)).unwrap();
+    }
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    let decks = |d: &Dev, note: &str| -> Vec<String> {
+        d.con()
+            .prepare("SELECT c.template_ord || ':' || dk.name FROM card c JOIN deck dk ON dk.id = c.deck_id JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 ORDER BY c.template_ord")
+            .unwrap()
+            .query_map([note], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let tb = type_of(&b, &note).id;
+    assert_eq!(type_of(&b, &note).templates[1].deck, b.id("deck", &a.uid("deck", rev)), "B 의 카드 종류도 같은 덱");
+    let ord = type_of(&b, &note).templates[1].ord;
+    let new = typed_note(&b, tb, &["새 질문", "새 답"]);
+    for d in [&b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(decks(d, &new), ["0:2과목".to_string(), format!("{ord}:뒤집기")], "B 에서 만든 새 카드");
+        assert_eq!(decks(d, &note), ["0:2과목".to_string(), format!("{ord}:2과목")], "덱을 정하기 전에 생긴 카드는 그대로");
+    }
+    // B 가 그 덱을 지운다 (카드째)
+    {
+        let id = b.id("deck", &a.uid("deck", rev)).unwrap();
+        let con = b.con();
+        con.execute("DELETE FROM card WHERE deck_id = ?1", [id]).unwrap();
+        con.execute("DELETE FROM deck WHERE id = ?1", [id]).unwrap();
+    }
+    for d in [&b, &a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    for d in [&a, &b] {
+        assert_eq!(type_of(d, &note).templates[1].deck, None, "지운 덱은 비운다");
+    }
+}
+
+#[test]
+fn tidied_missing_notes_follow_to_the_other_device() {
+    // DU59 (초안): 새 버전에 없는 노트 정리는 보통 편집 · 삭제라 다른 기기에도 간다 (학습 중지 → 지우기)
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let deck = sub_deck(&a);
+    let (n1, c1) = a.note(deck, "사라진 노트", Some("g-vanish"), 2000);
+    a.con().execute("UPDATE note SET origin = '{\"f\":[],\"t\":\"\"}' WHERE id = ?1", [n1]).unwrap();
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    let note = a.uid("note", n1);
+    let tidy = |action: &str| crate::import::deck_update::tidy_missing(&mut a.con(), &a.dir, &[c1], action, false).unwrap();
+    tidy("suspend");
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(b.n(&format!("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = '{note}' AND c.state = 'suspended'")), 1);
+    tidy("delete");
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    assert!(b.id("note", &note).is_none(), "지운 노트는 다른 기기에서도 지워진다");
+}
+
