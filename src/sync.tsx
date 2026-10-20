@@ -563,6 +563,14 @@ function SetupModal({ probe, note, onClose }: { probe: SyncProbe; note?: string;
       onClose();
       if (!later) toast({ title: "Google Drive에 연결했어요", text: "올리는 동안 계속 써도 돼요", icon: "cloud-check" });
     } catch (e) {
+      // K43: 로그인 때는 비어 있던 Drive 에 그 사이 다른 기기가 올렸다 (엔진이 새로 시작을 거절한다). 덮지 않고 찾은 데이터 창(K6-f · K6-m)으로
+      const p = later ? null : await syncApi.probe().catch(() => null);
+      if (p?.remote) {
+        onClose();
+        syncFlow(nextFlow({ ...p, device_name: name }));
+        toast({ title: "그 사이 다른 기기가 Drive에 데이터를 올렸어요", text: "덮지 않고, 그 데이터와 어떻게 맞출지 골라요" });
+        return;
+      }
       setError(errorText(e));
     } finally {
       setBusy(false);
@@ -795,11 +803,9 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
   const toast = useToast();
   const [probe, setProbe] = useState(given);
   const choice = given ? null : s?.choice ?? null;
-  // 다른 기기가 잠그기만 바꿨으면 내용은 같은 데이터에 그 기기 변경까지 받은 것이라 합치기가 잃는 것이 없다 (T3-09).
-  // 되돌리기 · 새로 시작 뒤라면 기본은 "Drive 데이터로 바꾸기"
-  const lockKind = choice?.header?.reason?.kind === "lock" || choice?.header?.reason?.kind === "unlock";
-  const suggest: SyncJoinMode = choice && !lockKind ? "take" : "merge";
-  const [mode, setMode] = useState<SyncJoinMode>(suggest);
+  // 기본은 잃는 것이 없는 합치기 (K43). 되돌리기 · 새로 시작 뒤에도: 다른 기기가 빈 데이터로 새로 시작했을 수 있다 (두 기기가 K3 를 함께 열었다).
+  // 다른 기기의 복구를 따르려면 [Drive 데이터로 바꾸기]를 고른다
+  const [mode, setMode] = useState<SyncJoinMode>("merge");
   const [name, setName] = useState(given?.device_name ?? s?.device_name ?? "");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -872,16 +878,22 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
           onPick={() => setMode("merge")}
           icon="merge"
           title="두 데이터 합치기"
-          badge={suggest === "merge" ? "권장" : undefined}
-          text="덱·카드·복습 기록을 합쳐요. 같은 Anki 노트의 카드는 하나로 합치고, 내용이 다르면 나중에 고친 버전을 써요. 다른 버전은 30일 동안 ‘두 기기에서 고친 카드’에서 볼 수 있어요."
+          badge="권장"
+          text={`덱·카드·복습 기록을 합쳐 어느 쪽도 잃지 않아요. 같은 Anki 노트의 카드는 하나로 합치고, 내용이 다르면 나중에 고친 버전을 써요. 다른 버전은 30일 동안 ‘두 기기에서 고친 카드’에서 볼 수 있어요.${kind === "restore" ? " 복구하기 전의 이 기기 내용도 Drive에 다시 올라가요." : ""}`}
         />
-        <Option on={mode === "take"} onPick={() => setMode("take")} icon="download" title="Drive 데이터로 바꾸기" badge={suggest === "take" ? "권장" : undefined} text="이 기기 데이터는 백업 파일로 남기고, Drive의 데이터를 받아요." />
+        <Option
+          on={mode === "take"}
+          onPick={() => setMode("take")}
+          icon="download"
+          title="Drive 데이터로 바꾸기"
+          text="Drive의 데이터를 받아요. Drive에 없는 이 기기의 덱·카드·복습 기록은 이 기기에서 빠지고 바꾸기 전 백업 파일에만 남아요."
+        />
         <Option
           on={mode === "fresh"}
           onPick={() => setMode("fresh")}
           icon="upload"
           title="이 기기 데이터로 Drive 새로 시작"
-          text={`Drive의 동기화 데이터를 이 기기 것으로 바꿔요. ${who}${eun(who)} 다음에 동기화할 때 고르는 창을 봐요.`}
+          text={`Drive의 동기화 데이터를 이 기기 것으로 바꿔요. 이 기기에 없는 Drive의 덱·카드·복습 기록은 Drive에서 빠져요. ${who}${eun(who)} 다음에 동기화할 때 고르는 창을 봐요.`}
         />
       </div>
       {/* 처음 연결: K3 · K6-f 처럼 이 기기 이름을 정한다 (같은 PC 이름끼리 구분, T3-16) */}
@@ -954,8 +966,11 @@ function Version({ v, other, current, picked, onUse, busy }: { v: SyncConflict["
         ))}
       </div>
       {current ? (
-        // 저절로 맞춘 쪽(이긴 버전, 고른 적 없음)만 "나중에 고친 쪽". 시각 비교로 고르지 않는다 (T3-02)
-        <span className="t-caption c-accent">{v.winner && !picked ? "나중에 고친 쪽이라 이 내용으로 맞췄어요" : "직접 고른 내용이에요"}</span>
+        // 저절로 맞춘 쪽(이긴 버전, 고른 적 없음)만 이유를 쓴다. 시각 비교로 고르지 않는다 (T3-02).
+        // 다른 쪽이 노트 유형이 다른 버전이면 유형을 옮긴 쪽이라 이겼다 (K41, 진 쪽이 더 나중에 고쳤을 수 있다)
+        <span className="t-caption c-accent">
+          {!v.winner || picked ? "직접 고른 내용이에요" : other.usable ? "나중에 고친 쪽이라 이 내용으로 맞췄어요" : "노트 유형을 옮긴 쪽이라 이 내용으로 맞췄어요"}
+        </span>
       ) : v.usable ? (
         <Button variant="secondary" size="M" icon="rotate" label="이 버전으로 바꾸기" busy={busy} onClick={onUse} />
       ) : (
@@ -1203,6 +1218,12 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
           text={`백업${count !== null ? ` ${n(count)}개와` : "과"} 동기화 데이터${s?.usage ? ` ${size(s.usage)}` : ""}를 지워요.${whoText ? ` ${whoText}의 동기화도 멈춰요.` : ""}`}
         />
       </div>
+      {/* K22: Drive 에서도 지우거나 90일 안에 맞춘 다른 기기가 없으면 Google 권한도 폐기한다 */}
+      {(remove || !whoText) && (
+        <p className="t-caption c-tertiary">
+          {remove ? "" : "맞추는 다른 기기가 없어 "}Google 계정에 준 Neo-Anki 권한도 거둬요. 다시 연결할 때 Google 화면에서 다시 허용해요.
+        </p>
+      )}
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="sync-foot sync-foot--end">
         <Button variant="ghost" size="M" label="취소" onClick={onClose} />

@@ -1863,28 +1863,37 @@ pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     let now = now_ms();
     let today = study_day(now);
     let (_, plan) = plan_for(&con, deck_ids.as_deref(), scale, today)?;
-    // 같은 학습일에 중간에 그만둔 세션이 있으면 이어 쓴다. Again 횟수와 접어둔 카드가 이어진다 (큐 명세 6.3).
-    // 끝까지 마친 세션은 이어 쓰지 않는다
-    let day = db::date_from_day(today);
+    let session_id = open_session(&con, &db::date_from_day(today), None, now)?;
+    Ok(SessionStart { session_id, card_ids: plan.ordered().iter().map(|c| c.id).collect() })
+}
+
+/// 학습 세션을 연다 (D2 보통 학습 mode NULL · P1 혼합 'mix'). 같은 학습일에 중간에 그만둔 같은 종류의 세션이 있으면 이어 쓴다:
+/// Again 횟수와 접어둔 카드가 이어진다 (큐 명세 6.3). 끝까지 마친 세션은 이어 쓰지 않는다.
+/// 이 기기에서 답한 세션만 이어 쓴다 (K44, drive-sync.md 5.4 "세션은 기기별로 따로"): 세션 안 카드 상태(session_card_state)는
+/// 이 기기에만 있어 동기화로 받은 다른 기기의 세션에는 없다. 아무도 답하지 않은 세션은 섞일 것이 없어 이어 쓴다
+pub(crate) fn open_session(con: &Connection, day: &str, mode: Option<&str>, now: i64) -> Res<i64> {
     let resumed: Option<i64> = con
         .query_row(
-            "SELECT id FROM study_session WHERE study_day = ?1 AND end_reason IN ('user_exit','app_exit') AND mode IS NULL ORDER BY started_at DESC LIMIT 1",
-            [&day],
+            "SELECT s.id FROM study_session s
+             WHERE s.study_day = ?1 AND s.mode IS ?2 AND s.end_reason IN ('user_exit','app_exit')
+               AND (EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id)
+                    OR NOT EXISTS (SELECT 1 FROM review_log r WHERE r.session_id = s.id))
+             ORDER BY s.started_at DESC LIMIT 1",
+            params![day, mode],
             |r| r.get(0),
         )
         .optional()
         .map_err(err)?;
-    let session_id = match resumed {
+    Ok(match resumed {
         Some(id) => {
             con.execute("UPDATE study_session SET ended_at = NULL, end_reason = NULL WHERE id = ?1", [id]).map_err(err)?;
             id
         }
         None => {
-            con.execute("INSERT INTO study_session (started_at, study_day) VALUES (?1, ?2)", params![now, day]).map_err(err)?;
+            con.execute("INSERT INTO study_session (started_at, study_day, mode) VALUES (?1, ?2, ?3)", params![now, day, mode]).map_err(err)?;
             con.last_insert_rowid()
         }
-    };
-    Ok(SessionStart { session_id, card_ids: plan.ordered().iter().map(|c| c.id).collect() })
+    })
 }
 
 #[derive(Serialize)]

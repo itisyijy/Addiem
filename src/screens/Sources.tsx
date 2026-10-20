@@ -1056,15 +1056,21 @@ export function PdfPage({
  * 표 칸 문단은 빼고 강조 색 · 고른 문단 표시 없이 제목과 글만) */
 export function SlidePage({ materialId, page, active, height, region = false }: { materialId: number; page: number; active?: string; height?: number; region?: boolean }) {
   const [paras, setParas] = useState<Para[]>();
+  // 읽지 못했다: 이 기기에 자료 파일이 없다 (원자료 파일은 동기화하지 않는다 K6) · 파일이 깨졌다. 글이 없는 슬라이드와 가른다
+  const [failed, setFailed] = useState<string>();
   useEffect(() => {
+    setFailed(undefined);
     sourceApi
       .slide(materialId, page)
       .then(setParas)
-      .catch(() => setParas([]));
+      .catch((e) => {
+        setParas([]);
+        setFailed(errorText(e));
+      });
   }, [materialId, page]);
   return (
     <div className="src-page src-page--slide" style={height ? { height } : undefined}>
-      {paras?.length === 0 && <span className="t-caption c-tertiary">이 슬라이드에는 글이 없어요</span>}
+      {paras?.length === 0 && <span className="t-caption c-tertiary">{failed ?? "이 슬라이드에는 글이 없어요"}</span>}
       {paras?.filter((p) => !region || !p.cell).map((p, i) => (
         <p
           key={i}

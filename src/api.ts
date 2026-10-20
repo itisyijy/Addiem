@@ -394,7 +394,9 @@ export type AnkiPreview = {
     notes: number;
     /** 이미 앱에 있는 노트. 가져와도 건너뛴다 */
     existing_notes: number;
-    /** 아래부터는 실제로 들어갈 것만 (이미 있는 노트의 카드는 뺀다) */
+    /** 내가 지운 노트의 카드 (업데이트로 알아본 파일만). 이미 있는 노트처럼 넣지 않는다 */
+    gone_cards: number;
+    /** 아래부터는 실제로 들어갈 것만 (이미 있는 노트 · 내가 지운 노트의 카드는 뺀다) */
     new_cards: number;
     reviews: number;
     overdue: number;
@@ -423,6 +425,8 @@ export type TidySummary = { notes: number; cards: number; studied: number; suspe
 export type UpdateHint = {
   notes: number;
   existing_notes: number;
+  /** 그중 내가 지운 노트. 업데이트도 [새 노트만 더하기]도 다시 넣지 않는다 (DU3) */
+  gone_notes: number;
   /** 같은 Anki 덱 id 로 가져온 우리 덱의 최상위 덱 이름 */
   known_decks: string[];
   /** 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15) */

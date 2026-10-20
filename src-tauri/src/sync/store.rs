@@ -27,6 +27,8 @@ pub enum SyncError {
     NewerSchema,
     /// 암호로 잠근 데이터인데 이 기기에 키가 없다
     Locked,
+    /// 새로 시작(K3)하려는데 그 사이 다른 기기가 Drive 에 데이터를 올렸다. 화면이 고르는 창(K6-f · K6-m)으로 보낸다 (K43)
+    Found,
     NotFound(String),
     Other(String),
 }
@@ -39,6 +41,7 @@ impl std::fmt::Display for SyncError {
             SyncError::Quota => write!(f, "Drive 공간이 부족해요."),
             SyncError::NewerSchema => write!(f, "Drive 데이터가 더 새 버전의 앱에서 만들어졌어요. 앱을 업데이트해 주세요."),
             SyncError::Locked => write!(f, "Drive 데이터가 암호로 잠겨 있어요. 암호를 입력해 주세요."),
+            SyncError::Found => write!(f, "그 사이 다른 기기가 Drive에 Neo-Anki 데이터를 올렸어요. 그 데이터와 어떻게 맞출지 골라 주세요."),
             SyncError::NotFound(p) => write!(f, "Drive 에서 파일을 찾지 못했어요: {p}"),
             SyncError::Other(e) => write!(f, "{e}"),
         }

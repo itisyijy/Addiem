@@ -1087,7 +1087,9 @@ pub struct DeckStat {
     notes: usize,
     /// 이미 앱에 있는 노트 (같은 guid). 가져와도 건너뛴다
     existing_notes: usize,
-    /// 아래는 실제로 들어갈 것만: 이미 있는 노트의 카드는 빼고 센다 (사전 검사 · 버튼 문구)
+    /// 내가 지운 노트의 카드 (업데이트로 알아본 파일만, deck_update::gone_guids). 이미 있는 노트처럼 넣지 않는다
+    gone_cards: usize,
+    /// 아래는 실제로 들어갈 것만: 이미 있는 노트 · 내가 지운 노트의 카드는 빼고 센다 (사전 검사 · 버튼 문구)
     new_cards: usize,
     reviews: usize,
     overdue: usize,
@@ -1110,8 +1112,8 @@ fn target_deck(pkg: &Package, did: i64, odid: i64) -> Option<&ADeck> {
 }
 
 /// B2-s. 실제 덱마다 자기 카드 · 노트 · 기록 · 밀린 복습 · 수식 · 템플릿 기능 수.
-/// existing: 이미 앱에 있는 노트 guid. overdue_before: 이 날(컬렉션 생성일 기준 일수)보다 기한이 앞선 복습 카드는 밀린 것
-fn deck_stats(pkg: &Package, existing: &HashSet<String>, overdue_before: i64) -> Res<Vec<DeckStat>> {
+/// existing: 이미 앱에 있는 노트 guid. gone: 넣지 않을 내가 지운 노트 guid. overdue_before: 이 날(컬렉션 생성일 기준 일수)보다 기한이 앞선 복습 카드는 밀린 것
+fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>, overdue_before: i64) -> Res<Vec<DeckStat>> {
     let revs: HashMap<i64, usize> = {
         let mut st = pkg.col.prepare("SELECT cid, count(*) FROM revlog GROUP BY cid").map_err(err)?;
         let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)?;
@@ -1134,13 +1136,18 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, overdue_before: i64) ->
             .entry(real_deck(did, odid))
             .or_insert_with(|| (DeckStat { id: real_deck(did, odid), path: deck_parts(d), ..Default::default() }, HashSet::new()));
         s.cards += 1;
-        let old = existing.contains(&r.get::<_, String>(8).map_err(err)?);
+        let guid: String = r.get(8).map_err(err)?;
+        let old = existing.contains(&guid);
         if notes.insert(nid) {
             s.notes += 1;
             s.existing_notes += old as usize;
         }
         if old {
             continue; // 이미 있는 노트는 다시 넣지 않으니 기록 · 밀린 복습 · 템플릿 검사에서 뺀다
+        }
+        if gone.contains(&guid) {
+            s.gone_cards += 1;
+            continue;
         }
         s.new_cards += 1;
         s.reviews += revs.get(&cid).copied().unwrap_or(0);
@@ -1233,8 +1240,11 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
         let rows = st.query_map([], |r| r.get(0)).map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)?
     };
-    let deck_tree = deck_stats(&pkg, &existing, overdue_before)?;
-    let update = deck_update::file_hint(&*state.db.lock().map_err(err)?, &pkg)?;
+    let (update, gone) = {
+        let con = state.db.lock().map_err(err)?;
+        (deck_update::file_hint(&con, &pkg)?, deck_update::gone_guids(&con, &pkg)?)
+    };
+    let deck_tree = deck_stats(&pkg, &existing, &gone, overdue_before)?;
     Ok(AnkiPreview {
         file_name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         bytes: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
@@ -1456,6 +1466,9 @@ fn run_import_selected(
     let mut note_map: HashMap<i64, (i64, String)> = HashMap::new();
     let mut note_mid: HashMap<i64, i64> = HashMap::new(); // 다시 맞출 유형의 노트만 (Anki 노트 id -> 모델 id)
     let mut dup = 0;
+    // [새 노트만 더하기]: 업데이트로 알아본 파일이면 내가 지운 노트는 다시 넣지 않는다 (업데이트와 같다 DU3, 실제 Drive 확인 q8 문제 4)
+    let gone = deck_update::gone_guids(&tx, &pkg)?;
+    let mut skipped_gone = 0;
     let mut refs: HashSet<String> = HashSet::new(); // 고른 노트가 쓰는 미디어 (덱을 골랐을 때만 쓴다)
     // 다시 맞춘 유형에서 값이 숨긴 자리로 간 · 넣을 자리가 없는 Anki 필드 -> 노트 수 (Q2-13)
     let (mut hidden, mut dropped): (BTreeMap<String, usize>, BTreeMap<String, usize>) = Default::default();
@@ -1476,6 +1489,10 @@ fn run_import_selected(
             let exists: bool = tx.query_row("SELECT count(*) FROM note WHERE anki_guid = ?1", [&guid], |r| r.get::<_, i64>(0)).map_err(err)? > 0;
             if exists {
                 dup += 1;
+                continue;
+            }
+            if gone.contains(&guid) {
+                skipped_gone += 1;
                 continue;
             }
             if chosen.is_some() {
@@ -1512,6 +1529,9 @@ fn run_import_selected(
         }
     }
     result.notes = note_map.len();
+    if skipped_gone > 0 {
+        result.issues.push(issue("info", "gone", format!("내가 지운 노트 {}개는 다시 넣지 않았어요", n(skipped_gone))));
+    }
     if dup > 0 {
         result.issues.push(issue("info", "duplicate", format!("이미 가져온 노트 {}개는 다시 넣지 않았어요", n(dup))));
         // 같은 guid 가 이 기기에 두 벌 (두 기기가 받지 않은 채 같은 파일을 업데이트했다, DU-06)
@@ -2343,7 +2363,7 @@ mod tests {
 
         // 덱 고르기 트리: 실제 덱마다 자기 카드. 필터 덱의 카드는 원래 덱(A::1)으로 센다
         let pkg = open_package(&pkg_path, &s.data_dir, &[]).unwrap();
-        let stats = deck_stats(&pkg, &HashSet::from(["guid3".to_string()]), i64::MAX).unwrap();
+        let stats = deck_stats(&pkg, &HashSet::from(["guid3".to_string()]), &HashSet::new(), i64::MAX).unwrap();
         let row = |id: i64| stats.iter().find(|d| d.id == id).unwrap();
         assert_eq!(stats.len(), 3, "필터 덱은 트리에 없다");
         assert_eq!((row(11).path.join("::"), row(11).cards, row(11).new_cards, row(11).reviews, row(11).overdue), ("A::1".into(), 2, 2, 2, 2));

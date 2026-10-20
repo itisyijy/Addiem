@@ -502,6 +502,60 @@ fn k6m_take_and_fresh() {
 }
 
 #[test]
+fn k3_on_two_devices_does_not_restart_the_drive_of_the_first() {
+    // K43 (실제 Drive 확인 q8 문제 2): 두 기기가 빈 Drive 를 보고 K3 를 함께 열었다. 먼저 [동기화 시작]한 기기(A)의 Drive 를
+    // 나중 기기(B)가 새 세대로 덮지 않는다: B 의 "새로 시작"은 Drive 에 데이터가 생겼으면 거절되고(Found) 화면이 고르는 창으로 보낸다
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let b = Dev::new("데스크톱");
+    let da = a.deck("노트북 덱", None);
+    a.note(da, "A 에서 만든 카드", None, 1000);
+    b.deck("데스크톱 덱", None);
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    assert!(matches!(engine::join(&b.db, &env.cx(&b), Join::New, json!({})), Err(SyncError::Found)), "Drive 에 데이터가 있으면 새로 시작하지 않는다");
+    assert_eq!(env.files("snapshot/").len(), 1);
+    assert!(env.files("snapshot/")[0].starts_with("snapshot/g0001-"), "세대 1 그대로");
+    assert_eq!(b.n("SELECT count(*) FROM deck WHERE name = '데스크톱 덱'"), 1, "B 데이터도 그대로");
+    // A 는 고르는 창 없이 그대로 맞추고(env.sync 는 고르는 창이면 멈춘다), B 는 고르는 창에서 합친다
+    env.sync(&a);
+    engine::join(&b.db, &env.cx(&b), Join::Merge, json!({})).unwrap();
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.n("SELECT count(*) FROM deck WHERE name IN ('노트북 덱', '데스크톱 덱')"), 2);
+    assert_eq!(a.dump(), b.dump());
+}
+
+#[test]
+fn study_session_of_the_other_device_is_not_resumed() {
+    // K44 (실제 Drive 확인 q8 문제 1): B 에서 공부하다 그만둔 세션을 받은 A 가 같은 날 학습을 시작하면 B 세션을 이어 쓰지 않는다
+    // (A 의 기록이 B 세션에 붙고 끝난 시각 · 이유를 A 가 덮던 것). 세션은 기기별로 따로 (drive-sync.md 5.4)
+    let env = Env::new();
+    let (a, b, card) = pair(&env);
+    let day = "2026-10-20";
+    let sb = crate::commands::open_session(&b.con(), day, None, 5_000).unwrap();
+    b.review(&env.fsrs, card, 3, 6_000);
+    {
+        let con = b.con();
+        con.execute("UPDATE review_log SET session_id = ?1", [sb]).unwrap();
+        con.execute("INSERT INTO session_card_state (session_id, card_id) VALUES (?1, ?2)", [sb, card]).unwrap();
+        con.execute("UPDATE study_session SET ended_at = 7000, end_reason = 'user_exit' WHERE id = ?1", [sb]).unwrap();
+    }
+    env.sync(&b);
+    env.sync(&a);
+    let b_uid = b.uid("study_session", sb);
+    assert!(a.id("study_session", &b_uid).is_some(), "B 세션을 받았다");
+    let sa = crate::commands::open_session(&a.con(), day, None, 8_000).unwrap();
+    assert_ne!(a.uid("study_session", sa), b_uid, "다른 기기의 세션은 이어 쓰지 않고 새로 연다");
+    assert_eq!(a.n("SELECT count(*) FROM study_session WHERE end_reason = 'user_exit'"), 1, "B 세션의 끝난 이유를 덮지 않는다");
+    // B 는 자기 세션을 이어 쓰고, 아무도 답하지 않은 A 의 새 세션도 A 가 다시 열면 이어 쓴다
+    assert_eq!(crate::commands::open_session(&b.con(), day, None, 9_000).unwrap(), sb);
+    a.con().execute("UPDATE study_session SET ended_at = 8500, end_reason = 'user_exit' WHERE id = ?1", [sa]).unwrap();
+    assert_eq!(crate::commands::open_session(&a.con(), day, None, 9_000).unwrap(), sa);
+    // 혼합 학습(mix) 세션은 보통 학습과 따로
+    assert_ne!(crate::commands::open_session(&a.con(), day, Some("mix"), 9_500).unwrap(), sa);
+}
+
+#[test]
 fn k9_restore_starts_new_generation() {
     let env = Env::new();
     let (a, b, _) = pair(&env);

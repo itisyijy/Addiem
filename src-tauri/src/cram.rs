@@ -343,25 +343,7 @@ pub fn mix_start(state: State<AppState>, deck_id: i64, every: usize, size: usize
     let decks = commands::load_decks(&con)?;
     let t = decks.iter().find(|d| d.id == deck_id).ok_or("덱을 찾을 수 없어요.")?;
     let (cards, due_today) = build_mix(&con, t, &decks, every.clamp(1, 4), size.clamp(1, 500), now)?;
-    let day = db::date_from_day(study_day(now));
-    let resumed: Option<i64> = con
-        .query_row(
-            "SELECT id FROM study_session WHERE study_day = ?1 AND mode = 'mix' AND end_reason IN ('user_exit','app_exit') ORDER BY started_at DESC LIMIT 1",
-            [&day],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(err)?;
-    let session_id = match resumed {
-        Some(id) => {
-            con.execute("UPDATE study_session SET ended_at = NULL, end_reason = NULL WHERE id = ?1", [id]).map_err(err)?;
-            id
-        }
-        None => {
-            con.execute("INSERT INTO study_session (started_at, study_day, mode) VALUES (?1, ?2, 'mix')", params![now, day]).map_err(err)?;
-            con.last_insert_rowid()
-        }
-    };
+    let session_id = commands::open_session(&con, &db::date_from_day(study_day(now)), Some("mix"), now)?;
     Ok(MixStart { session_id, cards, due_today })
 }
 

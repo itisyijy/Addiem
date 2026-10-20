@@ -372,7 +372,10 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
       {info.update && adding && !importing && (
         <div className="du-adding">
           <Icon name="plus" size={16} className="c-secondary" />
-          <span className="t-body-s c-secondary">새 노트만 더해요 · 이미 있는 노트 {n(info.update.existing_notes)}개는 그대로예요</span>
+          <span className="t-body-s c-secondary">
+            새 노트만 더해요 · 이미 있는 노트 {n(info.update.existing_notes)}개는 그대로예요
+            {info.update.gone_notes > 0 && ` · 내가 지운 노트 ${n(info.update.gone_notes)}개는 다시 넣지 않아요`}
+          </span>
           <Button variant="ghost" size="M" label="방식 바꾸기" onClick={() => setAdding(false)} />
         </div>
       )}
@@ -513,7 +516,7 @@ const pickOf = (node: DeckNode, sel: Set<number>): Pick => {
   const k = node.units.filter((u) => sel.has(u.id)).length;
   return k === 0 ? "off" : k === node.units.length ? "on" : "mixed";
 };
-const sumOf = (units: DeckStat[], key: "cards" | "notes" | "existing_notes" | "new_cards") => units.reduce((a, u) => a + u[key], 0);
+const sumOf = (units: DeckStat[], key: "cards" | "notes" | "existing_notes" | "gone_cards" | "new_cards") => units.reduce((a, u) => a + u[key], 0);
 const descendants = (n: DeckNode): DeckNode[] => n.children.flatMap((c) => [c, ...descendants(c)]);
 
 /** B2-s 왼쪽 "가져올 덱". 3상태 체크박스, 최상위만 펼친 채 시작, 고르는 단위는 하위 덱 전체 */
@@ -545,7 +548,7 @@ function DeckTree({ tree, sel, onChange, total, newOnly = false }: {
           <span className="t-title-s">가져올 덱</span>
           <span className="t-caption c-tertiary">
             {newOnly
-              ? `새 카드 ${n(sumOf(picked, "new_cards"))}장 · 이미 있는 ${n(sumOf(picked, "cards") - sumOf(picked, "new_cards"))}장 제외`
+              ? `새 카드 ${n(sumOf(picked, "new_cards"))}장 · 이미 있는 ${n(sumOf(picked, "cards") - sumOf(picked, "new_cards") - sumOf(picked, "gone_cards"))}장${sumOf(picked, "gone_cards") > 0 ? ` · 내가 지운 ${n(sumOf(picked, "gone_cards"))}장` : ""} 제외`
               : `${n(sumOf(total, "cards"))}장 중 ${n(sumOf(picked, "cards"))}장 · 덱 ${n(tree.length)}개 중 ${n(tree.filter((t) => pickOf(t, sel) !== "off").length)}개`}
           </span>
         </span>

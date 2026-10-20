@@ -90,7 +90,7 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
   const hint = summary?.hint ?? first;
   const deck = hint.known_decks[0];
   const half = hint.existing_notes * 2 >= hint.notes;
-  const adds = hint.notes - hint.existing_notes;
+  const adds = hint.notes - hint.existing_notes - hint.gone_notes;
   const ready = !!summary && pull !== "pulling" && pull !== null;
   const counts = summary
     ? [
@@ -186,7 +186,8 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
               {!hint.suggested && <Badge tone="accent">권장</Badge>}
             </span>
             <span className="t-body-s c-secondary">
-              이미 있는 노트 {n(hint.existing_notes)}개는 그대로 두고 새 노트 {n(adds)}개만 넣어요. 만든 사람이 고친 내용은 들어오지 않아요.
+              이미 있는 노트 {n(hint.existing_notes)}개는 그대로 두고 새 노트 {n(adds)}개만 넣어요.
+              {hint.gone_notes > 0 && ` 내가 지운 노트 ${n(hint.gone_notes)}개는 다시 넣지 않아요.`} 만든 사람이 고친 내용은 들어오지 않아요.
             </span>
           </span>
         </label>

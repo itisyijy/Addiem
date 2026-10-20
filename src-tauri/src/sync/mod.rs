@@ -849,6 +849,10 @@ fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
 /// run 잠금을 쥔 채로 부른다. fresh_kind: 새로 시작할 때 다른 기기 고르는 창에 보일 이유 (fresh · lock · unlock)
 fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), SyncError> {
     let store = store_of(sh)?;
+    // K43: 잠금 · 설정을 바꾸기 전에 (잠그며 시작하면 Drive 의 그림 · crypto.json 을 바꾼다). engine::join 도 다시 본다
+    if o.mode == Join::New && !o.later && !engine::remote(&*store)?.is_empty() {
+        return Err(SyncError::Found);
+    }
     let account = match sh.account.lock().ok().and_then(|a| a.clone()) {
         Some(a) => a,
         None => store.about()?.0,

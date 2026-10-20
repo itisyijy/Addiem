@@ -2488,6 +2488,10 @@ fn clear_synced(tx: &Transaction) -> SRes<()> {
 /// 처음 합류. 바꾸거나 합치기 전의 이 기기 백업은 부르는 쪽(mod.rs)이 먼저 만든다
 pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Report> {
     let r = remote(cx.store)?;
+    // K43: 새로 시작(K3)은 Drive 가 비어 있을 때만. 화면이 로그인 때 본 Drive 는 그 사이 다른 기기가 채웠을 수 있다 (두 기기가 K3 를 함께 열었다)
+    if how == Join::New && !r.is_empty() {
+        return Err(SyncError::Found);
+    }
     {
         let con = lock(db)?;
         init(&con)?;

@@ -247,6 +247,8 @@ pub struct UpdateHint {
     notes: usize,
     /// 그중 이미 있는 노트 (같은 guid)
     existing_notes: usize,
+    /// 그중 내가 지운 노트 (origin_gone). 업데이트도 [새 노트만 더하기]도 다시 넣지 않는다 (DU3)
+    gone_notes: usize,
     /// 같은 Anki 덱 id 로 가져온 우리 덱의 최상위 덱 이름
     known_decks: Vec<String>,
     /// 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15)
@@ -468,12 +470,15 @@ struct TypeMap {
 /// 같은 guid 비율 · 같은 Anki 덱 id (DU15)
 fn hint(con: &Connection, guids: &[&str], decks: &BTreeSet<i64>) -> Res<UpdateHint> {
     let mut st = con.prepare_cached("SELECT (SELECT c.deck_id FROM card c WHERE c.note_id = n.id ORDER BY c.id LIMIT 1) FROM note n WHERE n.anki_guid = ?1 LIMIT 1").map_err(err)?;
-    let mut existing = 0;
+    let mut gone_st = con.prepare_cached("SELECT 1 FROM origin_gone WHERE guid = ?1").map_err(err)?;
+    let (mut existing, mut gone) = (0, 0);
     let mut their_decks: HashSet<i64> = HashSet::new();
     for g in guids {
         if let Some(d) = st.query_row([g], |r| r.get::<_, Option<i64>>(0)).optional().map_err(err)? {
             existing += 1;
             their_decks.extend(d);
+        } else if gone_st.exists([g]).map_err(err)? {
+            gone += 1;
         }
     }
     let same_deck = known_decks(con, decks)?;
@@ -483,13 +488,22 @@ fn hint(con: &Connection, guids: &[&str], decks: &BTreeSet<i64>) -> Res<UpdateHi
     for id in roots_of(con, if same_deck.is_empty() { &their_decks } else { &same_deck })? {
         known.push(con.query_row("SELECT name FROM deck WHERE id = ?1", [id], |r| r.get(0)).map_err(err)?);
     }
-    Ok(UpdateHint { notes: guids.len(), existing_notes: existing, suggested, known_decks: known })
+    Ok(UpdateHint { notes: guids.len(), existing_notes: existing, gone_notes: gone, suggested, known_decks: known })
 }
 
 /// 이번 패키지 덱(Anki 덱 id)으로 가져온 우리 덱
 fn known_decks(con: &Connection, decks: &BTreeSet<i64>) -> Res<HashSet<i64>> {
     let list = decks.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
     con.prepare(&format!("SELECT id FROM deck WHERE anki_deck_id IN ({list})")).and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)
+}
+
+/// [새 노트만 더하기]가 넣지 않을 노트: 업데이트로 알아본 파일(file_hint 가 있다)이면 내가 지운 노트 (origin_gone, 업데이트와 같다 DU3).
+/// 이미 있는 노트가 하나도 없으면(덱째 지웠다 다시 가져온다) 처음 가져오기라 지운 노트도 넣는다
+pub(super) fn gone_guids(con: &Connection, pkg: &Package) -> Res<HashSet<String>> {
+    if file_hint(con, pkg)?.is_none() {
+        return Ok(HashSet::new());
+    }
+    con.prepare("SELECT guid FROM origin_gone").and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)
 }
 
 /// inspect_anki (B2): 이미 있는 노트가 하나라도 있으면 [업데이트로 가져오기] 를 보일 근거
@@ -2355,6 +2369,36 @@ mod tests {
             con.prepare("SELECT n.anki_guid || c.template_ord || ':' || c.deck_id FROM card c JOIN note n ON n.id = c.note_id ORDER BY 1").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
         };
         assert_eq!(rows, [format!("g10:{deck}"), format!("g11:{other}"), format!("g20:{deck}")]);
+    }
+
+    #[test]
+    fn add_only_does_not_bring_back_deleted_notes() {
+        // 실제 Drive 확인 q8 문제 4: 업데이트로 알아본 파일을 [새 노트만 더하기]로 가져와도 내가 지운 노트는 다시 넣지 않는다 (업데이트와 같다 DU3).
+        // 덱째 지웠다 다시 가져오면(이미 있는 노트가 없다) 처음 가져오기라 넣는다
+        let t = tmp("addgone");
+        let s = state(&t.0.join("data"));
+        let (p1, p2) = (t.0.join("v1.apkg"), t.0.join("v2.apkg"));
+        let m = || Model { id: 20, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", AFMT)], css: "" };
+        let n3 = || vec![note(1, "g1", 20, &["Q1", "A1"], &[(1, 0)]), note(2, "g2", 20, &["Q2", "A2"], &[(1, 0)]), note(3, "g3", 20, &["Q3", "A3"], &[(1, 0)])];
+        testpkg::write(&p1, &[m()], &[(1, "D")], &n3(), &[]);
+        let mut v2 = n3();
+        v2.push(note(4, "g4", 20, &["Q4", "A4"], &[(1, 0)]));
+        testpkg::write(&p2, &[m()], &[(1, "D")], &v2, &[]);
+        import(&s, &p1);
+        let del = |guid: &str| {
+            let con = s.db.lock().unwrap();
+            con.execute(&format!("DELETE FROM card WHERE note_id IN (SELECT id FROM note WHERE anki_guid {guid})"), []).unwrap();
+            con.execute(&format!("DELETE FROM note WHERE anki_guid {guid}"), []).unwrap();
+        };
+        del("= 'g2'");
+        let hint = update(&s, &p2, &Choices::default(), true).hint;
+        assert_eq!((hint.notes, hint.existing_notes, hint.gone_notes), (4, 2, 1), "새 노트는 g4 하나");
+        import(&s, &p2);
+        let guids = || q::<String>(&s, "SELECT group_concat(anki_guid) FROM (SELECT anki_guid FROM note ORDER BY anki_guid)");
+        assert_eq!(guids(), "g1,g3,g4", "지운 g2 는 돌아오지 않는다");
+        del("IS NOT NULL");
+        import(&s, &p2);
+        assert_eq!(guids(), "g1,g2,g3,g4", "덱째 지웠다 다시 가져오면 모두 넣는다");
     }
 
     #[test]

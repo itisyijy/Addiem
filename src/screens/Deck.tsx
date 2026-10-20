@@ -11,6 +11,7 @@ import { ExportDeckDialog } from "./ExportDeck";
 import { SourcesButton } from "./Sources";
 import { ExamLine } from "./Exam";
 import { CramHint } from "./StudyParts";
+import { useSyncStatus } from "../sync";
 
 const WEEKDAY = "일월화수목금토";
 export function dateWithDay(iso: string) {
@@ -1064,6 +1065,8 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const ok = typed.trim() === name.trim();
+  const sync = useSyncStatus();
+  const synced = !!sync?.connected && !!sync.enabled;
 
   const run = async () => {
     if (!ok || busy) return;
@@ -1081,7 +1084,7 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
   return (
     <Modal title="덱을 지울까요?" onClose={onClose} variant="confirm">
       <p className="t-body-m c-secondary">
-        「{name}」의 {counts}이 이 기기에서 사라져요. 되돌릴 수 없어요. 복습 기록은 학습 통계에만 남아요.
+        「{name}」의 {counts}이 {synced ? "이 기기에서 사라지고, 다음 동기화 때 다른 기기에서도 지워져요" : "이 기기에서 사라져요"}. 되돌릴 수 없어요. 복습 기록은 학습 통계에만 남아요.
       </p>
       <Checkbox checked={backup} label="지우기 전에 백업 파일 만들기 (권장)" onChange={setBackup} />
       <Input
