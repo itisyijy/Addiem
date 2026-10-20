@@ -1424,7 +1424,7 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
               </span>
               <span className="t-body-s c-secondary">
                 {tidied?.action === "delete"
-                  ? "지우기 전 백업을 만들었어요"
+                  ? "지우기 전 백업을 만들었어요 · 업데이트를 되돌려도 지운 노트는 돌아오지 않아요"
                   : tidied
                     ? `카드 ${n(tidied.cards)}장은 학습에 나오지 않아요 · 기록 · 일정은 남아 있어요. 카드 목록의 [학습 중지 n장 보기]에서 풀 수 있어요. 업데이트를 되돌려도 학습 중지는 그대로예요.`
                     : `지우지 않았어요. 카드 ${n(s.missing_card_ids.length)}장 · 기록 · 일정 그대로 학습에도 나와요. 더 볼 필요가 없으면 정리할 수 있어요`}
