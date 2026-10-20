@@ -100,3 +100,5 @@ u.du-diff { text-decoration: underline; text-underline-offset: 3px; }
 .du-undo__line > .icon { flex-shrink: 0; margin-top: 2px; }
 .du-undo-strip { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--accent-subtle); }
 .du-undo-strip > .t-body-s { flex: 1; min-width: 0; }
+/* DU3-v1 결과 화면 [정리하기] 메뉴: 버튼 아래 오른쪽 맞춤 */
+.menu__list.du-tidy-menu { top: calc(100% + 8px); width: 300px; }

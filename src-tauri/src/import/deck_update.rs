@@ -1502,13 +1502,15 @@ pub struct TidySummary {
     studied: usize,
     /// 이미 학습 중지인 카드
     suspended: usize,
-    /// 지우기 전에 만든 백업 이름 (-vanish)
+    /// 지우기 전에 만든 백업 이름 (-cleanup)
     backup: Option<String>,
+    /// 학습 중지로 이번에 바꾼 카드 (토스트 [되돌리기]는 이것만 푼다). 학습 중지면 notes · cards 도 이번에 바꾼 것만 센다 (이미 학습 중지는 빼고)
+    changed: Vec<i64>,
 }
 
-/// DU59 (초안 · 사용자 결정 대기) 새 버전에 없는 노트를 한 번에 정리한다. 업데이트 적용과 따로 (적용 전 요약 · 적용 뒤 결과 어디서든)이고
-/// 되돌리기 기록(update_journal)에는 들어가지 않는다. action: "suspend" 학습 중지 (기본, [학습 중지 풀기]로 되돌린다) · "delete" 지우기
-/// (지우기 전 자동 백업 -vanish, 복습 기록은 통계에만 남는다 A4, 원본이 있어 다음 업데이트도 다시 넣지 않는다 DU3). 동기화는 보통 편집 · 삭제 (K29).
+/// DU59 (초안 · 사용자 결정 대기) 새 버전에 없는 노트를 한 번에 정리한다. 결과 화면(B3-u)에서만, 업데이트 적용과 따로이고
+/// 되돌리기 기록(update_journal)에는 들어가지 않는다. action: "suspend" 학습 중지 (권장, 확인 창 없이 · 토스트 [되돌리기] · [학습 중지 풀기]) · "delete" 지우기
+/// (지우기 전 자동 백업 -cleanup, 복습 기록은 통계에만 남는다 A4, 원본이 있어 다음 업데이트도 다시 넣지 않는다 DU3). 동기화는 보통 편집 · 삭제 (K29).
 /// card_ids 는 요약의 missing_card_ids: 그 카드의 노트 중 원본이 있는 것만 본다
 pub(crate) fn tidy_missing(con: &mut Connection, data_dir: &Path, card_ids: &[i64], action: &str, dry: bool) -> Res<TidySummary> {
     if !["suspend", "delete"].contains(&action) {
@@ -1524,18 +1526,25 @@ pub(crate) fn tidy_missing(con: &mut Connection, data_dir: &Path, card_ids: &[i6
         .map_err(err)?;
     let list = if notes.is_empty() { "-1".to_string() } else { crate::commands::id_list(&notes) };
     let n = |sql: &str| -> Res<usize> { con.query_row(&format!("SELECT count(*) FROM card c WHERE c.note_id IN ({list}) {sql}"), [], |r| r.get::<_, i64>(0)).map(|v| v as usize).map_err(err) };
-    let mut s = TidySummary { notes: notes.len(), cards: n("")?, studied: n(&format!("AND {STUDIED}"))?, suspended: n("AND c.state = 'suspended'")?, backup: None };
+    let mut s = TidySummary { notes: notes.len(), cards: n("")?, studied: n(&format!("AND {STUDIED}"))?, suspended: n("AND c.state = 'suspended'")?, backup: None, changed: vec![] };
     if dry || notes.is_empty() {
         return Ok(s);
     }
     let now = now_ms();
     if action == "delete" {
-        let b = crate::commands::write_backup_as(con, data_dir, "vanish").map_err(|e| format!("지우기 전 백업을 만들지 못해 지우지 않았어요. {e}"))?;
+        let b = crate::commands::write_backup_as(con, data_dir, "cleanup").map_err(|e| format!("백업을 만들 수 없어 지우지 않았어요. {e}"))?;
         s.backup = b.file_name().map(|x| x.to_string_lossy().into_owned());
     }
     let tx = con.transaction().map_err(err)?;
     if action == "suspend" {
+        let changed: Vec<(i64, i64)> = tx
+            .prepare(&format!("SELECT id, note_id FROM card WHERE note_id IN ({list}) AND state <> 'suspended' ORDER BY id"))
+            .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+            .map_err(err)?;
         tx.execute(&format!("UPDATE card SET state = 'suspended', updated_at = ?1 WHERE note_id IN ({list}) AND state <> 'suspended'"), [now]).map_err(err)?;
+        s.notes = changed.iter().map(|c| c.1).collect::<std::collections::HashSet<_>>().len();
+        s.cards = changed.len();
+        s.changed = changed.into_iter().map(|c| c.0).collect();
     } else {
         // 카드 목록 [삭제] 와 같다 (commands::delete_cards): 기록은 card_id 가 NULL 이 되어 통계에만 남는다
         tx.execute(&format!("DELETE FROM card WHERE note_id IN ({list})"), []).map_err(err)?;
@@ -1545,7 +1554,7 @@ pub(crate) fn tidy_missing(con: &mut Connection, data_dir: &Path, card_ids: &[i6
     Ok(s)
 }
 
-/// B2-u · B3-u [정리하기]. dry_run 이면 확인 창의 수만
+/// B3-u [정리하기]. dry_run 이면 지우기 확인 창의 수만
 #[tauri::command]
 pub fn tidy_missing_notes(state: State<'_, AppState>, card_ids: Vec<i64>, action: String, dry_run: bool) -> Res<TidySummary> {
     tidy_missing(&mut *state.db.lock().map_err(err)?, &state.data_dir, &card_ids, &action, dry_run)
@@ -2351,7 +2360,7 @@ mod tests {
     #[test]
     fn missing_notes_are_tidied_apart_from_the_update() {
         // DU59 (초안): 새 버전에 없는 노트를 한 번에 학습 중지 · 지우기. 원본이 있는 노트만, 업데이트 되돌리기 기록에는 들어가지 않는다,
-        // 지우면 백업(-vanish) 뒤 지우고 기록은 통계에 남고 다음 업데이트도 다시 넣지 않는다
+        // 지우면 백업(-cleanup) 뒤 지우고 기록은 통계에 남고 다음 업데이트도 다시 넣지 않는다
         let t = tmp("tidy");
         let s = state(&t.0.join("data"));
         let (p1, p2) = (t.0.join("v1.apkg"), t.0.join("v2.apkg"));
@@ -2374,9 +2383,15 @@ mod tests {
         let journal = || q::<i64>(&s, "SELECT count(*) FROM update_journal");
         let j0 = journal();
         let tidy = |action: &str, dry: bool| tidy_missing(&mut s.db.lock().unwrap(), &s.data_dir, &ids, action, dry).unwrap();
-        assert_eq!(tidy("suspend", true), TidySummary { notes: 2, cards: 2, studied: 1, suspended: 0, backup: None });
+        assert_eq!(tidy("suspend", true), TidySummary { notes: 2, cards: 2, studied: 1, suspended: 0, backup: None, changed: vec![] });
         assert!(tidy_missing(&mut s.db.lock().unwrap(), &s.data_dir, &ids, "keep", true).is_err());
-        tidy("suspend", false);
+        let g3: i64 = q(&s, "SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = 'g3'");
+        let r = tidy("suspend", false);
+        assert_eq!((r.notes, r.cards, r.changed.len()), (2, 2, 2), "{r:?}");
+        assert!(r.changed.contains(&g3) && !r.changed.contains(&app_card));
+        // 이미 학습 중지인 카드는 세지 않고 [되돌리기]도 풀지 않는다
+        let again = tidy("suspend", false);
+        assert_eq!((again.notes, again.cards, again.changed), (0, 0, vec![]));
         let states: String = q(&s, "SELECT group_concat(x, ',') FROM (SELECT coalesce(n.anki_guid, 'app') || ':' || c.state AS x FROM card c JOIN note n ON n.id = c.note_id ORDER BY 1)");
         assert_eq!(states, "app:new,g1:new,g2:suspended,g3:suspended");
         assert_eq!(journal(), j0, "되돌리기 기록에 들어가지 않는다");
@@ -2384,7 +2399,7 @@ mod tests {
         // 지우기: 백업 뒤 노트 · 카드를 지우고 기록은 남는다. 다음 업데이트는 "내가 지운 노트"로 다시 넣지 않는다
         let logs = q::<i64>(&s, "SELECT count(*) FROM review_log");
         let r = tidy("delete", false);
-        assert!(r.backup.as_deref().is_some_and(|b| b.ends_with("-vanish.zip") && s.data_dir.join("backups").join(b).exists()), "{r:?}");
+        assert!(r.backup.as_deref().is_some_and(|b| b.ends_with("-cleanup.zip") && s.data_dir.join("backups").join(b).exists()), "{r:?}");
         assert_eq!((q::<i64>(&s, "SELECT count(*) FROM note WHERE anki_guid IN ('g2', 'g3')"), q::<i64>(&s, "SELECT count(*) FROM review_log")), (0, logs));
         assert_eq!(q::<i64>(&s, "SELECT count(*) FROM note WHERE anki_guid IS NULL"), 1, "앱에서 만든 노트는 그대로");
         assert_eq!(update(&s, &p2, &Choices::default(), true).missing_notes, 0);

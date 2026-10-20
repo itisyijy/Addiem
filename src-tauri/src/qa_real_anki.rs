@@ -610,7 +610,7 @@ fn phase1() {
         let logs0: i64 = q(&tdy, "SELECT count(*) FROM review_log");
         let mut con = tdy.db.lock().unwrap();
         let dry = deck_update::tidy_missing(&mut con, &tdy.data_dir, &ids, "suspend", true).map(|r| serde_json::to_value(r).unwrap());
-        let sus = deck_update::tidy_missing(&mut con, &tdy.data_dir, &ids, "suspend", false);
+        let sus = deck_update::tidy_missing(&mut con, &tdy.data_dir, &ids, "suspend", false).map(|r| serde_json::to_value(r).unwrap());
         let st: String = con.query_row("SELECT group_concat(c.state) FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = ?1", [g("basic3")], |r| r.get(0)).unwrap();
         let del = deck_update::tidy_missing(&mut con, &tdy.data_dir, &ids, "delete", false).map(|r| serde_json::to_value(r).unwrap());
         let left: i64 = con.query_row("SELECT count(*) FROM note WHERE anki_guid = ?1", [g("basic3")], |r| r.get(0)).unwrap();
@@ -619,10 +619,10 @@ fn phase1() {
         ck.add(
             "DU59-tidy",
             A2,
-            "새 버전에 없는 노트 정리 (초안): basic3 를 학습 중지했다가 지우면 백업(-vanish) 뒤 지워지고 복습 기록 수는 그대로",
-            dry.as_ref().is_ok_and(|d| d["notes"] == 1 && d["cards"] == 1) && sus.is_ok() && st == "suspended" && left == 0 && logs1 == logs0
-                && del.as_ref().is_ok_and(|d| d["backup"].as_str().is_some_and(|b| b.ends_with("-vanish.zip"))),
-            format!("dry={dry:?} · 학습 중지 뒤 {st} · 지우기 {del:?} · 남은 노트 {left} · 기록 {logs0} → {logs1}"),
+            "새 버전에 없는 노트 정리 (초안): basic3 를 학습 중지하면 바꾼 카드 id 를 돌려주고 ([되돌리기]), 지우면 백업(-cleanup) 뒤 지워지고 복습 기록 수는 그대로",
+            dry.as_ref().is_ok_and(|d| d["notes"] == 1 && d["cards"] == 1) && sus.as_ref().is_ok_and(|r| r["changed"].as_array().is_some_and(|a| a.len() == 1)) && st == "suspended" && left == 0 && logs1 == logs0
+                && del.as_ref().is_ok_and(|d| d["backup"].as_str().is_some_and(|b| b.ends_with("-cleanup.zip"))),
+            format!("dry={dry:?} · 학습 중지 {sus:?} 뒤 {st} · 지우기 {del:?} · 남은 노트 {left} · 기록 {logs0} → {logs1}"),
         );
     }
     let b4: i64 = q(&du, &format!("SELECT count(*) FROM note WHERE anki_guid = '{}'", g("basic4").replace('\'', "''")));

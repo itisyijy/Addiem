@@ -415,9 +415,10 @@ export type AnkiPreview = {
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
 /** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
-export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "vanish" };
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "cleanup" };
 /** DU59 새 버전에 없는 노트 정리의 수 (확인 창 · 결과). backup: 지우기 전에 만든 백업 이름 */
-export type TidySummary = { notes: number; cards: number; studied: number; suspended: number; backup: string | null };
+/** 학습 중지면 notes · cards 는 이번에 바꾼 것만, changed 는 그 카드 (토스트 [되돌리기]) */
+export type TidySummary = { notes: number; cards: number; studied: number; suspended: number; backup: string | null; changed: number[] };
 
 export type UpdateHint = {
   notes: number;
