@@ -1833,8 +1833,10 @@ fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64, deck_of: DeckOf) 
     )
     .map_err(err)?;
     let id = tx.last_insert_rowid();
+    // 빈칸 유형의 did 는 맞추지 않는다 (Anki 26.9.3 도 무시한다, NT77)
+    let cloze = t.templates.iter().any(|x| crate::notetype::cloze_like(&x.2));
     for (ord, name, q, a) in &t.templates {
-        let (deck, deck_name) = match t.decks.iter().find(|(o, _)| o == ord) {
+        let (deck, deck_name) = match t.decks.iter().find(|(o, _)| o == ord).filter(|_| !cloze) {
             Some((_, did)) => deck_of(*did)?,
             None => (None, None),
         };

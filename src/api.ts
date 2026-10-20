@@ -280,6 +280,8 @@ export type NoteTypeDetail = Omit<NoteTypeRow, "fields" | "templates"> & {
     reason: string | null;
     deck: number | null;
     deck_path: string | null;
+    /** 정한 덱을 보관했다: 그 경로 (새 카드는 노트를 넣는 덱으로) */
+    deck_archived: string | null;
     deck_gone: string | null;
     cards: number;
   }[];

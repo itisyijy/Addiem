@@ -948,7 +948,8 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>, deck_ma
     let (slots, fields): (Vec<usize>, Vec<String>) = nt.visible().into_iter().unzip();
     let tmpls: Vec<(i64, String, String, String)> =
         nt.templates.iter().enumerate().map(|(i, t)| (i as i64, t.name.clone(), t.qfmt.clone(), t.afmt.clone())).collect();
-    let tdid = |i: usize| nt.templates.get(i).and_then(|t| t.deck).and_then(|d| deck_map.get(&d).copied());
+    // 빈칸 유형은 쓰지 않는다 (NT77): did 는 늘 null
+    let tdid = |i: usize| nt.templates.get(i).filter(|_| !nt.cloze()).and_then(|t| t.deck).and_then(|d| deck_map.get(&d).copied());
     let cloze = nt.cloze();
     let ords: HashMap<i64, i64> = if cloze { HashMap::new() } else { nt.templates.iter().enumerate().map(|(i, t)| (t.ord as i64, i as i64)).collect() };
     let io = tmpls.iter().any(|t| crate::occlusion::is_template(&t.2));

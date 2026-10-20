@@ -39,6 +39,8 @@ type DTpl = {
   reason: string | null;
   deck: number | null;
   gone: string | null;
+  /** 정한 덱을 보관했다 (연 때의 덱 그대로일 때만): 그 경로 */
+  archived: string | null;
   cards: number;
 };
 type Draft = { fields: DField[]; tpls: DTpl[]; css: string };
@@ -151,6 +153,7 @@ const initDraft = (d: Detail): Draft => ({
     reason: t.reason,
     deck: t.deck,
     gone: t.deck_gone,
+    archived: t.deck_archived,
     cards: t.cards,
   })),
   css: d.css,
@@ -536,7 +539,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
     const layout: Layout = { front: [{ kind: "field", name: other }], back: [{ kind: "front_side" }, { kind: "field", name: f0 }] };
     const b = await api.buildTemplateLayout(layout);
     const key = seq.current--;
-    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null, deck: null, gone: null, cards: 0 }] }));
+    setDraft((x) => ({ ...x, tpls: [...x.tpls, { key, ord: null, name: "", ...b, layout, reason: null, deck: null, gone: null, archived: null, cards: 0 }] }));
     setCurKey(key);
   };
   const removeTpl = (key: number) => {
@@ -853,9 +856,12 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
 
   /** NT11 넣을 덱 (카드 종류의 옵션 끝, Figma 293:21525): 기본 "노트를 넣는 덱", 정하면 그 덱 · 이미 있는 카드 수, 정한 덱을 지웠으면 주황 "지운 덱" */
   function deckOption() {
-    if (readOnly || !cur) return null;
-    const label = cur.deck === null ? null : (deckOptions.find((o) => o.id === cur.deck)?.label ?? d.templates.find((t) => t.ord === cur.ord)?.deck_path ?? "덱");
-    const tone = label ? "is-set" : cur.gone ? "is-gone" : "";
+    // 빈칸 유형은 카드 종류의 덱을 쓰지 않는다 (Anki 26.9.3 과 같다, NT77)
+    if (readOnly || !cur || d.cloze) return null;
+    // 보관한 덱이면 실제로는 노트를 넣는 덱에 넣는다: 지운 덱처럼 주황으로 (Q6 #2)
+    const archived = cur.deck !== null ? cur.archived : null;
+    const label = cur.deck === null || archived ? null : (deckOptions.find((o) => o.id === cur.deck)?.label ?? d.templates.find((t) => t.ord === cur.ord)?.deck_path ?? "덱");
+    const tone = label ? "is-set" : cur.gone || archived ? "is-gone" : "";
     return (
       <div className="nte__option nte__deckopt">
         <span className="t-label-m">넣을 덱</span>
@@ -867,8 +873,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             aria-expanded={deckMenu}
             onClick={() => setDeckMenu((v) => !v)}
           >
-            <Icon name={cur.gone && !label ? "alert" : "layers"} size={14} />
-            <span className="deckpick__label t-label-m">{label ?? (cur.gone ? "지운 덱" : "노트를 넣는 덱")}</span>
+            <Icon name={(cur.gone || archived) && !label ? "alert" : "layers"} size={14} />
+            <span className="deckpick__label t-label-m">{label ?? (archived ? "보관한 덱" : cur.gone ? "지운 덱" : "노트를 넣는 덱")}</span>
             <Icon name="chevron-down" size={12} scaled />
           </button>
           {deckMenu && (
@@ -877,12 +883,12 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
               gone={cur.deck === null && !!cur.gone}
               choices={deckOptions}
               onPick={(id) => {
-                setTpl(cur.key, { deck: id, gone: null });
+                setTpl(cur.key, { deck: id, gone: null, archived: null });
                 setDeckMenu(false);
               }}
               onCreated={(id) => {
                 reloadDecks();
-                setTpl(cur.key, { deck: id, gone: null });
+                setTpl(cur.key, { deck: id, gone: null, archived: null });
                 setDeckMenu(false);
               }}
               onClose={() => setDeckMenu(false)}
@@ -892,7 +898,9 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
         <span className={`t-caption ${tone === "is-gone" ? "c-warn" : "c-tertiary"}`}>
           {label
             ? "이 카드 종류로 새로 만드는 카드는 늘 이 덱에 넣어요"
-            : cur.gone
+            : archived
+              ? `정한 덱 「${archived}」${eun(archived)} 보관한 덱이라 노트를 넣는 덱에 넣어요 · 보관을 풀면 다시 그 덱에 넣어요`
+              : cur.gone
               ? `정한 덱 「${cur.gone}」${eul(cur.gone)} 지웠어요 · 다시 고를 때까지 노트를 넣는 덱에 넣어요`
               : "카드를 추가할 때 고른 덱에 넣어요"}
         </span>
@@ -1389,12 +1397,12 @@ function Preview({ d, draft, tpl, samples }: { d: Detail; draft: Draft; tpl: DTp
   const sample = samples && pick !== "names" ? samples[pick] : undefined;
   const names = draft.fields.filter((f) => f.name).map((f) => f.name);
   const values = sample ? draft.fields.filter((f) => f.name).map((f) => (f.slot !== null ? (sample.slots[f.slot] ?? "") : `(${f.name})`)) : null;
-  const key = JSON.stringify([tpl?.qfmt, tpl?.afmt, names, values]);
+  const key = JSON.stringify([tpl?.qfmt, tpl?.afmt, names, values, tpl?.deck]);
   useEffect(() => {
     if (!tpl || samples === null) return;
     let live = true;
     api
-      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names, sample?.note_id)
+      .previewTemplate(d.id, tpl.qfmt, tpl.afmt, tpl.ord ?? 0, values, names, sample?.note_id, !d.cloze && tpl.deck !== null && !tpl.archived ? tpl.deck : undefined)
       .then(async (p) => {
         const parts = splitBack(p.back, p.front);
         const [front, question, answer] = (await Promise.all([renderCardHtml(p.front), renderCardHtml(parts.question), renderCardHtml(parts.answer)])).map(withMath);

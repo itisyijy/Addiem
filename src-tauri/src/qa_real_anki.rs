@@ -778,5 +778,26 @@ fn phase2() {
         nv.get(1).is_some_and(|x| x.1 == rt["native_value"]) && !in_conflict && u["no_base"] == 0,
         format!("값 {nv:?}, 충돌={in_conflict}, other_type={}, no_base={}, 새로 만든 유형 {created:?}", u["other_type"], u["no_base"]),
     );
+
+    // NT76 2차 왕복 (Q6 #1): 앱에서 카드B 의 덱만 2장 → 1장으로 바꿔 다시 내보낸다 (1장은 Anki 덱 id 를 그대로 가진 덱). 유형 수정 시각이 올라야 같은 Anki 컬렉션이 새 did 를 받는다
+    // (real_anki.py anki2 가 1차 왕복한 Anki 컬렉션에 가져와 본다)
+    {
+        let td = copy_state(&src, &w.join("neo_td2"));
+        let con = td.db.lock().unwrap();
+        let (ntid, before): (i64, i64) = con.query_row("SELECT id, updated_at FROM note_type WHERE name = 'QA 특수필드' AND anki_model_id IS NOT NULL", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let ord = notetype::load(&con, ntid).unwrap().templates.iter().find(|t| t.name == "카드B").unwrap().ord;
+        let rid: i64 = con.query_row("SELECT id FROM deck WHERE name = ?1 AND parent_id IS NULL", [ROOT], |r| r.get(0)).unwrap();
+        let d1: i64 = con.query_row("SELECT id FROM deck WHERE name = '1장' AND parent_id = ?1", [rid], |r| r.get(0)).unwrap();
+        notetype::set_template_deck(&con, ntid, ord, Some(d1)).unwrap();
+        let after: i64 = con.query_row("SELECT updated_at FROM note_type WHERE id = ?1", [ntid], |r| r.get(0)).unwrap();
+        let r = crate::export::export_for_qa(&con, &td.data_dir, rid, &w.join("neo_export2.apkg"), true);
+        ck.add(
+            "TD-mod",
+            A4,
+            "카드 종류의 덱만 바꿔도 노트 유형 수정 시각(내보낸 모델 mod)이 오르고 다시 내보낸다",
+            after / 1000 > before / 1000 && r.is_ok(),
+            format!("updated_at {before} → {after}, 내보내기 {:?}", r.as_ref().map(|_| "ok")),
+        );
+    }
     ck.save("rust2");
 }

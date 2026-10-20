@@ -528,12 +528,42 @@ def anki_side(work):
     save_checks(work, "anki")
 
 
+def anki_side2(work):
+    """NT76 2차 왕복 (Q6 #1): 1차 왕복한 Anki 컬렉션(tdid.anki2)에 덱만 바꾼 Neo 패키지를 기본 옵션으로 가져오면 카드B 의 did 가 새 덱이고,
+    새 노트의 카드B 도 그 덱에 들어간다 (mod 가 그대로면 Anki 는 옛 덱을 쓴다)"""
+    Collection, _, _, ImportAnkiPackageRequest, ImportAnkiPackageOptions, _ = anki_mod()
+    neo = load(os.path.join(work, "neo_state.json"))
+    tp = os.path.join(work, "anki", "tdid.anki2")
+    pkg = os.path.join(work, "neo_export2.apkg")
+    area = "4 왕복"
+    if not (os.path.exists(tp) and os.path.exists(pkg)):
+        check("E-tdid-2", area, "덱만 바꾼 뒤 같은 Anki 컬렉션으로 2차 왕복", False, f"tdid.anki2={os.path.exists(tp)} neo_export2={os.path.exists(pkg)}")
+        save_checks(work, "anki2")
+        return
+    tc = Collection(tp)
+    tc.import_anki_package(ImportAnkiPackageRequest(package_path=pkg, options=ImportAnkiPackageOptions(with_scheduling=True)))
+    tm = next((m for m in tc.models.all() if m["name"].rstrip("+") == CUSTOM), None)
+    want = tc.decks.id_for_name(f"{neo['root']}::1장")
+    tdid = next((t.get("did") for t in (tm or {}).get("tmpls", []) if t["name"] == "카드B"), None)
+    placed = None
+    if tm:
+        nn = tc.new_note(tm)
+        nn["Front"], nn["Back"], nn["Extra"] = "덱 지정 2차", "td2", "예문"
+        tc.add_note(nn, tc.decks.id_for_name(f"{neo['root']}::2장"))
+        placed = sorted((c.ord, tc.decks.name(c.did)) for c in nn.cards())
+    check("E-tdid-2", area, "카드B 의 덱만 2장 → 1장으로 바꾼 Neo 패키지를 1차 왕복한 Anki 컬렉션에 가져오면 카드B did 가 1장이고, 2장에 더한 새 노트의 카드B 도 1장",
+          tdid == want and placed is not None and any(o == 1 and dn.endswith("::1장") for o, dn in placed) and any(o == 0 and dn.endswith("::2장") for o, dn in placed),
+          f"카드B did={tdid} (1장 {want}), 새 노트의 카드 {placed}")
+    tc.close()
+    save_checks(work, "anki2")
+
+
 # ------------------------------------------------------------------ 보고
 
 
 def report(work):
     rows = []
-    for phase in ["make", "rust1", "anki", "rust2"]:
+    for phase in ["make", "rust1", "anki", "rust2", "anki2"]:
         p = os.path.join(work, f"checks_{phase}.json")
         if os.path.exists(p):
             rows += load(p)
@@ -583,6 +613,8 @@ def main():
             anki_side(work)
             CHECKS.clear()
             cargo(os.path.abspath(a.repo), "phase2", work, a.target)
+            CHECKS.clear()
+            anki_side2(work)
         sys.exit(1 if report(work) else 0)
     os.makedirs(work, exist_ok=True)
     {"make": make, "anki": anki_side, "report": report}[a.step](work)
