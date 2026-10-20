@@ -44,8 +44,9 @@ export function useSyncStatus() {
 type Flow =
   | { kind: "connect"; from?: "home" | "settings" | "login" }
   | { kind: "setup"; probe: SyncProbe; note?: string }
-  | { kind: "found"; probe: SyncProbe }
-  | { kind: "choice"; probe: SyncProbe | null }
+  /** note: 창 위쪽 안내 줄 (K43 그 사이 다른 기기가 올렸다) */
+  | { kind: "found"; probe: SyncProbe; note?: string }
+  | { kind: "choice"; probe: SyncProbe | null; note?: string }
   | { kind: "conflicts" }
   | { kind: "restore"; backup: DriveBackup }
   | { kind: "disconnect" }
@@ -345,9 +346,9 @@ async function startFromProbe() {
   }
 }
 
-function nextFlow(probe: SyncProbe, from?: string): Flow {
+function nextFlow(probe: SyncProbe, from?: string, note?: string): Flow {
   if (!probe.remote) return { kind: "setup", probe, note: from === "home" ? "이 계정에는 아직 Neo-Anki 데이터가 없어요" : undefined };
-  return probe.local.empty ? { kind: "found", probe } : { kind: "choice", probe };
+  return probe.local.empty ? { kind: "found", probe, note } : { kind: "choice", probe, note };
 }
 
 // ---------------------------------------------------------------- 창을 그리는 곳 (App 에 하나)
@@ -395,8 +396,8 @@ export function SyncHost({ studying }: { studying: boolean }) {
       {s?.closing && <CloseModal s={s} />}
       {flow?.kind === "connect" && <ConnectModal from={flow.from} onDone={setFlow} />}
       {flow?.kind === "setup" && <SetupModal probe={flow.probe} note={flow.note} onClose={close} />}
-      {flow?.kind === "found" && <FoundModal probe={flow.probe} onClose={close} />}
-      {flow?.kind === "choice" && <ChoiceModal probe={flow.probe} onClose={close} />}
+      {flow?.kind === "found" && <FoundModal probe={flow.probe} note={flow.note} onClose={close} />}
+      {flow?.kind === "choice" && <ChoiceModal probe={flow.probe} note={flow.note} onClose={close} />}
       {flow?.kind === "conflicts" && <ConflictsModal onClose={close} />}
       {flow?.kind === "restore" && <RestoreModal backup={flow.backup} onClose={close} />}
       {flow?.kind === "disconnect" && <DisconnectModal onClose={close} />}
@@ -563,12 +564,12 @@ function SetupModal({ probe, note, onClose }: { probe: SyncProbe; note?: string;
       onClose();
       if (!later) toast({ title: "Google Drive에 연결했어요", text: "올리는 동안 계속 써도 돼요", icon: "cloud-check" });
     } catch (e) {
-      // K43: 로그인 때는 비어 있던 Drive 에 그 사이 다른 기기가 올렸다 (엔진이 새로 시작을 거절한다). 덮지 않고 찾은 데이터 창(K6-f · K6-m)으로
+      // K43: 로그인 때는 비어 있던 Drive 에 그 사이 다른 기기가 올렸다 (엔진이 새로 시작을 거절한다). 덮지 않고 찾은 데이터 창(K6-f · K6-m)으로,
+      // 이유는 토스트가 아니라 창 위쪽 안내 줄로 (토스트는 창의 [취소]를 가린다)
       const p = later ? null : await syncApi.probe().catch(() => null);
       if (p?.remote) {
         onClose();
-        syncFlow(nextFlow({ ...p, device_name: name }));
-        toast({ title: "그 사이 다른 기기가 Drive에 데이터를 올렸어요", text: "덮지 않고, 그 데이터와 어떻게 맞출지 골라요" });
+        syncFlow(nextFlow({ ...p, device_name: name }, undefined, "그 사이 다른 기기가 Drive에 데이터를 올렸어요 · 덮지 않고, 그 데이터와 어떻게 맞출지 골라 주세요"));
         return;
       }
       setError(errorText(e));
@@ -713,7 +714,7 @@ export function DriveLoadLink() {
   );
 }
 
-function FoundModal({ probe, onClose }: { probe: SyncProbe; onClose: () => void }) {
+function FoundModal({ probe, note, onClose }: { probe: SyncProbe; note?: string; onClose: () => void }) {
   const nav = useNav();
   const toast = useToast();
   const [name, setName] = useState(probe.device_name);
@@ -750,6 +751,7 @@ function FoundModal({ probe, onClose }: { probe: SyncProbe; onClose: () => void 
           <span className="t-caption c-tertiary">{probe.account}</span>
         </span>
       </span>
+      {note && <p className="sync-note t-body-s c-secondary">{note}</p>}
       <div className="sync-table">
         <span>
           <span className="t-body-s c-secondary">마지막으로 맞춘 기기</span>
@@ -797,7 +799,7 @@ function FoundModal({ probe, onClose }: { probe: SyncProbe; onClose: () => void 
 
 // ---------------------------------------------------------------- K6-m 이 기기에도 데이터가 있을 때 (처음 연결 · 다른 기기의 되돌리기 뒤)
 
-function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClose: () => void }) {
+function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null; note?: string; onClose: () => void }) {
   const s = useSyncStatus();
   const nav = useNav();
   const toast = useToast();
@@ -856,6 +858,7 @@ function ChoiceModal({ probe: given, onClose }: { probe: SyncProbe | null; onClo
   return (
     <Sheet label={title} onClose={onClose} className="sync-k6m">
       <Head title={title} sub={sub} onClose={onClose} />
+      {note && <p className="sync-note t-body-s c-secondary">{note}</p>}
       <div className="sync-sides">
         <span className="sync-side">
           <Icon name="laptop" size={18} className="c-secondary" />
