@@ -143,7 +143,9 @@ npx tsc --noEmit
 
 `npm run tauri build` 는 NSIS 설치 파일 하나(`Neo-Anki_<버전>_x64-setup.exe`)만 만든다. 현재 사용자에게 설치하고(`%LOCALAPPDATA%\Neo-Anki`, 관리자 권한 없음) 설치 화면은 한국어다(Windows 표시 언어가 영어면 영어). 첫 배포 전에 확인할 것:
 
-- [ ] **코드 서명**: 인증서(OV · EV 또는 Azure Trusted Signing)를 준비하고 `bundle.windows` 에 `certificateThumbprint` + `digestAlgorithm: "sha256"` + `timestampUrl`, 또는 `signCommand`(signtool 등)를 넣는다. 서명이 없으면 SmartScreen 경고가 뜬다. 확인은 `Get-AuthenticodeSignature <exe>`.
+- [ ] **코드 서명**: 인증서(OV · EV 또는 Azure Trusted Signing)를 준비하고 `bundle.windows` 에 `certificateThumbprint` + `digestAlgorithm: "sha256"` + `timestampUrl`, 또는 `signCommand`(signtool 등)를 넣는다. 서명이 없으면 SmartScreen 경고가 뜬다. 확인은 `Get-AuthenticodeSignature <exe>`. **지금은 서명 없이 배포한다 (사용자 결정 2026-10-20, 공개 배포 전에 다시 정한다).** 설치하는 사람에게 함께 알릴 것:
+  - 설치 파일이나 앱을 처음 열 때 "Windows의 PC 보호" 파란 창이 뜨면 **[추가 정보] → [실행]** 을 누른다.
+  - 백신(Defender)이 서술형 개념 관계 확인 엔진(`llm\neoanki-llm.exe`)을 막거나 지우면 그 기능만 꺼지고(설정 › 서술형 채점에 "이 설치에는 엔진이 없어요"), 핵심어 채점과 나머지 기능은 그대로다.
 - [ ] **게시자 이름**: `bundle.publisher`(지금 `itisyijy`). 프로그램 추가/제거의 게시자, exe 의 CompanyName, NSIS 레지스트리 키 `HKCU\Software\<게시자>\Neo-Anki` 가 이 값에서 나온다. NSIS 는 이 키로 이전 설치 폴더를 찾으니 첫 배포 전에 정하고 그 뒤로는 바꾸지 않는다. 데이터 폴더 · 키체인 이름은 `identifier` 에서 나오므로 영향이 없다. `bundle.copyright` 도 아직 비어 있다.
 - [ ] **아이콘**: `src-tauri/icons/` 는 아직 Tauri 기본 아이콘이다. 로고가 정해지면 `npx tauri icon <1024px PNG>` 로 다시 만든다. 설치 파일 자체의 아이콘은 `bundle.windows.nsis.installerIcon`.
 - [ ] **Google OAuth**: 배포 빌드를 하는 셸에 `NEOANKI_GOOGLE_CLIENT_ID` · `NEOANKI_GOOGLE_CLIENT_SECRET` 을 넣는다. 빠져도 빌드는 성공하고 Drive 연결만 꺼지니(`option_env!`) 빌드 전에 확인한다. OAuth 동의 화면을 테스트에서 프로덕션으로 게시한다(테스트 상태에서는 등록한 테스트 사용자만 로그인된다).
