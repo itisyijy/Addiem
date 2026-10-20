@@ -899,7 +899,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
           {label
             ? "이 카드 종류로 새로 만드는 카드는 늘 이 덱에 넣어요"
             : archived
-              ? `정한 덱 「${archived}」${eun(archived)} 보관한 덱이라 노트를 넣는 덱에 넣어요 · 보관을 풀면 다시 그 덱에 넣어요`
+              ? `정한 덱 「${archived}」${eun(archived)} 보관한 덱이라 노트를 넣는 덱에 넣어요 · 보관 해제하면 다시 그 덱에 넣어요`
               : cur.gone
               ? `정한 덱 「${cur.gone}」${eul(cur.gone)} 지웠어요 · 다시 고를 때까지 노트를 넣는 덱에 넣어요`
               : "카드를 추가할 때 고른 덱에 넣어요"}
