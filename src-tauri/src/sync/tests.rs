@@ -2434,3 +2434,31 @@ fn card_type_deck_follows_to_the_other_device() {
         assert_eq!(type_of(d, &note).templates[1].deck, None, "지운 덱은 비운다");
     }
 }
+
+#[test]
+fn tidied_missing_notes_follow_to_the_other_device() {
+    // DU59 (초안): 새 버전에 없는 노트 정리는 보통 편집 · 삭제라 다른 기기에도 간다 (학습 중지 → 지우기)
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let deck = sub_deck(&a);
+    let (n1, c1) = a.note(deck, "사라진 노트", Some("g-vanish"), 2000);
+    a.con().execute("UPDATE note SET origin = '{\"f\":[],\"t\":\"\"}' WHERE id = ?1", [n1]).unwrap();
+    for d in [&a, &b, &a] {
+        env.sync(d);
+    }
+    let note = a.uid("note", n1);
+    let tidy = |action: &str| crate::import::deck_update::tidy_missing(&mut a.con(), &a.dir, &[c1], action, false).unwrap();
+    tidy("suspend");
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(b.n(&format!("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = '{note}' AND c.state = 'suspended'")), 1);
+    tidy("delete");
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    assert!(b.id("note", &note).is_none(), "지운 노트는 다른 기기에서도 지워진다");
+}
+

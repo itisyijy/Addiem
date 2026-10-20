@@ -128,7 +128,7 @@ pub fn run() {
             import::cancel_import,
             import::deck_update::inspect_update,
             import::deck_update::apply_update,
-            import::deck_update::undo_update, import::deck_update::undoable_updates,
+            import::deck_update::undo_update, import::deck_update::undoable_updates, import::deck_update::tidy_missing_notes,
             import::save_text,
             import::read_json_file,
             import::read_table_file,

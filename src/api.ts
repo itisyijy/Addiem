@@ -415,7 +415,9 @@ export type AnkiPreview = {
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
 /** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
-export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" };
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "vanish" };
+/** DU59 새 버전에 없는 노트 정리의 수 (확인 창 · 결과). backup: 지우기 전에 만든 백업 이름 */
+export type TidySummary = { notes: number; cards: number; studied: number; suspended: number; backup: string | null };
 
 export type UpdateHint = {
   notes: number;
@@ -682,6 +684,8 @@ export const api = {
     invoke<UpdateSummary>("apply_update", { path, deckIds: null, choices, voices: await voiceLangs() }),
   /** DU2-u 이 업데이트 되돌리기. dryRun 이면 확인 창의 수만 (쓰지 않는다). 적용은 되돌리기 전 백업 → 한 트랜잭션 */
   undoUpdate: (batch: number, dryRun: boolean) => invoke<UndoSummary>("undo_update", { batch, dryRun }),
+  /** DU59 새 버전에 없는 노트 정리 (요약의 missing_card_ids). action: 학습 중지 suspend · 지우기 delete. 업데이트 되돌리기와 따로 */
+  tidyMissingNotes: (cardIds: number[], action: "suspend" | "delete", dryRun: boolean) => invoke<TidySummary>("tidy_missing_notes", { cardIds, action, dryRun }),
   undoableUpdates: () => invoke<Undoable[]>("undoable_updates"),
   /** B2-j 끌어놓은 .json 파일을 읽는다 */
   readJsonFile: (path: string) => invoke<string>("read_json_file", { path }),

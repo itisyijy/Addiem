@@ -1490,6 +1490,67 @@ pub(crate) fn apply(con: &mut Connection, data_dir: &Path, req: &Req) -> Res<Upd
     Ok(s)
 }
 
+// ------------------------------------------------------------------ 새 버전에 없는 노트 정리 (DU59 · 초안, 사용자 결정 대기)
+
+/// [정리하기] 확인 창 · 결과의 수
+#[derive(Serialize, Default, Debug, PartialEq)]
+pub struct TidySummary {
+    /// 정리할 노트 (원본이 있는 노트만, DU11 의 "새 버전에 없는 노트")
+    notes: usize,
+    cards: usize,
+    /// 그 사이 공부한 카드 (기록이 있거나 학습을 시작했다, STUDIED)
+    studied: usize,
+    /// 이미 학습 중지인 카드
+    suspended: usize,
+    /// 지우기 전에 만든 백업 이름 (-vanish)
+    backup: Option<String>,
+}
+
+/// DU59 (초안 · 사용자 결정 대기) 새 버전에 없는 노트를 한 번에 정리한다. 업데이트 적용과 따로 (적용 전 요약 · 적용 뒤 결과 어디서든)이고
+/// 되돌리기 기록(update_journal)에는 들어가지 않는다. action: "suspend" 학습 중지 (기본, [학습 중지 풀기]로 되돌린다) · "delete" 지우기
+/// (지우기 전 자동 백업 -vanish, 복습 기록은 통계에만 남는다 A4, 원본이 있어 다음 업데이트도 다시 넣지 않는다 DU3). 동기화는 보통 편집 · 삭제 (K29).
+/// card_ids 는 요약의 missing_card_ids: 그 카드의 노트 중 원본이 있는 것만 본다
+pub(crate) fn tidy_missing(con: &mut Connection, data_dir: &Path, card_ids: &[i64], action: &str, dry: bool) -> Res<TidySummary> {
+    if !["suspend", "delete"].contains(&action) {
+        return Err("정리할 방법을 골라 주세요.".into());
+    }
+    if card_ids.is_empty() {
+        return Ok(TidySummary::default());
+    }
+    let ids = crate::commands::id_list(card_ids);
+    let notes: Vec<i64> = con
+        .prepare(&format!("SELECT DISTINCT n.id FROM note n JOIN card c ON c.note_id = n.id WHERE c.id IN ({ids}) AND n.origin IS NOT NULL ORDER BY n.id"))
+        .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
+        .map_err(err)?;
+    let list = if notes.is_empty() { "-1".to_string() } else { crate::commands::id_list(&notes) };
+    let n = |sql: &str| -> Res<usize> { con.query_row(&format!("SELECT count(*) FROM card c WHERE c.note_id IN ({list}) {sql}"), [], |r| r.get::<_, i64>(0)).map(|v| v as usize).map_err(err) };
+    let mut s = TidySummary { notes: notes.len(), cards: n("")?, studied: n(&format!("AND {STUDIED}"))?, suspended: n("AND c.state = 'suspended'")?, backup: None };
+    if dry || notes.is_empty() {
+        return Ok(s);
+    }
+    let now = now_ms();
+    if action == "delete" {
+        let b = crate::commands::write_backup_as(con, data_dir, "vanish").map_err(|e| format!("지우기 전 백업을 만들지 못해 지우지 않았어요. {e}"))?;
+        s.backup = b.file_name().map(|x| x.to_string_lossy().into_owned());
+    }
+    let tx = con.transaction().map_err(err)?;
+    if action == "suspend" {
+        tx.execute(&format!("UPDATE card SET state = 'suspended', updated_at = ?1 WHERE note_id IN ({list}) AND state <> 'suspended'"), [now]).map_err(err)?;
+    } else {
+        // 카드 목록 [삭제] 와 같다 (commands::delete_cards): 기록은 card_id 가 NULL 이 되어 통계에만 남는다
+        tx.execute(&format!("DELETE FROM card WHERE note_id IN ({list})"), []).map_err(err)?;
+        tx.execute(&format!("DELETE FROM note WHERE id IN ({list})"), []).map_err(err)?;
+    }
+    tx.commit().map_err(err)?;
+    Ok(s)
+}
+
+/// B2-u · B3-u [정리하기]. dry_run 이면 확인 창의 수만
+#[tauri::command]
+pub fn tidy_missing_notes(state: State<'_, AppState>, card_ids: Vec<i64>, action: String, dry_run: bool) -> Res<TidySummary> {
+    tidy_missing(&mut *state.db.lock().map_err(err)?, &state.data_dir, &card_ids, &action, dry_run)
+}
+
 // ------------------------------------------------------------------ 업데이트 되돌리기 (DU57 · DU58)
 
 /// 사용자 결정 2026-10-19 ①: 업데이트 뒤 공부한 새 카드(그 노트 포함)는 되돌리기가 건드리지 않는다 (기록 · 일정 보존).
@@ -2285,6 +2346,50 @@ mod tests {
             con.prepare("SELECT n.anki_guid || c.template_ord || ':' || c.deck_id FROM card c JOIN note n ON n.id = c.note_id ORDER BY 1").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
         };
         assert_eq!(rows, [format!("g10:{deck}"), format!("g11:{other}"), format!("g20:{deck}")]);
+    }
+
+    #[test]
+    fn missing_notes_are_tidied_apart_from_the_update() {
+        // DU59 (초안): 새 버전에 없는 노트를 한 번에 학습 중지 · 지우기. 원본이 있는 노트만, 업데이트 되돌리기 기록에는 들어가지 않는다,
+        // 지우면 백업(-vanish) 뒤 지우고 기록은 통계에 남고 다음 업데이트도 다시 넣지 않는다
+        let t = tmp("tidy");
+        let s = state(&t.0.join("data"));
+        let (p1, p2) = (t.0.join("v1.apkg"), t.0.join("v2.apkg"));
+        let m = || Model { id: 20, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", AFMT)], css: "" };
+        testpkg::write(&p1, &[m()], &[(1, "D")], &[note(1, "g1", 20, &["Q1", "A1"], &[(1, 0)]), note(2, "g2", 20, &["Q2", "A2"], &[(1, 0)]), note(3, "g3", 20, &["Q3", "A3"], &[(1, 0)])], &[]);
+        import(&s, &p1);
+        testpkg::write(&p2, &[m()], &[(1, "D")], &[note(1, "g1", 20, &["Q1", "A1 v2"], &[(1, 0)])], &[]);
+        let u = update(&s, &p2, &Choices::default(), false);
+        assert_eq!(u.missing_notes, 2);
+        // 그 사이 g2 를 공부했다. 앱에서 만든 노트의 카드는 넘겨도 정리하지 않는다
+        let app_card: i64 = {
+            let con = s.db.lock().unwrap();
+            con.execute("UPDATE card SET reps = 1, state = 'review' WHERE note_id = (SELECT id FROM note WHERE anki_guid = 'g2')", []).unwrap();
+            let deck: i64 = con.query_row("SELECT id FROM deck WHERE name = 'D'", [], |r| r.get(0)).unwrap();
+            crate::commands::insert_note(&con, &crate::commands::NewCard { deck_id: deck, kind: "basic".into(), front: "앱".into(), back: "노트".into(), importance: None }, "", None).unwrap();
+            con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap()
+        };
+        let mut ids = u.missing_card_ids.clone();
+        ids.push(app_card);
+        let journal = || q::<i64>(&s, "SELECT count(*) FROM update_journal");
+        let j0 = journal();
+        let tidy = |action: &str, dry: bool| tidy_missing(&mut s.db.lock().unwrap(), &s.data_dir, &ids, action, dry).unwrap();
+        assert_eq!(tidy("suspend", true), TidySummary { notes: 2, cards: 2, studied: 1, suspended: 0, backup: None });
+        assert!(tidy_missing(&mut s.db.lock().unwrap(), &s.data_dir, &ids, "keep", true).is_err());
+        tidy("suspend", false);
+        let states: String = q(&s, "SELECT group_concat(x, ',') FROM (SELECT coalesce(n.anki_guid, 'app') || ':' || c.state AS x FROM card c JOIN note n ON n.id = c.note_id ORDER BY 1)");
+        assert_eq!(states, "app:new,g1:new,g2:suspended,g3:suspended");
+        assert_eq!(journal(), j0, "되돌리기 기록에 들어가지 않는다");
+        assert_eq!(tidy("delete", true).suspended, 2);
+        // 지우기: 백업 뒤 노트 · 카드를 지우고 기록은 남는다. 다음 업데이트는 "내가 지운 노트"로 다시 넣지 않는다
+        let logs = q::<i64>(&s, "SELECT count(*) FROM review_log");
+        let r = tidy("delete", false);
+        assert!(r.backup.as_deref().is_some_and(|b| b.ends_with("-vanish.zip") && s.data_dir.join("backups").join(b).exists()), "{r:?}");
+        assert_eq!((q::<i64>(&s, "SELECT count(*) FROM note WHERE anki_guid IN ('g2', 'g3')"), q::<i64>(&s, "SELECT count(*) FROM review_log")), (0, logs));
+        assert_eq!(q::<i64>(&s, "SELECT count(*) FROM note WHERE anki_guid IS NULL"), 1, "앱에서 만든 노트는 그대로");
+        assert_eq!(update(&s, &p2, &Choices::default(), true).missing_notes, 0);
+        let back = update(&s, &p1, &Choices::default(), true); // 그 노트가 다시 있는 버전이 와도
+        assert_eq!((back.gone, back.new_notes), (2, 0), "지운 노트는 다시 넣지 않는다 (DU3)");
     }
 
     #[test]

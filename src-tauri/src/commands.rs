@@ -1356,7 +1356,7 @@ pub fn dismiss_weak(state: State<AppState>, deck_id: i64, recovered: bool) -> Re
 }
 
 /// "1,2,3". 숫자만 들어가므로 SQL 에 바로 넣어도 된다
-fn id_list(ids: &[i64]) -> String {
+pub(crate) fn id_list(ids: &[i64]) -> String {
     ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
 }
 
@@ -2763,7 +2763,8 @@ pub struct LocalBackup {
 /// 자동 백업의 이름 끝 (-update.zip …). update = 덱 업데이트 적용 전, restore = 복구 전, move = 노트 유형 옮기기 전,
 /// undo = 업데이트 되돌리기 전, notetype = 노트 유형 저장 전 (NT44), deck = 덱 삭제 전, wipe = 모든 데이터 삭제 전.
 /// 동기화 기기 백업(sync/mod.rs local_backup)은 이름 앞이 neoanki-before-sync- (sync) · neoanki-before-restore- (restore). 화면 이름은 Settings.tsx BACKUP_KIND
-const BACKUP_KINDS: [&str; 7] = ["update", "restore", "move", "undo", "notetype", "deck", "wipe"];
+/// vanish = 덱 업데이트의 새 버전에 없는 노트 지우기 전 (DU59)
+const BACKUP_KINDS: [&str; 8] = ["update", "restore", "move", "undo", "notetype", "deck", "wipe", "vanish"];
 
 /// 자동 백업이면 (종류, 만든 시각 ms). 앱이 만드는 이름과 꼴이 꼭 맞을 때만: neoanki-<YYYYmmdd-HHMMSS>-<종류>.zip (write_backup_as),
 /// neoanki-before-sync-<시각>.zip · neoanki-before-restore-<시각>.zip (sync/mod.rs local_backup). 그 밖은 None (직접 만든 백업으로 본다)

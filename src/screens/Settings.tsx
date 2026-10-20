@@ -329,6 +329,7 @@ const BACKUP_KIND: Record<LocalBackup["kind"], string> = {
   deck: "덱 삭제 전 자동 백업",
   wipe: "모든 데이터 삭제 전 자동 백업",
   sync: "동기화 전 자동 백업",
+  vanish: "새 버전에 없는 노트 지우기 전 자동 백업",
 };
 const size = (b: number) => (b < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(1)}MB`);
 

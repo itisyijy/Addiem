@@ -15,7 +15,8 @@ import {
   type UpdateSummary,
   type UpdateTypeChange,
 } from "../api";
-import type { UndoSummary } from "../api";
+import type { TidySummary, UndoSummary } from "../api";
+import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
 import { renderCardHtml } from "../cardHtml";
 import { scopeCss } from "../cardCss";
@@ -303,6 +304,7 @@ export function DeckUpdate({ path, info, summary: first }: { path: string; info:
       onLooks={() => setStep("looks")}
       onAllNewLooks={allNewLooks}
       onApply={() => setStep("apply")}
+      onTidied={() => back()}
     />
   );
 }
@@ -337,7 +339,7 @@ function typeDesc(t: UpdateTypeChange) {
   return `"${t.name}"${sentence ? `: ${sentence}` : ""}`;
 }
 
-function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks, onAllNewLooks, onApply }: {
+function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks, onAllNewLooks, onApply, onTidied }: {
   s: UpdateSummary;
   reviewed: boolean;
   busy: boolean;
@@ -346,10 +348,14 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
   onReview: () => void;
   onLooks: () => void;
   onAllNewLooks: () => void;
+  /** 새 버전에 없는 노트를 정리했다: 요약을 다시 센다 (DU59) */
+  onTidied: () => void;
   onApply: () => void;
 }) {
   const nav = useNav();
-  useKey("Escape", onMode);
+  const toast = useToast();
+  const [tidy, setTidy] = useState(false); // DU59 새 버전에 없는 노트 정리 창
+  useKey("Escape", onMode, !tidy);
   const conflicts = s.conflicts.length;
   const picked = conflictPicks(s.conflicts);
   const typeRows = s.types.filter(
@@ -460,9 +466,12 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
           key: "missing",
           icon: "info" as IconName,
           title: "새 버전에 없는 노트",
-          desc: "지우지 않아요. 카드 · 기록 · 일정 그대로 학습에도 나와요",
+          desc: "지우지 않아요. 카드 · 기록 · 일정 그대로 학습에도 나와요 · [정리하기]로 학습 중지하거나 지울 수 있어요",
           right: `${n(s.missing_notes)}개`,
-          actions: [{ label: "카드 목록에서 보기", onClick: () => nav({ name: "cards", deckId: null, cardIds: s.missing_card_ids }) }],
+          actions: [
+            { label: "정리하기", onClick: () => setTidy(true) },
+            { label: "카드 목록에서 보기", onClick: () => nav({ name: "cards", deckId: null, cardIds: s.missing_card_ids }) },
+          ],
         }]
       : []),
     ...(s.gone > 0 ? [{ key: "gone", icon: "trash" as IconName, title: "내가 지운 노트", desc: "다시 넣지 않아요", right: `${n(s.gone)}개` }] : []),
@@ -565,6 +574,18 @@ function UpdateSummaryView({ s, reviewed, busy, error, onMode, onReview, onLooks
           )}
         </span>
       </div>
+      {tidy && (
+        <TidyMissing
+          cardIds={s.missing_card_ids}
+          onClose={() => setTidy(false)}
+          onDone={(action, r) => {
+            setTidy(false);
+            if (action === "keep") return;
+            toast({ title: action === "delete" ? `노트 ${n(r.notes)}개를 지웠어요` : `카드 ${n(r.cards)}장을 학습 중지했어요`, text: "이 정리는 업데이트 되돌리기에 들어가지 않아요" });
+            onTidied();
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -1339,12 +1360,15 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
   const nav = useNav();
   const sync = useSyncStatus();
   const [undoing, setUndoing] = useState(false);
+  // DU59 새 버전에 없는 노트 정리 (적용 뒤에도 할 수 있다)
+  const [tidy, setTidy] = useState(false);
+  const [tidied, setTidied] = useState<(TidySummary & { action: TidyAction }) | null>(null);
   const [saved, setSaved] = useState<string>();
   const [error, setError] = useState<string>();
   const synced = !!sync?.connected && !!sync.enabled;
   const root = s.roots[0] ?? null;
   const openDeck = () => nav(root !== null ? { name: "deck", deckId: root } : { name: "home" });
-  useKey("Escape", openDeck, !undoing);
+  useKey("Escape", openDeck, !undoing && !tidy);
   const tiles = [
     s.changed + s.merged > 0 && { label: "바꾼 노트", value: n(s.changed + s.merged), sub: [s.changed > 0 && `새 버전 ${n(s.changed)}`, s.merged > 0 && `합친 노트 ${n(s.merged)}`].filter(Boolean).join(" · ") },
     s.conflicts.length > 0 && { label: "충돌", value: n(s.conflicts.length), sub: conflictPicks(s.conflicts).text },
@@ -1389,12 +1413,25 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
       <div className="result__list">
         {s.missing_notes > 0 && (
           <div className="result__row">
-            <Icon name="info" size={20} className="c-warn" />
+            <Icon name={tidied?.action === "delete" ? "trash" : "info"} size={20} className={tidied ? "c-secondary" : "c-warn"} />
             <span className="result__row-text">
-              <span className="t-body-m-strong">새 버전에 없어 그대로 둔 노트 {n(s.missing_notes)}개</span>
-              <span className="t-body-s c-secondary">지우지 않았어요. 카드 · 기록 · 일정 그대로 학습에 나와요.</span>
+              <span className="t-body-m-strong">
+                {tidied?.action === "delete"
+                  ? `새 버전에 없는 노트 ${n(tidied.notes)}개를 지웠어요`
+                  : tidied
+                    ? `새 버전에 없는 노트 ${n(tidied.notes)}개를 학습 중지했어요`
+                    : `새 버전에 없어 그대로 둔 노트 ${n(s.missing_notes)}개`}
+              </span>
+              <span className="t-body-s c-secondary">
+                {tidied?.action === "delete"
+                  ? `카드 ${n(tidied.cards)}장을 지웠어요 · 복습 기록은 학습 통계에 남아요 · 지우기 전 백업은 설정 › 이 기기 백업에 있어요. 이 정리는 업데이트 되돌리기에 들어가지 않아요.`
+                  : tidied
+                    ? `카드 ${n(tidied.cards)}장이 학습에 나오지 않아요 · 카드 목록 [학습 중지 n장 보기]에서 풀 수 있어요. 이 정리는 업데이트 되돌리기에 들어가지 않아요.`
+                    : "지우지 않았어요. 카드 · 기록 · 일정 그대로 학습에 나와요."}
+              </span>
             </span>
-            <Button variant="ghost" size="M" label="카드 목록에서 보기" onClick={() => nav({ name: "cards", deckId: null, cardIds: s.missing_card_ids })} />
+            {!tidied && <Button variant="ghost" size="M" label="정리하기" onClick={() => setTidy(true)} />}
+            {tidied?.action !== "delete" && <Button variant="ghost" size="M" label="카드 목록에서 보기" onClick={() => nav({ name: "cards", deckId: null, cardIds: s.missing_card_ids })} />}
           </div>
         )}
         {s.cloze.renumbered_notes + s.cloze.new_cards + s.cloze.emptied_cards > 0 && (
@@ -1444,6 +1481,16 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; inf
         )}
       </div>
       {undoing && s.batch !== null && <UndoConfirm batch={s.batch} onClose={() => setUndoing(false)} />}
+      {tidy && (
+        <TidyMissing
+          cardIds={s.missing_card_ids}
+          onClose={() => setTidy(false)}
+          onDone={(action, r) => {
+            setTidy(false);
+            if (action !== "keep") setTidied({ ...r, action });
+          }}
+        />
+      )}
       <div className="result__foot">
         <Button variant="ghost" size="M" icon="download" label={saved ?? "결과를 파일로 저장"} onClick={save_} />
         <span className="import__foot-right">
@@ -1468,6 +1515,81 @@ const josa = (parts: (string | false)[]) => {
 const ARCHIVE_TAG = "되돌린_업데이트";
 
 /** 확인 창: 줄마다 앞에 결과 (돌아가요 · 보관해요 · 남겨요). 지우는 것이 없어 주 버튼은 Primary */
+type TidyAction = "suspend" | "delete" | "keep";
+
+/**
+ * DU59 (초안 · 사용자 결정 대기) 새 버전에 없는 노트 정리 확인 창. 디자인 프레임 전, 기존 부품(Modal · 고르기 줄)으로.
+ * 학습 중지(기본, 되돌릴 수 있다) · 지우기(위험, 지우기 전 백업) · 그대로 두기. 노트 · 카드 · 그 사이 공부한 카드 수를 먼저 보인다
+ */
+function TidyMissing({ cardIds, onClose, onDone }: { cardIds: number[]; onClose: () => void; onDone: (action: TidyAction, r: TidySummary) => void }) {
+  const [c, setC] = useState<TidySummary | null>(null);
+  const [action, setAction] = useState<TidyAction>("suspend");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  useKey("Escape", onClose, !busy, { modal: true });
+  useEffect(() => {
+    api.tidyMissingNotes(cardIds, "suspend", true).then(setC, (e) => setError(errorText(e)));
+  }, [cardIds]);
+  const run = async () => {
+    if (action === "keep" || !c) return onDone("keep", c ?? { notes: 0, cards: 0, studied: 0, suspended: 0, backup: null });
+    setBusy(true);
+    try {
+      onDone(action, await api.tidyMissingNotes(cardIds, action, false));
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  };
+  const options: { value: TidyAction; title: string; desc: string }[] = [
+    { value: "suspend", title: "학습 중지 (권장)", desc: "학습에 나오지 않아요 · 카드 목록 [학습 중지 n장 보기]에서 언제든 풀 수 있어요" },
+    {
+      value: "delete",
+      title: "지우기",
+      desc: `노트와 카드를 지워요 · 복습 기록은 학습 통계에만 남아요 · 다음 버전에 다시 있어도 넣지 않아요${c && c.studied > 0 ? ` · 공부한 카드 ${n(c.studied)}장도 지워져요` : ""}`,
+    },
+    { value: "keep", title: "그대로 두기", desc: "지금처럼 카드 · 기록 · 일정 그대로 학습에 나와요" },
+  ];
+  return (
+    <Modal title={c ? `새 버전에 없는 노트 ${n(c.notes)}개를 정리할까요?` : "새 버전에 없는 노트를 정리할까요?"} onClose={onClose} variant="confirm" icon="layers" className="du-tidy">
+      {c && (
+        <p className="t-body-m c-secondary">
+          카드 {n(c.cards)}장 · 그 사이 공부한 카드 {n(c.studied)}장{c.suspended > 0 ? ` · 이미 학습 중지 ${n(c.suspended)}장` : ""}. 만든 사람이 새 버전에서 뺀 노트예요.
+        </p>
+      )}
+      <div className="restore__list" role="radiogroup" aria-label="정리할 방법">
+        {options.map((o) => (
+          <label key={o.value} className={`import__option ${action === o.value ? "is-on" : ""}`}>
+            <input type="radio" name="tidy" checked={action === o.value} onChange={() => setAction(o.value)} />
+            <span className="import__radio" />
+            <span className="import__option-text">
+              <span className={`t-body-m-strong ${o.value === "delete" ? "c-danger" : ""}`}>{o.title}</span>
+              <span className="t-caption c-tertiary">{o.desc}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      <p className="du-line t-caption c-tertiary">
+        <Icon name="info" size={14} />
+        {action === "delete" ? "지우기 전에 이 기기 백업을 먼저 만들어요 · " : ""}이 정리는 [이 업데이트 되돌리기]에 들어가지 않아요
+      </p>
+      {error && <p className="t-body-s c-danger">{error}</p>}
+      <div className="modal__actions">
+        <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+        <Button
+          variant={action === "delete" ? "danger" : "primary"}
+          size="M"
+          icon={action === "delete" ? "trash" : undefined}
+          label={action === "delete" ? `노트 ${n(c?.notes ?? 0)}개 지우기` : action === "keep" ? "그대로 두기" : `카드 ${n(c?.cards ?? 0)}장 학습 중지`}
+          busy={busy}
+          busyLabel="정리하는 중"
+          disabled={!c || (action !== "keep" && c.notes === 0)}
+          onClick={run}
+        />
+      </div>
+    </Modal>
+  );
+}
+
 export function UndoConfirm({ batch, onClose }: { batch: number; onClose: () => void }) {
   const nav = useNav();
   const [u, setU] = useState<UndoSummary | null>(null);
