@@ -104,12 +104,20 @@ pub(crate) fn subtree(con: &Connection, deck_id: i64) -> Res<String> {
     Ok(descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
 }
 
+/// 자료 · 연결 순서는 기기마다 다른 로컬 id 대신 동기화로 같은 값으로 (만든 시각 → uid, Q7). id 는 uid 가 비었을 때만
+const MATERIAL_ORDER: &str = "m.created_at, m.uid, m.id";
+const LINK_ORDER: &str = "l.created_at, l.uid, l.id";
+
 /// 이 덱과 하위 덱에 붙은 자료
 #[tauri::command]
 pub fn source_list(state: State<AppState>, deck_id: i64) -> Res<Vec<Material>> {
     let con = state.db.lock().map_err(err)?;
-    let ids = subtree(&con, deck_id)?;
-    let mut st = con.prepare(&format!("{MATERIAL_SQL} WHERE m.deck_id IN ({ids}) ORDER BY m.id")).map_err(err)?;
+    materials_in(&con, deck_id)
+}
+
+fn materials_in(con: &Connection, deck_id: i64) -> Res<Vec<Material>> {
+    let ids = subtree(con, deck_id)?;
+    let mut st = con.prepare(&format!("{MATERIAL_SQL} WHERE m.deck_id IN ({ids}) ORDER BY {MATERIAL_ORDER}")).map_err(err)?;
     let rows = st.query_map([], material_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     Ok(rows)
 }
@@ -494,10 +502,10 @@ pub(crate) fn segments_of(con: &Connection, material_id: i64) -> Res<Vec<Segment
     let mut st = con.prepare(&format!("{SEGMENT_SQL} WHERE material_id = ?1 ORDER BY page, ord")).map_err(err)?;
     let mut segs: Vec<Segment> = st.query_map([material_id], segment_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     let mut st = con
-        .prepare(
+        .prepare(&format!(
             "SELECT l.segment_id, l.card_id, l.method, l.origin FROM source_link l JOIN source_segment s ON s.id = l.segment_id
-             WHERE s.material_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, l.id",
-        )
+             WHERE s.material_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, {LINK_ORDER}",
+        ))
         .map_err(err)?;
     let mut links: HashMap<i64, Vec<Link>> = HashMap::new();
     for row in st.query_map([material_id], |r| Ok((r.get::<_, i64>(0)?, Link { card_id: r.get(1)?, method: r.get(2)?, origin: r.get(3)? }))).map_err(err)? {
@@ -665,8 +673,10 @@ fn region_cards(con: &mut Connection, deck_id: i64, region: &Region, cards: &[cr
 /// R8 넣을 곳: 같은 자료에서 쪽이 가장 가까운 "카드가 있는 구간"의 카드 덱 (rag 초안 · IT 그림 · 표)
 pub(crate) fn nearest_deck(con: &Connection, material_id: i64, page: i64) -> Res<Option<i64>> {
     con.query_row(
-        "SELECT c.deck_id FROM source_segment s JOIN source_link l ON l.segment_id = s.id AND l.method != 'rejected'
-         JOIN card c ON c.id = l.card_id WHERE s.material_id = ?1 ORDER BY abs(s.page - ?2), s.page, s.ord LIMIT 1",
+        &format!(
+            "SELECT c.deck_id FROM source_segment s JOIN source_link l ON l.segment_id = s.id AND l.method != 'rejected'
+             JOIN card c ON c.id = l.card_id WHERE s.material_id = ?1 ORDER BY abs(s.page - ?2), s.page, s.ord, {LINK_ORDER} LIMIT 1"
+        ),
         params![material_id, page],
         |r| r.get(0),
     )
@@ -706,18 +716,24 @@ pub fn source_segment(state: State<AppState>, segment_id: i64) -> Res<CardSource
 #[tauri::command]
 pub fn source_for_card(state: State<AppState>, card_id: i64) -> Res<Option<CardSource>> {
     let con = state.db.lock().map_err(err)?;
+    for_card(&con, card_id)
+}
+
+fn for_card(con: &Connection, card_id: i64) -> Res<Option<CardSource>> {
     let hit: Option<(i64, i64, String)> = con
         .query_row(
-            "SELECT s.material_id, s.id, l.method FROM source_link l JOIN source_segment s ON s.id = l.segment_id
-             WHERE l.card_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, l.id LIMIT 1",
+            &format!(
+                "SELECT s.material_id, s.id, l.method FROM source_link l JOIN source_segment s ON s.id = l.segment_id
+                 WHERE l.card_id = ?1 AND l.method != 'rejected' ORDER BY l.method = 'manual' DESC, l.score DESC, {LINK_ORDER} LIMIT 1"
+            ),
             [card_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(err)?;
     let Some((material_id, segment_id, method)) = hit else { return Ok(None) };
-    let segment = segments_of(&con, material_id)?.into_iter().find(|s| s.id == segment_id).ok_or("구간을 찾을 수 없어요.")?;
-    Ok(Some(CardSource { material: material(&con, material_id)?, segment, method }))
+    let segment = segments_of(con, material_id)?.into_iter().find(|s| s.id == segment_id).ok_or("구간을 찾을 수 없어요.")?;
+    Ok(Some(CardSource { material: material(con, material_id)?, segment, method }))
 }
 
 /// I1 "분석 뒤에 추가한 카드 N장". 분석 시각을 따로 두지 않고 이 기기의 임베딩 캐시로 센다
@@ -1586,7 +1602,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         let ids = subtree(&con, deck_id)?;
         let cards = card_texts(&con, &ids)?;
         let mut st = con
-            .prepare(&format!("SELECT id, file_name FROM source_material WHERE deck_id IN ({ids}) AND status = 'ready' ORDER BY id"))
+            .prepare(&format!("SELECT m.id, m.file_name FROM source_material m WHERE m.deck_id IN ({ids}) AND m.status = 'ready' ORDER BY {MATERIAL_ORDER}"))
             .map_err(err)?;
         let materials: Vec<(i64, String)> =
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
@@ -2410,5 +2426,39 @@ mod tests {
         assert_eq!(deep.0.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 1, 2, 1]);
         assert_eq!(deep.0[1], (1, "자료구조 요약".to_string(), 2, 3, 2, Some("제목에 '요약'".to_string())));
         assert_eq!(deep.1, vec![("세부 강조".to_string(), 1), ("요약 강조".to_string(), 1)]);
+    }
+
+    #[test]
+    fn order_follows_shared_creation_not_local_id() {
+        // 다른 기기에서 먼저 만든 자료가 동기화로 나중에 들어오면 이 기기의 id 가 더 크다 (Q7). 목록 · 연결 순서는 만든 시각 → uid
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute_batch(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'D', 0, 0);
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, status, created_at, updated_at, uid) VALUES
+               (1, 1, '나중.pdf', 'sources/1.pdf', 'pdf', 'ready', 200, 0, 'b'), (2, 1, '먼저.pdf', 'sources/2.pdf', 'pdf', 'ready', 100, 0, 'a'),
+               (3, 1, '같은 시각.pdf', 'sources/3.pdf', 'pdf', 'ready', 100, 0, '0');
+             INSERT INTO source_segment (id, material_id, page, ord, text, signals, weight) VALUES (1, 2, 1, 0, '가', 'highlight', 3), (2, 2, 2, 0, '나', 'highlight', 3);",
+        )
+        .unwrap();
+        let names: Vec<String> = materials_in(&con, 1).unwrap().into_iter().map(|m| m.file_name).collect();
+        assert_eq!(names, ["같은 시각.pdf", "먼저.pdf", "나중.pdf"]);
+        let nt: i64 = con.query_row("SELECT id FROM note_type WHERE name = 'Basic'", [], |r| r.get(0)).unwrap();
+        for id in [1, 2] {
+            con.execute("INSERT INTO note (id, note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, '[\"q\",\"a\"]', 0, 0)", params![id, nt]).unwrap();
+            con.execute("INSERT INTO card (id, note_id, deck_id, template_ord, created_at, updated_at) VALUES (?1, ?1, 1, 0, 0, 0)", [id]).unwrap();
+        }
+        // 직접 연결 둘: id 는 카드 1 · 2쪽 구간이 먼저지만 만든 것은 카드 2 · 1쪽 구간이 먼저
+        con.execute_batch(
+            "INSERT INTO source_link (id, segment_id, card_id, method, created_at, uid) VALUES (1, 1, 1, 'manual', 300, 'y'), (2, 1, 2, 'manual', 100, 'x'),
+               (3, 2, 1, 'manual', 50, 'w');",
+        )
+        .unwrap();
+        let links: Vec<i64> = segments_of(&con, 2).unwrap()[0].links.iter().map(|l| l.card_id).collect();
+        assert_eq!(links, [2, 1]);
+        // I2 원자료 · 넣을 곳 기본값도 먼저 만든 연결
+        assert_eq!(for_card(&con, 1).unwrap().unwrap().segment.id, 2);
+        con.execute("INSERT INTO deck (id, parent_id, name, created_at, updated_at) VALUES (2, 1, '하위', 0, 0)", []).unwrap();
+        con.execute("UPDATE card SET deck_id = 2 WHERE id = 2", []).unwrap();
+        assert_eq!(nearest_deck(&con, 2, 1).unwrap(), Some(2));
     }
 }
