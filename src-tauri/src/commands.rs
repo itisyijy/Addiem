@@ -1012,6 +1012,11 @@ pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>, sl
 /// update_note 의 본문. values 는 자리 순서 (짧으면 빈 값으로 채운다). 그림 가리기 저장(occlusion::save) · 목록 · 선택형 편집도 같은 길로 카드를 맞춘다.
 /// 일반 유형은 앞면이 새로 비지 않게 된 템플릿의 카드를 만든다 (Anki 처럼 만들기만)
 pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String]) -> Res<()> {
+    save_note_fields_at(tx, note_id, values, now_ms())
+}
+
+/// save_note_fields 를 고친 시각 at 으로 (테스트가 시각을 정한다)
+pub(crate) fn save_note_fields_at(tx: &Connection, note_id: i64, values: &[String], at: i64) -> Res<()> {
     let ntid: i64 = tx.query_row("SELECT note_type_id FROM note WHERE id = ?1", [note_id], |r| r.get(0)).map_err(err)?;
     let nt = notetype::load(tx, ntid)?;
     if values.len() > nt.slots.len() {
@@ -1025,10 +1030,10 @@ pub(crate) fn save_note_fields(tx: &Connection, note_id: i64, values: &[String])
     if nt.native_kind.is_some() && nt.visible().first().is_none_or(|(s, _)| render::is_blank(&values[*s])) {
         return Err("첫 칸을 비울 수 없어요.".into());
     }
-    let now = now_ms();
+    let now = at;
     tx.execute(
         "UPDATE note SET fields = ?2, updated_at = ?3 WHERE id = ?1",
-        params![note_id, serde_json::to_string(&values).map_err(err)?, now],
+        params![note_id, serde_json::to_string(&values).map_err(err)?, db::edit_ms(now)],
     )
     .map_err(err)?;
 
@@ -1439,7 +1444,7 @@ pub(crate) fn unsuspend(con: &mut Connection, card_ids: &[i64], now: i64) -> Res
              WHERE id IN (SELECT note_id FROM card WHERE id IN ({ids})) AND (' ' || tags || ' ') LIKE '% ' || ?1 || ' %'
                AND NOT EXISTS (SELECT 1 FROM card c WHERE c.note_id = note.id AND c.state = 'suspended')"
         ),
-        params![tag, now],
+        params![tag, db::edit_ms(now)],
     )
     .map_err(err)?;
     tx.commit().map_err(err)?;

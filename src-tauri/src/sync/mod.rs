@@ -1519,7 +1519,7 @@ pub(crate) fn use_conflict(c: &Connection, id: i64) -> Result<(), SyncError> {
     if !same_type(other_type.as_deref(), &ty) {
         return Err(store::other(OTHER_TYPE));
     }
-    c.execute("UPDATE note SET fields = ?2, updated_at = ?3 WHERE uid = ?1", rusqlite::params![note, other, crate::db::now_ms()]).map_err(store::other)?;
+    c.execute("UPDATE note SET fields = ?2, updated_at = ?3 WHERE uid = ?1", rusqlite::params![note, other, crate::db::edit_ms(crate::db::now_ms())]).map_err(store::other)?;
     c.execute("UPDATE sync_conflict SET resolved = 1 WHERE id = ?1", [id]).map_err(store::other)?;
     Ok(())
 }

@@ -1292,7 +1292,7 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
     let mut ov: Vec<Option<String>> = (0..len).map(|sl| base.as_ref().and_then(|b| b.value(sl)).map(String::from)).collect();
     let take = |sl: usize| choices.take_new.contains(&o.id) || choices.take_new_fields.contains(&(o.id, sl));
     // DU18: 원본이 없으면 updated_at 의 ms 자리로 가져온 뒤 고쳤는지 본다 (가져올 때는 Anki mod 초 × 1000).
-    // ponytail: 앱에서 저장한 시각의 ms 가 000 이면 (1/1000) 고치지 않은 것으로 본다
+    // 앱이 고친 시각은 정확한 초가 되지 않는다 (db::edit_ms, DU61)
     let touched = o.updated_at % 1000 != 0;
     let (mut new, mut mine) = (0, 0);
     let mut conflicts = vec![];
@@ -1381,7 +1381,7 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
                 exam.0,
                 exam.1,
                 origin,
-                if fields_changed || tags_changed { now } else { o.updated_at }
+                if fields_changed || tags_changed { db::edit_ms(now) } else { o.updated_at }
             ],
         )
         .map_err(err)?;
@@ -1736,7 +1736,7 @@ pub(crate) fn undo(con: &mut Connection, batch: i64, dry: bool) -> Res<UndoSumma
                 let changed = content(&b) != content(&a);
                 tx.execute(
                     "UPDATE note SET fields = ?2, tags = ?3, exam_hits = ?4, exam_names = ?5, origin = ?6, updated_at = CASE WHEN ?8 THEN ?7 ELSE updated_at END WHERE id = ?1",
-                    params![id, b["fields"].as_str(), b["tags"].as_str(), b["exam_hits"].as_i64(), b["exam_names"].as_str(), b["origin"].as_str(), now, changed],
+                    params![id, b["fields"].as_str(), b["tags"].as_str(), b["exam_hits"].as_i64(), b["exam_names"].as_str(), b["origin"].as_str(), db::edit_ms(now), changed],
                 )
                 .map_err(err)?;
                 s.reverted_notes += changed as usize;
@@ -1752,7 +1752,7 @@ pub(crate) fn undo(con: &mut Connection, batch: i64, dry: bool) -> Res<UndoSumma
                     s.archived_note_cards += rest.len() + if KEEP_STUDIED { 0 } else { kept.len() };
                     tx.execute(
                         "UPDATE note SET tags = trim(tags || ' ' || ?2), updated_at = ?3 WHERE id = ?1 AND (' ' || tags || ' ') NOT LIKE '% ' || ?2 || ' %'",
-                        params![id, ARCHIVE_TAG, now],
+                        params![id, ARCHIVE_TAG, db::edit_ms(now)],
                     )
                     .map_err(err)?;
                 }
@@ -2279,6 +2279,29 @@ mod tests {
         assert_eq!(fields(&s, "g1"), ["사과", "apple", "과일", "메모2"], "숨긴 자리에 새 값 (Q2-13), 없어진 필드 값은 그대로");
         assert_eq!(fields(&s, "g2"), ["배", "pear", "", ""]);
         assert_eq!(q::<String>(&s, "SELECT group_concat(template_ord) FROM card WHERE note_id = (SELECT id FROM note WHERE anki_guid = 'g1')"), "0,2");
+    }
+
+    #[test]
+    fn app_edit_at_a_whole_second_still_counts_as_touched() {
+        // DU61: 원본 없는 예전 노트를 앱에서 정확한 초(…000 ms)에 고쳐도 고친 흔적으로 본다. 전에는 ms 자리가 0 이라
+        // 고치지 않은 노트로 보고 내 수정을 만든 사람의 새 버전으로 말없이 덮었다 (legacy_notes_and_types_without_origin 간헐 실패)
+        assert_eq!((db::edit_ms(1_792_000_000_000), db::edit_ms(1_792_000_000_123)), (1_792_000_000_001, 1_792_000_000_123));
+        let t = tmp("wholesec");
+        let s = state(&t.0.join("data"));
+        let (p1, p2) = (t.0.join("v1.apkg"), t.0.join("v2.apkg"));
+        testpkg::write(&p1, &[basic(false)], &[(1, "D")], &[note(1, "ga", 7, &["A", "a"], &[(1, 0)])], &[]);
+        import(&s, &p1);
+        s.db.lock().unwrap().execute_batch("UPDATE note SET origin = NULL; UPDATE note_type SET origin = NULL;").unwrap();
+        {
+            let id = id_of(&s, "ga");
+            let con = s.db.lock().unwrap();
+            crate::commands::save_note_fields_at(&con, id, &["A".into(), "a (내 것)".into()], 1_792_000_000_000).unwrap();
+        }
+        assert_ne!(q::<i64>(&s, "SELECT updated_at FROM note WHERE anki_guid = 'ga'") % 1000, 0);
+        testpkg::write(&p2, &[basic(false)], &[(1, "D")], &[note(1, "ga", 7, &["A", "a2"], &[(1, 0)])], &[]);
+        let r = update(&s, &p2, &Choices::default(), false);
+        assert_eq!((r.changed, r.conflicts.len()), (0, 1), "고친 노트라 충돌 (덮지 않는다)");
+        assert_eq!(fields(&s, "ga")[1], "a (내 것)");
     }
 
     #[test]
