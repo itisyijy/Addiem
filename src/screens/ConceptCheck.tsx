@@ -5,13 +5,15 @@
 import "../styles/concept.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { errorText } from "../api";
+import { errorText, stoppedDownload } from "../api";
 import { useToast } from "../toast";
 import { Badge, Button, Icon, Spinner, type IconName } from "../ui";
 import { Modal } from "./NewDeck";
 import { llm, written as writtenApi, type Concept, type LlmStatus, type Relation } from "../written";
 
 const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)}GB`;
+/** 받는 중 진행: 0.1GB 미만은 MB ("12MB / 1.1GB") */
+const amount = (bytes: number) => (bytes < 1e8 ? `${Math.round(bytes / 1e6)}MB` : gb(bytes));
 
 // 상태는 설정 칸과 학습 화면이 같이 본다. 받거나 지우면 refreshLlm()
 let status: LlmStatus | null = null;
@@ -98,7 +100,7 @@ function LlmRow() {
   const sub = !ok
     ? `${s.cpu_ok ? "이 설치에는 개념 관계 확인 엔진이 없어 쓸 수 없어요." : "이 PC의 CPU가 빠른 계산(AVX2)을 지원하지 않아 쓸 수 없어요."} 서술형 핵심어 검사와 ChatGPT 채점 보조는 그대로 쓸 수 있어요.`
     : loading
-      ? `내려받고 있어요 · ${gb(loading.done)} / ${gb(loading.total)} · 다 받으면 이 기기 안에서만 돌아요`
+      ? `내려받고 있어요 · ${amount(loading.done)} / ${amount(loading.total)} · 다 받으면 이 기기 안에서만 돌아요`
       : s.ready
         ? `${s.short} · 약 ${gb(s.bytes)} · 실험 기능${s.last_ms ? ` · 지난 확인은 ${Math.max(1, Math.round(s.last_ms / 1000))}초 걸렸어요` : ""}`
         : "서술형 답이 원인 → 결과, 비교, 순서 같은 관계를 맞게 말했는지 이 기기 안에서 살펴봐요. 받지 않아도 핵심어 검사는 그대로예요.";
@@ -110,7 +112,7 @@ function LlmRow() {
             개념 관계 확인 모델 · 실험 기능 {!ok && <Badge>이 PC에서는 쓸 수 없어요</Badge>}
           </span>
           <span className="t-body-s c-secondary">{sub}</span>
-          {error && <span className="t-body-s c-danger">{error}</span>}
+          {error && <span className={`t-body-s ${stoppedDownload(error) ? "c-secondary" : "c-danger"}`}>{error}</span>}
         </span>
         {!ok ? (
           s.ready && <Button variant="ghost" size="M" icon="trash" label={`지우기 · ${gb(s.bytes)} 비우기`} onClick={() => setAsking("delete")} />

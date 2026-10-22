@@ -1058,3 +1058,6 @@ export const syncApi = {
 export function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : "알 수 없는 오류가 났어요.";
 }
+
+/** 사용자가 [멈추기]를 눌러 끝난 모델 받기 (dl.rs STOPPED). 오류가 아니라 회색으로 보인다 (J18) */
+export const stoppedDownload = (e?: string) => !!e?.startsWith("내려받기를 멈췄어요");

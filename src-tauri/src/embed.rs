@@ -153,11 +153,7 @@ fn download(dir: &Path, base: &str, progress: impl Fn(u64, u64)) -> Res<()> {
             continue;
         }
         let part = dir.join(format!("{name}.part"));
-        let res = crate::dl::fetch(&format!("{base}/{name}"), size, sha, &part, &|| CANCEL.load(Ordering::SeqCst), |got| progress(done + got, total));
-        if res.is_err() {
-            let _ = std::fs::remove_file(&part);
-        }
-        res?;
+        crate::dl::fetch(&format!("{base}/{name}"), size, sha, &part, &|| CANCEL.load(Ordering::SeqCst), |got| progress(done + got, total))?;
         std::fs::rename(&part, &path).map_err(err)?;
         done += size;
     }

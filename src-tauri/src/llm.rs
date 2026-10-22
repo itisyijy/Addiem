@@ -288,13 +288,9 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
             continue;
         }
         let part = dir.join(format!("{}.part", f.name));
-        let res = crate::dl::fetch(&url_of(f), f.size, f.sha, &part, &|| CANCEL.load(Ordering::SeqCst), |got| {
+        crate::dl::fetch(&url_of(f), f.size, f.sha, &part, &|| CANCEL.load(Ordering::SeqCst), |got| {
             let _ = app.emit("llm-progress", DownloadProgress { done: done + got, total });
-        });
-        if res.is_err() {
-            let _ = std::fs::remove_file(&part);
-        }
-        res?;
+        })?;
         std::fs::rename(&part, &path).map_err(err)?;
         done += f.size;
     }

@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 const IDLE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
 pub const STALLED: &str = "연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 pub const OFFLINE: &str = "모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
+/// 사용자가 멈췄다 (화면은 이 말로 시작하면 오류가 아니라 회색으로 보인다)
+pub const STOPPED: &str = "내려받기를 멈췄어요";
 /// 버린 연결을 읽던 스레드가 늦어도 끝나는 때 (본문 전체 제한). 느린 회선의 1.1GB 도 넉넉히
 /// ponytail: 버린 스레드는 이때까지 소켓 하나를 쥘 수 있다. 문제가 되면 연결을 직접 닫는 Transport 로
 const STRAY: Duration = Duration::from_secs(6 * 3600);
@@ -36,8 +38,16 @@ enum Msg {
     End(Result<(), String>),
 }
 
-/// url 을 part 에 받고 크기 · SHA-256 을 맞춘다. progress(받은 바이트)는 1MiB 마다. 실패하면 part 는 부른 쪽이 지운다
-pub fn fetch(url: &str, size: u64, sha: &str, part: &Path, cancel: &dyn Fn() -> bool, mut progress: impl FnMut(u64)) -> Result<(), String> {
+/// url 을 part 에 받고 크기 · SHA-256 을 맞춘다. progress(받은 바이트)는 1MiB 마다. 실패하면 part 를 지운다
+pub fn fetch(url: &str, size: u64, sha: &str, part: &Path, cancel: &dyn Fn() -> bool, progress: impl FnMut(u64)) -> Result<(), String> {
+    let res = fetch_into(url, size, sha, part, cancel, progress);
+    match res {
+        Err(e) if std::fs::remove_file(part).is_ok() && e == STOPPED => Err(format!("{STOPPED} · 받던 파일은 지웠어요")),
+        res => res,
+    }
+}
+
+fn fetch_into(url: &str, size: u64, sha: &str, part: &Path, cancel: &dyn Fn() -> bool, mut progress: impl FnMut(u64)) -> Result<(), String> {
     let mut file = std::fs::File::create(part).map_err(|e| e.to_string())?;
     let mut h = Sha256::new();
     let (mut got, mut last) = (0u64, 0u64);
@@ -54,7 +64,7 @@ pub fn fetch(url: &str, size: u64, sha: &str, part: &Path, cancel: &dyn Fn() -> 
     });
     match res {
         Ok(()) => {}
-        Err(Fail::Cancelled) => return Err("내려받기를 멈췄어요.".into()),
+        Err(Fail::Cancelled) => return Err(STOPPED.into()),
         Err(Fail::Stalled) => return Err(STALLED.into()),
         Err(Fail::Net(e)) => {
             eprintln!("[dl] {url} 받기 실패: {e}");
@@ -185,7 +195,10 @@ pub mod tests {
         let part = std::env::temp_dir().join(format!("na-dl-test-{}.part", std::process::id()));
         assert_eq!(fetch(&format!("http://127.0.0.1:{port}/x"), 10, "", &part, &|| false, |_| {}), Err(OFFLINE.into()));
         assert_eq!(fetch(&server(1000, 1000, Duration::from_millis(10)), 1000, "00", &part, &|| false, |_| {}), Err("받은 모델 파일이 원본과 달라요. 다시 시도해 주세요.".into()));
-        let _ = std::fs::remove_file(&part);
+        assert!(!part.exists(), "실패하면 받던 파일을 지운다");
+        // 사용자가 멈췄으면 지웠다고 알린다 (화면은 회색)
+        assert_eq!(fetch(&server(1000, 10, Duration::from_secs(5)), 1000, "", &part, &|| true, |_| {}), Err(format!("{STOPPED} · 받던 파일은 지웠어요")));
+        assert!(!part.exists());
     }
 
     #[test]

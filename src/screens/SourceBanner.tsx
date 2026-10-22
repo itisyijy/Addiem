@@ -3,7 +3,7 @@
 import "../styles/sources.css";
 import { useEffect, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { errorText, type BoardDeck } from "../api";
+import { errorText, stoppedDownload, type BoardDeck } from "../api";
 import { Button, Icon } from "../ui";
 import { n } from "../nav";
 import { mb, refreshModel, sourceApi, useModel } from "../sourceApi";
@@ -153,7 +153,7 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
         <Icon name={icon} size={18} className="c-accent" />
       </span>
       {body}
-      {error && <span className="t-caption c-danger src-banner__error">{error}</span>}
+      {error && <span className={`t-caption src-banner__error ${stoppedDownload(error) ? "c-secondary" : "c-danger"}`}>{error}</span>}
     </div>
   );
 }
