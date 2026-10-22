@@ -1,184 +1,169 @@
 # Neo-Anki
 
-Anki가 복습 시점을 관리한다면, Neo-Anki는 시험일까지의 완주 전략을 관리합니다.
+Anki가 복습 시점을 관리한다면, Neo-Anki는 시험일까지의 완주 전략을 관리해요.
 
-Neo-Anki는 시험 목표와 카드 품질을 함께 관리해, 사용자가 제한된 시간 안에 핵심 내용을 효율적으로 암기하도록 돕는 Anki 호환 학습 시스템입니다.
+![Neo-Anki 홈 화면과 학습 화면](docs/images/readme/hero.png)
 
-## Documentation
+Windows용 데스크톱 앱 · 버전 0.1.0 · Anki 덱 호환 · 이 기기에 저장
 
-- [Anki 장기 사용자 인터뷰](docs/user-research/anki-power-user-interview.md)
-- [Neo-Anki 제품 방향](docs/product/product-direction.md)
-- [Neo-Anki MVP 범위](docs/product/mvp-scope.md)
-- [Neo-Anki MVP 화면 흐름](docs/product/mvp-screen-flow.md)
-- [MVP 다음 단계: 원자료 기반 중요도 판정](docs/product/post-mvp-source-analysis.md)
+## 소개
 
-### 설계
+Neo-Anki는 시험 목표와 카드 품질을 함께 관리해, 정해진 기간 안에 핵심 내용부터 외우도록 돕는 Anki 호환 학습 앱이에요.
 
-- [ADR 0001. 기술 스택과 책임 경계](docs/adr/0001-tech-stack.md)
-- [데이터 모델](docs/engineering/data-model.md) — 정본은 [`db/schema.sql`](db/schema.sql)
-- [오늘의 학습 큐 명세](docs/engineering/study-queue-spec.md)
+- **쓰던 Anki 덱을 이어서 써요.** `.apkg` · `.colpkg`를 가져오고, 복습 기록도 함께 옮길 수 있어요. 새 덱을 만들어 바로 시작해도 돼요.
+- **덱마다 시험일과 중요도를 정해요.** 남은 날짜와 핵심 · 일반 · 보충 중요도에 맞춰 오늘 볼 카드를 골라 줘요. 복습 간격은 검증된 FSRS로 계산해요.
+- **강의 자료와 카드를 이어요.** PDF · PPTX의 강조와 목차를 읽어, 카드가 어디서 나왔는지 학습 중에 바로 열어 볼 수 있어요.
+- **이 기기에 저장해요.** 계정이 없어도 되고, 학습 · 가져오기 · 카드 점검은 인터넷 없이 돼요. Google Drive 동기화와 ChatGPT 연결은 켜고 싶을 때만 켜요.
+- **바꾸기 전에 보여 줘요.** 중요도 제안 · 서식 고치기 · 덱 업데이트는 바뀌는 것을 먼저 보여 주고, 확정은 직접 해요. 고친 것은 되돌릴 수 있어요.
+
+## 주요 기능
+
+### 학습
+
+홈에서 오늘 남은 카드(복습 · 신규)와 덱별 분량을 보고 [오늘 학습 시작]을 누르면 돼요. 평가는 Again · Hard · Good · Easy 네 가지이고, 키보드만으로도 한 번의 학습을 끝낼 수 있어요(단축키는 설정에서 바꿔요).
+
+- 같은 학습에서 Again을 두 번 받은 카드는 잠깐 접어 두고 나머지를 먼저 봐요. 어려운 카드 하나가 오늘 진도를 막지 않아요.
+- 카드 종류: 기본 · 앞뒤 · 빈칸 · 서술형 · 목록 회상 · 선택형 · 그림 가리기. 소리 재생, Anki `{{tts}}` 읽어주기, 수식(KaTeX)도 돼요.
+- 화면 테마는 밝게 · 어둡게 · 시스템 따름 중에서 골라요.
+
+<p>
+  <img src="docs/images/readme/home.png" alt="오늘 남은 카드와 덱별 오늘 학습량이 보이는 홈" width="49%">
+  <img src="docs/images/readme/home-dark.png" alt="어두운 테마의 홈" width="49%">
+</p>
+
+### 계획과 시험
+
+덱에 시험일을 정하면 남은 신규 카드를 남은 날로 나눠 하루 분량을 정해요(예: 남은 신규 5장 ÷ 21일 = 하루 1장). 계산식과 진행률을 숨기지 않고 보여 줘요.
+
+- 학습 계획: 날짜별 복습 · 신규 예상, 실제 속도에 맞춰 매일 다시 나누기, 평일 · 주말 공부 시간, 여러 덱의 시험일이 겹칠 때 조정.
+- 시험 전 회독(시험 14일 전부터): 핵심 · 약한 챕터 · 불안한 카드만 빠르게 도는 **압축**, 범위 전체를 돌며 약한 카드를 끼워 넣는 **혼합** 중에서 골라요.
+- 기출 표시: 카드나 자료 구간에 어느 시험에 나왔는지 달아 두면, 같은 중요도 안에서 기출 카드를 먼저 배워요.
+
+![D-21 목표 카드와 오늘 남은 분량이 보이는 덱 화면](docs/images/readme/deck-goal.png)
+
+### 원자료와 중요도
+
+강의 PDF · PPTX를 덱에 넣으면 하이라이트 · 밑줄 · 붉은 글씨 · 굵은 글씨 · ★ 표시를 **강조 구간**으로, 제목 구조를 **목차**로 읽어요. 제목에 '요약' · '핵심' 같은 낱말이 있거나 제목이 하이라이트 · 밑줄 · 붉은 글씨 · ★로 강조된 구간은 **핵심 범위**로 제안해요(제안이에요. 확정은 중요도 정하기에서 해요).
+
+- 강조 구간을 카드와 이으면, 학습 중 [연결 자료] 버튼(단축키 S)으로 그 쪽을 바로 열어 봐요.
+- 카드가 이어지지 않은 강조 구간(미연결 강조 구간)을 모아 보여 줘서 빠뜨린 범위를 찾기 쉬워요.
+- PDF의 그림 · 표 영역을 잡아 그림 카드나 그림 가리기 카드로 만들 수 있어요.
+
+<p>
+  <img src="docs/images/readme/source-outline.png" alt="PDF 목차와 핵심 범위 제안이 보이는 학습 자료 화면" width="49%">
+  <img src="docs/images/readme/study-source.png" alt="답 면 옆에 연결 자료 패널이 열린 학습 화면" width="49%">
+</p>
+
+중요도는 카드가 아니라 하위 덱 단위로 정해요. 가져온 태그(`중요도::최우선` 등), 하위 덱 이름('요약' · '부록' 등), 자료 · 기출 표시를 근거로 초기 배치를 제안하고, 칩에 마우스를 올리면 이유를 한 줄로 보여 줘요. 직접 확정한 값은 자동 제안이 덮어쓰지 않아요.
+
+![하위 덱을 핵심 · 일반 · 보충으로 나눈 중요도 정하기 화면](docs/images/readme/importance.png)
+
+### 카드 품질
+
+계속 틀리는 이유가 기억이 아니라 카드 모양일 때가 있어요. 카드 점검은 규칙으로 이런 카드를 찾아요(기기 안에서 바로).
+
+- 답이 너무 긴 카드, 질문이 여러 개인 카드 → [나누기 제안]. 최근 14일에 Again을 2번 이상 받은 긴 카드는 따로 모아 보여 줘요
+- 질문과 답이 안 맞아 보이는 카드(예: "차이"를 묻는데 답이 낱말 하나) → 근거 한 줄과 함께 표시
+- 한 줄에 이어 쓴 번호 · 항목 → [서식 고치기]: 글자는 그대로 두고 줄바꿈 · 굵게만 바꿔요
+
+고치기 전에 지금 카드와 고친 카드를 나란히 보여 주고, 고친 뒤 7일 동안 되돌릴 수 있어요.
+
+![지금 카드와 고친 카드를 나란히 비교하는 서식 고치기 창](docs/images/readme/card-check.png)
+
+### 서술형 채점
+
+서술형 카드는 답을 직접 써 보고 [답과 비교하기]를 눌러요. 등록한 핵심어가 내 답에 있는지 표시하고, 핵심어 기준으로 평가를 추천해요. 최종 평가는 직접 골라요.
+
+- **개념 관계 확인 (실험 기능):** 설정 › 서술형 채점에서 모델(약 1.1GB)을 받으면, 모범 답안의 관계(원인 → 결과 등)를 내 답에서 찾아 '맞아 보여요 · 안 보여요'처럼 보여 줘요. 이 기기 안에서만 돌고, 참고용이라 틀릴 수 있어서 평가 추천에는 쓰지 않아요. AVX2를 지원하는 CPU에서만 쓸 수 있어요.
+- ChatGPT를 연결했다면 [ChatGPT로 채점 보조]로 의미를 한 번 더 확인할 수 있어요.
+
+![핵심어 확인, 내 답과 모범 답안 비교, 개념 관계 결과가 보이는 서술형 카드](docs/images/readme/written-answer.png)
+
+### 노트 유형
+
+카드를 만드는 틀(노트 유형)을 직접 만들고 고쳐요. **쉬운 편집**에서는 필드를 끌어 앞면 · 뒷면에 놓고 크기 · 정렬을 고르고, 실제 노트로 미리보기를 봐요. HTML · CSS를 직접 고치려면 **HTML** 탭을 써요. 카드 종류(예: 단어 → 뜻, 뜻 → 단어)를 더하면 노트 하나에서 카드가 한 장씩 더 생겨요.
+
+![필드, 앞면 · 뒷면 배치, 미리보기가 보이는 노트 유형 편집기](docs/images/readme/note-type-editor.png)
+
+### Anki 호환과 덱 업데이트
+
+- 가져오기: Anki `.apkg` · `.colpkg`(덱 구조 · 노트 유형 · 태그 · 미디어 · 복습 기록), JSON, CSV. 처리하지 못한 항목은 조용히 버리지 않고 결과 화면에 알려 줘요. 원본 파일은 읽기만 해요.
+- 내보내기: 덱을 `.apkg`(복습 기록 포함 여부 선택)나 CSV로 내보내요.
+- **덱 업데이트:** 이미 가져온 덱의 새 버전 파일을 받으면 [업데이트로 가져오기]를 권해요. 만든 사람이 고친 노트는 새 버전으로 바꾸고, 내가 고친 필드와 복습 기록 · 일정은 지켜요. 같은 필드를 둘 다 고친 충돌은 나란히 보고 골라요. 적용 전에 백업을 만들고, 나중에 이 업데이트만 되돌릴 수도 있어요.
+
+![새 버전으로 바뀌는 노트, 충돌, 새 노트를 먼저 보여 주는 업데이트 요약](docs/images/readme/deck-update.png)
+
+JSON으로 카드를 만들 때는 [JSON 일괄 가져오기 형식](docs/engineering/json-import-format.md)을 보세요.
+
+### Google Drive 동기화
+
+내 Google Drive에 자동으로 백업하고, 다른 컴퓨터에서도 같은 덱 · 카드 · 복습 기록으로 이어서 공부해요. Neo-Anki 서버를 거치지 않아요.
+
+- 권한은 두 가지뿐이에요: Neo-Anki가 만든 파일만(`drive.file`), 앱 전용 폴더(`drive.appdata`). 내 Drive의 다른 파일은 보지 않아요.
+- [암호로 잠그기]를 켜면 이 기기에서 암호화한 뒤 올려서 Google도 내용을 볼 수 없어요. 암호를 잊으면 Drive에 올린 데이터는 열 수 없어요(이 기기 데이터는 남아요).
+- 연결을 끊어도 이 기기 데이터는 그대로예요. Drive 없이 쓸 때는 설정 › 이 기기 백업에서 백업 파일을 만들고 복구해요.
+
+### 선택 AI (ChatGPT)
+
+ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술형 채점 보조, 비슷한 내용끼리 나누기, 선택형 오답 보기 제안, 카드 점검의 질문 · 답 확인을 쓸 수 있어요. 내 ChatGPT 요금제를 쓰고, Neo-Anki에는 추가 요금이 없어요. 버튼을 직접 누를 때만 요청을 보내요. 연결하지 않아도 나머지 기능은 쓸 수 있어요.
+
+![Google Drive 연결과 ChatGPT 연결 칸이 보이는 설정 화면](docs/images/readme/settings-drive-ai.png)
+
+## 설치
+
+**필요한 것**
+
+- Windows 10 · 11 (64비트)
+- Microsoft Edge WebView2 런타임. Windows 11에는 들어 있어요. 없으면 설치 중에 내려받아요(인터넷 필요).
+
+**설치 파일:** `Neo-Anki_0.1.0_x64-setup.exe`
+
+> 내려받는 곳은 첫 배포 때 여기에 적어요.
+
+1. 설치 파일을 실행해요. 관리자 권한 없이 지금 사용자 계정에 설치돼요(`%LOCALAPPDATA%\Neo-Anki`). 설치 화면은 Windows 표시 언어에 따라 한국어 또는 영어로 보여요.
+2. 아직 코드 서명이 없어서 "Windows의 PC 보호" 파란 창이 뜰 수 있어요. [추가 정보] → [실행]을 눌러요.
+3. 시작 메뉴에서 Neo-Anki를 열어요.
+
+- **업데이트:** 자동 업데이트는 없어요. 새 버전 설치 파일로 다시 설치해요. 학습 데이터는 지워지지 않아요. 지금 버전은 설정 화면 맨 아래에 보여요.
+- **지우기:** Windows 설정 › 앱에서 Neo-Anki를 제거해요. 학습 데이터는 남아요. 데이터까지 지우려면 제거 창에서 [애플리케이션 데이터 삭제하기]를 체크해요.
+- 백신(Microsoft Defender 등)이 개념 관계 확인 엔진(`llm\neoanki-llm.exe`)을 막거나 지우면 그 기능만 꺼지고(설정 › 서술형 채점에 "이 설치에는 개념 관계 확인 엔진이 없어 쓸 수 없어요"), 핵심어 채점과 나머지 기능은 계속 쓸 수 있어요.
+
+## 시작하기
+
+1. 처음 화면에서 [새 덱 만들기]로 이름만 정해 덱을 만들거나, [가져오기]로 쓰던 Anki 덱(`.apkg` · `.colpkg`)이나 JSON · CSV 파일을 가져와요.
+2. 덱 화면의 [목표 및 학습 설정]에서 시험일을 정해요. 정하지 않으면 시험일 없는 덱으로 계속 복습해요.
+3. [중요도 조정]에서 제안된 핵심 · 일반 · 보충 배치를 확인하고, 틀린 것만 옮겨요. 건너뛰어도 학습은 돼요.
+4. 강의 PDF · PPTX가 있으면 덱 화면의 [자료]에서 추가해요.
+5. 홈에서 [오늘 학습 시작]을 누르거나 Enter 키를 눌러요.
+
+## 데이터와 개인정보
+
+- 덱 · 카드 · 복습 기록 · 미디어 · 추가한 자료는 이 기기에 저장돼요(`%APPDATA%\io.github.itisyijy.neoanki`). Neo-Anki 서버는 없어요.
+- 인터넷은 아래 경우에만 써요. 모두 직접 켜거나 눌렀을 때예요.
+  - **Google Drive 동기화:** 덱 · 카드 · 복습 기록 · 설정과 그림 · 미디어를 올려요. `drive.file` · `drive.appdata` 권한만 쓰고, 원자료 파일(PDF · PPTX)과 모델 파일은 올리지 않아요.
+  - **ChatGPT (선택 AI):** 그때 화면에 보여 준 카드 글자와 자료 구간 발췌만 OpenAI로 보내요. 원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름은 보내지 않아요.
+  - **모델 내려받기:** 분석 모델(multilingual-e5-small, 약 490MB, 비슷한 카드 찾기 · 자료와 카드 자동 연결)과 개념 관계 확인 모델(Qwen2.5-1.5B-Instruct 4비트, 약 1.1GB)은 [내려받기]를 누를 때만 Hugging Face에서 받아요. 파일마다 크기와 SHA-256을 확인하고, 받은 뒤에는 이 기기 안에서만 돌아요.
+- Google · ChatGPT 로그인 정보와 동기화 잠금 키는 Windows 자격 증명 관리자에만 저장해요.
+- 읽어주기는 이 기기 안의 음성으로 읽어요.
+
+## 알려진 제한
+
+- **코드 서명이 없어요.** 설치 파일과 앱을 처음 열 때 SmartScreen 경고가 떠요(위 [설치](#설치) 참고).
+- **Windows만 지원해요.** macOS · Linux · 모바일 앱은 없어요.
+- **자동 업데이트가 없어요.** 새 버전은 설치 파일을 다시 받아 설치해요.
+- **Google 로그인은 아직 등록한 테스트 사용자만 돼요.** Google OAuth 동의 화면을 공개로 게시하기 전까지는 Drive 동기화를 쓸 수 있는 계정이 정해져 있어요.
+- **개념 관계 확인은 실험 기능이에요.** 참고용이고 틀릴 수 있어요. 약 1.1GB를 따로 받아야 하고, AVX2 · FMA · F16C를 지원하는 CPU에서만 돌아요.
+- Anki 애드온은 지원하지 않고, 카드 템플릿의 스크립트(JavaScript)는 실행하지 않아요. 그런 카드가 있으면 가져오기 결과에 알려 줘요.
+- AnkiWeb과 직접 동기화하지 않아요. Anki와는 `.apkg` 파일로 주고받아요.
+
+## 문서
+
+- [제품 방향](docs/product/product-direction.md) · [MVP 범위](docs/product/mvp-scope.md) · [MVP 화면 흐름](docs/product/mvp-screen-flow.md)
 - [JSON 일괄 가져오기 형식](docs/engineering/json-import-format.md)
-- [UI 문구 기준](docs/design/copy-guide.md) — 용어표와 톤·배치 규칙. 근거는 [UI 문구 이해도 검토](docs/design/ui-copy-review.md)
+- [덱 업데이트](docs/engineering/deck-update.md) · [노트 유형](docs/engineering/note-types.md) · [Google Drive 동기화 설계](docs/engineering/drive-sync.md)
+- [UI 문구 기준](docs/design/copy-guide.md)
+- [개발 문서](docs/engineering/development.md) — 빌드 · 실행 · 확인 · 배포 체크리스트 · 구조 · 도구
 
-### 스파이크
+## 라이선스
 
-- [1. Anki 패키지 구조 실측](docs/engineering/spike-01-apkg-parsing.md)
-- [5. FSRS 적합성](docs/engineering/spike-05-fsrs.md)
-
-### 검토 대기
-
-- [검토 대기 결정 목록](docs/DECISIONS-PENDING-REVIEW.md)
-
-## 개발 환경
-
-언어마다 프로젝트 안에서 버전을 고정한다. 전역에 설치하는 것은 언어 런타임과 rustup뿐이다.
-
-| 언어 | 고정 장치 | 버전 |
-|---|---|---|
-| Python | `.venv/` + [`requirements.txt`](requirements.txt) | 3.12 |
-| Rust | [`rust-toolchain.toml`](rust-toolchain.toml). 이 폴더 안에서 rustup이 자동으로 이 버전을 쓴다 | 1.99.0 |
-| Node | `package.json` 의 `engines` + `package-lock.json` | 24 |
-
-### 필요한 것
-
-| 도구 | 확인 |
-|---|---|
-| Python 3.12 | `python --version` |
-| Node 24 | `node --version` |
-| Rust (rustup) | `rustc --version`. 없으면 [rustup.rs](https://rustup.rs) |
-| MSVC C++ 빌드 도구 | Visual Studio 2022의 "C++를 사용한 데스크톱 개발" |
-| WebView2 | Windows 11에는 기본 포함 |
-
-Tauri 기준으로 한 번에 점검하려면 이렇게 한다.
-
-```bash
-npx @tauri-apps/cli@2 info
-```
-
-### 처음 한 번
-
-```powershell
-npm install
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-```
-
-Rust는 따로 할 일이 없다. 이 폴더에서 `cargo` 를 처음 실행하면 `rust-toolchain.toml` 의 버전이 자동으로 설치된다.
-
-### 앱 실행
-
-```powershell
-npm run tauri dev       # 개발 모드. 프론트엔드는 저장하면 바로 반영, Rust는 다시 컴파일
-npm run tauri build     # NSIS 설치 파일 생성 (src-tauri/target/release/bundle/nsis/)
-```
-
-데이터는 `%APPDATA%\io.github.itisyijy.neoanki\` 에 저장된다 (DB, `media/`, `backups/`). 다른 폴더로 시험하려면 환경 변수 `NEOANKI_DATA_DIR` 을 지정한다.
-
-```powershell
-$env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm run tauri dev
-```
-
-### 읽어주기 음성 (빌드)
-
-Anki `{{tts}}` 읽어주기는 설치 파일에 들어 있는 Supertonic 3 음성(fp32 · 목소리 F1, OpenRAIL-M)과 ONNX Runtime 1.31.0(MIT)으로 이 기기에서 읽는다. 약 400MB라 저장소에는 없다. 빌드 전에 `src-tauri/resources/tts/`(gitignore)를 채운다. 파일마다 SHA-256 을 확인한다.
-
-```powershell
-pwsh -File tools\fetch_tts.ps1             # %LOCALAPPDATA%\neoanki-dev\tts 에 받아 둔 파일을 복사 (-Source 로 다른 폴더)
-pwsh -File tools\fetch_tts.ps1 -Download   # 받아 둔 것이 없으면 Hugging Face 고정 리비전 · ONNX Runtime GitHub 릴리스에서 받는다
-```
-
-폴더가 비어 있어도 `cargo build` · `npm run tauri dev` · CI 는 그대로 돈다(`build.rs` 가 빈 폴더를 만든다). 그 빌드의 읽어주기는 OS 음성(Windows 설정 › 시간 및 언어 › 음성)으로만 읽는다. 실제 모델로 한 문장 읽어 보는 시험은 `cd src-tauri; cargo test tts -- --ignored --nocapture`.
-
-### 서술형 개념 관계 확인 엔진 (8.3)
-
-서술형 답의 개념 관계를 이 기기에서 살펴보는 실험 기능은 추론을 보조 실행 파일 `neoanki-llm.exe`(`src-tauri/llm`, candle)가 한다. 본체는 AVX2 없이 빌드해 모든 CPU 에서 돌고, 엔진만 AVX2 로 빌드한다(candle 의 양자화 계산은 컴파일 때만 AVX2 를 켠다). 본체는 CPU 가 AVX2 · FMA · F16C 를 지원하고, 앱 리소스 폴더의 엔진 파일이 빌드 때 잰 크기 · SHA-256 과 같을 때만 띄운다. 모델(Qwen2.5-1.5B-Instruct 4비트, 약 1.1GB)은 설치 파일에 넣지 않고 설정 › 서술형 채점에서 사용자가 받는다.
-
-```powershell
-pwsh -File tools\build_llm.ps1             # RUSTFLAGS +avx2,+fma,+f16c 로 따로 빌드해 src-tauri/resources/llm/ 에 넣는다 (gitignore)
-```
-
-엔진이 없어도 `cargo build` · `npm run tauri dev` · CI 는 그대로 돈다(`build.rs` 가 빈 폴더를 만들고, 앱은 "이 설치에는 엔진이 없어요"로 핵심어 채점만 한다). **릴리스 빌드(`npm run tauri build`)는 엔진 없이는 멈춘다**(알고 빼려면 `NEOANKI_ALLOW_NO_LLM=1`). 개발셋 측정은 `cd src-tauri; $env:NEOANKI_LLM_BIN="<neoanki-llm.exe>"; $env:NEOANKI_LLM_DIR="<model.gguf · tokenizer.json 폴더>"; cargo test --lib eval83 -- --ignored --nocapture` (DECISIONS J).
-
-### Google Drive 동기화 (개발)
-
-[설계](docs/engineering/drive-sync.md) · 코드는 `src-tauri/src/sync/`. Google 연결은 빌드할 때 넣는 OAuth 클라이언트가 있어야 켜진다. 없으면 설정의 Google Drive 칸이 "이 앱 버전에서는 Google Drive 연결을 사용할 수 없어요"로 보이고 나머지는 그대로 동작한다.
-
-1. Google Cloud 콘솔에서 Drive API 를 켜고, OAuth 동의 화면에 범위 `drive.file` · `drive.appdata` 두 개만 넣는다 (테스트 단계에서는 테스트 사용자를 등록).
-2. 사용자 인증 정보 > OAuth 클라이언트 ID > **데스크톱 앱**을 만든다. 리디렉션은 `http://127.0.0.1:<임의 포트>` 루프백이라 따로 적지 않는다.
-3. 빌드하는 셸에서 두 값을 넣고 빌드한다 (`option_env!` 라 빌드할 때만 읽는다. 바꾸면 다시 빌드).
-
-```powershell
-$env:NEOANKI_GOOGLE_CLIENT_ID = "<클라이언트 ID>.apps.googleusercontent.com"
-$env:NEOANKI_GOOGLE_CLIENT_SECRET = "<클라이언트 보안 비밀>"   # 데스크톱 클라이언트에 Google 이 주는 값. PKCE 와 함께 쓴다
-npm run tauri dev
-```
-
-토큰과 잠금 키는 OS 키체인(Windows 자격 증명 관리자, 서비스 이름 `io.github.itisyijy.neoanki`)에만 저장된다.
-
-Google 계정 없이 시험하려면 로컬 폴더를 Drive 대신 쓴다. 같은 폴더를 가리키는 두 인스턴스(데이터 폴더는 다르게)가 두 기기처럼 맞춰진다. 로그인 창 없이 바로 연결된다.
-
-```powershell
-$env:NEOANKI_SYNC_FOLDER = "C:\temp\neoanki-drive"; $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-a"; npm run tauri dev
-```
-
-엔진 테스트(두 기기 시뮬레이션)는 `cargo test sync::` 로 돈다.
-
-### ChatGPT 연결 (개발)
-
-환경 변수가 필요 없다 (Sign in with ChatGPT 의 직접 흐름은 클라이언트 비밀이 없다). 실제 계정 없이 화면 상태를 보려면 debug 빌드에서 가짜 응답을 켠다. 성격별로 묶기(L4)와 자료 근거 AI(R1 초안 · R2 채점 보조 · R3 근거)가 같이 쓴다. 네트워크와 키체인을 쓰지 않고, 켜 둔 동안에는 [다시 로그인] 등을 눌러도 로그인 창을 열지 않는다. 빠진 범위 · 비슷한 카드 같은 기기 안 검사는 가짜가 아니라 실제로 돈다 (비슷한 카드 · 근거 검사는 분석 모델이 있을 때만).
-
-```powershell
-# ok | slow | usage_limit(= limit) | expired | offline | unavailable | malformed
-$env:NEOANKI_AI_FAKE = "ok"; $env:NEOANKI_DATA_DIR = "C:\temp\neoanki-test"; npm run tauri dev
-```
-
-### 확인
-
-```powershell
-cd src-tauri; cargo test; cargo clippy --all-targets; cd ..
-npx tsc --noEmit
-```
-
-### 배포 체크리스트
-
-`npm run tauri build` 는 NSIS 설치 파일 하나(`Neo-Anki_<버전>_x64-setup.exe`)만 만든다. 현재 사용자에게 설치하고(`%LOCALAPPDATA%\Neo-Anki`, 관리자 권한 없음) 설치 화면은 한국어다(Windows 표시 언어가 영어면 영어). 첫 배포 전에 확인할 것:
-
-- [ ] **코드 서명**: 인증서(OV · EV 또는 Azure Trusted Signing)를 준비하고 `bundle.windows` 에 `certificateThumbprint` + `digestAlgorithm: "sha256"` + `timestampUrl`, 또는 `signCommand`(signtool 등)를 넣는다. 서명이 없으면 SmartScreen 경고가 뜬다. 확인은 `Get-AuthenticodeSignature <exe>`. **지금은 서명 없이 배포한다 (사용자 결정 2026-10-20, 공개 배포 전에 다시 정한다).** 설치하는 사람에게 함께 알릴 것:
-  - 설치 파일이나 앱을 처음 열 때 "Windows의 PC 보호" 파란 창이 뜨면 **[추가 정보] → [실행]** 을 누른다.
-  - 백신(Defender)이 서술형 개념 관계 확인 엔진(`llm\neoanki-llm.exe`)을 막거나 지우면 그 기능만 꺼지고(설정 › 서술형 채점에 "이 설치에는 엔진이 없어요"), 핵심어 채점과 나머지 기능은 그대로다.
-- [ ] **게시자 이름**: `bundle.publisher`(지금 `itisyijy`). 프로그램 추가/제거의 게시자, exe 의 CompanyName, NSIS 레지스트리 키 `HKCU\Software\<게시자>\Neo-Anki` 가 이 값에서 나온다. NSIS 는 이 키로 이전 설치 폴더를 찾으니 첫 배포 전에 정하고 그 뒤로는 바꾸지 않는다. 데이터 폴더 · 키체인 이름은 `identifier` 에서 나오므로 영향이 없다. `bundle.copyright` 도 아직 비어 있다.
-- [ ] **아이콘**: `src-tauri/icons/` 는 아직 Tauri 기본 아이콘이다. 로고가 정해지면 `npx tauri icon <1024px PNG>` 로 다시 만든다. 설치 파일 자체의 아이콘은 `bundle.windows.nsis.installerIcon`.
-- [ ] **Google OAuth**: 배포 빌드를 하는 셸에 `NEOANKI_GOOGLE_CLIENT_ID` · `NEOANKI_GOOGLE_CLIENT_SECRET` 을 넣는다. 빠져도 빌드는 성공하고 Drive 연결만 꺼지니(`option_env!`) 빌드 전에 확인한다. OAuth 동의 화면을 테스트에서 프로덕션으로 게시한다(테스트 상태에서는 등록한 테스트 사용자만 로그인된다).
-- [ ] **읽어주기 음성**: `tools\fetch_tts.ps1` 로 `src-tauri/resources/tts/` 의 11개 파일을 채운 뒤 빌드한다. 비어 있어도 빌드는 성공하고 OS 음성으로만 읽는다.
-- [ ] **개념 관계 확인 엔진**: `tools\build_llm.ps1` 로 `src-tauri/resources/llm/neoanki-llm.exe` 를 만든 뒤 빌드한다(없으면 릴리스 빌드가 멈춘다). 엔진 exe 도 본체처럼 코드 서명하지 않으면 SmartScreen · Defender 가 막을 수 있다.
-- [ ] **WebView2**: `bundle.windows.webviewInstallMode` 는 기본값 `downloadBootstrapper` 다. WebView2 가 없는 PC(일부 Windows 10)는 설치 중에 인터넷이 필요하다. 오프라인 배포라면 `embedBootstrapper` 또는 `offlineInstaller`.
-- [ ] **업데이트**: 자동 업데이트는 없다(`tauri-plugin-updater` 안 씀). 새 버전은 설치 파일을 다시 받아 설치한다. 버전은 `tauri.conf.json` · `Cargo.toml` · `package.json` 을 같이 올리고, 설정 화면 맨 아래에 보인다.
-
-### 구조
-
-| 경로 | 내용 |
-|---|---|
-| `src/screens/` | 화면. [Figma](https://www.figma.com/design/xZsmRhJ4rvkjwYHfQyM5jx) 화면 24장과 이름이 같다 (Home = A1·A2, Deck = C1, Study = D1~D4 …) |
-| `src/ui.tsx`, `src/styles/` | Figma 컴포넌트와 디자인 토큰 |
-| `src-tauri/src/` | 데이터 계층. Rust: `db` 스키마, `queue` 오늘의 큐, `srs` FSRS, `render` Anki 템플릿, `import` 가져오기, `commands` 화면이 부르는 명령 |
-| `db/schema.sql` | 데이터 모델 정본 |
-| `src-tauri/llm/` | 8.3 개념 관계 확인 엔진 (보조 실행 파일, 본체와 따로 AVX2 로 빌드) |
-| `tools/` | Python 참조 구현. Rust로 옮긴 원본. `fetch_tts.ps1` 은 읽어주기 음성 채우기, `build_llm.ps1` 은 개념 관계 확인 엔진 빌드 |
-
-### Python 도구 사용
-
-```powershell
-.venv\Scripts\Activate.ps1      # 이후 python 은 가상환경의 것
-```
-
-## 도구
-
-```bash
-python tools/import_reference.py --self-test     # 스키마 자체 검사
-python tools/import_reference.py <파일.colpkg>    # Anki 패키지 -> Neo-Anki 스키마
-python tools/import_reference.py <파일.json>      # JSON 일괄 가져오기
-python tools/queue_reference.py                  # 큐 알고리즘 테스트
-python tools/queue_reference.py <적재된.sqlite>   # 실제 데이터로 큐 구성
-```
-
-가상환경을 활성화한 상태에서 실행한다. `tools/` 는 스파이크 산출물이고, 실제 앱은 ADR 0001에 따라 Rust(Tauri)로 만든다.
+[MIT](LICENSE)
