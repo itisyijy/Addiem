@@ -109,10 +109,16 @@ fn deck_name_level(name: &str) -> Option<(i64, String)> {
     const CORE: [&str; 8] = ["요약", "핵심", "정리", "기출", "필수", "summary", "core", "essential"];
     const SUPP: [&str; 7] = ["부록", "참고", "심화", "보충", "appendix", "extra", "advanced"];
     let lower = name.to_lowercase();
-    if let Some(k) = CORE.iter().find(|k| lower.contains(*k)) {
-        return Some((2, format!("하위 덱 이름에 '{k}'이 있어요")));
+    let reason = |k: &str| format!("하위 덱 이름에 '{k}'{} 있어요", if crate::quality::has_batchim(k) { "이" } else { "가" });
+    let core = CORE.iter().find(|k| lower.contains(*k));
+    let supp = SUPP.iter().find(|k| lower.contains(*k));
+    match (core, supp) {
+        // "부록 · 용어 정리" 처럼 둘 다 있으면 어느 쪽인지 모른다: 제안하지 않는다 (I109)
+        (Some(_), Some(_)) => None,
+        (Some(k), None) => Some((2, reason(k))),
+        (None, Some(k)) => Some((0, reason(k))),
+        (None, None) => None,
     }
-    SUPP.iter().find(|k| lower.contains(*k)).map(|k| (0, format!("하위 덱 이름에 '{k}'이 있어요")))
 }
 
 // ------------------------------------------------------------------ 덱 만들기 (두 경로 공통)
@@ -2052,6 +2058,10 @@ mod tests {
         assert_eq!(deck_name_level("3장 요약").map(|t| t.0), Some(2));
         assert_eq!(deck_name_level("부록").map(|t| t.0), Some(0));
         assert_eq!(deck_name_level("4단원"), None);
+        assert_eq!(deck_name_level("부록 · 용어 정리"), None, "핵심 · 보충 낱말이 함께 있으면 제안하지 않는다 (I109)");
+        assert_eq!(deck_name_level("3장 정리").map(|t| t.1), Some("하위 덱 이름에 '정리'가 있어요".to_string()), "받침 없는 낱말은 '가'");
+        assert_eq!(deck_name_level("3장 요약").map(|t| t.1), Some("하위 덱 이름에 '요약'이 있어요".to_string()));
+        assert_eq!(deck_name_level("Core").map(|t| t.1), Some("하위 덱 이름에 'core'가 있어요".to_string()));
     }
 
     #[test]
