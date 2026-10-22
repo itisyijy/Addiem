@@ -2,20 +2,25 @@
 //! 연결 · 본문 읽기는 따로 도는 스레드가 하고, 부른 쪽은 받은 조각만 쓴다. 그래서 읽기가 막혀 있어도
 //! [멈추기]는 곧바로 먹고, 데이터가 IDLE 동안 오지 않으면 "연결이 멈췄다"로 끝낸다.
 //! ureq 3.4.2 에는 읽기마다의 시간 제한이 없고 본문 전체 제한(`timeout_recv_body`)만 있어서다.
-//! 멈추거나 끝낸 연결은 버린다: 읽던 스레드는 다음 데이터 · 끊김 · 전체 제한(STRAY)에서 스스로 끝난다
+//! 멈추거나 끝낸 연결은 버린다: 읽던 스레드는 다음 데이터 · 끊김 · 전체 제한(STRAY)에서 스스로 끝난다.
+//! 오류는 화면에 쓸 사용자 문구만 돌려주고 원인 글은 로그(stderr)로 (J1 · J18)
 
-use std::io::Read;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다
-pub const IDLE: Duration = Duration::from_secs(30);
+/// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다 (시험에서는 2초)
+const IDLE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
+pub const STALLED: &str = "연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
+pub const OFFLINE: &str = "모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 /// 버린 연결을 읽던 스레드가 늦어도 끝나는 때 (본문 전체 제한). 느린 회선의 1.1GB 도 넉넉히
 /// ponytail: 버린 스레드는 이때까지 소켓 하나를 쥘 수 있다. 문제가 되면 연결을 직접 닫는 Transport 로
 const STRAY: Duration = Duration::from_secs(6 * 3600);
 
 #[derive(Debug, PartialEq)]
-pub enum Fail {
+enum Fail {
     /// 사용자가 멈췄다
     Cancelled,
     /// IDLE 동안 데이터가 오지 않았다
@@ -31,8 +36,41 @@ enum Msg {
     End(Result<(), String>),
 }
 
+/// url 을 part 에 받고 크기 · SHA-256 을 맞춘다. progress(받은 바이트)는 1MiB 마다. 실패하면 part 는 부른 쪽이 지운다
+pub fn fetch(url: &str, size: u64, sha: &str, part: &Path, cancel: &dyn Fn() -> bool, mut progress: impl FnMut(u64)) -> Result<(), String> {
+    let mut file = std::fs::File::create(part).map_err(|e| e.to_string())?;
+    let mut h = Sha256::new();
+    let (mut got, mut last) = (0u64, 0u64);
+    // ureq 의 limit 는 딱 그 크기에서도 "더 있는지" 보다가 오류를 낸다. 한 바이트 넉넉히 두고 크기는 아래에서 맞춘다
+    let res = stream(url, size + 1, IDLE, cancel, |b| {
+        h.update(b);
+        file.write_all(b).map_err(|e| e.to_string())?;
+        got += b.len() as u64;
+        if got - last >= 1 << 20 {
+            last = got;
+            progress(got);
+        }
+        Ok(())
+    });
+    match res {
+        Ok(()) => {}
+        Err(Fail::Cancelled) => return Err("내려받기를 멈췄어요.".into()),
+        Err(Fail::Stalled) => return Err(STALLED.into()),
+        Err(Fail::Net(e)) => {
+            eprintln!("[dl] {url} 받기 실패: {e}");
+            return Err(OFFLINE.into());
+        }
+        Err(Fail::Write(e)) => return Err(e),
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    if got != size || format!("{:x}", h.finalize()) != sha {
+        return Err("받은 모델 파일이 원본과 달라요. 다시 시도해 주세요.".into());
+    }
+    Ok(())
+}
+
 /// url 의 본문을 limit 바이트까지 받아 조각마다 on 을 부른다. cancel() 은 0.2초마다 본다
-pub fn stream(url: &str, limit: u64, idle: Duration, cancel: &dyn Fn() -> bool, mut on: impl FnMut(&[u8]) -> Result<(), String>) -> Result<(), Fail> {
+fn stream(url: &str, limit: u64, idle: Duration, cancel: &dyn Fn() -> bool, mut on: impl FnMut(&[u8]) -> Result<(), String>) -> Result<(), Fail> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(60)))
@@ -79,14 +117,14 @@ pub fn stream(url: &str, limit: u64, idle: Duration, cancel: &dyn Fn() -> bool, 
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
-    use std::io::Write;
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// 로컬 서버: 헤더는 total 바이트라고 하고 send 바이트만 보낸 뒤 hold 동안 연결을 연 채 아무것도 보내지 않는다
-    fn server(total: usize, send: usize, hold: Duration) -> String {
+    /// 로컬 서버 (연결 하나): 헤더는 total 바이트라고 하고 send 바이트만 보낸 뒤 hold 동안 연결을 연 채 아무것도 보내지 않는다.
+    /// 돌려주는 주소 뒤의 경로는 보지 않는다
+    pub fn server(total: usize, send: usize, hold: Duration) -> String {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -98,7 +136,7 @@ mod tests {
             let _ = s.flush();
             std::thread::sleep(hold);
         });
-        format!("http://{addr}/model.gguf")
+        format!("http://{addr}")
     }
 
     #[test]
@@ -138,6 +176,16 @@ mod tests {
         let t = Instant::now();
         assert_eq!(stream(&url, 1_000_001, IDLE, &|| stop.load(Ordering::SeqCst), |_| Ok(())), Err(Fail::Cancelled));
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    }
+
+    /// 화면에는 사용자 문구만 (원인 글 "os error 10061" 같은 것은 로그로)
+    #[test]
+    fn fetch_shows_only_user_sentences() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let part = std::env::temp_dir().join(format!("na-dl-test-{}.part", std::process::id()));
+        assert_eq!(fetch(&format!("http://127.0.0.1:{port}/x"), 10, "", &part, &|| false, |_| {}), Err(OFFLINE.into()));
+        assert_eq!(fetch(&server(1000, 1000, Duration::from_millis(10)), 1000, "00", &part, &|| false, |_| {}), Err("받은 모델 파일이 원본과 달라요. 다시 시도해 주세요.".into()));
+        let _ = std::fs::remove_file(&part);
     }
 
     #[test]

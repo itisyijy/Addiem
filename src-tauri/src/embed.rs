@@ -8,7 +8,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -93,7 +93,14 @@ pub async fn model_download(app: AppHandle) -> Res<()> {
     }
     CANCEL.store(false, Ordering::SeqCst);
     let dir = model_dir(&app.state::<AppState>().data_dir);
-    let res = tauri::async_runtime::spawn_blocking(move || download(&app, &dir)).await.map_err(err);
+    let base = format!("https://huggingface.co/{REPO}/resolve/{REVISION}");
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        download(&dir, &base, |done, total| {
+            let _ = app.emit("model-progress", DownloadProgress { done, total });
+        })
+    })
+    .await
+    .map_err(err);
     DOWNLOADING.store(false, Ordering::SeqCst);
     res?
 }
@@ -133,7 +140,8 @@ fn sha256_file(path: &Path) -> Res<String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
-fn download(app: &AppHandle, dir: &Path) -> Res<()> {
+/// base 아래의 FILES 를 dir 에 받는다. progress(받은 바이트, 전체)
+fn download(dir: &Path, base: &str, progress: impl Fn(u64, u64)) -> Res<()> {
     std::fs::create_dir_all(dir).map_err(err)?;
     let total: u64 = FILES.iter().map(|f| f.1).sum();
     let mut done = 0;
@@ -145,7 +153,7 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
             continue;
         }
         let part = dir.join(format!("{name}.part"));
-        let res = fetch(app, name, size, sha, &part, done, total);
+        let res = crate::dl::fetch(&format!("{base}/{name}"), size, sha, &part, &|| CANCEL.load(Ordering::SeqCst), |got| progress(done + got, total));
         if res.is_err() {
             let _ = std::fs::remove_file(&part);
         }
@@ -153,39 +161,7 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
         std::fs::rename(&part, &path).map_err(err)?;
         done += size;
     }
-    let _ = app.emit("model-progress", DownloadProgress { done: total, total });
-    Ok(())
-}
-
-/// 읽기는 dl::stream 이 따로 도는 스레드에서 한다: 연결이 멈춰도 [멈추기]가 곧바로 먹고, 30초 동안 데이터가 없으면 끝난다
-fn fetch(app: &AppHandle, name: &str, size: u64, sha: &str, part: &Path, base: u64, total: u64) -> Res<()> {
-    let url = format!("https://huggingface.co/{REPO}/resolve/{REVISION}/{name}");
-    let mut file = std::fs::File::create(part).map_err(err)?;
-    let mut h = Sha256::new();
-    let (mut got, mut last) = (0u64, 0u64);
-    // ureq 의 limit 는 딱 그 크기에서도 "더 있는지" 보다가 오류를 낸다. 한 바이트 넉넉히 두고 크기는 아래에서 맞춘다
-    let res = crate::dl::stream(&url, size + 1, crate::dl::IDLE, &|| CANCEL.load(Ordering::SeqCst), |b| {
-        h.update(b);
-        file.write_all(b).map_err(err)?;
-        got += b.len() as u64;
-        if got - last >= 1 << 20 {
-            last = got;
-            let _ = app.emit("model-progress", DownloadProgress { done: base + got, total });
-        }
-        Ok(())
-    });
-    match res {
-        Ok(()) => {}
-        Err(crate::dl::Fail::Cancelled) => return Err("내려받기를 멈췄어요.".into()),
-        Err(crate::dl::Fail::Stalled) => return Err("연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.".into()),
-        // 원인은 괄호 안에 남긴다 (문의할 때 보여줄 수 있게)
-        Err(crate::dl::Fail::Net(e)) => return Err(format!("모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요. ({e})")),
-        Err(crate::dl::Fail::Write(e)) => return Err(e),
-    }
-    file.flush().map_err(err)?;
-    if got != size || format!("{:x}", h.finalize()) != sha {
-        return Err("받은 모델 파일이 원본과 달라요. 다시 시도해 주세요.".into());
-    }
+    progress(total, total);
     Ok(())
 }
 
@@ -234,5 +210,47 @@ impl Embedder {
         let mean = out.broadcast_mul(&m).and_then(|x| x.sum(1)).and_then(|s| s.broadcast_div(&m.sum(1)?)).map_err(err)?;
         let norm = mean.sqr().and_then(|x| x.sum_keepdim(1)).and_then(|x| x.sqrt()).map_err(err)?;
         mean.broadcast_div(&norm).and_then(|v| v.to_vec2::<f32>()).map_err(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("na-embed-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// QA (2026-10-22): 받는 중 앱을 닫아 남은 .part 는 받는 중이 아닐 때만 지운다
+    #[test]
+    fn leftover_parts_go_only_when_not_downloading() {
+        let d = scratch("parts");
+        std::fs::write(d.join("model.safetensors.part"), b"x").unwrap();
+        std::fs::write(d.join("config.json"), b"{}").unwrap();
+        DOWNLOADING.store(true, Ordering::SeqCst);
+        clean_parts(&d);
+        assert!(d.join("model.safetensors.part").exists(), "받는 중에는 둔다");
+        DOWNLOADING.store(false, Ordering::SeqCst);
+        clean_parts(&d);
+        assert!(!d.join("model.safetensors.part").exists());
+        assert!(d.join("config.json").exists(), "받은 파일은 둔다");
+        assert!(!DOWNLOADING.load(Ordering::SeqCst), "깃발을 놓는다");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// QA (2026-10-22): 분석 모델 받기도 dl 을 탄다 — 멈춘 연결은 제한 시간 뒤 사용자 문구로 끝나고 .part 가 남지 않는다
+    #[test]
+    fn stalled_connection_ends_with_a_user_sentence_and_no_part() {
+        let base = crate::dl::tests::server(655, 100, Duration::from_secs(20));
+        let d = scratch("stall");
+        let t = Instant::now();
+        assert_eq!(download(&d, &base, |_, _| {}), Err(crate::dl::STALLED.to_string()));
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert!(!d.join("config.json.part").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

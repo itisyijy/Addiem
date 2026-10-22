@@ -54,8 +54,6 @@ const NAME: &str = "Qwen2.5-1.5B-Instruct (4비트)";
 const SHORT: &str = "1.5B 모델 (4비트)";
 const LICENSE: &str = "Apache-2.0";
 const SOURCE: &str = "Hugging Face · Qwen/Qwen2.5-1.5B-Instruct-GGUF (Qwen 팀 공식)";
-/// 연결이 멈췄을 때 (데이터가 dl::IDLE 동안 오지 않음)
-const STALLED: &str = "연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 /// 받은 뒤에도 남겨 둘 여유 (임시 파일 · 다른 기능)
 const MARGIN: u64 = 200_000_000;
 
@@ -290,7 +288,9 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
             continue;
         }
         let part = dir.join(format!("{}.part", f.name));
-        let res = fetch(app, f, &part, done, total);
+        let res = crate::dl::fetch(&url_of(f), f.size, f.sha, &part, &|| CANCEL.load(Ordering::SeqCst), |got| {
+            let _ = app.emit("llm-progress", DownloadProgress { done: done + got, total });
+        });
         if res.is_err() {
             let _ = std::fs::remove_file(&part);
         }
@@ -305,40 +305,6 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
 /// "1.3" (GB, 소수 한 자리)
 fn gb(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / 1e9)
-}
-
-/// 파일 하나 받기. 읽기는 dl::stream 이 따로 도는 스레드에서 해서, 연결이 멈춰도 [멈추기]가 곧바로 먹고 30초 동안 데이터가 없으면 끝난다.
-/// 화면에는 사용자 문구만, 원인 글은 로그로 (J1)
-fn fetch(app: &AppHandle, f: &File, part: &Path, base: u64, total: u64) -> Res<()> {
-    let mut file = std::fs::File::create(part).map_err(err)?;
-    let mut h = Sha256::new();
-    let (mut got, mut last) = (0u64, 0u64);
-    // ureq 의 limit 는 딱 그 크기에서도 "더 있는지" 보다가 오류를 낸다. 한 바이트 넉넉히 두고 크기는 아래에서 맞춘다
-    let res = crate::dl::stream(&url_of(f), f.size + 1, crate::dl::IDLE, &|| CANCEL.load(Ordering::SeqCst), |b| {
-        h.update(b);
-        file.write_all(b).map_err(err)?;
-        got += b.len() as u64;
-        if got - last >= 1 << 22 {
-            last = got;
-            let _ = app.emit("llm-progress", DownloadProgress { done: base + got, total });
-        }
-        Ok(())
-    });
-    match res {
-        Ok(()) => {}
-        Err(crate::dl::Fail::Cancelled) => return Err("내려받기를 멈췄어요.".into()),
-        Err(crate::dl::Fail::Stalled) => return Err(STALLED.into()),
-        Err(crate::dl::Fail::Net(e)) => {
-            eprintln!("[llm] {} 받기 실패: {e}", f.name);
-            return Err("모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.".into());
-        }
-        Err(crate::dl::Fail::Write(e)) => return Err(e),
-    }
-    file.flush().map_err(err)?;
-    if got != f.size || format!("{:x}", h.finalize()) != f.sha {
-        return Err("받은 모델 파일이 원본과 달라요. 다시 시도해 주세요.".into());
-    }
-    Ok(())
 }
 
 // ------------------------------------------------------------------ 엔진 (보조 실행 파일과 한 줄 JSON 주고받기)
