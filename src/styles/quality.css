@@ -145,7 +145,7 @@
 .rewrite__card--check { border: 1px dashed var(--border-strong); background: var(--bg-surface); }
 .rewrite__arrow { display: inline-flex; flex-shrink: 0; padding-top: 120px; }
 .rewrite__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.rewrite__text { white-space: normal; }
+.rewrite__text { white-space: pre-line; }
 .rewrite__text del { color: var(--text-tertiary); text-decoration: line-through; }
 .rewrite__text ins { text-decoration: underline; text-underline-offset: 3px; }
 .rewrite__nl { color: var(--accent-default); text-decoration: none; }
