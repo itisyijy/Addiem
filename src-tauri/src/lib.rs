@@ -5,6 +5,7 @@ mod written;
 mod llm;
 mod db;
 mod embed;
+mod dl;
 mod exam;
 mod export;
 mod import;

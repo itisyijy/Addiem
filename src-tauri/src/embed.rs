@@ -56,8 +56,20 @@ pub struct ModelStatus {
     analyzing: Option<crate::source::Progress>,
 }
 
+/// 받는 중에 앱이 닫혀 남은 .part 를 지운다 (받는 중이 아닐 때만. 그동안 새 받기가 시작되지 않게 깃발을 잠깐 쥔다)
+fn clean_parts(dir: &Path) {
+    if DOWNLOADING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return;
+    }
+    for (name, _, _) in FILES {
+        let _ = std::fs::remove_file(dir.join(format!("{name}.part")));
+    }
+    DOWNLOADING.store(false, Ordering::SeqCst);
+}
+
 #[tauri::command]
 pub fn model_status(state: State<AppState>) -> ModelStatus {
+    clean_parts(&model_dir(&state.data_dir));
     ModelStatus {
         ready: installed(&model_dir(&state.data_dir)),
         downloading: DOWNLOADING.load(Ordering::SeqCst),
@@ -125,11 +137,6 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
     std::fs::create_dir_all(dir).map_err(err)?;
     let total: u64 = FILES.iter().map(|f| f.1).sum();
     let mut done = 0;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(std::time::Duration::from_secs(20)))
-        .timeout_recv_response(Some(std::time::Duration::from_secs(60)))
-        .build()
-        .into();
     for (name, size, sha) in FILES {
         let path = dir.join(name);
         // 지난번에 다 받은 파일은 건너뛴다
@@ -138,7 +145,7 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
             continue;
         }
         let part = dir.join(format!("{name}.part"));
-        let res = fetch(app, &agent, name, size, sha, &part, done, total);
+        let res = fetch(app, name, size, sha, &part, done, total);
         if res.is_err() {
             let _ = std::fs::remove_file(&part);
         }
@@ -150,35 +157,30 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn fetch(app: &AppHandle, agent: &ureq::Agent, name: &str, size: u64, sha: &str, part: &Path, base: u64, total: u64) -> Res<()> {
+/// 읽기는 dl::stream 이 따로 도는 스레드에서 한다: 연결이 멈춰도 [멈추기]가 곧바로 먹고, 30초 동안 데이터가 없으면 끝난다
+fn fetch(app: &AppHandle, name: &str, size: u64, sha: &str, part: &Path, base: u64, total: u64) -> Res<()> {
     let url = format!("https://huggingface.co/{REPO}/resolve/{REVISION}/{name}");
-    // 원인은 괄호 안에 남긴다 (문의할 때 보여줄 수 있게)
-    fn offline<E: std::fmt::Display>(e: E) -> String {
-        format!("모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요. ({e})")
-    }
-    let mut resp = agent.get(&url).call().map_err(offline)?;
-    // ureq 의 limit 는 딱 그 크기에서도 "더 있는지" 보다가 오류를 낸다. 한 바이트 넉넉히 두고 크기는 아래에서 맞춘다
-    let mut reader = resp.body_mut().with_config().limit(size + 1).reader();
     let mut file = std::fs::File::create(part).map_err(err)?;
     let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
     let (mut got, mut last) = (0u64, 0u64);
-    loop {
-        if CANCEL.load(Ordering::SeqCst) {
-            return Err("내려받기를 멈췄어요.".into());
-        }
-        let n = reader.read(&mut buf).map_err(offline)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-        file.write_all(&buf[..n]).map_err(err)?;
-        got += n as u64;
+    // ureq 의 limit 는 딱 그 크기에서도 "더 있는지" 보다가 오류를 낸다. 한 바이트 넉넉히 두고 크기는 아래에서 맞춘다
+    let res = crate::dl::stream(&url, size + 1, crate::dl::IDLE, &|| CANCEL.load(Ordering::SeqCst), |b| {
+        h.update(b);
+        file.write_all(b).map_err(err)?;
+        got += b.len() as u64;
         if got - last >= 1 << 20 {
             last = got;
             let _ = app.emit("model-progress", DownloadProgress { done: base + got, total });
         }
+        Ok(())
+    });
+    match res {
+        Ok(()) => {}
+        Err(crate::dl::Fail::Cancelled) => return Err("내려받기를 멈췄어요.".into()),
+        Err(crate::dl::Fail::Stalled) => return Err("연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.".into()),
+        // 원인은 괄호 안에 남긴다 (문의할 때 보여줄 수 있게)
+        Err(crate::dl::Fail::Net(e)) => return Err(format!("모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요. ({e})")),
+        Err(crate::dl::Fail::Write(e)) => return Err(e),
     }
     file.flush().map_err(err)?;
     if got != size || format!("{:x}", h.finalize()) != sha {

@@ -54,6 +54,8 @@ const NAME: &str = "Qwen2.5-1.5B-Instruct (4비트)";
 const SHORT: &str = "1.5B 모델 (4비트)";
 const LICENSE: &str = "Apache-2.0";
 const SOURCE: &str = "Hugging Face · Qwen/Qwen2.5-1.5B-Instruct-GGUF (Qwen 팀 공식)";
+/// 연결이 멈췄을 때 (데이터가 dl::IDLE 동안 오지 않음)
+const STALLED: &str = "연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 /// 받은 뒤에도 남겨 둘 여유 (임시 파일 · 다른 기능)
 const MARGIN: u64 = 200_000_000;
 
@@ -182,9 +184,21 @@ pub struct LlmStatus {
     last_ms: Option<u64>,
 }
 
+/// 받는 중에 앱이 닫혀 남은 .part 를 지운다 (받는 중이 아닐 때만. 그동안 새 받기가 시작되지 않게 깃발을 잠깐 쥔다)
+fn clean_parts(dir: &Path) {
+    if DOWNLOADING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return;
+    }
+    for f in &FILES {
+        let _ = std::fs::remove_file(dir.join(format!("{}.part", f.name)));
+    }
+    DOWNLOADING.store(false, Ordering::SeqCst);
+}
+
 #[tauri::command]
 pub fn llm_status(app: AppHandle) -> LlmStatus {
     let dir = model_dir(&app.state::<AppState>().data_dir);
+    clean_parts(&dir);
     let bytes = FILES.iter().map(|f| f.size).sum();
     LlmStatus {
         ready: installed(&dir),
@@ -243,6 +257,7 @@ pub async fn llm_delete(app: AppHandle) -> Res<()> {
         return Err("내려받기가 끝난 뒤에 지울 수 있어요.".into());
     }
     unload().await?;
+    LAST_MS.store(0, Ordering::SeqCst); // "지난 확인은 N초" 는 지운 모델의 값이다
     let dir = model_dir(&app.state::<AppState>().data_dir);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|_| "모델 파일을 지우지 못했어요. 앱을 다시 연 뒤에 해 주세요.".to_string())?;
@@ -268,11 +283,6 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
         return Err(format!("저장 공간이 모자라요. {}GB 이상 비운 뒤 다시 해 주세요.", gb(left + MARGIN)));
     }
     let mut done = 0;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(20)))
-        .timeout_recv_response(Some(Duration::from_secs(60)))
-        .build()
-        .into();
     for f in &FILES {
         let path = dir.join(f.name);
         if path.metadata().is_ok_and(|m| m.len() == f.size) && sha256_file(&path)? == f.sha {
@@ -280,7 +290,7 @@ fn download(app: &AppHandle, dir: &Path) -> Res<()> {
             continue;
         }
         let part = dir.join(format!("{}.part", f.name));
-        let res = fetch(app, &agent, f, &part, done, total);
+        let res = fetch(app, f, &part, done, total);
         if res.is_err() {
             let _ = std::fs::remove_file(&part);
         }
@@ -297,32 +307,32 @@ fn gb(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / 1e9)
 }
 
-fn fetch(app: &AppHandle, agent: &ureq::Agent, f: &File, part: &Path, base: u64, total: u64) -> Res<()> {
-    fn offline<E: std::fmt::Display>(e: E) -> String {
-        format!("모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요. ({e})")
-    }
-    let mut resp = agent.get(&url_of(f)).call().map_err(offline)?;
-    // ureq 의 limit 는 딱 그 크기에서도 "더 있는지" 보다가 오류를 낸다. 한 바이트 넉넉히 두고 크기는 아래에서 맞춘다
-    let mut reader = resp.body_mut().with_config().limit(f.size + 1).reader();
+/// 파일 하나 받기. 읽기는 dl::stream 이 따로 도는 스레드에서 해서, 연결이 멈춰도 [멈추기]가 곧바로 먹고 30초 동안 데이터가 없으면 끝난다.
+/// 화면에는 사용자 문구만, 원인 글은 로그로 (J1)
+fn fetch(app: &AppHandle, f: &File, part: &Path, base: u64, total: u64) -> Res<()> {
     let mut file = std::fs::File::create(part).map_err(err)?;
     let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
     let (mut got, mut last) = (0u64, 0u64);
-    loop {
-        if CANCEL.load(Ordering::SeqCst) {
-            return Err("내려받기를 멈췄어요.".into());
-        }
-        let n = reader.read(&mut buf).map_err(offline)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-        file.write_all(&buf[..n]).map_err(err)?;
-        got += n as u64;
+    // ureq 의 limit 는 딱 그 크기에서도 "더 있는지" 보다가 오류를 낸다. 한 바이트 넉넉히 두고 크기는 아래에서 맞춘다
+    let res = crate::dl::stream(&url_of(f), f.size + 1, crate::dl::IDLE, &|| CANCEL.load(Ordering::SeqCst), |b| {
+        h.update(b);
+        file.write_all(b).map_err(err)?;
+        got += b.len() as u64;
         if got - last >= 1 << 22 {
             last = got;
             let _ = app.emit("llm-progress", DownloadProgress { done: base + got, total });
         }
+        Ok(())
+    });
+    match res {
+        Ok(()) => {}
+        Err(crate::dl::Fail::Cancelled) => return Err("내려받기를 멈췄어요.".into()),
+        Err(crate::dl::Fail::Stalled) => return Err(STALLED.into()),
+        Err(crate::dl::Fail::Net(e)) => {
+            eprintln!("[llm] {} 받기 실패: {e}", f.name);
+            return Err("모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.".into());
+        }
+        Err(crate::dl::Fail::Write(e)) => return Err(e),
     }
     file.flush().map_err(err)?;
     if got != f.size || format!("{:x}", h.finalize()) != f.sha {

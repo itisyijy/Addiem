@@ -110,11 +110,7 @@ function LlmRow() {
             개념 관계 확인 모델 · 실험 기능 {!ok && <Badge>이 PC에서는 쓸 수 없어요</Badge>}
           </span>
           <span className="t-body-s c-secondary">{sub}</span>
-          {error && (
-            <span className="t-body-s c-danger" title={error}>
-              {error.replace(/\s*\([^()]*\)$/, "")}
-            </span>
-          )}
+          {error && <span className="t-body-s c-danger">{error}</span>}
         </span>
         {!ok ? (
           s.ready && <Button variant="ghost" size="M" icon="trash" label={`지우기 · ${gb(s.bytes)} 비우기`} onClick={() => setAsking("delete")} />
