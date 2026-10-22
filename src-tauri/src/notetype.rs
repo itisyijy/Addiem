@@ -2046,7 +2046,7 @@ pub(crate) fn change_type(con: &Connection, req: &ChangeType) -> Res<ChangeImpac
         }
         out.unclozed += unclozed as usize;
         out.lost_notes += lost_any as usize;
-        con.execute("UPDATE note SET note_type_id = ?2, fields = ?3, updated_at = ?4 WHERE id = ?1", params![nid, req.to, serde_json::to_string(&new).map_err(err)?, now])
+        con.execute("UPDATE note SET note_type_id = ?2, fields = ?3, updated_at = ?4 WHERE id = ?1", params![nid, req.to, serde_json::to_string(&new).map_err(err)?, crate::db::edit_ms(now)])
             .map_err(err)?;
         // 카드: 대응이 없는 것은 지우고, 나머지는 잠깐 음수 ord 로 비켜 둔 뒤 새 ord 로 (맞바꾸기에도 유일 키가 걸리지 않게)
         let cards: Vec<(i64, u32)> = con
