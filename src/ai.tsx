@@ -347,7 +347,7 @@ export function AiSection() {
             <Button variant="secondary" size="M" icon="external" label="사용량 관리" onClick={openUsage} />
           </div>
           <div className="ai-rows">
-            <Row label="쓰는 곳" value="자료에서 카드 초안 · 서술형 채점 보조 · 비슷한 내용끼리 나누기 · 선택형 오답 보기 제안" />
+            <Row label="쓰는 곳" value="자료에서 카드 초안 · 서술형 채점 보조 · 비슷한 내용끼리 나누기 · 선택형 오답 보기 제안 · 카드 점검의 질문·답 확인" />
             <Row label="보내는 것" value="실행할 때 보여 주는 카드 글자와 자료 구간 발췌" />
             <Row label="보내지 않는 것" value="원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름" />
             <Row label="보낸 횟수" value={`이번 달 ${n(s.sent_month)}번${s.sent_at ? ` · 마지막 ${when(s.sent_at)}` : ""}`} />
@@ -365,7 +365,7 @@ export function AiSection() {
             </span>
             <span className="prefs__text">
               <span className="t-body-m-strong">ChatGPT로 카드 만들기 · 고치기 돕기</span>
-              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안을 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
+              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안 · 질문·답 확인을 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
             </span>
             <ChatGptButton onClick={() => setConnecting(true)} />
           </div>

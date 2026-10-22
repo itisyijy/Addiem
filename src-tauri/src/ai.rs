@@ -1043,10 +1043,10 @@ fn parse_cited(text: &str, sent: &[rag::Sent]) -> Result<Vec<rag::Sent>, AiError
 /// 사용자가 [이대로 고치기]로 승인한 quality::rewrite_apply 뿐이다. 모델이 글을 쓰는 AI 고쳐 쓰기 길은 이 명령 하나다 (CQ, 사용자 결정 2026-10-19)
 const CHECK_INSTRUCTIONS: &str = "암기 카드 한 장의 질문과 답이 서로 맞는지 확인해요. 사용자가 보낸 질문과 답을 보고:
 - matches: 답이 질문이 묻는 것(개수 · 때 · 차이 · 이유 · 순서 · 대상)에 맞게 답하면 true, 어긋나면 false.
-- reason: 그렇게 본 근거 한 문장. 질문과 같은 언어로.
+- reason: 그렇게 본 근거 한 문장. 질문과 같은 언어로, 한국어면 해요체로 (\"…예요\", \"…없어요\"). 같은 말을 되풀이하지 마세요. fix 가 null 이면 화면이 \"근거가 부족해요\"를 이미 보여 주니 무엇이 없는지만 쓰세요 (예: \"자료에 절편 설명이 없어요\").
 - fix: 어긋나면 서로 맞게 고친 {\"question\": 질문, \"answer\": 답}. 원래 글자를 되도록 그대로 두고 꼭 필요한 곳만 고치세요. 줄은 줄바꿈으로 나누고 HTML 이나 서식 기호는 쓰지 마세요.
 - 카드와 자료 구간에 없는 새 사실을 넣지 마세요. 고칠 근거가 부족하면 fix 를 null 로 두고 reason 에 무엇이 부족한지 쓰세요. 맞으면 fix 는 null.
-- checks: 어긋나는데 fix 가 null 이면 사용자가 직접 확인할 것을 물음으로 2~3개. 첫 물음은 질문을 되풀이하지 말고 어긋나 보이는 이유를 짚으세요 (예: \"질문은 '몇'(개수)을 묻는데 답에 수가 없어요. 답에 몇 계층인지 넣어야 할까요?\"). 아니면 빈 배열.
+- checks: 어긋나는데 fix 가 null 이면 사용자가 직접 확인할 것을 해요체 물음으로 2~3개. 첫 물음은 질문을 되풀이하지 말고 어긋나 보이는 이유를 짚으세요 (예: \"질문은 '몇'(개수)을 묻는데 답에 수가 없어요. 답에 몇 계층인지 넣어야 할까요?\"). 아니면 빈 배열.
 - segments: 고친 안이 기댄 자료 구간 번호. 없으면 빈 배열.
 - 답은 {\"matches\": true 또는 false, \"reason\": 근거, \"fix\": {\"question\": 질문, \"answer\": 답} 또는 null, \"checks\": [물음, …], \"segments\": [번호, …]} 모양의 JSON 하나만.";
 
@@ -1123,7 +1123,11 @@ fn parse_check(text: &str, question: &str, answer: &str, sent: &[rag::Sent], loc
         }
         Ok(t)
     };
-    let fix = if matches || v["fix"].is_null() {
+    // 맞다고 하면 판단 · 근거만 받는다: 함께 온 fix · checks · segments 는 보지도 검사하지도 않는다 (QA: 맞는 카드가 드물게 형식 오류로 떨어졌다)
+    if matches {
+        return Ok(CardCheck { matches, reason, fix: None, kept_locked: false, checks: vec![], sent: sent.to_vec(), evidence: vec![] });
+    }
+    let fix = if v["fix"].is_null() {
         None
     } else {
         Some(CardFix { question: fixed("question", MAX_FRONT_CHARS)?, answer: fixed("answer", MAX_ANSWER_CHARS)? })
@@ -1140,18 +1144,18 @@ fn parse_check(text: &str, question: &str, answer: &str, sent: &[rag::Sent], loc
         f
     });
     let fix = fix.filter(|f| f.question != q0 || f.answer != a0);
-    let mut checks = vec![];
-    for c in v["checks"].as_array().into_iter().flatten().take(MAX_CHECKS) {
-        let c = c.as_str().map(str::trim).filter(|c| !c.is_empty() && c.chars().count() <= MAX_FRONT_CHARS && !markup(c));
-        checks.push(c.ok_or_else(|| bad("확인할 물음이 비었거나 너무 길어요"))?.to_string());
-    }
-    if matches || fix.is_some() {
-        checks.clear();
-    }
+    // 확인할 물음은 고친 안이 없을 때만. 비었거나 길거나 표시가 있는 물음은 그 물음만 버린다 (덧붙이는 것이라 판단을 버리지 않는다)
+    let checks: Vec<String> = if fix.is_some() {
+        vec![]
+    } else {
+        let ok = |c: &&str| !c.is_empty() && c.chars().count() <= MAX_FRONT_CHARS && !markup(c);
+        v["checks"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::trim).filter(ok)).take(MAX_CHECKS).map(String::from).collect()
+    };
+    // 근거 구간은 고친 안이 있을 때만 본다. 보내지 않은 번호를 인용하면 고친 안을 쓰지 않는다 (근거 칩이 틀리면 안 된다)
     let mut evidence: Vec<rag::Sent> = vec![];
-    for n in v["segments"].as_array().into_iter().flatten() {
+    for n in v["segments"].as_array().into_iter().flatten().filter(|_| fix.is_some()) {
         let id = rag::segment_at(sent, n).ok_or_else(|| bad("보내지 않은 구간 번호예요"))?;
-        if fix.is_some() && !evidence.iter().any(|s| s.id == id) {
+        if !evidence.iter().any(|s| s.id == id) {
             evidence.extend(sent.iter().find(|s| s.id == id).cloned());
         }
     }
@@ -1159,7 +1163,7 @@ fn parse_check(text: &str, question: &str, answer: &str, sent: &[rag::Sent], loc
 }
 
 /// 개발용 가짜 결과 (CQ3 의 세 상태): 규칙에 걸린 카드에 연결 구간이 있으면 첫 구간을 근거로 답 끝에 한 줄을 더한 고친 안,
-/// 구간이 없으면 근거가 부족해 고친 안 없음 + 확인할 물음, 규칙에 걸리지 않은 카드는 맞다고
+/// 구간이 없으면 근거가 부족해 고친 안 없음 + 확인할 물음 (앞뒤가 바뀐 카드만은 카드 글자만으로 앞뒤를 바꾼 고친 안), 규칙에 걸리지 않은 카드는 맞다고
 fn fake_check(question: &str, answer: &str, rule: Option<&str>, segments: usize) -> String {
     match rule {
         Some(why) if segments > 0 => json!({
@@ -1169,9 +1173,16 @@ fn fake_check(question: &str, answer: &str, rule: Option<&str>, segments: usize)
             "checks": [],
             "segments": [1],
         }),
+        Some(why) if why.contains("바뀌었을") => json!({
+            "matches": false,
+            "reason": format!("{why} (개발용 가짜 응답)"),
+            "fix": { "question": answer, "answer": question },
+            "checks": [],
+            "segments": [],
+        }),
         Some(why) => json!({
             "matches": false,
-            "reason": format!("{why}. 연결된 자료가 없어 고칠 근거가 부족해요 (개발용 가짜 응답)"),
+            "reason": format!("{why}. 연결된 자료가 없어요 (개발용 가짜 응답)"),
             "fix": null,
             "checks": [format!("{why}. 답에 질문이 묻는 내용을 넣어야 할까요?"), "답이 다른 카드의 답과 섞였는지 봐 주세요."],
             "segments": [],
@@ -1215,11 +1226,27 @@ pub async fn ai_check_card(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) 
         let rule = Some(r.why.as_str()).filter(|w| !w.is_empty());
         let text = generate(&app, &|m, f| request_body(m, &instructions, &input, f.then_some(("card_check", &schema))), || {
             fake_check(&r.question, &r.answer, rule, sent.len())
-        })?;
-        parse_check(&text, &r.question, &r.answer, &sent, r.locked)
+        });
+        let res = text.and_then(|t| parse_check(&t, &r.question, &r.answer, &sent, r.locked));
+        if let Err(e) = &res {
+            log_failure(&app, "ai_check_card", e);
+        }
+        res
     })
     .await
     .map_err(|e| AiError::Other(e.to_string()))?
+}
+
+/// 실패 까닭을 이 기기의 `ai-errors.log`(데이터 폴더)와 stderr 에 한 줄로 남긴다. 카드 글 · 응답 글은 남기지 않는다 (까닭 글만).
+/// 취소 · 연결 안 됨은 남기지 않는다. ponytail: 크기 제한 없이 덧붙인다 (드문 일), 커지면 돌려쓰기
+fn log_failure(app: &AppHandle, what: &str, e: &AiError) {
+    if matches!(e, AiError::Cancelled | AiError::NotConnected) {
+        return;
+    }
+    let line = format!("{} {what} {}: {e:?}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), e.kind());
+    eprint!("{line}");
+    let path = app.state::<AppState>().data_dir.join("ai-errors.log");
+    let _ = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
 }
 
 /// 보내고 스트림을 끝까지 읽는다. 200 이면 sent() (이번 달 보낸 카드). 취소되면 읽기를 멈춘다 (Truncated)
@@ -1590,6 +1617,22 @@ mod tests {
         // 맞다고 하면 고친 안 · 물음 · 근거는 버린다
         let c = check(r#"{"matches":true,"reason":"맞아요","fix":{"question":"x","answer":"y"},"checks":["?"],"segments":[1]}"#).unwrap();
         assert!(c.matches && c.fix.is_none() && c.checks.is_empty() && c.evidence.is_empty());
+        // 맞다고 하면 함께 온 것이 이상해도(빈 물음 · 긴 물음 · 서식 · 보내지 않은 구간 · 깨진 fix) 판단은 받는다 (QA 4)
+        let long = "가".repeat(MAX_FRONT_CHARS + 1);
+        for extra in [
+            r#""checks":[""],"segments":[]"#.to_string(),
+            format!(r#""checks":["{long}"],"segments":[]"#),
+            r#""checks":["<b>x</b>"],"segments":[9]"#.to_string(),
+            r#""checks":"x","segments":"y""#.to_string(),
+        ] {
+            let t = format!(r#"{{"matches":true,"reason":"맞아요","fix":{{"question":"","answer":"<b>"}},{extra}}}"#);
+            let c = check(&t).unwrap_or_else(|e| panic!("{extra}: {e:?}"));
+            assert!(c.matches && c.fix.is_none() && c.checks.is_empty() && c.evidence.is_empty(), "{extra}");
+        }
+        // 고친 안이 있으면 물음은 보지 않는다. 고친 안이 없을 때 이상한 물음은 그 물음만 버린다
+        assert!(check(r#"{"matches":false,"reason":"r","fix":{"question":"q","answer":"a"},"checks":[""],"segments":[]}"#).unwrap().fix.is_some());
+        let c = check(r#"{"matches":false,"reason":"r","fix":null,"checks":["","좋은 물음인가요?","<b>x</b>"],"segments":[7]}"#).unwrap();
+        assert_eq!(c.checks, ["좋은 물음인가요?"], "고친 안이 없으면 구간 번호도 보지 않는다");
         // 근거가 부족하면 고친 안 없이 확인할 물음만 (억지로 만들지 않는다)
         let c = check(r#"{"matches":false,"reason":"자료에 답이 없어요","fix":null,"checks":["묻는 것이 맞나요?","다른 카드와 섞였나요?"],"segments":[]}"#).unwrap();
         assert!(!c.matches && c.fix.is_none());
@@ -1605,7 +1648,7 @@ mod tests {
         }
         assert!(bad(&format!(r#"{{"matches":false,"reason":"r","fix":{{"question":"q","answer":"{}"}},"checks":[],"segments":[]}}"#, "가".repeat(MAX_ANSWER_CHARS + 1))), "긴 답");
         assert!(bad(r#"{"matches":false,"reason":"r","fix":{"question":"q","answer":"a"},"checks":[],"segments":[3]}"#), "보내지 않은 구간");
-        assert!(bad(r#"{"matches":false,"reason":"r","fix":null,"checks":[""],"segments":[]}"#), "빈 물음");
+        assert!(!bad(r#"{"matches":false,"reason":"r","fix":null,"checks":[""],"segments":[]}"#), "빈 물음은 그 물음만 버린다");
         assert!(bad("고치면 이래요: {"), "JSON 이 아니다");
         assert!(!markup("a < b 그리고 3<5"), "부등호는 글자다");
         // 잠긴 칸(서식 · 그림)을 바꾼 고친 안: 그 칸은 버리고 알린다 (QA M2). 남는 것이 없으면 고친 안이 없다
@@ -1632,6 +1675,9 @@ mod tests {
         assert!(c.fix.is_some() && c.evidence.len() == 1, "연결 구간이 있으면 그 구간을 근거로 고친 안");
         let c = parse_check(&fake_check("Q?", "80", Some("근거"), 0), "Q?", "80", &[], [false, false]).unwrap();
         assert!(c.fix.is_none() && c.checks.len() == 2, "구간이 없으면 근거 부족");
+        let c = parse_check(&fake_check("광합성", "빛으로 무엇을 만들까?", Some("답이 물음으로 끝나요. 앞면과 뒷면이 바뀌었을 수 있어요"), 0), "광합성", "빛으로 무엇을 만들까?", &[], [false, false]).unwrap();
+        assert_eq!(c.fix, Some(CardFix { question: "빛으로 무엇을 만들까?".into(), answer: "광합성".into() }), "앞뒤가 바뀐 카드는 자료 없이 고친 안");
+        assert!(c.evidence.is_empty() && c.sent.is_empty());
         assert!(parse_check(&fake_check("Q?", "80", None, 0), "Q?", "80", &[], [false, false]).unwrap().matches);
         let text = fake_text(&st, 0, "malformed", || unreachable!()).unwrap();
         assert!(matches!(parse_check(&text, "Q?", "80", &[], [false, false]), Err(AiError::BadOutput(_))));

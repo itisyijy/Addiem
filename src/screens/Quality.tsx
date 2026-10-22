@@ -566,13 +566,13 @@ function FixedCard({ before, value, onChange, locked, readOnly, label = "고친 
   );
 }
 
-/** 근거 줄 (CQ3): 고친 안이 기댄 자료 구간 + [자료 열기]. 자료로 확인하지 못했으면 주황 한 줄 */
+/** 근거 줄 (CQ3): 고친 안이 기댄 자료 구간 + [자료 열기]. 기댄 구간이 없으면 주황 한 줄: 자료를 안 보냈으면 카드 글자만으로 고친 안, 보냈는데 인용하지 않았으면 그 사실 */
 function Evidence({ check, onOpen }: { check: CardCheck; onOpen: (id: number) => void }) {
   if (!check.evidence.length)
     return (
       <p className="rewrite__evidence is-warn t-body-s">
         <Icon name="alert" size={16} />
-        자료로 확인하지 못했어요 · ChatGPT가 일반 지식으로 고쳤어요
+        {check.sent.length ? "보낸 자료에서 고친 곳의 근거를 찾지 못했어요 · 직접 확인해 주세요" : "자료 없이 카드 글자만으로 고친 안이에요 · 직접 확인해 주세요"}
       </p>
     );
   return (
@@ -861,7 +861,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
                 <span className="rewrite__nl">↵</span> 줄을 나눈 곳 · 지운 글자는 취소선, 더한 글자는 밑줄로 보여요
               </>
             ) : (
-              "지운 글자는 취소선, 더한 글자는 밑줄 · 자료에 있는 내용으로만 고치라고 요청했어요"
+              `지운 글자는 취소선, 더한 글자는 밑줄${check?.sent.length ? " · 자료에 있는 내용으로만 고치라고 요청했어요" : ""}`
             )}
           </p>
         )}
