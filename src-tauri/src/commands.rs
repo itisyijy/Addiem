@@ -2822,12 +2822,109 @@ pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
     Ok(out)
 }
 
+/// 백업 하나를 풀어 쓰는 최대 바이트 (DB + 미디어 + 원자료 합계). 압축 폭탄이 디스크를 채우지 않게
+const MAX_RESTORE: u64 = 32 << 30;
+
+/// max 바이트까지만 새 파일로 옮긴다. 넘거나 실패하면 만든 파일을 지운다. 이미 있는 파일은 건드리지 않는다
+fn copy_capped(r: impl std::io::Read, to: &std::path::Path, max: u64) -> Res<u64> {
+    let mut out = std::fs::File::create_new(to).map_err(err)?;
+    let copied = std::io::copy(&mut r.take(max + 1), &mut out);
+    drop(out);
+    match copied {
+        Ok(n) if n <= max => Ok(n),
+        other => {
+            let _ = std::fs::remove_file(to);
+            Err(other.err().map_or("백업을 풀면 너무 커져서 멈췄어요. 손상됐거나 안전하지 않은 파일일 수 있어요.".into(), |e| e.to_string()))
+        }
+    }
+}
+
+fn remove_db_files(path: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+/// 복구할 백업을 지금 데이터 옆에 푼다: DB 는 임시 파일로 풀어 열리는지 확인하고, 미디어 · 원자료는 없는 것만 채운다
+/// (덮어쓰지 않으니 중간에 멈춰도 지금 데이터는 그대로다). 확인한 임시 DB 경로를 돌려준다
+fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<std::path::PathBuf> {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path).map_err(err)?).map_err(|_| "백업 파일을 읽을 수 없어요.".to_string())?;
+    let staged = data_dir.join(format!(".restore-{}.sqlite", now_ms()));
+    let result = (|| -> Res<()> {
+        let f = zip.by_name("neoanki.sqlite").map_err(|_| "백업에 데이터 파일(neoanki.sqlite)이 없어요.".to_string())?;
+        let mut used = copy_capped(f, &staged, MAX_RESTORE)?;
+        // db::open 은 전역 설정(하루 시작 시각)을 바꾸므로 여기서는 SQLite 파일인지만 본다. 스키마 문제는 swap_in_db 가 되돌린다
+        let check: rusqlite::Result<String> = Connection::open(&staged).and_then(|c| c.query_row("PRAGMA quick_check", [], |r| r.get(0)));
+        if !matches!(check.as_deref(), Ok("ok")) {
+            return Err("백업의 데이터 파일이 손상됐어요.".into());
+        }
+        for i in 0..zip.len() {
+            let f = zip.by_index(i).map_err(err)?;
+            let name = f.name().map_err(err)?.into_owned();
+            let Some((sub, file)) = name.split_once('/').filter(|(sub, _)| ["media", "sources"].contains(sub)) else { continue };
+            let dir = data_dir.join(sub);
+            if safe_media_name(file).is_err() || dir.join(file).exists() {
+                continue;
+            }
+            std::fs::create_dir_all(&dir).map_err(err)?;
+            used += copy_capped(f, &dir.join(file), MAX_RESTORE - used)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(staged),
+        Err(e) => {
+            remove_db_files(&staged);
+            Err(e)
+        }
+    }
+}
+
+/// 확인한 DB 로 바꾼다. 지금 파일은 지우지 않고 neoanki-before-restore-<시각>.sqlite 로 옆에 남긴다.
+/// 중간에 실패하면 옮긴 파일을 되돌리고 원래 DB 를 다시 연다 (빈 데이터로 남지 않게)
+fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::path::Path) -> Res<()> {
+    let db_path = data_dir.join("neoanki.sqlite");
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    // 파일을 옮기려면 연결부터 닫는다 (Windows 는 열린 파일을 옮기지 못한다)
+    *con = db::open_in_memory().map_err(err)?;
+    let mut moved = vec![];
+    let mut placed = false;
+    let result = (|| -> Res<Connection> {
+        for suffix in ["", "-wal", "-shm"] {
+            let from = std::path::PathBuf::from(format!("{}{suffix}", db_path.display()));
+            if from.exists() {
+                let to = data_dir.join(format!("neoanki-before-restore-{stamp}.sqlite{suffix}"));
+                std::fs::rename(&from, &to).map_err(err)?;
+                moved.push((from, to));
+            }
+        }
+        std::fs::rename(staged, &db_path).map_err(err)?;
+        placed = true;
+        db::open(&db_path).map_err(|e| format!("백업도 열지 못했어요: {e}"))
+    })();
+    match result {
+        Ok(c) => {
+            *con = c;
+            Ok(())
+        }
+        Err(e) => {
+            remove_db_files(if placed { &db_path } else { staged });
+            for (from, to) in moved.iter().rev() {
+                let _ = std::fs::rename(to, from);
+            }
+            if let Ok(c) = db::open(&db_path) {
+                *con = c;
+            }
+            Err(format!("{e} 원래 데이터로 되돌렸어요."))
+        }
+    }
+}
+
 /// S1-6 "백업에서 복구" · 설정 › 이 기기 백업 [백업으로 복구]. name 이 없으면 가장 최근 백업 zip 으로 되돌린다.
 /// backup_first 면 바꾸기 전에 지금 상태를 백업한다 (-restore). 지금 파일은 지우지 않고 neoanki-before-restore-<시각>.sqlite 로 옆에도 남긴다.
 /// 미디어는 없는 것만 채운다
 #[tauri::command]
 pub async fn restore_backup(state: State<'_, AppState>, name: Option<String>, backup_first: Option<bool>) -> Res<String> {
-    use std::io::Read;
     let dir = backup_dir(&state.data_dir);
     let latest = match name {
         // 목록에서 고른 이름만 (경로 · 다른 폴더는 받지 않는다)
@@ -2841,43 +2938,16 @@ pub async fn restore_backup(state: State<'_, AppState>, name: Option<String>, ba
             .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
             .ok_or("백업 파일이 없어요.")?,
     };
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(&latest).map_err(err)?).map_err(|_| "백업 파일을 읽을 수 없어요.".to_string())?;
-
+    // 지금 데이터에 손대기 전에 풀고 확인한다. 깨졌거나 안전하지 않은 백업이면 여기서 멈춘다
+    let staged = stage_restore(&latest, &state.data_dir)?;
     let mut guard = state.db.lock().map_err(err)?;
-    if backup_first.unwrap_or(false) {
-        write_backup_as(&guard, &state.data_dir, "restore").map_err(|e| format!("지금 상태를 백업하지 못해 복구하지 않았어요. {e}"))?;
+    if backup_first.unwrap_or(false)
+        && let Err(e) = write_backup_as(&guard, &state.data_dir, "restore")
+    {
+        remove_db_files(&staged);
+        return Err(format!("지금 상태를 백업하지 못해 복구하지 않았어요. {e}"));
     }
-    // 파일을 옮기려면 연결부터 닫는다 (Windows 는 열린 파일을 옮기지 못한다)
-    *guard = db::open_in_memory().map_err(err)?;
-    let db_path = state.data_dir.join("neoanki.sqlite");
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    for suffix in ["", "-wal", "-shm"] {
-        let from = std::path::PathBuf::from(format!("{}{suffix}", db_path.display()));
-        if from.exists() {
-            let to = state.data_dir.join(format!("neoanki-before-restore-{stamp}.sqlite{suffix}"));
-            std::fs::rename(&from, &to).map_err(err)?;
-        }
-    }
-    for i in 0..zip.len() {
-        let mut f = zip.by_index(i).map_err(err)?;
-        let name = f.name().map_err(err)?.into_owned();
-        let target = if name == "neoanki.sqlite" {
-            db_path.clone()
-        } else if let Some((sub, file)) = name.split_once('/').filter(|(sub, _)| ["media", "sources"].contains(sub)) {
-            let dir = state.data_dir.join(sub);
-            if safe_media_name(file).is_err() || dir.join(file).exists() {
-                continue;
-            }
-            std::fs::create_dir_all(&dir).map_err(err)?;
-            dir.join(file)
-        } else {
-            continue;
-        };
-        let mut buf = vec![];
-        f.read_to_end(&mut buf).map_err(err)?;
-        std::fs::write(target, buf).map_err(err)?;
-    }
-    *guard = db::open(&db_path).map_err(|e| format!("백업도 열지 못했어요: {e}"))?;
+    swap_in_db(&mut guard, &state.data_dir, &staged)?;
     // 동기화하던 백업이면 다음 동기화가 Drive 와 다시 맞춘다 (백업 뒤의 이 기기 · 다른 기기 변경을 받는다, Q2-09)
     crate::sync::engine::mark_restored(&guard).map_err(err)?;
     *state.startup_error.lock().map_err(err)? = None;
@@ -2940,6 +3010,66 @@ pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::S
 mod tests {
     use crate::db::{now_ms, study_day, study_day_end_ms};
     use rusqlite::{params, Connection};
+
+    fn marker(con: &Connection) -> String {
+        con.query_row("SELECT value FROM schema_meta WHERE key = 'marker'", [], |r| r.get(0)).unwrap_or_default()
+    }
+
+    fn set_marker(con: &Connection, v: &str) {
+        con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('marker', ?1)", [v]).unwrap();
+    }
+
+    fn zip_with(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, bytes) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn leftovers(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(".restore-")).collect()
+    }
+
+    #[test]
+    fn bad_backup_is_refused_before_touching_live_data() {
+        let dir = std::env::temp_dir().join(format!("na-restore-bad-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let no_db = dir.join("no-db.zip");
+        zip_with(&no_db, &[("media/a.png", b"png")]);
+        assert!(super::stage_restore(&no_db, &dir).unwrap_err().contains("neoanki.sqlite"));
+        let garbage = dir.join("garbage.zip");
+        zip_with(&garbage, &[("neoanki.sqlite", b"not a database at all")]);
+        assert!(super::stage_restore(&garbage, &dir).is_err());
+        assert!(leftovers(&dir).is_empty(), "임시 DB 를 남기지 않는다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_swaps_in_backup_and_rolls_back_on_failure() {
+        let dir = std::env::temp_dir().join(format!("na-restore-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut con = crate::db::open(&dir.join("neoanki.sqlite")).unwrap();
+        set_marker(&con, "backup");
+        let zip = super::write_backup(&con, &dir).unwrap();
+        set_marker(&con, "live");
+
+        // 교체 중 실패 (임시 DB 가 사라짐): 원래 DB 가 제자리로 돌아오고 다시 열린다
+        let missing = dir.join(".restore-missing.sqlite");
+        assert!(super::swap_in_db(&mut con, &dir, &missing).unwrap_err().contains("되돌렸어요"));
+        assert_eq!(marker(&con), "live");
+
+        let staged = super::stage_restore(&zip, &dir).unwrap();
+        super::swap_in_db(&mut con, &dir, &staged).unwrap();
+        assert_eq!(marker(&con), "backup");
+        assert!(leftovers(&dir).is_empty());
+        let before = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with("neoanki-before-restore-"));
+        assert!(before, "지금 파일은 옆에 남긴다");
+        drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn old_automatic_backups_are_pruned_but_never_manual_ones() {
