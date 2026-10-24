@@ -10,8 +10,9 @@ Chosen 2026-10-25: mark **I02** with type **Newsreader**. The type was picked in
 | `addiem-mark.svg` / `-dark.svg` | 4×4 mark, 32px and up, light / dark background |
 | `addiem-mark-small.svg` / `-small-dark.svg` | 3×3 mark (I01), 16–24px. At that size the 4×4 grid's light dots disappear |
 | `addiem-icon.svg` | App icon source: the 4×4 mark on the accent tile. Used at 48px and up |
-| `addiem-icon-small.svg` | Small app icon: the 3×3 mark on the same tile. Used at 16, 24 and 32px |
-| `icons/` | Copy of `src-tauri/icons`. Generated with `npx @tauri-apps/cli@2 icon design/logo/addiem-icon.svg -o design/logo/icons`. Then `32x32.png` was replaced with the small icon, and `icon.ico` was packed from both SVGs: 16/24/32 small, 48/64/256 regular |
+| `addiem-icon-small.svg` | Small app icon: the 3×3 mark on the same tile. Used at 24 and 32px |
+| `addiem-icon-16.svg` | 16px app icon: three diagonal dots only, pixel-aligned (title bar). At 16px the 3×3 grid read as an empty tile (QA QB-06) |
+| `icons/` | Copy of `src-tauri/icons`. Generated with `npx @tauri-apps/cli@2 icon design/logo/addiem-icon.svg -o design/logo/icons`. Then `32x32.png` was replaced with the small icon, and `icon.ico` was packed from three SVGs: 16 from the 16px icon, 24/32 from the small icon, 48/64/256 from the regular icon |
 
 ## Figma
 
@@ -28,7 +29,7 @@ The file "Neo-Anki MVP UI" (xZsmRhJ4rvkjwYHfQyM5jx) has a page "Addiem 로고" (
 |---|---|---|---|
 | Accent (diagonal dots, icon tile) | #4433FF | #7A6DFF | white |
 | Grid dots | #D9D5FF | #3A3470 | #6A5CFF |
-| The day (orange) | #FF8A3D | #FF9A55 | #FF9A55 |
+| The day (orange) | #E05C06 (was #FF8A3D, darkened for 3:1 on the light top bar, QA QB-05) | #FF9A55 | #FF9A55 |
 | Wordmark ink | #16151F | #ECEBF5 | — |
 
 ## Wordmark

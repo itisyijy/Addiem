@@ -65,7 +65,7 @@
   /* Addiem 로고 (Figma brand/*). 점 격자 심볼과 워드마크만 쓴다 */
   --brand-path: #4433ff;
   --brand-grid: #d9d5ff;
-  --brand-day: #ff8a3d;
+  --brand-day: #e05c06; /* 밝은 메뉴 위 3:1 (QA QB-05). 앱 강조 --accent-warm 과 따로 */
   --brand-ink: #16151f;
 
   --status-warn-bg: #fff1d6;

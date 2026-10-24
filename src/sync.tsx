@@ -494,7 +494,7 @@ function ConnectModal({ from, onDone }: { from?: "home" | "settings" | "login"; 
           <Icon name="folder" size={16} className="c-secondary" />
           <span className="sync-perm__text">
             <span className="t-body-s">Addiem이 만든 파일만 보고 관리하기</span>
-            <span className="t-caption c-tertiary">"Neo-Anki 백업" 폴더</span>
+            <span className="t-caption c-tertiary">"Neo-Anki 백업" 폴더 · Neo-Anki는 Addiem의 예전 이름이에요</span>
           </span>
         </span>
         <span className="sync-perm">
