@@ -183,14 +183,13 @@
 .deckrow .badge { padding: 1px 8px; }
 
 /* Logo */
-.logo { position: relative; display: inline-block; width: 28px; height: 28px; flex-shrink: 0; }
-.logo__back {
-  position: absolute; left: 2px; top: 6px; width: 16px; height: 20px;
-  border-radius: 4px; background: var(--bg-inverse);
-}
-.logo__front {
-  position: absolute; left: 10px; top: 2px; width: 16px; height: 20px;
-  border-radius: 4px; background: var(--accent-default); border: 2px solid var(--bg-canvas);
+.logo { width: 32px; height: 32px; flex-shrink: 0; }
+.wordmark { height: 30px; width: auto; flex-shrink: 0; }
+/* Windows 고대비: 메뉴 배경은 시스템 색이 되는데 SVG fill 은 그대로라 글자가 사라졌다 (QA QB-03). 시스템 색으로 그린다 */
+@media (forced-colors: active) {
+  .wordmark path, .logo [fill="var(--brand-path)"] { fill: CanvasText; }
+  .logo [fill="var(--brand-grid)"] { fill: GrayText; }
+  .wordmark circle, .logo [fill="var(--brand-day)"] { fill: Highlight; }
 }
 
 /* TopNav */

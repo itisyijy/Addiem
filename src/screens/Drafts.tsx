@@ -146,7 +146,7 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
           foot={
             <p className="ai-send__foot t-caption c-tertiary">
               <Icon name="info" size={14} />
-              그 밖에 Neo-Anki가 붙이는 카드 형식 안내문만 함께 가요. 덱 이름·다른 카드·복습 기록은 보내지 않아요.
+              그 밖에 Addiem이 붙이는 카드 형식 안내문만 함께 가요. 덱 이름·다른 카드·복습 기록은 보내지 않아요.
             </p>
           }
         />

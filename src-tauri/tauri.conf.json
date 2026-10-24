@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Neo-Anki",
+  "productName": "Addiem",
   "version": "0.1.0",
   "identifier": "io.github.itisyijy.neoanki",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Neo-Anki",
+        "title": "Addiem",
         "create": false,
         "width": 1280,
         "height": 800,
@@ -29,6 +29,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "itisyijy",
+    "copyright": "© 2026 itisyijy",
     "resources": {
       "resources/tts/": "tts/",
       "resources/llm/": "llm/"
@@ -42,6 +43,8 @@
     ],
     "windows": {
       "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "windows/hooks.nsh",
         "installMode": "currentUser",
         "languages": ["Korean", "English"]
       }

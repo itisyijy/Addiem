@@ -58,7 +58,7 @@ pub struct Status {
     pub pending: i64,
     pub pending_reviews: i64,
     pub pending_notes: i64,
-    /// Drive 에서 Neo-Anki 가 쓰는 공간 (바이트)
+    /// Drive 에서 Addiem이 쓰는 공간 (바이트)
     pub usage: Option<u64>,
     /// Drive 전체 (쓴 양, 한도)
     pub quota: Option<(u64, u64)>,
@@ -594,7 +594,7 @@ struct AuthEvent {
 #[derive(Serialize, Clone)]
 pub struct Probe {
     pub account: String,
-    /// Drive 에 Neo-Anki 데이터가 있으면 (K6-f · K6-m)
+    /// Drive 에 Addiem 데이터가 있으면 (K6-f · K6-m)
     pub remote: Option<J>,
     pub local: J,
     pub device_name: String,

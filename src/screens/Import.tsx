@@ -417,7 +417,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
                       {info.update ? <Badge tone="neutral">{n(reviews)}건</Badge> : <Badge tone="accent">권장 · {n(reviews)}건</Badge>}
                     </span>
                     <span className="t-body-s c-secondary">
-                      카드마다 간격·기한·기억 상태를 이어받아 시작해요. 이후 평가는 Neo-Anki의 일정 계산을 따르고, 학습 순서·하루 분량은 Neo-Anki 설정을 써요.
+                      카드마다 간격·기한·기억 상태를 이어받아 시작해요. 이후 평가는 Addiem의 일정 계산을 따르고, 학습 순서·하루 분량은 Addiem 설정을 써요.
                     </span>
                     {!all && orphanReviews > 0 && (
                       <span className="t-caption c-tertiary">지운 카드의 기록 {n(orphanReviews)}건은 덱을 모두 고를 때만 함께 들어가요</span>
@@ -1259,7 +1259,7 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
 
 function report(r: ImportResult) {
   const lines = [
-    `Neo-Anki 가져오기 결과`,
+    `Addiem 가져오기 결과`,
     `파일: ${r.source}`,
     `시각: ${new Date().toLocaleString("ko-KR")}`,
     ``,

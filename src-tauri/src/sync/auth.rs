@@ -126,9 +126,9 @@ pub fn parse_callback(request_line: &str, path: &str, state: &str) -> Result<Cal
 
 fn done_page(title: &str) -> String {
     format!(
-        "<!doctype html><meta charset=utf-8><title>Neo-Anki</title>\
+        "<!doctype html><meta charset=utf-8><title>Addiem</title>\
 <body style=\"font-family:system-ui,sans-serif;display:grid;place-items:center;height:90vh;color:#16161d\">\
-<div style=text-align:center><h2>{title}</h2><p>이 탭을 닫고 Neo-Anki 로 돌아가세요.</p></div>"
+<div style=text-align:center><h2>{title}</h2><p>이 탭을 닫고 Addiem으로 돌아가세요.</p></div>"
     )
 }
 

@@ -873,7 +873,7 @@ pub struct Remote {
     pub devices: Vec<String>,
     pub media: HashSet<String>,
     pub locked: bool,
-    /// 숨김 공간 전체 크기 (K4 "Neo-Anki 가 쓰는 공간")
+    /// 숨김 공간 전체 크기 (K4 "Addiem이 쓰는 공간")
     pub bytes: u64,
 }
 

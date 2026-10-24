@@ -2851,7 +2851,7 @@ fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<
     let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path).map_err(err)?).map_err(|_| "백업 파일을 읽을 수 없어요.".to_string())?;
     let staged = data_dir.join(format!(".restore-{}.sqlite", now_ms()));
     let result = (|| -> Res<()> {
-        let f = zip.by_name("neoanki.sqlite").map_err(|_| "백업에 데이터 파일(neoanki.sqlite)이 없어요.".to_string())?;
+        let f = zip.by_name("neoanki.sqlite").map_err(|_| "백업 안에 데이터 파일이 없어요. 이 앱에서 만든 백업 파일이 맞는지 확인해 주세요.".to_string())?;
         let mut used = copy_capped(f, &staged, MAX_RESTORE)?;
         // db::open 은 전역 설정(하루 시작 시각)을 바꾸므로 여기서는 SQLite 파일인지만 본다. 스키마 문제는 swap_in_db 가 되돌린다
         let check: rusqlite::Result<String> = Connection::open(&staged).and_then(|c| c.query_row("PRAGMA quick_check", [], |r| r.get(0)));
@@ -3039,7 +3039,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let no_db = dir.join("no-db.zip");
         zip_with(&no_db, &[("media/a.png", b"png")]);
-        assert!(super::stage_restore(&no_db, &dir).unwrap_err().contains("neoanki.sqlite"));
+        assert!(super::stage_restore(&no_db, &dir).unwrap_err().contains("데이터 파일이 없어요"));
         let garbage = dir.join("garbage.zip");
         zip_with(&garbage, &[("neoanki.sqlite", b"not a database at all")]);
         assert!(super::stage_restore(&garbage, &dir).is_err());

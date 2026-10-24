@@ -46,6 +46,10 @@ const PORT: u16 = 1455;
 const REFRESH: &str = "chatgpt-refresh-token";
 const META_HOST: &str = "ai_host_id";
 const META_CLIENT: &str = "ai_client_id";
+/// 그 등록을 어떤 이름(agent_name_hint)으로 했는지. 없으면 Neo-Anki 시절 등록이다 (QA QB-09)
+const META_CLIENT_NAME: &str = "ai_client_name";
+/// ChatGPT 연결 화면 · 연결된 앱 목록에 보이는 이름
+const AGENT_NAME: &str = "Addiem";
 /// 있으면 연결됨 (화면 표시용 이메일). 계정 식별은 검사한 ID 토큰의 sub
 const META_EMAIL: &str = "ai_email";
 const META_SUB: &str = "ai_sub";
@@ -194,7 +198,7 @@ pub fn authorize_url(client_id: Option<&str>, host_id: &str, redirect: &str, p: 
         ("code_challenge_method", "S256"),
     ];
     if client_id.is_none() {
-        q.push(("agent_name_hint", "Neo-Anki"));
+        q.push(("agent_name_hint", AGENT_NAME));
     }
     if reconsent {
         q.push(("prompt", "consent"));
@@ -834,7 +838,7 @@ pub fn ai_connect(app: AppHandle, state: State<AiState>, reconsent: bool, new_ac
                 h
             }
         };
-        Ok((host, get_meta(c, META_CLIENT).filter(|_| !new_account)))
+        Ok((host, reusable_client(get_meta(c, META_CLIENT), get_meta(c, META_CLIENT_NAME).as_deref(), new_account)))
     })
     .map_err(|e| e.to_string())?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", PORT)).or_else(|_| auth::loopback()).map_err(|e| e.to_string())?;
@@ -852,6 +856,12 @@ pub fn ai_connect(app: AppHandle, state: State<AiState>, reconsent: bool, new_ac
         let _ = app.emit("ai-auth", ev);
     });
     Ok(url)
+}
+
+/// 다음 로그인에 저장한 등록(client_id)을 다시 쓸지. 다른 이름으로 한 등록(Neo-Anki 시절)이면 새로 등록해
+/// ChatGPT 에 Addiem 으로 보이게 한다. 지금 연결은 그대로고, 다시 연결할 때만 바뀐다 (QA QB-09)
+fn reusable_client(client: Option<String>, name: Option<&str>, new_account: bool) -> Option<String> {
+    client.filter(|_| !new_account && name == Some(AGENT_NAME))
 }
 
 fn connect_blocking(
@@ -905,7 +915,11 @@ fn save_connection(app: &AppHandle, st: &AiState, client: &str, t: &Tokens, nonc
     let old_refresh = auth::load_secret(REFRESH);
     // 등록은 검증한 ID 토큰의 aud 와 같을 때만 저장한다. 사용량 권한이 빠져도 저장: [다시 연결]은 같은 client_id 로 (errors-and-recovery).
     // 다음 로그인은 이 client_id 로 (dynamic_agent_client 는 다시 쓰지 않는다)
-    with_db(app, |c| set_meta(c, META_CLIENT, Some(client))).map_err(fail)?;
+    with_db(app, |c| {
+        set_meta(c, META_CLIENT, Some(client))?;
+        set_meta(c, META_CLIENT_NAME, Some(AGENT_NAME))
+    })
+    .map_err(fail)?;
     // 저장하기 전에 권한부터. 사용량 권한이 없으면 요금제로 쓸 수 없다
     if !has_use_scope(&t.scope) {
         return Err(fail(AiError::Scope));
@@ -1306,13 +1320,23 @@ mod tests {
     }
 
     #[test]
+    fn old_registration_is_replaced_on_next_connect() {
+        let c = || Some("oaiapp_1".to_string());
+        assert_eq!(reusable_client(c(), Some(AGENT_NAME), false).as_deref(), Some("oaiapp_1"), "Addiem 으로 한 등록은 다시 쓴다");
+        assert_eq!(reusable_client(c(), None, false), None, "이름 기록이 없으면 Neo-Anki 시절 등록: 새로 등록");
+        assert_eq!(reusable_client(c(), Some("Neo-Anki"), false), None);
+        assert_eq!(reusable_client(c(), Some(AGENT_NAME), true), None, "[다른 계정으로]");
+        assert_eq!(reusable_client(None, Some(AGENT_NAME), false), None);
+    }
+
+    #[test]
     fn authorize_url_first_and_returning() {
         let redirect = "http://127.0.0.1:1455/auth/callback";
         let u = authorize_url(None, "urn:uuid:h", redirect, &pkce(), "n0", false);
         assert!(u.starts_with("https://auth.openai.com/api/accounts/authorize?"));
         let q = query(&u);
         assert_eq!(q["client_id"], "dynamic_agent_client", "처음에는 동적 등록");
-        assert_eq!(q["agent_name_hint"], "Neo-Anki");
+        assert_eq!(q["agent_name_hint"], "Addiem");
         assert_eq!(q["ext_agent_host_id"], "urn:uuid:h");
         assert_eq!(q["response_type"], "code");
         assert_eq!(q["redirect_uri"], redirect);
