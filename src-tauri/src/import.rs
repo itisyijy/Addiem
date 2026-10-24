@@ -637,7 +637,8 @@ fn pb_fields(buf: &[u8]) -> Vec<(u64, Pb<'_>)> {
             }
             2 => {
                 let len = varint(buf, &mut i) as usize;
-                let end = (i + len).min(buf.len());
+                // 길이는 파일이 정한다. u64 최대값 근처면 i + len 이 넘쳐 end < i 가 된다
+                let end = i.saturating_add(len).min(buf.len());
                 out.push((num, Pb::Bytes(&buf[i..end])));
                 i = end;
             }
@@ -2204,6 +2205,8 @@ mod tests {
         assert_eq!(pb_str(b"\x0a\x02hi\x40\x01", 1), "hi");
         assert_eq!(pb_str(b"\x0a\x02hi", 2), "");
         assert!(pb_fields(b"").is_empty());
+        // 길이가 u64 최대값인 필드: 넘쳐서 패닉하지 않고 남은 바이트까지만 읽는다
+        assert_eq!(pb_str(b"\x0a\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01x", 1), "x");
     }
 
     #[test]

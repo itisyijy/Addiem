@@ -786,10 +786,20 @@ struct Pptx<R> {
 /// 구역 이름 · 그 안 슬라이드 수 (순서대로)
 type Sections = Vec<(String, usize)>;
 
+/// PPTX 안 XML 한 파일의 최대 크기. 보통 수백 KB 다. 압축 폭탄이 메모리를 다 쓰지 않게
+const MAX_XML: u64 = 32 << 20;
+/// 슬라이드 그림 한 장의 최대 크기 (파일 전체 상한과 같은 정도)
+const MAX_IMAGE: u64 = 200 << 20;
+
+/// max 바이트까지만 읽는다. 넘으면 None (잘린 내용을 쓰지 않는다)
+fn read_capped(r: impl Read, max: u64) -> Option<Vec<u8>> {
+    let mut b = vec![];
+    r.take(max + 1).read_to_end(&mut b).ok()?;
+    (b.len() as u64 <= max).then_some(b)
+}
+
 fn zip_text<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Option<String> {
-    let mut s = String::new();
-    zip.by_name(name).ok()?.read_to_string(&mut s).ok()?;
-    Some(s)
+    String::from_utf8(read_capped(zip.by_name(name).ok()?, MAX_XML)?).ok()
 }
 
 /// rels 의 Target 을 zip 안 경로로 ("../media/a.png" 는 dir 기준, "/ppt/.." 는 그대로)
@@ -1415,8 +1425,8 @@ pub fn source_slide_image(state: State<AppState>, material_id: i64, page: i64, i
     let i = usize::try_from(page - 1).map_err(err)?;
     let (_, images, _) = slide_objects(&mut p, i).ok_or("슬라이드를 찾을 수 없어요.")?;
     let img = images.get(index).ok_or("그림을 찾을 수 없어요.")?;
-    let mut bytes = vec![];
-    p.zip.by_name(&img.path).map_err(|_| "그림을 찾을 수 없어요.".to_string())?.read_to_end(&mut bytes).map_err(err)?;
+    let f = p.zip.by_name(&img.path).map_err(|_| "그림을 찾을 수 없어요.".to_string())?;
+    let bytes = read_capped(f, MAX_IMAGE).ok_or("그림이 너무 크거나 읽을 수 없어요.")?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -1795,6 +1805,14 @@ fn core_ranges(con: &Connection, ids: &str) -> Res<HashMap<i64, String>> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn capped_read_refuses_more_than_max() {
+        assert_eq!(read_capped(&b"abc"[..], 3).as_deref(), Some(&b"abc"[..]));
+        assert_eq!(read_capped(&b"abcd"[..], 3), None, "넘으면 잘라 쓰지 않는다");
+        // 압축 폭탄: 끝까지 풀지 않고 max + 1 에서 멈춘다
+        assert_eq!(read_capped(std::io::repeat(0), 1 << 10), None);
+    }
 
     /// 슬라이드 두 장짜리 최소 PPTX. 순서는 presentation.xml 이 정한다 (slide2 가 먼저)
     fn tiny_pptx() -> Vec<u8> {
