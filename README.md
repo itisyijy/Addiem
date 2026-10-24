@@ -1,14 +1,28 @@
-# Neo-Anki
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/logo/addiem-lockup-dark.svg">
+    <img src="design/logo/addiem-lockup.svg" alt="Addiem" width="300">
+  </picture>
+</p>
 
-Anki가 복습 시점을 관리한다면, Neo-Anki는 시험일까지의 완주 전략을 관리해요.
+<p align="center"><b>Anki가 복습 시점을 관리한다면, Addiem은 시험일까지의 완주 전략을 관리해요.</b></p>
+
+<p align="center">
+  <a href="https://github.com/itisyijy/Addiem/releases/latest"><img src="https://img.shields.io/badge/버전-0.1.0-4433ff" alt="버전 0.1.0"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20·%2011-16151f" alt="Windows 10 · 11">
+  <img src="https://img.shields.io/badge/Anki-.apkg%20·%20.colpkg-16151f" alt="Anki .apkg · .colpkg 호환">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/라이선스-MIT-16151f" alt="MIT 라이선스"></a>
+</p>
+
+<p align="center">한국어 · <a href="README.en.md">English</a></p>
 
 ![오늘 남은 카드 39장이 보이는 홈 화면과, 그중 7번째 카드를 연결 자료와 함께 보는 학습 화면](docs/images/readme/hero.png)
 
-Windows용 데스크톱 앱 · 버전 0.1.0 · Anki 덱 호환 · 이 기기에 저장
+**Addiem**(에디엠)은 시험 목표와 카드 품질을 함께 관리해, 정해진 기간 안에 핵심 내용부터 외우도록 돕는 Anki 호환 학습 앱이에요. 이름은 라틴어 *ad diem*, '그날까지'에서 왔어요. 로고의 대각선은 날짜 칸을 지나 주황 점, 곧 시험일에 닿아요.
+
+**[설치 파일 내려받기](https://github.com/itisyijy/Addiem/releases/latest)** · [설치](#설치) · [시작하기](#시작하기) · [데이터와 개인정보](#데이터와-개인정보) · [알려진 제한](#알려진-제한)
 
 ## 소개
-
-Neo-Anki는 시험 목표와 카드 품질을 함께 관리해, 정해진 기간 안에 핵심 내용부터 외우도록 돕는 Anki 호환 학습 앱이에요.
 
 - **쓰던 Anki 덱을 이어서 써요.** `.apkg` · `.colpkg`를 가져오고, 복습 기록도 함께 옮길 수 있어요. 새 덱을 만들어 바로 시작해도 돼요.
 - **덱마다 시험일과 중요도를 정해요.** 남은 날짜와 핵심 · 일반 · 보충 중요도에 맞춰 오늘 볼 카드를 골라 줘요. 복습 간격은 FSRS로 계산해요.
@@ -24,7 +38,7 @@ Neo-Anki는 시험 목표와 카드 품질을 함께 관리해, 정해진 기간
 
 - 같은 학습에서 Again을 두 번 받은 카드는 잠깐 접어 두고 나머지를 먼저 봐요. 어려운 카드 하나가 오늘 진도를 막지 않아요.
 - 앱 기본 노트 유형: 질문과 답변 · 양방향 · 빈칸 · 서술형 · 목록 · 선택형 · 그림 가리기. 소리 재생, Anki `{{tts}}` 읽어주기, 수식(KaTeX)도 돼요.
-- 화면 테마는 밝게 · 어둡게 · 시스템 따름 중에서 골라요.
+- 화면 테마는 밝게 · 어둡게 · 시스템 따름 중에서 골라요. Windows 고대비 테마에서도 로고와 글자가 시스템 색으로 보여요.
 
 <p>
   <img src="docs/images/readme/home.png" alt="오늘 남은 카드와 덱별 오늘 학습량이 보이는 홈" width="49%">
@@ -97,15 +111,15 @@ JSON으로 카드를 만들 때는 [JSON 일괄 가져오기 형식](docs/engine
 
 ### Google Drive 동기화
 
-내 Google Drive에 자동으로 백업하고, 다른 컴퓨터에서도 같은 덱 · 카드 · 복습 기록으로 이어서 공부해요. Neo-Anki 서버를 거치지 않아요.
+내 Google Drive에 자동으로 백업하고, 다른 컴퓨터에서도 같은 덱 · 카드 · 복습 기록으로 이어서 공부해요. Addiem 서버를 거치지 않아요.
 
-- 권한은 두 가지뿐이에요: Neo-Anki가 만든 파일만(`drive.file`), 앱 전용 폴더(`drive.appdata`). 내 Drive의 다른 파일은 보지 않아요.
+- 권한은 두 가지뿐이에요: Addiem이 만든 파일만(`drive.file`), 앱 전용 폴더(`drive.appdata`). 내 Drive의 다른 파일은 보지 않아요.
 - [암호로 잠그기]를 켜면 이 기기에서 암호화한 뒤 올려서 Google도 내용을 볼 수 없어요. 암호를 잊으면 Drive에 올린 데이터는 열 수 없어요(이 기기 데이터는 남아요).
 - 연결을 끊어도 이 기기 데이터는 그대로예요. Drive 없이 쓸 때는 설정 › 이 기기 백업에서 백업 파일을 만들고 복구해요.
 
 ### 선택 AI (ChatGPT)
 
-ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술형 채점 보조, 비슷한 내용끼리 나누기, 선택형 오답 보기 제안, 카드 점검의 질문 · 답 확인을 쓸 수 있어요. 내 ChatGPT 요금제를 쓰고, Neo-Anki에는 추가 요금이 없어요. 버튼을 직접 누를 때만 요청을 보내요. 연결하지 않아도 나머지 기능은 쓸 수 있어요.
+ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술형 채점 보조, 비슷한 내용끼리 나누기, 선택형 오답 보기 제안, 카드 점검의 질문 · 답 확인을 쓸 수 있어요. 내 ChatGPT 요금제를 쓰고, Addiem에는 추가 요금이 없어요. 버튼을 직접 누를 때만 요청을 보내요. 연결하지 않아도 나머지 기능은 쓸 수 있어요.
 
 ![Google Drive 연결과 ChatGPT 연결 칸이 보이는 설정 화면](docs/images/readme/settings-drive-ai.png)
 
@@ -116,16 +130,19 @@ ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술�
 - Windows 10 · 11 (64비트)
 - Microsoft Edge WebView2 런타임. Windows 11에는 들어 있어요. 없으면 설치 중에 내려받아요(인터넷 필요).
 
-**설치 파일:** `Neo-Anki_0.1.0_x64-setup.exe`
+**설치 파일:** [Releases](https://github.com/itisyijy/Addiem/releases/latest)에서 `Addiem_0.1.0_x64-setup.exe`를 내려받아요. 같은 곳에 있는 `SHA256SUMS.txt`로 파일이 온전한지 확인할 수 있어요.
 
-> 내려받는 곳은 첫 배포 때 여기에 적어요.
+```powershell
+Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
+```
 
-1. 설치 파일을 실행해요. 관리자 권한 없이 지금 사용자 계정에 설치돼요(`%LOCALAPPDATA%\Neo-Anki`). 설치 화면은 Windows 표시 언어에 따라 한국어 또는 영어로 보여요.
+1. 설치 파일을 실행해요. 관리자 권한 없이 지금 사용자 계정에 설치돼요(`%LOCALAPPDATA%\Addiem`). 설치 화면은 Windows 표시 언어에 따라 한국어 또는 영어로 보여요.
 2. 아직 코드 서명이 없어서 "Windows의 PC 보호" 파란 창이 뜰 수 있어요. [추가 정보] → [실행]을 눌러요.
-3. 시작 메뉴에서 Neo-Anki를 열어요.
+3. 시작 메뉴에서 Addiem을 열어요.
 
+- **Neo-Anki를 쓰던 경우:** Addiem의 예전 이름이 Neo-Anki예요. Addiem을 설치하면 예전 Neo-Anki 프로그램을 먼저 지우고(학습 데이터는 그대로), 같은 데이터로 이어서 열려요. 백업 폴더 · 파일 이름의 `neoanki`와 Drive의 "Neo-Anki 백업" 폴더는 데이터를 잇기 위해 예전 이름 그대로 써요.
 - **업데이트:** 자동 업데이트는 없어요. 새 버전 설치 파일로 다시 설치해요. 학습 데이터는 지워지지 않아요. 지금 버전은 설정 화면 맨 아래에 보여요.
-- **지우기:** Windows 설정 › 앱에서 Neo-Anki를 제거해요. 학습 데이터는 남아요. 데이터까지 지우려면 제거 창에서 [애플리케이션 데이터 삭제하기]를 체크해요.
+- **지우기:** Windows 설정 › 앱에서 Addiem을 제거해요. 학습 데이터는 남아요. 데이터까지 지우려면 제거 창에서 [애플리케이션 데이터 삭제하기]를 체크해요.
 - 백신(Microsoft Defender 등)이 개념 관계 확인 엔진(`llm\neoanki-llm.exe`)을 막거나 지우면 그 기능만 꺼지고(설정 › 서술형 채점에 "이 설치에는 개념 관계 확인 엔진이 없어 쓸 수 없어요"), 핵심어 채점과 나머지 기능은 계속 쓸 수 있어요.
 
 ## 시작하기
@@ -138,7 +155,7 @@ ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술�
 
 ## 데이터와 개인정보
 
-- 덱 · 카드 · 복습 기록 · 미디어 · 추가한 자료는 이 기기에 저장돼요(`%APPDATA%\io.github.itisyijy.neoanki`). Neo-Anki 서버는 없어요.
+- 덱 · 카드 · 복습 기록 · 미디어 · 추가한 자료는 이 기기에 저장돼요(`%APPDATA%\io.github.itisyijy.neoanki`). Addiem 서버는 없어요.
 - 인터넷은 아래 경우에만 써요. 모두 직접 켜거나 눌렀을 때예요.
   - **Google Drive 동기화:** 덱 · 카드 · 복습 기록 · 설정과 그림 · 미디어를 올려요. `drive.file` · `drive.appdata` 권한만 쓰고, 원자료 파일(PDF · PPTX)과 모델 파일은 올리지 않아요.
   - **ChatGPT (선택 AI):** 그때 화면에 보여 준 카드 글자와 자료 구간 발췌만 OpenAI로 보내요. 원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름은 보내지 않아요.
@@ -156,13 +173,30 @@ ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술�
 - Anki 애드온은 지원하지 않고, 카드 템플릿의 스크립트(JavaScript)는 실행하지 않아요. 그런 카드가 있으면 가져오기 결과에 알려 줘요.
 - AnkiWeb과 직접 동기화하지 않아요. Anki와는 `.apkg` 파일로 주고받아요.
 
+## 자주 묻는 질문
+
+**Anki와 같이 써도 되나요?**
+돼요. Addiem은 Anki 파일을 읽기만 하고 고치지 않아요. 덱을 `.apkg`로 내보내 Anki로 다시 가져갈 수도 있어요. 다만 두 앱의 복습 기록은 자동으로 합쳐지지 않으니, 한 덱은 한쪽에서 공부하는 걸 권해요.
+
+**시험일이 지나면 어떻게 되나요?**
+시험일 없는 덱처럼 FSRS 간격대로 계속 복습해요. 새 시험일을 정하면 그날에 맞춰 다시 나눠요.
+
+**데이터를 다른 컴퓨터로 옮기려면요?**
+Google Drive 동기화를 켜거나, 설정 › 이 기기 백업에서 만든 백업 파일을 다른 컴퓨터에서 [백업으로 복구]해요.
+
 ## 문서
 
 - [제품 방향](docs/product/product-direction.md) · [MVP 범위](docs/product/mvp-scope.md) · [MVP 화면 흐름](docs/product/mvp-screen-flow.md)
 - [JSON 일괄 가져오기 형식](docs/engineering/json-import-format.md)
 - [덱 업데이트](docs/engineering/deck-update.md) · [노트 유형](docs/engineering/note-types.md) · [Google Drive 동기화 설계](docs/engineering/drive-sync.md)
-- [UI 문구 기준](docs/design/copy-guide.md)
+- [UI 문구 기준](docs/design/copy-guide.md) · [로고와 브랜드](design/logo/README.md)
 - [개발 문서](docs/engineering/development.md) — 빌드 · 실행 · 확인 · 배포 체크리스트 · 구조 · 도구
+
+## 함께 쓴 오픈소스
+
+[Tauri](https://tauri.app) · [React](https://react.dev) · [FSRS](https://github.com/open-spaced-repetition/fsrs-rs) (BSD-3-Clause) · [KaTeX](https://katex.org) (MIT) · [PDF.js](https://mozilla.github.io/pdf.js/) (Apache-2.0) · [DOMPurify](https://github.com/cure53/DOMPurify) · [Pretendard](https://github.com/orioncactus/pretendard) (OFL-1.1) · 워드마크 글자 [Newsreader](https://github.com/productiontype/Newsreader) (OFL-1.1) · 읽어주기 음성 [Supertonic](https://huggingface.co/Supertone/supertonic-3) (OpenRAIL-M) · [ONNX Runtime](https://onnxruntime.ai) (MIT) · 내려받는 모델 [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (MIT) · [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) (Apache-2.0)
+
+Anki는 Ankitects Pty Ltd의 상표예요. Addiem은 Anki와 제휴하지 않은 별개의 앱이에요.
 
 ## 라이선스
 

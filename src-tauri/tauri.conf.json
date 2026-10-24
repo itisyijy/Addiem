@@ -29,6 +29,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "itisyijy",
+    "copyright": "© 2026 itisyijy",
     "resources": {
       "resources/tts/": "tts/",
       "resources/llm/": "llm/"
