@@ -261,7 +261,7 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
       </section>
 
       <Licenses />
-      {version && <p className="prefs__version t-caption c-tertiary">Neo-Anki {version}</p>}
+      {version && <p className="prefs__version t-caption c-tertiary">Addiem {version}</p>}
 
       {wiping && <WipeConfirm info={info} onClose={() => setWiping(false)} onDone={() => nav({ name: "home" })} />}
     </main>

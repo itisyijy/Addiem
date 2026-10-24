@@ -194,7 +194,7 @@ pub fn authorize_url(client_id: Option<&str>, host_id: &str, redirect: &str, p: 
         ("code_challenge_method", "S256"),
     ];
     if client_id.is_none() {
-        q.push(("agent_name_hint", "Neo-Anki"));
+        q.push(("agent_name_hint", "Addiem"));
     }
     if reconsent {
         q.push(("prompt", "consent"));
@@ -1312,7 +1312,7 @@ mod tests {
         assert!(u.starts_with("https://auth.openai.com/api/accounts/authorize?"));
         let q = query(&u);
         assert_eq!(q["client_id"], "dynamic_agent_client", "처음에는 동적 등록");
-        assert_eq!(q["agent_name_hint"], "Neo-Anki");
+        assert_eq!(q["agent_name_hint"], "Addiem");
         assert_eq!(q["ext_agent_host_id"], "urn:uuid:h");
         assert_eq!(q["response_type"], "code");
         assert_eq!(q["redirect_uri"], redirect);

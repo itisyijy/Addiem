@@ -129,7 +129,7 @@ function line(s: SyncStatus): { title: string; icon: IconName; tone: "ok" | "pla
     case "choice":
       return { title: "다른 기기에서 Drive 데이터를 바꿨어요", icon: "cloud", tone: "plain" };
     case "gone":
-      return { title: "Drive의 Neo-Anki 데이터가 없어졌어요", icon: "cloud-off", tone: "plain" };
+      return { title: "Drive의 Addiem 데이터가 없어졌어요", icon: "cloud-off", tone: "plain" };
     case "locked":
       return { title: "Drive 데이터가 암호로 잠겨 있어요", icon: "lock", tone: "plain" };
     case "update":
@@ -266,7 +266,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     );
   } else if (s.state === "quota") {
     text = s.quota
-      ? `${size(s.quota[1])} 중 ${size(s.quota[0])}를 쓰고 있어요. Neo-Anki는 ${size(s.usage ?? 0)}를 써요. 공간이 생기면 이어서 올려요.`
+      ? `${size(s.quota[1])} 중 ${size(s.quota[0])}를 쓰고 있어요. Addiem은 ${size(s.usage ?? 0)}를 써요. 공간이 생기면 이어서 올려요.`
       : "Drive 공간이 모자라 백업을 멈췄어요. 공간이 생기면 이어서 올려요.";
     actions = (
       <>
@@ -347,7 +347,7 @@ async function startFromProbe() {
 }
 
 function nextFlow(probe: SyncProbe, from?: string, note?: string): Flow {
-  if (!probe.remote) return { kind: "setup", probe, note: from === "home" ? "이 계정에는 아직 Neo-Anki 데이터가 없어요" : undefined };
+  if (!probe.remote) return { kind: "setup", probe, note: from === "home" ? "이 계정에는 아직 Addiem 데이터가 없어요" : undefined };
   return probe.local.empty ? { kind: "found", probe, note } : { kind: "choice", probe, note };
 }
 
@@ -489,11 +489,11 @@ function ConnectModal({ from, onDone }: { from?: "home" | "settings" | "login"; 
       <h2 className="t-title-m">{url === null && current?.folder ? "개발용 폴더에 연결하는 중" : "브라우저에서 Google 로그인을 마쳐 주세요"}</h2>
       <p className="t-body-s c-secondary sync-center">기본 브라우저에 로그인 창을 열었어요. 계정을 고르고 권한을 허용하면 이 창으로 자동으로 돌아와요.</p>
       <div className="sync-box">
-        <span className="t-label-s c-tertiary">Neo-Anki가 요청하는 권한 2개</span>
+        <span className="t-label-s c-tertiary">Addiem이 요청하는 권한 2개</span>
         <span className="sync-perm">
           <Icon name="folder" size={16} className="c-secondary" />
           <span className="sync-perm__text">
-            <span className="t-body-s">Neo-Anki가 만든 파일만 보고 관리하기</span>
+            <span className="t-body-s">Addiem이 만든 파일만 보고 관리하기</span>
             <span className="t-caption c-tertiary">"Neo-Anki 백업" 폴더</span>
           </span>
         </span>
@@ -741,13 +741,13 @@ function FoundModal({ probe, note, onClose }: { probe: SyncProbe; note?: string;
     }
   };
   return (
-    <Sheet label="Drive에서 Neo-Anki 데이터를 찾았어요" onClose={onClose} className="sync-k6f">
+    <Sheet label="Drive에서 Addiem 데이터를 찾았어요" onClose={onClose} className="sync-k6f">
       <span className="sync-found__head">
         <span className="sync-tile sync-tile--accent">
           <Icon name="cloud-check" size={22} className="c-accent" />
         </span>
         <span className="sync-head__text">
-          <h2 className="t-title-m">Drive에서 Neo-Anki 데이터를 찾았어요</h2>
+          <h2 className="t-title-m">Drive에서 Addiem 데이터를 찾았어요</h2>
           <span className="t-caption c-tertiary">{probe.account}</span>
         </span>
       </span>
@@ -1224,7 +1224,7 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
       {/* K22: Drive 에서도 지우거나 90일 안에 맞춘 다른 기기가 없으면 Google 권한도 폐기한다 */}
       {(remove || !whoText) && (
         <p className="t-caption c-tertiary">
-          {remove ? "" : "맞추는 다른 기기가 없어 "}Google 계정에 준 Neo-Anki 권한도 거둬요. 다시 연결할 때 Google 화면에서 다시 허용해요.
+          {remove ? "" : "맞추는 다른 기기가 없어 "}Google 계정에 준 Addiem 권한도 거둬요. 다시 연결할 때 Google 화면에서 다시 허용해요.
         </p>
       )}
       {error && <p className="t-body-s c-danger">{error}</p>}
@@ -1344,11 +1344,11 @@ function Intro({ s }: { s: SyncStatus }) {
       <div className="sync-facts">
         <span>
           <Icon name="folder" size={16} className="c-secondary" />
-          <span className="t-caption c-secondary">내 Drive에 저장 · Neo-Anki 서버 없음</span>
+          <span className="t-caption c-secondary">내 Drive에 저장 · Addiem 서버 없음</span>
         </span>
         <span>
           <Icon name="lock" size={16} className="c-secondary" />
-          <span className="t-caption c-secondary">Neo-Anki가 만든 파일만 접근</span>
+          <span className="t-caption c-secondary">Addiem이 만든 파일만 접근</span>
         </span>
         <span>
           <Icon name="link-off" size={16} className="c-secondary" />
@@ -1419,7 +1419,7 @@ function Connected({ s }: { s: SyncStatus }) {
   };
   const full = async (b: DriveBackup) => {
     setMenu(null);
-    const path = await save({ defaultPath: b.name.replace(/\.zip$/, "-with-media.zip"), filters: [{ name: "Neo-Anki 백업", extensions: ["zip"] }] });
+    const path = await save({ defaultPath: b.name.replace(/\.zip$/, "-with-media.zip"), filters: [{ name: "Addiem 백업", extensions: ["zip"] }] });
     if (!path) return;
     setBusy(b.name);
     try {
@@ -1453,7 +1453,7 @@ function Connected({ s }: { s: SyncStatus }) {
           <span className="t-body-m-strong">{l.title}</span>
           <span className="t-caption c-tertiary">
             {s.account}
-            {s.usage !== null && ` · Drive에서 Neo-Anki가 쓰는 공간 ${size(s.usage)}`}
+            {s.usage !== null && ` · Drive에서 Addiem이 쓰는 공간 ${size(s.usage)}`}
           </span>
           {busyNow && s.total > 1 && (
             <span className="sync-bar">

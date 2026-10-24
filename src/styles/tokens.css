@@ -1,5 +1,5 @@
 /*
- * Figma 변수 "Neo-Anki Color" 와 텍스트 스타일을 그대로 옮긴 것.
+ * Figma 변수 "Addiem Color" 와 텍스트 스타일을 그대로 옮긴 것.
  * 이름은 Figma 와 맞춘다 (bg/canvas -> --bg-canvas). 값은 임시 테마라 여기만 바꾸면 전체가 따라간다.
  * 자간은 Figma 의 퍼센트 값을 em 으로 옮겼다 (-0.5% -> -0.005em).
  * 다크 모드(F)는 같은 변수의 Dark 값만 바꾼다. <html data-theme="dark"> 는 theme.ts 가 붙인다.
@@ -61,6 +61,12 @@
   --accent-warm: #ff8a3d;
   --accent-pressed: #2f22c4; /* 단축키 칩 on-accent 배경, 강조 버튼 hover */
   --accent-on-inverse: #c9c1ff; /* 반전 면(오늘 카드) 안의 보조 글자. 두 모드 같다 */
+
+  /* Addiem 로고 (Figma brand/*). 점 격자 심볼과 워드마크만 쓴다 */
+  --brand-path: #4433ff;
+  --brand-grid: #d9d5ff;
+  --brand-day: #ff8a3d;
+  --brand-ink: #16151f;
 
   --status-warn-bg: #fff1d6;
   --status-warn-fg: #8f5b00;
@@ -125,6 +131,11 @@
   --accent-warm: #ff9a55;
   --accent-pressed: #4335d9;
   --accent-on-inverse: #c9c1ff;
+
+  --brand-path: #7a6dff;
+  --brand-grid: #3a3470;
+  --brand-day: #ff9a55;
+  --brand-ink: #ecebf5;
 
   --status-warn-bg: #33270f;
   --status-warn-fg: #f2c46b;

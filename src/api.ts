@@ -994,7 +994,7 @@ export type SyncHeader = {
 export type SyncCounts = { decks: number; cards: number; reviews: number; media_bytes: number };
 export type SyncProbe = {
   account: string;
-  /** Drive 에 Neo-Anki 데이터가 있으면 (K6-f · K6-m) */
+  /** Drive 에 Addiem 데이터가 있으면 (K6-f · K6-m) */
   remote: { gen: number; locked: boolean; devices: number; names: string[]; bytes: number; device: string | null; at: number | null; counts: SyncCounts | null } | null;
   local: SyncCounts & { empty: boolean };
   device_name: string;

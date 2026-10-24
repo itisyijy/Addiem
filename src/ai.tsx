@@ -126,7 +126,7 @@ export function AiConnect({ start = "intro", reconsent = false, onDone }: { star
 function Intro({ onClose, onGo }: { onClose: () => void; onGo: () => void }) {
   return (
     <Sheet label="ChatGPT를 연결할까요?" onClose={onClose} className="ai-l2">
-      <Head title="ChatGPT를 연결할까요?" sub="카드 초안 만들기 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안을 직접 누를 때만 써요. 내 ChatGPT 요금제로 요청하고, Neo-Anki에는 추가 요금이 없어요." onClose={onClose} />
+      <Head title="ChatGPT를 연결할까요?" sub="카드 초안 만들기 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안을 직접 누를 때만 써요. 내 ChatGPT 요금제로 요청하고, Addiem에는 추가 요금이 없어요." onClose={onClose} />
       <div className="ai-two">
         <div className="ai-two__col">
           <span className="ai-two__head">
@@ -226,7 +226,7 @@ function Wait({ reconsent, newAccount, onClose, onDone, onFail }: {
       <h2 className="t-title-m">브라우저에서 ChatGPT 로그인을 마쳐 주세요</h2>
       <p className="t-body-s c-secondary sync-center">기본 브라우저에 OpenAI 로그인 창을 열었어요. 계정을 고르고 권한을 허용하면 이 창으로 자동으로 돌아와요.</p>
       <div className="sync-box">
-        <span className="t-label-s c-tertiary">Neo-Anki가 요청하는 권한</span>
+        <span className="t-label-s c-tertiary">Addiem이 요청하는 권한</span>
         <span className="sync-perm">
           <Icon name="check" size={16} className="c-secondary" />
           <span className="sync-perm__text">
@@ -256,7 +256,7 @@ function Wait({ reconsent, newAccount, onClose, onDone, onFail }: {
 /** L2-x 연결하지 못했다. 사용량 권한이 빠졌으면 [다시 연결], 요금제가 안 되면 [다른 계정으로]. 업그레이드는 권하지 않는다 */
 function Fail({ ev, onClose, onRetry }: { ev: AiAuthEvent; onClose: () => void; onRetry: (o: { reconsent: boolean; newAccount: boolean }) => void }) {
   const [head, text] =
-    ev.reason === "scope" ? ["사용량 권한이 필요해요", `Neo-Anki는 내 ChatGPT 요금제로만 요청해요. 로그인할 때 "사용량" 권한을 허락해 주세요.`]
+    ev.reason === "scope" ? ["사용량 권한이 필요해요", `Addiem은 내 ChatGPT 요금제로만 요청해요. 로그인할 때 "사용량" 권한을 허락해 주세요.`]
     : ev.reason === "not_eligible" ? ["이 요금제에서는 쓸 수 없어요", "지금 계정의 ChatGPT 요금제는 다른 앱에서 요금제로 요청하는 기능을 지원하지 않아요."]
     : ev.reason === "timeout" ? ["시간이 지났어요", "5분 안에 로그인을 마치지 않아 기다리기를 멈췄어요."]
     : ev.reason === "denied" ? ["로그인을 취소했어요", "브라우저에서 연결을 허락하지 않았어요."]
@@ -297,7 +297,7 @@ function Welcome({ onClose }: { onClose: () => void }) {
       <p className="t-body-s c-secondary sync-center">
         ChatGPT에 보낼 때마다 요금제 사용량에서 줄어요.
         <br />
-        Neo-Anki에는 추가 요금이 없어요.
+        Addiem에는 추가 요금이 없어요.
       </p>
       <p className="t-caption c-tertiary sync-center">한도는 ChatGPT 설정의 사용량 관리에서 정할 수 있어요.</p>
       <div className="ai-l3__foot">
@@ -342,7 +342,7 @@ export function AiSection() {
             </span>
             <span className="prefs__text">
               <span className="t-body-m-strong">ChatGPT 연결됨</span>
-              <span className="t-caption c-tertiary">{s.email} · ChatGPT 요금제 사용 · Neo-Anki 추가 요금 없음</span>
+              <span className="t-caption c-tertiary">{s.email} · ChatGPT 요금제 사용 · Addiem 추가 요금 없음</span>
             </span>
             <Button variant="secondary" size="M" icon="external" label="사용량 관리" onClick={openUsage} />
           </div>
@@ -365,7 +365,7 @@ export function AiSection() {
             </span>
             <span className="prefs__text">
               <span className="t-body-m-strong">ChatGPT로 카드 만들기 · 고치기 돕기</span>
-              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안 · 질문·답 확인을 직접 누를 때만 내 ChatGPT 요금제를 써요. Neo-Anki에는 추가 요금이 없어요.</span>
+              <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 비슷한 내용끼리 나누기 · 오답 보기 제안 · 질문·답 확인을 직접 누를 때만 내 ChatGPT 요금제를 써요. Addiem에는 추가 요금이 없어요.</span>
             </span>
             <ChatGptButton onClick={() => setConnecting(true)} />
           </div>
@@ -427,7 +427,7 @@ export function AiErrorBox({ e, onRule, onClose, onRetry, onReconnect, copy = {}
     : e.kind === "expired" ? ["ChatGPT 로그인이 만료됐어요", "다시 로그인하면 이어서 쓸 수 있어요. 이 카드는 아직 보내지 않았어요."]
     : e.kind === "offline" ? ["인터넷에 연결되어 있지 않아요", "규칙으로 나눈 제안은 인터넷 없이도 그대로 쓸 수 있어요."]
     : e.kind === "bad_output" ? ["ChatGPT 답을 카드로 바꾸지 못했어요", "형식이 맞지 않아 쓰지 않았어요. 아래는 규칙으로 나눈 제안이에요."]
-    : e.kind === "scope" ? ["사용량 권한이 필요해요", `Neo-Anki는 내 ChatGPT 요금제로만 요청해요. 다시 연결할 때 "사용량" 권한을 허락해 주세요.`]
+    : e.kind === "scope" ? ["사용량 권한이 필요해요", `Addiem은 내 ChatGPT 요금제로만 요청해요. 다시 연결할 때 "사용량" 권한을 허락해 주세요.`]
     : e.kind === "not_eligible" ? ["이 요금제에서는 쓸 수 없어요", "지금 계정의 ChatGPT 요금제는 다른 앱에서 요금제로 요청하는 기능을 지원하지 않아요."]
     : e.kind === "unavailable" ? ["지금은 ChatGPT 요금제를 쓸 수 없어요", "잠시 뒤 다시 해 보세요. 규칙으로 나눈 제안은 그대로 쓸 수 있어요."]
     : ["ChatGPT로 나누지 못했어요", e.message]);

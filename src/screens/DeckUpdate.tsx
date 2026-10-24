@@ -1323,7 +1323,7 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
 
 function report(s: UpdateSummary) {
   const lines = [
-    "Neo-Anki 덱 업데이트 결과",
+    "Addiem 덱 업데이트 결과",
     `파일: ${s.file_name}${deckOf(s) ? ` → 덱 "${deckOf(s)}"` : ""}`,
     `시각: ${new Date().toLocaleString("ko-KR")}`,
     "",
