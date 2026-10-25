@@ -113,7 +113,7 @@ fn load(dir: &Path) -> Res<Engine> {
         return Err("읽어주기 음성 파일이 없어요.".into());
     }
     // 절대 경로로만 연다. System32 의 onnxruntime.dll(Windows ML)을 잡지 않게
-    let env = ort::init_from(dir.join(FILES[0])).map_err(err)?.with_name("neo-anki-tts").build().map_err(err)?;
+    let env = ort::init_from(dir.join(FILES[0])).map_err(err)?.with_name("addiem-tts").build().map_err(err)?;
     let m = dir.join("supertonic-3");
     let open = |name: &str| Session::builder(&env).map_err(err)?.commit_from_file(m.join("onnx").join(name)).map_err(err);
     let (dp, enc, est, voc) =

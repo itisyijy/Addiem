@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn answers_line_by_line_and_exits_when_stdin_closes() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_neoanki-llm")).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_addiem-llm")).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();

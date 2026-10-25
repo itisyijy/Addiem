@@ -63,7 +63,7 @@ export function Import({ tab: initial, deckId = null, pick = false, path }: { ta
         <h1 className="t-title-l">가져오기</h1>
         <div className="segment segment--boxed">
           <button className={`segment__item t-label-m ${tab === "anki" ? "is-selected" : ""}`} onClick={() => switchTab("anki")} disabled={locked}>
-            Anki 덱 (.apkg · .colpkg)
+            덱 패키지 (.apkg · .colpkg)
           </button>
           <button className={`segment__item t-label-m ${tab === "json" ? "is-selected" : ""}`} onClick={() => switchTab("json")} disabled={locked}>
             JSON
@@ -195,7 +195,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
   };
 
   const pick = async () => {
-    const p = await open({ multiple: false, directory: false, filters: [{ name: "Anki 덱", extensions: ["apkg", "colpkg"] }] });
+    const p = await open({ multiple: false, directory: false, filters: [{ name: "덱 패키지", extensions: ["apkg", "colpkg"] }] });
     if (typeof p === "string") inspect(p);
   };
   const [drag] = useFileDrop(!importing, ANKI_FILE, inspect);
@@ -275,16 +275,16 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
     return (
       <DropZone
         drag={drag}
-        idle="Anki 덱 파일을 여기로 끌어오세요"
+        idle="덱 패키지 파일을 여기로 끌어오세요"
         wrong={
           <>
-            Anki 덱 파일(.apkg, .colpkg)만 가져올 수 있어요.
+            덱 패키지 파일(.apkg, .colpkg)만 가져올 수 있어요.
             <br />
             JSON · CSV는 오른쪽 위 탭에서.
           </>
         }
         hint=".apkg · .colpkg   ·   원본 파일은 읽기만 하고 수정하지 않아요"
-        help='Anki에서 파일 만들기: 파일 → 내보내기 → "Anki 덱 패키지 (.apkg)" 또는 "Anki 컬렉션 패키지 (.colpkg)"'
+        help='쓰던 앱에서 파일 만들기: 파일 → 내보내기 → 덱 패키지(.apkg) 또는 컬렉션 패키지(.colpkg)'
         onPick={pick}
         busy={checking}
       />
@@ -350,7 +350,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
         }]
       : []),
     ...(info.filtered_decks > 0
-      ? [{ icon: "check" as IconName, tone: "c-success", label: "Anki 필터 덱", value: `${n(info.filtered_decks)}개 · 카드는 원래 덱으로 들어가요` }]
+      ? [{ icon: "check" as IconName, tone: "c-success", label: "필터 덱", value: `${n(info.filtered_decks)}개 · 카드는 원래 덱으로 들어가요` }]
       : []),
   ];
 
@@ -406,8 +406,8 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
             </div>
             {/* B2-r 고른 덱에 기록이 없으면 고를 것이 없어 묶음째 숨기고 새 카드로 가져온다 */}
             {reviews > 0 && (
-              <div className="import__choice" role="radiogroup" aria-label="Anki의 복습 기록">
-                <p className="t-label-m">Anki의 복습 기록</p>
+              <div className="import__choice" role="radiogroup" aria-label="파일에 든 복습 기록">
+                <p className="t-label-m">파일에 든 복습 기록</p>
                 <label className={`import__option ${history ? "is-on" : ""}`}>
                   <input type="radio" name="history" checked={history} onChange={() => setHistory(true)} />
                   <span className="import__radio" />
@@ -441,9 +441,9 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
                       {info.update && <Badge tone="accent">권장</Badge>}
                     </span>
                     <span className="t-body-s c-secondary">
-                      Anki에서 학습한 카드도 복습 기록 없이 신규 카드로 시작해요. 목표일이 있으면 신규로 다시 나눠요. 원본 기록은 Anki에 그대로 남아요.
+                      이미 학습한 카드도 복습 기록 없이 신규 카드로 시작해요. 목표일이 있으면 신규로 다시 나눠요. 원본 기록은 쓰던 앱에 그대로 남아요.
                     </span>
-                    {info.update && <span className="t-caption c-tertiary">이미 가져온 덱의 새 버전이라, 이 기록은 덱을 만든 사람의 것일 수 있어요. 내가 Anki에서 공부한 기록이면 위를 골라 주세요.</span>}
+                    {info.update && <span className="t-caption c-tertiary">이미 가져온 덱의 새 버전이라, 이 기록은 덱을 만든 사람의 것일 수 있어요. 내가 쓰던 앱에서 공부한 기록이면 위를 골라 주세요.</span>}
                   </span>
                 </label>
               </div>
@@ -765,7 +765,7 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
       (e) => setError(errorText(e)),
     ),
   );
-  const shownError = drag === "wrong" ? "JSON 파일(.json)만 넣을 수 있어요. Anki 덱과 CSV는 다른 탭에서 가져와요." : error;
+  const shownError = drag === "wrong" ? "JSON 파일(.json)만 넣을 수 있어요. 덱 패키지와 CSV는 다른 탭에서 가져와요." : error;
 
   const run = async () => {
     if (!preview || preview.ok === 0 || busy) return;
@@ -1117,7 +1117,7 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
               <>
                 CSV 파일(.csv, .tsv, .txt)만 가져올 수 있어요.
                 <br />
-                Anki 덱과 JSON은 왼쪽 탭에서.
+                덱 패키지와 JSON은 왼쪽 탭에서.
               </>
             }
             hint=".csv · .tsv   ·   원본 파일은 읽기만 하고 수정하지 않아요"
@@ -1324,7 +1324,7 @@ export function ImportResultScreen({ result: r }: { result: ImportResult }) {
           icon: "layers" as IconName,
           scaled: true,
           tone: "c-secondary",
-          title: `Anki 필터 덱 ${n(r.filtered_decks)}개는 가져오지 않았어요`,
+          title: `필터 덱 ${n(r.filtered_decks)}개는 가져오지 않았어요`,
           desc: r.filtered_cards > 0 ? `필터 덱에 올라가 있던 ${n(r.filtered_cards)}장은 원래 덱으로 들어갔어요.` : "",
         }]
       : []),
@@ -1336,7 +1336,7 @@ export function ImportResultScreen({ result: r }: { result: ImportResult }) {
                 icon: "clock" as IconName,
                 tone: "c-success",
                 title: `복습 기록 ${n(r.reviews)}건을 옮겼어요`,
-                desc: `Anki 일정 그대로 이어서 복습해요.${
+                desc: `원래 일정 그대로 이어서 복습해요.${
                   overdue > 0 ? ` 오늘 밀린 복습 ${n(overdue)}장은 하루 ${BACKLOG_PER_DAY}장씩 올라와요.` : ""
                 }`,
               }

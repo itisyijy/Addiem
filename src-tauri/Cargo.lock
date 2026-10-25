@@ -3,6 +3,41 @@
 version = 4
 
 [[package]]
+name = "addiem"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "base64 0.23.1",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "chacha20poly1305",
+ "chrono",
+ "flate2",
+ "fsrs",
+ "getrandom 0.4.3",
+ "keyring",
+ "ort",
+ "quick-xml",
+ "rand 0.9.5",
+ "rand_distr",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokenizers",
+ "unicode-normalization-alignments",
+ "ureq",
+ "url",
+ "zip 9.0.2",
+ "zstd",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2983,41 +3018,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "neo-anki"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "base64 0.23.1",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "chacha20poly1305",
- "chrono",
- "flate2",
- "fsrs",
- "getrandom 0.4.3",
- "keyring",
- "ort",
- "quick-xml",
- "rand 0.9.5",
- "rand_distr",
- "ring",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokenizers",
- "unicode-normalization-alignments",
- "ureq",
- "url",
- "zip 9.0.2",
- "zstd",
 ]
 
 [[package]]

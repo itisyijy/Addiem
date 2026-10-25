@@ -1979,7 +1979,7 @@ mod tests {
         let change = region_cards(&mut con, 2, &region("table", [0.0, 0.5, 0.5, 0.5]), &cards).unwrap();
         let count = |con: &Connection, sql: &str| -> i64 { con.query_row(sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(count(&con, "SELECT count(*) FROM card WHERE deck_id = 2"), 3);
-        assert_eq!(count(&con, "SELECT count(*) FROM note n JOIN note_type t ON t.id = n.note_type_id WHERE t.name = 'Neo-Anki 목록 회상'"), 1);
+        assert_eq!(count(&con, "SELECT count(*) FROM note n JOIN note_type t ON t.id = n.note_type_id WHERE t.name = 'Addiem 목록 회상'"), 1);
         let segs = segments_of(&con, 1).unwrap();
         // 영역 구간은 그 쪽 강조 구간 뒤, 가중치 0, 글자가 없으면 "표 · 슬라이드 3" (PPTX)
         let t = segs.iter().find(|s| s.signals == ["table"]).unwrap();

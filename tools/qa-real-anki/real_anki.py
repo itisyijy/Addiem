@@ -1,6 +1,6 @@
-"""Neo-Anki x 실제 Anki(pylib) 검증 하네스. README.md 참고.
+"""Addiem x 실제 Anki(pylib) 검증 하네스. README.md 참고.
 
-    <venv>\\Scripts\\python.exe -I real_anki.py all --repo <Neo-Anki worktree> --work <빈 작업 폴더>
+    <venv>\\Scripts\\python.exe -I real_anki.py all --repo <Addiem worktree> --work <빈 작업 폴더>
 
 단계: make (pylib 로 v1 · v2 패키지와 Anki 렌더 기준) → rust phase1 (가져오기 · 덱 업데이트 · 내보내기)
 → anki (Neo 가 내보낸 .apkg 를 Anki 로 가져와 비교, Anki 에서 고치고 공부한 뒤 내보내기) → rust phase2 (다시 가져오기) → report.
@@ -597,7 +597,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("step", choices=["make", "anki", "report", "all"])
     ap.add_argument("--work", required=True, help="작업 폴더 (all 은 비우고 시작)")
-    ap.add_argument("--repo", help="Neo-Anki worktree (all)")
+    ap.add_argument("--repo", help="Addiem worktree (all)")
     ap.add_argument("--target", default=os.path.join(os.environ.get("TEMP", "."), "na-qr-target"), help="CARGO_TARGET_DIR")
     a = ap.parse_args()
     work = os.path.abspath(a.work)

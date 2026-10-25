@@ -1,7 +1,7 @@
 //! Google 로그인 (drive-sync.md 3장 · K2). 시스템 기본 브라우저 + PKCE + 127.0.0.1 루프백.
 //! 토큰은 OS 키체인에만 둔다 (Windows 자격 증명 관리자, macOS 키체인). DB 나 파일에 쓰지 않는다.
 //!
-//! OAuth 클라이언트는 빌드할 때 넣는다: NEOANKI_GOOGLE_CLIENT_ID, NEOANKI_GOOGLE_CLIENT_SECRET.
+//! OAuth 클라이언트는 빌드할 때 넣는다: ADDIEM_GOOGLE_CLIENT_ID, ADDIEM_GOOGLE_CLIENT_SECRET.
 //! 데스크톱 클라이언트의 "비밀"은 Google 이 설치형 앱에 주는 값이라 비밀이 아니다 (PKCE 가 보호한다)
 
 use super::crypto;
@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use ureq::http::{Method, Request};
 
-pub const CLIENT_ID: Option<&str> = option_env!("NEOANKI_GOOGLE_CLIENT_ID");
-pub const CLIENT_SECRET: Option<&str> = option_env!("NEOANKI_GOOGLE_CLIENT_SECRET");
+pub const CLIENT_ID: Option<&str> = option_env!("ADDIEM_GOOGLE_CLIENT_ID");
+pub const CLIENT_SECRET: Option<&str> = option_env!("ADDIEM_GOOGLE_CLIENT_SECRET");
 /// 두 개만. Drive 전체 권한(drive)은 요청하지 않는다
 pub const SCOPES: [&str; 2] = ["https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.appdata"];
 const AUTH: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -22,7 +22,7 @@ const REVOKE: &str = "https://oauth2.googleapis.com/revoke";
 /// 루프백 서버는 5분 기다리고 닫힌다 (K2)
 pub const WAIT: Duration = Duration::from_secs(5 * 60);
 
-const SERVICE: &str = "io.github.itisyijy.neoanki";
+const SERVICE: &str = "io.github.itisyijy.addiem";
 pub const REFRESH: &str = "google-refresh-token";
 pub const KEY: &str = "drive-lock-key";
 
@@ -258,11 +258,11 @@ pub fn revoke(agent: &ureq::Agent, token: &str) {
 
 // ---------------------------------------------------------------- OS 키체인
 
-/// 검증용 데이터 폴더(NEOANKI_DATA_DIR)로 띄운 앱은 폴더마다 다른 항목 이름을 쓴다.
+/// 검증용 데이터 폴더(ADDIEM_DATA_DIR)로 띄운 앱은 폴더마다 다른 항목 이름을 쓴다.
 /// 실제 앱의 로그인 토큰을 읽거나 덮거나 지우지 않게 하려는 것
 fn secret_name(name: &str) -> String {
     use sha2::Digest;
-    match std::env::var_os("NEOANKI_DATA_DIR").filter(|v| !v.is_empty()) {
+    match std::env::var_os("ADDIEM_DATA_DIR").filter(|v| !v.is_empty()) {
         Some(dir) => {
             let h = sha2::Sha256::digest(dir.to_string_lossy().as_bytes());
             format!("{name}@{}", h[..4].iter().map(|b| format!("{b:02x}")).collect::<String>())
@@ -276,18 +276,45 @@ pub fn save_secret(name: &str, value: &str) -> Result<(), String> {
 }
 
 pub fn load_secret(name: &str) -> Option<String> {
-    keyring::Entry::new(SERVICE, &secret_name(name)).and_then(|e| e.get_password()).ok()
+    load_from(SERVICE, crate::legacy::OLD_ID, &secret_name(name))
+}
+
+/// 예전 이름(Neo-Anki) 서비스에 저장한 값이면 새 서비스로 옮긴다 (legacy.rs). 옮기지 못해도 값은 쓴다
+fn load_from(service: &str, old_service: &str, name: &str) -> Option<String> {
+    if let Ok(v) = keyring::Entry::new(service, name).and_then(|e| e.get_password()) {
+        return Some(v);
+    }
+    let old = keyring::Entry::new(old_service, name).ok()?;
+    let v = old.get_password().ok()?;
+    if keyring::Entry::new(service, name).and_then(|e| e.set_password(&v)).is_ok() {
+        let _ = old.delete_credential();
+    }
+    Some(v)
 }
 
 pub fn delete_secret(name: &str) {
-    if let Ok(e) = keyring::Entry::new(SERVICE, &secret_name(name)) {
-        let _ = e.delete_credential();
+    for service in [SERVICE, crate::legacy::OLD_ID] {
+        if let Ok(e) = keyring::Entry::new(service, &secret_name(name)) {
+            let _ = e.delete_credential();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 시험용 서비스 이름만 쓴다 (실제 앱 키는 건드리지 않는다)
+    #[test]
+    fn old_service_secret_moves_on_first_read() {
+        let (new, old, name) = ("addiem-test-new", "addiem-test-old", format!("t-{}", crypto::random_hex(6)));
+        assert_eq!(load_from(new, old, &name), None);
+        keyring::Entry::new(old, &name).unwrap().set_password("rt").unwrap();
+        assert_eq!(load_from(new, old, &name).as_deref(), Some("rt"));
+        assert!(keyring::Entry::new(old, &name).unwrap().get_password().is_err(), "예전 것은 지운다");
+        assert_eq!(keyring::Entry::new(new, &name).unwrap().get_password().unwrap(), "rt");
+        keyring::Entry::new(new, &name).unwrap().delete_credential().unwrap();
+    }
 
     #[test]
     fn pkce_and_auth_url() {

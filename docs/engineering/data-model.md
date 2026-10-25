@@ -1,4 +1,4 @@
-# Neo-Anki 데이터 모델
+# Addiem 데이터 모델
 
 ## 문서 상태
 
@@ -156,7 +156,7 @@ media                                  파일명으로 카드 HTML에서 참조
 
 요약하면 이렇다.
 
-| Anki | Neo-Anki | 주의 |
+| Anki | Addiem | 주의 |
 |---|---|---|
 | `decks.name` (`\x1f` 구분) | `deck` 계층 | 부모부터 만든다 |
 | `notetypes` + `fields` + `templates` | `note_type` + `card_template` | 템플릿은 protobuf. field 1=앞면, 2=뒷면 |

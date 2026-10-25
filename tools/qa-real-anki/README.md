@@ -1,11 +1,11 @@
 # 실제 Anki(pylib) 검증 하네스
 
-Neo-Anki 의 .apkg 가져오기 · 덱 업데이트 · 내보내기 · 왕복을 **실제 Anki 의 Rust 백엔드(pylib `anki` 26.9.3)** 와 맞대어 본다. Anki 가 기준이다 (특수 필드 · 렌더 의미).
+Addiem 의 .apkg 가져오기 · 덱 업데이트 · 내보내기 · 왕복을 **실제 Anki 의 Rust 백엔드(pylib `anki` 26.9.3)** 와 맞대어 본다. Anki 가 기준이다 (특수 필드 · 렌더 의미).
 
 ## 한 명령으로 다시 돌리기
 
 ```powershell
-$repo = "C:\path\to\Neo-Anki-worktree"   # 합친 브랜치의 worktree (메인 체크아웃 말고)
+$repo = "C:\path\to\Addiem-worktree"   # 합친 브랜치의 worktree (메인 체크아웃 말고)
 & "$env:TEMP\na-anki-venv\Scripts\python.exe" -I "$repo\tools\qa-real-anki\real_anki.py" all --repo $repo --work "$env:TEMP\na-qr-work"
 ```
 

@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "addiem-llm"
+version = "0.1.0"
+dependencies = [
+ "candle-core",
+ "candle-transformers",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -710,16 +720,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "neoanki-llm"
-version = "0.1.0"
-dependencies = [
- "candle-core",
- "candle-transformers",
- "serde_json",
- "tokenizers",
 ]
 
 [[package]]

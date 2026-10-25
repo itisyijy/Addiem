@@ -75,7 +75,7 @@ function EmptyHome() {
       </span>
       <h1 className="t-display-l">아직 학습할 덱이 없어요</h1>
       <p className="t-body-l c-secondary">
-        덱은 학습 카드를 모아 두는 묶음이에요. 과목이나 시험별로 새로 만들거나, 쓰던 Anki 덱을 가져오면 바로 시작할 수 있어요.
+        덱은 학습 카드를 모아 두는 묶음이에요. 과목이나 시험별로 새로 만들거나, 쓰던 덱 파일(.apkg)을 가져오면 바로 시작할 수 있어요.
       </p>
       <div className="a1__choices">
         <button className="a1__card a1__card--primary" onClick={() => nav({ name: "newDeck" })}>
@@ -96,7 +96,7 @@ function EmptyHome() {
           </span>
           <span className="a1__spacer" />
           <span className="t-title-m">가져오기</span>
-          <span className="t-body-s c-secondary">Anki 덱(.apkg · .colpkg) 또는 JSON 파일</span>
+          <span className="t-body-s c-secondary">덱 패키지(.apkg · .colpkg) 또는 JSON 파일</span>
           <span className="a1__foot">
             <Kbd k={actionKey("import")} />
             <Icon name="arrow-right" size={20} />

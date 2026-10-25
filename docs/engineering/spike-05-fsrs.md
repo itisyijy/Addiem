@@ -78,7 +78,7 @@ new_card, log = scheduler.review_card(card, rating, review_datetime=None, review
 ADR 7장의 경계 한 줄이 그대로 성립한다.
 
 > SRS 라이브러리는 카드 한 장의 다음 일정만 계산한다.
-> 오늘 무엇을 어떤 순서로 보여줄지는 전부 Neo-Anki 큐가 결정한다.
+> 오늘 무엇을 어떤 순서로 보여줄지는 전부 Addiem 큐가 결정한다.
 
 보류를 유발한 2회차 Again을 스케줄러에 넘기지 않는 것도 간단하다. **`review_card`를 호출하지 않으면 된다.** 카드 상태가 그대로 유지된다.
 

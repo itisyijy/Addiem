@@ -1953,7 +1953,7 @@ mod tests {
     }
 
     fn tmp(tag: &str) -> Tmp {
-        let p = std::env::temp_dir().join(format!("neoanki-du-{tag}-{}-{}", std::process::id(), now_ms()));
+        let p = std::env::temp_dir().join(format!("addiem-du-{tag}-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(p.join("data/media")).unwrap();
         Tmp(p)
     }
@@ -1961,7 +1961,7 @@ mod tests {
     fn state(dir: &Path) -> AppState {
         std::fs::create_dir_all(dir.join("media")).unwrap();
         AppState {
-            db: std::sync::Mutex::new(db::open(&dir.join("neoanki.sqlite")).unwrap()),
+            db: std::sync::Mutex::new(db::open(&dir.join("addiem.sqlite")).unwrap()),
             fsrs: fsrs::FSRS::default(),
             data_dir: dir.to_path_buf(),
             undo: Default::default(),
@@ -2645,19 +2645,19 @@ mod tests {
         con.execute("DELETE FROM note WHERE anki_guid = 'g2'", []).unwrap();
         assert_eq!(con.query_row("SELECT group_concat(guid) FROM origin_gone", [], |r| r.get::<_, String>(0)).unwrap(), "g1");
         drop(con);
-        let again = db::open(&t.0.join("a/neoanki.sqlite")).unwrap();
+        let again = db::open(&t.0.join("a/addiem.sqlite")).unwrap();
         let n = |sql: &str| again.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(n("SELECT count(*) FROM pragma_table_info('note') WHERE name = 'origin'") + n("SELECT count(*) FROM pragma_table_info('note_type') WHERE name = 'origin'"), 2);
         assert_eq!(n("SELECT count(*) FROM sqlite_master WHERE name IN ('origin_gone', 'note_origin_gone')"), 2);
         assert_eq!(n("SELECT count(*) FROM origin_gone"), 1);
     }
 
-    /// 화면 확인(B2-u0 ~ B3-u)용 데이터: NEOANKI_DU_OUT/data 에 v1 을 가져와 몇 장 고치고 지운 DB, NEOANKI_DU_OUT/v2.apkg.
-    /// NEOANKI_DU_OUT=<폴더> cargo test --lib deck_update_sample -- --ignored
+    /// 화면 확인(B2-u0 ~ B3-u)용 데이터: ADDIEM_DU_OUT/data 에 v1 을 가져와 몇 장 고치고 지운 DB, ADDIEM_DU_OUT/v2.apkg.
+    /// ADDIEM_DU_OUT=<폴더> cargo test --lib deck_update_sample -- --ignored
     #[test]
     #[ignore]
     fn deck_update_sample() {
-        let out = PathBuf::from(std::env::var("NEOANKI_DU_OUT").expect("NEOANKI_DU_OUT"));
+        let out = PathBuf::from(std::env::var("ADDIEM_DU_OUT").expect("ADDIEM_DU_OUT"));
         let s = state(&out.join("data"));
         let decks = [(1, "정보처리기사 실기"), (2, "정보처리기사 실기::데이터베이스"), (3, "정보처리기사 실기::네트워크")];
         let afmt = "{{FrontSide}}<hr id=answer>{{뒷면}}";

@@ -9,6 +9,7 @@ mod dl;
 mod exam;
 mod export;
 mod import;
+mod legacy;
 mod notetype;
 mod occlusion;
 mod plan;
@@ -32,6 +33,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // 예전 이름(Neo-Anki) 시절 폴더를 새 식별자 폴더로 (legacy.rs). WebView2 데이터(화면 설정)가 로컬 폴더에 있어 창을 만들기 전에 옮긴다.
+            // 데이터 폴더를 옮기지 못하면 이번에는 예전 폴더를 그대로 쓴다
+            let default_dir = match std::env::var_os("ADDIEM_DATA_DIR") {
+                Some(_) => None,
+                None => {
+                    legacy::move_dir(&app.path().app_local_data_dir()?);
+                    Some(legacy::move_dir(&app.path().app_data_dir()?))
+                }
+            };
             // 첫 창은 여기서 만든다 (tauri.conf.json create: false). 만들기 전에 크기를 정해 커졌다 줄어드는 깜빡임이 없다.
             // 켤 때마다 주 모니터 작업 영역에 맞추고, 크기와 상관없이 작업 영역 가운데에 둔다. 모니터를 못 읽으면 설정 크기(1280×800) 그대로
             // ponytail: 크기 기억은 하지 않는다. 필요하면 닫을 때 크기를 저장해 여기서 읽는다
@@ -44,17 +54,18 @@ pub fn run() {
                 win.center().build()?;
             }
             // %APPDATA%\<식별자> (DECISIONS H1: 식별자가 바뀌면 이 경로가 바뀐다).
-            // NEOANKI_DATA_DIR 로 바꿀 수 있다. 테스트가 실제 데이터를 건드리지 않게 하기 위한 것이다
-            let data_dir = match std::env::var_os("NEOANKI_DATA_DIR") {
-                Some(dir) => dir.into(),
-                None => app.path().app_data_dir()?,
+            // ADDIEM_DATA_DIR 로 바꿀 수 있다. 테스트가 실제 데이터를 건드리지 않게 하기 위한 것이다
+            let data_dir = match default_dir {
+                Some(dir) => dir,
+                None => std::env::var_os("ADDIEM_DATA_DIR").unwrap_or_default().into(),
             };
             std::fs::create_dir_all(&data_dir)?;
+            legacy::rename_files(&data_dir);
             // 지난 실행이 가져오는 중에 끊겨 남긴 임시 컬렉션 (T7-05)
             import::clean_stale(&data_dir);
             // 열지 못해도 앱은 뜬다. 빈 메모리 DB 로 시작하고 화면이 S1-6 안내(다시 시도 / 백업에서 복구)를 띄운다.
             // 자동 복구는 하지 않는다. 원본 파일을 건드리기 전에 사용자가 고른다
-            let (con, startup_error) = match db::open(&data_dir.join("neoanki.sqlite")) {
+            let (con, startup_error) = match db::open(&db::file(&data_dir)) {
                 Ok(con) => (con, None),
                 Err(e) => (db::open_in_memory()?, Some(e.to_string())),
             };

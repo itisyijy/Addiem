@@ -2678,10 +2678,10 @@ pub fn prune_backups(list: &[(String, i64)], now: i64) -> Vec<String> {
     sorted.into_iter().filter(|(n, _)| !keep.contains(n)).map(|(n, _)| n.clone()).collect()
 }
 
-/// 백업 zip 이름의 시각: neoanki-2026-10-14-0912.zip
+/// 백업 zip 이름의 시각: addiem-2026-10-14-0912.zip (예전 이름 addiem- 도)
 pub fn backup_time(name: &str) -> Option<i64> {
     use chrono::TimeZone;
-    let s = name.strip_prefix("neoanki-")?.strip_suffix(".zip")?;
+    let s = crate::legacy::backup_rest(name)?.strip_suffix(".zip")?;
     let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d-%H%M").ok()?;
     chrono::Local.from_local_datetime(&dt).earliest().map(|d| d.timestamp_millis())
 }
@@ -2696,7 +2696,7 @@ pub fn backup_zip(con: &Connection, tmp_dir: &Path) -> SRes<Vec<u8>> {
         let mut out = std::io::Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(&mut out);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("neoanki.sqlite", opts).map_err(other)?;
+        zip.start_file(crate::db::FILE, opts).map_err(other)?;
         zip.write_all(&std::fs::read(&copy).map_err(other)?).map_err(other)?;
         zip.finish().map_err(other)?;
         Ok(out.into_inner())
@@ -2725,10 +2725,10 @@ pub fn adopt_restored(current: &Connection, restored: &Connection) -> SRes<()> {
     Ok(())
 }
 
-/// zip 안의 neoanki.sqlite 를 파일로 꺼낸다
+/// zip 안의 DB 를 파일로 꺼낸다
 pub fn unzip_db(zip_bytes: &[u8], to: &Path) -> SRes<()> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(|_| other("백업 파일을 읽을 수 없어요"))?;
-    let f = zip.by_name("neoanki.sqlite").map_err(|_| other("백업 파일에 학습 데이터가 없어요"))?;
+    let f = crate::legacy::zip_db(&mut zip).ok_or_else(|| other("백업 파일에 학습 데이터가 없어요"))?;
     let mut out = std::fs::File::create(to).map_err(other)?;
     let n = std::io::copy(&mut f.take(MAX_UNPACKED + 1), &mut out).map_err(other)?;
     if n > MAX_UNPACKED {

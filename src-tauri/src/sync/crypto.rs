@@ -53,6 +53,7 @@ pub struct KdfParams {
     pub check: String,
 }
 
+/// 예전 이름이 들어 있지만 바꾸지 않는다: 바꾸면 이미 잠근 Drive 데이터의 비밀번호 확인이 맞지 않는다
 const CHECK: &[u8] = b"neo-anki key check";
 
 pub fn derive_key(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<[u8; 32], String> {

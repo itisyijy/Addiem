@@ -40,8 +40,8 @@ export function useAiStatus() {
  * 처음 보낼 때 한 번만 묻는다 (L4-s). 연결을 끊으면 지워서 다시 연결한 뒤 다시 묻는다.
  * R3-s: 자료 구간을 함께 보낼 때는 확인한 구간 수가 바뀌면 다시 묻는다
  */
-const SEND_OK = "neoanki.ai.sendConfirmed";
-const SEND_SEGS = "neoanki.ai.sendSegments";
+const SEND_OK = "addiem.ai.sendConfirmed";
+const SEND_SEGS = "addiem.ai.sendSegments";
 export const sendConfirmed = (segs = 0) => {
   try {
     return localStorage.getItem(SEND_OK) === "1" && (segs === 0 || localStorage.getItem(SEND_SEGS) === String(segs));

@@ -16,12 +16,12 @@ Chosen 2026-10-25: mark **I02** with type **Newsreader**. The type was picked in
 
 ## Figma
 
-The file "Neo-Anki MVP UI" (xZsmRhJ4rvkjwYHfQyM5jx) has a page "Addiem 로고" (300:22727) with two frames:
+The file "Addiem MVP UI" (xZsmRhJ4rvkjwYHfQyM5jx) has a page "Addiem 로고" (300:22727) with two frames:
 
 - **"Addiem · 컴포넌트" (300:22886)** holds the components: Mark, Mark Dark, Mark Small, Mark Small Dark, App Icon, Wordmark, Wordmark Dark, Lockup and Lockup Dark.
-- **The components are bound to color variables.** Mark, Mark Small and Wordmark use the `brand/path`, `brand/grid`, `brand/the-day` and `brand/ink` variables in the "Addiem Color" collection (renamed from "Neo-Anki Color"). One component therefore works in Light and Dark mode; App Icon keeps fixed colors.
+- **The components are bound to color variables.** Mark, Mark Small and Wordmark use the `brand/path`, `brand/grid`, `brand/the-day` and `brand/ink` variables in the "Addiem Color" collection. One component therefore works in Light and Dark mode; App Icon keeps fixed colors.
 - **The MVP Screens page uses them.** Its `Logo` component (32px) is an Addiem Mark (4×4) instance, and `TopNav` shows the Wordmark at 30px tall. The size was enlarged from 28 / 24 at the user's request; the bar stays 60px.
-- **"Addiem 로고 시트" (301:22763)** is the sheet: lockups, marks, wordmarks, app icon sizes and colors. Its frames use the file's Neo-Anki Color variables and Pretendard text styles. The dark tiles set the Dark mode explicitly.
+- **"Addiem 로고 시트" (301:22763)** is the sheet: lockups, marks, wordmarks, app icon sizes and colors. Its frames use the file's Addiem Color variables and Pretendard text styles. The dark tiles set the Dark mode explicitly.
 
 ## Colors
 

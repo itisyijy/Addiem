@@ -59,7 +59,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
   const run = async () => {
     if (!info || file || picking.current || (csv && cols.length === 0)) return;
     picking.current = true;
-    const filter = csv ? { name: "CSV (쉼표로 분리)", extensions: ["csv"] } : { name: "Anki 덱 패키지", extensions: ["apkg"] };
+    const filter = csv ? { name: "CSV (쉼표로 분리)", extensions: ["csv"] } : { name: "덱 패키지 (.apkg)", extensions: ["apkg"] };
     const path = await save({ defaultPath: fileName, filters: [filter] }).finally(() => (picking.current = false));
     if (!path) return; // 저장 창에서 취소하면 이 창으로 돌아온다
     if (csv) return runCsv(path);
@@ -161,7 +161,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
             <span className="export__warn-text">
               <span className="t-body-m-strong c-warn">카드 종류가 없는 카드 {n(r.skipped_cards)}장을 뺐어요</span>
               <span className="t-body-s c-secondary">
-                카드 종류가 지워진 카드라 Anki가 받지 않아요. 넣으면 Anki가 파일 전체를 가져오지 않아요. 이 앱의 카드는 그대로예요.
+                카드 종류가 지워진 카드라 .apkg에 넣을 수 없어요. 넣으면 .apkg를 여는 앱이 파일 전체를 가져오지 않아요. 이 앱의 카드는 그대로예요.
               </span>
             </span>
           </div>
@@ -172,7 +172,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
             <span className="export__warn-text">
               <span className="t-body-m-strong c-warn">두 벌 있는 노트 {n(r.duplicate_guids)}개</span>
               <span className="t-body-s c-secondary">
-                두 기기가 받기 전에 같은 덱 업데이트를 적용해 생긴 것 같아요. Anki가 하나로 합치지 않게 두 번째 것은 다른 노트로 내보냈어요. 이 앱에서 하나를 지우면 다음부터 한 벌로 나가요.
+                두 기기가 받기 전에 같은 덱 업데이트를 적용해 생긴 것 같아요. .apkg를 여는 앱이 하나로 합치지 않게 두 번째 것은 다른 노트로 내보냈어요. 이 앱에서 하나를 지우면 다음부터 한 벌로 나가요.
               </span>
             </span>
           </div>
@@ -223,7 +223,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
       <div className="segment segment--boxed">
         {(["apkg", "csv"] as const).map((f) => (
           <button key={f} className={`segment__item t-label-m ${format === f ? "is-selected" : ""}`} onClick={() => setFormat(f)} disabled={!!file}>
-            {f === "apkg" ? "Anki 덱 (.apkg)" : "CSV (표)"}
+            {f === "apkg" ? "덱 패키지 (.apkg)" : "CSV (표)"}
           </button>
         ))}
       </div>
@@ -269,7 +269,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
           <div className="export__note">
             <Icon name="info" size={16} className="c-tertiary" />
             <span className="t-body-s c-secondary">
-              CSV에는 그림·소리·복습 기록이 들어가지 않아요. 다른 기기나 Anki로 옮기려면 .apkg가 나아요. 엑셀에서 한글이 깨지지 않게 UTF-8(BOM)으로 저장해요.
+              CSV에는 그림·소리·복습 기록이 들어가지 않아요. 다른 기기나 다른 학습 앱으로 옮기려면 .apkg가 나아요. 엑셀에서 한글이 깨지지 않게 UTF-8(BOM)으로 저장해요.
             </span>
           </div>
         </>
@@ -286,13 +286,13 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
           </div>
           <div className="export__note">
             <Icon name="info" size={16} className="c-tertiary" />
-            <span className="t-body-s c-secondary">Anki에서 고친 뒤 이 파일을 Addiem으로 다시 가져오면 덱 업데이트로 알아봐요 · 고친 노트만 바뀌고 이 기기의 복습 기록과 일정은 그대로예요. 백업은 설정 &gt; 백업을 쓰세요.</span>
+            <span className="t-body-s c-secondary">다른 앱에서 고친 .apkg를 Addiem으로 다시 가져오면 덱 업데이트로 알아봐요 · 고친 노트만 바뀌고 이 기기의 복습 기록과 일정은 그대로예요. 백업은 설정 &gt; 백업을 쓰세요.</span>
           </div>
           {info.recall_cards > 0 && (
             <div className="export__note">
               <Icon name="info" size={16} className="c-tertiary" />
               <span className="t-body-s c-secondary">
-                목록·선택형 카드 {n(info.recall_cards)}장 · Anki에서는 목록을 하나씩 공개하거나 보기를 선택할 수 없어요. 질문·정답은 볼 수 있어요.
+                목록·선택형 카드 {n(info.recall_cards)}장 · .apkg를 여는 다른 앱에서는 목록을 하나씩 공개하거나 보기를 선택할 수 없어요. 질문·정답은 볼 수 있어요.
               </span>
             </div>
           )}

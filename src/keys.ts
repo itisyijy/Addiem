@@ -70,7 +70,7 @@ export const reservedLabel = (id: ActionId, chord: string) =>
 
 // ---------------------------------------------------------------- 저장 (이 기기의 localStorage)
 
-const STORE = "neoanki.keys";
+const STORE = "addiem.keys";
 /** 바꾼 동작만 저장한다. 빈 문자열은 "미지정" (같은 범위에서 다른 동작에 내준 키) */
 type Overrides = Partial<Record<ActionId, string[]>>;
 

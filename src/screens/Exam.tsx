@@ -42,7 +42,7 @@ export function ExamDialog({ deckId, notes, cards, title, sub, unit = "노트", 
       title={title ?? `선택한 카드 ${n(cards)}장에 기출 시험 표시`}
       sub={
         sub ??
-        `같은 내용에서 만들어진 카드들은 기출 표시를 함께 써요(Anki 노트 기준). 고른 카드는 노트 ${n(notes.length)}개에서 나왔어요.`
+        `같은 내용에서 만들어진 카드들은 기출 표시를 함께 써요(노트 기준). 고른 카드는 노트 ${n(notes.length)}개에서 나왔어요.`
       }
       onClose={onClose}
       className="exam-dialog"

@@ -574,13 +574,13 @@ fn parse_regroup(text: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError
 
 // ---------------------------------------------------------------- 개발용 가짜 응답
 
-/// debug 빌드에서만: NEOANKI_AI_FAKE=ok|slow|usage_limit(limit)|expired|offline|unavailable|malformed.
+/// debug 빌드에서만: ADDIEM_AI_FAKE=ok|slow|usage_limit(limit)|expired|offline|unavailable|malformed.
 /// 실제 계정 없이 L4 · R1 · R2 · R3 의 보내는 중 · 오류 · 결과를 그리려는 것. 네트워크 · 키체인을 쓰지 않는다
 pub(crate) fn fake_mode() -> Option<String> {
     if !cfg!(debug_assertions) {
         return None;
     }
-    std::env::var("NEOANKI_AI_FAKE").ok().filter(|v| !v.is_empty())
+    std::env::var("ADDIEM_AI_FAKE").ok().filter(|v| !v.is_empty())
 }
 
 /// 가짜 모드에서 [연결 끊기]를 누른 뒤 (앱을 다시 켤 때까지). 끊긴 화면(L1)과 "끊은 뒤에는 보내지 않음"을 가짜 모드로도 보게 (QA T5-06)
@@ -827,7 +827,7 @@ struct AuthEvent {
 pub fn ai_connect(app: AppHandle, state: State<AiState>, reconsent: bool, new_account: bool) -> Res<String> {
     // 가짜 응답으로 화면을 그리는 동안 [다시 로그인] 등을 눌러도 실제 로그인 창을 열지 않는다
     if fake_mode().is_some() {
-        return Err("개발용 가짜 응답 모드(NEOANKI_AI_FAKE)에서는 ChatGPT에 로그인하지 않아요.".into());
+        return Err("개발용 가짜 응답 모드(ADDIEM_AI_FAKE)에서는 ChatGPT에 로그인하지 않아요.".into());
     }
     let (host, client) = with_db(&app, |c| {
         let host = match get_meta(c, META_HOST) {
