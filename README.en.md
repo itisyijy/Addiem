@@ -205,3 +205,7 @@ Anki is a trademark of Ankitects Pty Ltd. Addiem is an independent app, not affi
 ## License
 
 [MIT](LICENSE)
+
+---
+
+[Website](https://addiem.pages.dev/) · [Privacy Policy](https://addiem.pages.dev/privacy/) · [Terms of Service](https://addiem.pages.dev/terms/)

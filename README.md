@@ -201,3 +201,7 @@ Anki는 Ankitects Pty Ltd의 상표예요. Addiem은 Anki와 제휴하지 않은
 ## 라이선스
 
 [MIT](LICENSE)
+
+---
+
+[홈페이지](https://addiem.pages.dev/) · [개인정보 처리방침](https://addiem.pages.dev/privacy/) · [이용약관](https://addiem.pages.dev/terms/)

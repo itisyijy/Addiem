@@ -15,6 +15,8 @@ __pycache__/
 # 프론트엔드 (Vite)
 node_modules/
 dist/
+# 공개 사이트 빌드 결과 (site/build.sh)
+_site/
 *.local
 *.log
 
