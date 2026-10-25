@@ -199,3 +199,7 @@ Google Drive 동기화를 켜거나, 설정 › 이 기기 백업에서 만든 �
 ## 라이선스
 
 [MIT](LICENSE)
+
+---
+
+[홈페이지](https://addiem.pages.dev/) · [개인정보 처리방침](https://addiem.pages.dev/privacy/) · [이용약관](https://addiem.pages.dev/terms/)

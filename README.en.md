@@ -203,3 +203,7 @@ Design and engineering documents are in Korean.
 ## License
 
 [MIT](LICENSE)
+
+---
+
+[Website](https://addiem.pages.dev/) · [Privacy Policy](https://addiem.pages.dev/privacy/) · [Terms of Service](https://addiem.pages.dev/terms/)

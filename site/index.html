@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 사이트를 하위 경로(예: GitHub Pages 의 /Addiem/)에 올리면 이 줄만 고친다. 모든 링크와 그림이 이 경로를 기준으로 한다 -->
+<base href="/">
+<title>Addiem — 시험일까지, 핵심부터</title>
+<meta name="description" content="Addiem은 덱마다 시험일과 중요도를 정하면 오늘 볼 카드를 골라 주는 Windows용 플래시카드 학습 앱이에요.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="img/addiem-icon.svg" type="image/svg+xml">
+<!-- Google Search Console 소유권 확인: 확인용 meta 태그를 받으면 아래 주석을 풀고 content 값을 바꾼다
+<meta name="google-site-verification" content="여기에-확인-코드">
+-->
+<script>
+// 첫 화면을 그리기 전에 언어와 화면을 정한다 (깜빡임 방지). 자바스크립트가 없으면 모든 화면과 두 언어가 다 보인다
+(function () {
+  var d = document.documentElement, l = null;
+  try { l = localStorage.getItem("addiem-lang"); } catch (e) {}
+  d.dataset.lang = l === "ko" || l === "en" ? l : /^ko\b/i.test(navigator.language) ? "ko" : "en";
+  d.lang = d.dataset.lang;
+  var p = location.pathname.slice(new URL(document.baseURI).pathname.length);
+  d.dataset.route = p.indexOf("privacy") === 0 ? "privacy" : p.indexOf("terms") === 0 ? "terms" : "home";
+})();
+</script>
+<style>
+@font-face { font-family: "Pretendard"; font-weight: 400; font-display: swap; src: url("fonts/Pretendard-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 600; font-display: swap; src: url("fonts/Pretendard-SemiBold.woff2") format("woff2"); }
+
+/* Figma "Addiem Color" 변수와 같은 값 */
+:root {
+  --bg-canvas: #f4f2ee; --bg-surface: #fff; --bg-inverse: #16161d; --bg-nav: rgba(255, 255, 255, .72);
+  --border: #e5e1da; --border-ink: #16161d;
+  --text-1: #16161d; --text-2: #4f4d57; --text-3: #66636d; --text-inverse: #fff;
+  --accent: #4433ff; --accent-pressed: #2f22c4; --accent-subtle: #e9e6ff; --accent-text: #3324d6; --the-day: #e05c06;
+  --radius-card: 16px; --radius-shot: 12px; --width-content: 1120px; --width-doc: 720px;
+  --shadow-shot: 0 12px 32px -8px rgba(23, 20, 38, .10);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-canvas: #121117; --bg-surface: #1b1a21; --bg-inverse: #34305a; --bg-nav: rgba(27, 26, 33, .78);
+    --border: #2c2b34; --border-ink: #e9e7f0;
+    --text-1: #edebf3; --text-2: #b4b1be; --text-3: #94919e;
+    --accent: #5b4bff; --accent-pressed: #4335d9; --accent-subtle: #252150; --accent-text: #a79fff; --the-day: #ff9a55;
+    --shadow-shot: 0 12px 32px -8px rgba(0, 0, 0, .5);
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg-canvas); color: var(--text-1); font: 400 15px/24px "Pretendard", system-ui, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; word-break: keep-all; overflow-wrap: anywhere; }
+img { max-width: 100%; height: auto; display: block; }
+a { color: inherit; }
+[id] { scroll-margin-top: 112px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* 언어 · 화면 전환 (data-lang · data-route 는 head 의 스크립트가 정한다) */
+html[data-lang="ko"] [lang="en"], html[data-lang="en"] [lang="ko"] { display: none !important; }
+html[data-route] [data-view] { display: none; }
+html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-view="privacy"], html[data-route="terms"] [data-view="terms"] { display: block; }
+
+.wrap { max-width: calc(var(--width-content) + 32px); margin-inline: auto; padding-inline: 16px; }
+.ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* 글자 (Figma 텍스트 스타일) */
+.display { margin: 0; font-size: 52px; line-height: 64px; font-weight: 600; letter-spacing: -.02em; }
+.heading { margin: 0; font-size: 32px; line-height: 42px; font-weight: 600; letter-spacing: -.01em; }
+.title-m { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; }
+.title-s { margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; }
+.body-l { margin: 0; font-size: 17px; line-height: 28px; color: var(--text-2); }
+.body-s { margin: 0; font-size: 13px; line-height: 20px; color: var(--text-3); }
+.label-s { margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--accent-text); }
+.serif { font: italic 22px/28px "Newsreader", Georgia, "Times New Roman", serif; color: var(--accent-text); }
+
+/* 버튼 (Figma Button: Primary · Secondary, Size L · M) */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 56px; padding: 0 28px; border-radius: 999px; font: 600 16px/24px inherit; font-family: inherit; text-decoration: none; border: 1px solid transparent; }
+.btn-m { gap: 6px; min-height: 38px; padding: 0 16px; font-size: 14px; line-height: 20px; }
+.btn-m .ic { width: 16px; height: 16px; }
+.btn-primary { background: var(--accent); color: var(--text-inverse); }
+.btn-primary:hover { background: var(--accent-pressed); }
+.btn-secondary { border-color: var(--border-ink); color: var(--text-1); }
+.btn-secondary:hover { background: var(--bg-surface); }
+
+/* Web/Nav */
+.nav { position: sticky; top: 0; z-index: 10; background: var(--bg-nav); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); }
+.nav-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 72px; }
+.nav-right { display: flex; align-items: center; gap: 24px; }
+.nav-links { display: flex; align-items: center; gap: 24px; }
+.nav-links a { padding: 6px 0 4px; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text-2); text-decoration: none; border-bottom: 2px solid transparent; }
+.nav-links a[aria-current="page"] { color: var(--text-1); border-bottom-color: var(--accent); }
+.nav-links .short { display: none; }
+.logo { display: block; }
+.logo img { width: 101px; height: 28px; }
+/* Web/Lang (Segment) */
+.lang { display: inline-flex; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); }
+.lang button { padding: 5px 12px; border: 0; border-radius: 999px; background: none; color: var(--text-2); font: 600 14px/20px inherit; font-family: inherit; cursor: pointer; }
+.lang button[aria-pressed="true"] { background: var(--bg-inverse); color: var(--text-inverse); }
+
+/* 홈 */
+.hero { padding-block: 96px 64px; display: grid; gap: 24px; justify-items: start; }
+.accent { display: flex; align-items: center; gap: 10px; }
+.accent::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--the-day); }
+.hero .body-l { max-width: 640px; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.phone-only { display: none; }
+.shot { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-shot); box-shadow: var(--shadow-shot); background: var(--bg-surface); }
+.section { padding-block: 64px; }
+.section-head { display: grid; gap: 12px; margin-bottom: 48px; }
+.section-head .body-l { max-width: 640px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
+/* Web/Feature */
+.feature { display: grid; gap: 12px; align-content: start; }
+.tile { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--accent-subtle); color: var(--accent-text); }
+.feature p { margin: 0; color: var(--text-2); }
+/* Web/Showcase */
+.showcases { display: grid; gap: 96px; padding-block: 64px; }
+.showcase { display: grid; grid-template-columns: 440px 1fr; gap: 64px; align-items: center; }
+.showcase.flip { grid-template-columns: 1fr 440px; }
+.showcase.flip .text { order: 2; }
+.showcase .text { display: grid; gap: 12px; }
+.showcase h3 { margin: 0; font-size: 24px; line-height: 32px; font-weight: 600; letter-spacing: -.01em; }
+/* 개인정보 띠 · Web/Fact */
+.card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 48px; display: grid; gap: 32px; }
+.facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+.fact { display: flex; gap: 16px; }
+.fact .ic { margin-top: 2px; }
+.fact div { display: grid; gap: 4px; }
+.fact p { margin: 0; color: var(--text-2); }
+.more { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--accent-text); text-decoration: none; }
+.more .ic { width: 16px; height: 16px; }
+.download { padding-block: 96px; display: grid; gap: 24px; justify-items: center; text-align: center; }
+.download img { width: 56px; height: 56px; }
+
+/* 처리방침 · 약관 (Web/Doc Section) */
+.doc-layout { display: grid; grid-template-columns: 240px minmax(0, var(--width-doc)); gap: 64px; padding-block: 64px 96px; }
+.toc { position: sticky; top: 104px; align-self: start; display: grid; gap: 8px; padding-top: 8px; }
+.toc p { margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--text-3); }
+.toc a { font-size: 13px; line-height: 20px; color: var(--text-2); text-decoration: none; }
+.toc a:hover { color: var(--text-1); text-decoration: underline; }
+.doc { display: grid; gap: 48px; }
+.doc header { display: grid; gap: 12px; }
+.doc section { display: grid; gap: 12px; }
+.doc section p, .doc section li, .doc td, .doc th { font-size: 17px; line-height: 28px; color: var(--text-2); }
+.doc section p, .doc ol, .doc ul { margin: 0; }
+.doc ol, .doc ul { padding-left: 1.4em; display: grid; gap: 4px; }
+.doc .glance { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 32px; display: grid; gap: 24px; }
+.doc .glance .fact div { gap: 0; }
+.table { overflow-x: auto; }
+.doc table { width: 100%; border-collapse: collapse; }
+.doc th, .doc td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--border); font-size: 15px; line-height: 24px; }
+.doc th { color: var(--text-1); font-weight: 600; }
+.note { padding: 16px 20px; border-radius: 12px; background: var(--accent-subtle); color: var(--text-1); font-size: 15px; line-height: 24px; margin: 0; }
+
+/* Web/Footer */
+.footer { border-top: 1px solid var(--border); padding-block: 48px; }
+.footer-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+.footer-row img { width: 79px; height: 22px; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.footer-links a { font-size: 13px; line-height: 20px; color: var(--text-2); text-decoration: none; }
+.footer-links a:hover { color: var(--text-1); text-decoration: underline; }
+
+/* 폰 (Figma 390) */
+@media (max-width: 720px) {
+  .nav-row { min-height: 0; padding-top: 12px; flex-wrap: wrap; gap: 8px; }
+  .nav-right { display: contents; }
+  .nav-links { order: 3; width: 100%; }
+  .nav-links .long, .nav .btn { display: none; }
+  .nav-links .short { display: inline; }
+  .display { font-size: 34px; line-height: 44px; }
+  .heading { font-size: 24px; line-height: 32px; }
+  .hero { padding-block: 48px 32px; gap: 16px; }
+  .serif { font-size: 20px; }
+  .cta { display: grid; width: 100%; }
+  .phone-only { display: block; }
+  .section { padding-block: 48px; }
+  .section-head { margin-bottom: 32px; }
+  .grid, .facts, .showcase, .showcase.flip { grid-template-columns: 1fr; gap: 32px; }
+  .showcase { gap: 24px; }
+  .showcase.flip .text { order: 0; }
+  .showcases { gap: 64px; padding-block: 48px; }
+  .card { padding: 24px; gap: 24px; }
+  .facts { gap: 24px; }
+  .download { padding-block: 64px; }
+  .doc-layout { grid-template-columns: 1fr; padding-block: 32px 48px; }
+  .toc { display: none; }
+  .doc { gap: 32px; }
+  .doc .glance { padding: 20px; }
+  /* 전송 표는 행마다 쌓는다: 기능 이름이 제목, 받는 곳 · 시점은 흐린 글자 */
+  .doc thead { display: none; }
+  .doc table, .doc tbody, .doc tr, .doc td { display: block; }
+  .doc tr { padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .doc td { border: 0; padding: 2px 0; }
+  .doc td:first-child { color: var(--text-1); font-weight: 600; }
+  .doc td:nth-child(2), .doc td:last-child { color: var(--text-3); }
+  .footer { padding-block: 32px; }
+  .footer-row { flex-direction: column; align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <symbol id="i-calendar" viewBox="0 0 24 24"><path d="M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65M22 12.65l-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 18 18"><path d="M15 12V5.25a1.5 1.5 0 0 0-1.5-1.5h-9A1.5 1.5 0 0 0 3 5.25V12m12 0H3m12 0 .96 1.91a.75.75 0 0 1-.68 1.09H2.72a.75.75 0 0 1-.68-1.09L3 12"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 22 22"><path d="M9.11 14.21a2 2 0 0 0-1.32-1.32L2.17 11.44a.46.46 0 0 1 0-.88l5.62-1.45a2 2 0 0 0 1.32-1.32l1.45-5.63a.46.46 0 0 1 .88 0l1.45 5.63a2 2 0 0 0 1.32 1.32l5.63 1.45a.46.46 0 0 1 0 .88l-5.63 1.45a2 2 0 0 0-1.32 1.32l-1.45 5.63a.46.46 0 0 1-.88 0Z"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 22 22"><path d="M16.04 17.42H8.25a6.42 6.42 0 1 1 6.15-8.25h1.64a4.13 4.13 0 0 1 0 8.25Z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 18 18"><rect x="2.25" y="8.25" width="13.5" height="8.25" rx="1.5"/><path d="M5.25 8.25v-3a3.75 3.75 0 0 1 7.5 0v3"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-external" viewBox="0 0 16 16"><path d="M10 2h4v4M6.67 9.33 14 2M12 8.67v4A1.33 1.33 0 0 1 10.67 14H3.33A1.33 1.33 0 0 1 2 12.67V5.33A1.33 1.33 0 0 1 3.33 4h4"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-row">
+    <a class="logo" href="./" data-route="home"><picture><source srcset="img/addiem-lockup-dark.svg" media="(prefers-color-scheme: dark)"><img src="img/addiem-lockup.svg" alt="Addiem" width="101" height="28"></picture></a>
+    <div class="nav-right">
+      <nav class="nav-links" aria-label="Addiem">
+        <a href="./" data-route="home"><span lang="ko">소개</span><span lang="en">Overview</span></a>
+        <a href="privacy/" data-route="privacy"><span lang="ko"><span class="long">개인정보 처리방침</span><span class="short">개인정보</span></span><span lang="en">Privacy</span></a>
+        <a href="terms/" data-route="terms"><span lang="ko"><span class="long">이용약관</span><span class="short">약관</span></span><span lang="en">Terms</span></a>
+      </nav>
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-lang="ko" aria-pressed="false">한국어</button>
+        <button type="button" data-lang="en" aria-pressed="false">English</button>
+      </div>
+      <a class="btn btn-primary btn-m" href="https://github.com/itisyijy/Addiem/releases/latest"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg><span lang="ko">내려받기</span><span lang="en">Download</span></a>
+    </div>
+  </div>
+</header>
+
+<main>
+<!-- ============================================================ 홈 -->
+<div data-view="home">
+<div lang="ko">
+  <section class="wrap hero">
+    <p class="accent serif" lang="la">ad diem<span lang="ko"> — 그날까지</span></p>
+    <h1 class="display">시험일까지 남은 날에 맞춰,<br>핵심부터 끝까지 외워요.</h1>
+    <p class="body-l">덱마다 시험일과 중요도를 정하면 오늘 볼 카드를 골라 주는 플래시카드 학습 앱이에요. 쓰던 덱 패키지도 그대로 가져와요.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/itisyijy/Addiem/releases/latest"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Windows용 내려받기</a>
+      <a class="btn btn-secondary" href="https://github.com/itisyijy/Addiem"><svg class="ic" aria-hidden="true"><use href="#i-external"/></svg>GitHub에서 보기</a>
+    </div>
+    <p class="body-s">무료 · Windows 10 · 11 (64비트) · 버전 0.1.0 · 처음 실행할 때 SmartScreen 경고가 뜰 수 있어요<span class="phone-only">폰에서는 설치할 수 없어요. PC에서 내려받아요.</span></p>
+    <img class="shot" src="img/hero.png" width="1600" height="900" alt="오늘 남은 카드 39장이 보이는 홈 화면과, 카드를 연결 자료와 함께 보는 학습 화면">
+  </section>
+  <section class="wrap section">
+    <div class="section-head">
+      <h2 class="heading">시험 준비에 맞춘 플래시카드 앱</h2>
+      <p class="body-l">쓰던 덱은 그대로 가져오고, 시험일까지 무엇을 먼저 볼지는 Addiem이 정리해 줘요.</p>
+    </div>
+    <div class="grid">
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-calendar"/></svg></span><h3 class="title-s">덱마다 시험일과 중요도를 정해요</h3><p>남은 날짜와 핵심 · 일반 · 보충 중요도에 맞춰 오늘 볼 카드를 골라 줘요. 복습 간격은 FSRS로 계산해요.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-layers"/></svg></span><h3 class="title-s">쓰던 덱을 이어서 써요</h3><p>덱 패키지(.apkg · .colpkg)를 가져오고, 복습 기록도 함께 옮길 수 있어요. 새 덱을 만들어 바로 시작해도 돼요.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg></span><h3 class="title-s">강의 자료와 카드를 이어요</h3><p>PDF · PPTX의 강조와 목차를 읽어, 카드가 어디서 나왔는지 학습 중에 바로 열어 봐요.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-laptop"/></svg></span><h3 class="title-s">이 기기에 저장해요</h3><p>계정이 없어도 돼요. 학습 · 가져오기 · 카드 점검은 인터넷 없이 돼요.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-check-circle"/></svg></span><h3 class="title-s">바꾸기 전에 보여 줘요</h3><p>중요도 제안 · 서식 고치기 · 덱 업데이트는 바뀌는 것을 먼저 보여 주고, 확정은 직접 해요.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-sparkles"/></svg></span><h3 class="title-s">AI는 원할 때만 써요</h3><p>ChatGPT를 연결하면 카드 초안과 서술형 채점 보조를 쓸 수 있어요. 버튼을 누를 때만 보내요.</p></div>
+    </div>
+  </section>
+  <section class="wrap showcases">
+    <div class="showcase"><div class="text"><p class="label-s">계획과 시험</p><h3>시험일까지 남은 날로 하루 분량을 나눠요</h3><p class="body-l">남은 신규 카드를 남은 날로 나눠 하루 분량을 정하고, 계산식과 진행률을 그대로 보여 줘요. 시험 14일 전부터는 핵심과 약한 카드 위주로 회독해요.</p></div><img class="shot" src="img/deck-goal.png" width="1280" height="760" loading="lazy" alt="시험일까지 남은 날짜와 하루 분량 계산이 보이는 덱 화면"></div>
+    <div class="showcase flip"><div class="text"><p class="label-s">원자료와 중요도</p><h3>강의 자료의 강조를 카드와 이어요</h3><p class="body-l">하이라이트 · 밑줄 · 붉은 글씨를 강조 구간으로, 제목 구조를 목차로 읽어요. 카드가 이어지지 않은 강조 구간을 모아 빠뜨린 범위를 찾아요.</p></div><img class="shot" src="img/source-outline.png" width="1280" height="800" loading="lazy" alt="PDF 목차와 핵심 범위 제안이 보이는 학습 자료 화면"></div>
+    <div class="showcase"><div class="text"><p class="label-s">카드 품질</p><h3>계속 틀리는 카드의 모양을 고쳐요</h3><p class="body-l">답이 너무 긴 카드, 질문이 여러 개인 카드를 찾아 나누기와 서식 고치기를 제안해요. 고치기 전에 나란히 보여 주고, 7일 동안 되돌릴 수 있어요.</p></div><img class="shot" src="img/card-check.png" width="1280" height="800" loading="lazy" alt="지금 카드와 고친 카드를 나란히 비교하는 서식 고치기 창"></div>
+  </section>
+  <section class="wrap section">
+    <div class="card">
+      <div class="section-head" style="margin:0"><h2 class="heading">공부 기록은 내 기기에 남아요</h2><p class="body-l">Addiem은 서버가 없어요. 인터넷은 직접 켜거나 누른 기능에서만 써요.</p></div>
+      <div class="facts">
+        <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-laptop"/></svg><div><h3 class="title-s">이 기기에 저장해요</h3><p>덱 · 카드 · 복습 기록 · 자료는 이 PC에만 있어요. 계정도 필요 없어요.</p></div></div>
+        <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-cloud"/></svg><div><h3 class="title-s">Drive는 Addiem 파일만</h3><p>Google Drive 동기화는 drive.file · drive.appdata 두 권한만 써요. 다른 파일은 보지 않아요.</p></div></div>
+        <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-sparkles"/></svg><div><h3 class="title-s">ChatGPT는 누를 때만</h3><p>그때 보이는 카드 글자와 자료 발췌만 보내요. 복습 기록과 파일 전체는 보내지 않아요.</p></div></div>
+      </div>
+      <a class="more" href="privacy/" data-route="privacy">개인정보 처리방침 전체 보기<svg class="ic" aria-hidden="true"><use href="#i-arrow-right"/></svg></a>
+    </div>
+  </section>
+  <section class="wrap download">
+    <picture><source srcset="img/addiem-mark-dark.svg" media="(prefers-color-scheme: dark)"><img src="img/addiem-mark.svg" alt="" width="56" height="56"></picture>
+    <h2 class="heading">오늘 분량부터 시작해요</h2>
+    <p class="body-l">설치 파일 하나로 끝나요. 관리자 권한 없이 지금 사용자 계정에 설치돼요.</p>
+    <a class="btn btn-primary" href="https://github.com/itisyijy/Addiem/releases/latest"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Windows용 내려받기</a>
+    <p class="body-s">Windows 10 · 11 (64비트) · 무료 · MIT 라이선스</p>
+  </section>
+</div>
+
+<div lang="en">
+  <section class="wrap hero">
+    <p class="accent serif" lang="la">ad diem<span lang="en"> — until the day</span></p>
+    <h1 class="display">Plan to your exam date.<br>Learn what matters first, and finish on time.</h1>
+    <p class="body-l">A flashcard app that picks today's cards from each deck's exam date and importance. Bring the deck packages you already use.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/itisyijy/Addiem/releases/latest"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Download for Windows</a>
+      <a class="btn btn-secondary" href="https://github.com/itisyijy/Addiem"><svg class="ic" aria-hidden="true"><use href="#i-external"/></svg>View on GitHub</a>
+    </div>
+    <p class="body-s">Free · Windows 10 · 11 (64-bit) · Version 0.1.0 · Windows SmartScreen may warn you on first run<span class="phone-only">Addiem doesn't run on phones. Download it on your PC.</span></p>
+    <img class="shot" src="img/hero.png" width="1600" height="900" alt="The home screen with 39 cards left today, and a study screen showing a card with its linked source">
+  </section>
+  <section class="wrap section">
+    <div class="section-head">
+      <h2 class="heading">A flashcard app built for exam prep</h2>
+      <p class="body-l">Bring your existing decks. Addiem works out what to study first before the exam.</p>
+    </div>
+    <div class="grid">
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-calendar"/></svg></span><h3 class="title-s">An exam date and importance for each deck</h3><p>Addiem picks today's cards from the days left and core · normal · extra importance. Review intervals use FSRS.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-layers"/></svg></span><h3 class="title-s">Keep using your decks</h3><p>Import deck packages (.apkg, .colpkg) with their review history, or start a new deck right away.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg></span><h3 class="title-s">Link lecture notes to cards</h3><p>Addiem reads highlights and outlines in PDF and PPTX files, so you can open a card's source while you study.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-laptop"/></svg></span><h3 class="title-s">Stored on this PC</h3><p>No account needed. Studying, importing and card checks work offline.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-check-circle"/></svg></span><h3 class="title-s">See changes before they happen</h3><p>Importance suggestions, format fixes and deck updates show what will change first. You confirm.</p></div>
+      <div class="feature"><span class="tile"><svg class="ic" aria-hidden="true"><use href="#i-sparkles"/></svg></span><h3 class="title-s">AI only when you want it</h3><p>Connect ChatGPT for card drafts and help grading written answers. Data is sent only when you press the button.</p></div>
+    </div>
+  </section>
+  <section class="wrap showcases">
+    <div class="showcase"><div class="text"><p class="label-s">Plans and exams</p><h3>Split the days left into a daily amount</h3><p class="body-l">Addiem divides the new cards left by the days left and shows the formula and your progress. From 14 days before the exam, reviews focus on core and weak cards.</p></div><img class="shot" src="img/deck-goal.png" width="1280" height="760" loading="lazy" alt="A deck screen showing the days left until the exam and the daily amount"></div>
+    <div class="showcase flip"><div class="text"><p class="label-s">Sources and importance</p><h3>Connect highlights in your lecture notes to cards</h3><p class="body-l">Highlights, underlines and red text become highlighted ranges, and headings become an outline. Ranges with no card are gathered so you can spot what you missed.</p></div><img class="shot" src="img/source-outline.png" width="1280" height="800" loading="lazy" alt="A source screen showing a PDF outline and suggested core ranges"></div>
+    <div class="showcase"><div class="text"><p class="label-s">Card quality</p><h3>Fix the shape of cards you keep missing</h3><p class="body-l">Addiem finds answers that are too long and cards that ask several things, and suggests splits and format fixes. You see both versions side by side, and can undo for 7 days.</p></div><img class="shot" src="img/card-check.png" width="1280" height="800" loading="lazy" alt="A format fix window comparing the current card and the fixed card"></div>
+  </section>
+  <section class="wrap section">
+    <div class="card">
+      <div class="section-head" style="margin:0"><h2 class="heading">Your study data stays on your PC</h2><p class="body-l">Addiem has no server. It only goes online for features you turn on or press.</p></div>
+      <div class="facts">
+        <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-laptop"/></svg><div><h3 class="title-s">Stored on this PC</h3><p>Decks, cards, review history and materials stay on your PC. No account needed.</p></div></div>
+        <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-cloud"/></svg><div><h3 class="title-s">Drive: only Addiem's files</h3><p>Google Drive sync uses only drive.file and drive.appdata. It doesn't see your other files.</p></div></div>
+        <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-sparkles"/></svg><div><h3 class="title-s">ChatGPT: only when you press</h3><p>Only the card text and source excerpts on screen are sent. Never your review history or whole files.</p></div></div>
+      </div>
+      <a class="more" href="privacy/" data-route="privacy">Read the full privacy policy<svg class="ic" aria-hidden="true"><use href="#i-arrow-right"/></svg></a>
+    </div>
+  </section>
+  <section class="wrap download">
+    <picture><source srcset="img/addiem-mark-dark.svg" media="(prefers-color-scheme: dark)"><img src="img/addiem-mark.svg" alt="" width="56" height="56"></picture>
+    <h2 class="heading">Start with today's cards</h2>
+    <p class="body-l">One installer. It installs for your user account without admin rights.</p>
+    <a class="btn btn-primary" href="https://github.com/itisyijy/Addiem/releases/latest"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Download for Windows</a>
+    <p class="body-s">Windows 10 · 11 (64-bit) · Free · MIT License</p>
+  </section>
+</div>
+</div>
+
+<!-- ============================================================ 개인정보 처리방침 -->
+<!-- 앱이 실제로 하는 일만 적는다: src-tauri/src/sync/auth.rs (권한 2개 · PKCE · 루프백), sync/store.rs (about: 이메일 · 저장 공간),
+     sync/mod.rs (연결 끊기 · Drive 데이터 삭제), ai.rs (보내는 글자 · 연결 끊기 때 권한 취소), embed.rs · llm.rs (Hugging Face 내려받기) -->
+<div data-view="privacy">
+<div class="wrap doc-layout" lang="ko">
+  <nav class="toc" aria-label="목차">
+    <p>목차</p>
+    <a href="privacy/#ko-p1">제1조 (처리하는 개인정보와 처리 목적)</a>
+    <a href="privacy/#ko-p2">제2조 (이용자 PC에 저장되는 정보)</a>
+    <a href="privacy/#ko-p3">제3조 (이용자가 켠 기능의 외부 전송)</a>
+    <a href="privacy/#ko-p4">제4조 (Google 사용자 데이터)</a>
+    <a href="privacy/#ko-p5">제5조 (보유 기간과 파기)</a>
+    <a href="privacy/#ko-p6">제6조 (제3자 제공과 처리 위탁)</a>
+    <a href="privacy/#ko-p7">제7조 (안전성 확보 조치)</a>
+    <a href="privacy/#ko-p8">제8조 (이용자의 권리와 행사 방법)</a>
+    <a href="privacy/#ko-p9">제9조 (만 14세 미만 아동)</a>
+    <a href="privacy/#ko-p10">제10조 (자동 수집 장치)</a>
+    <a href="privacy/#ko-p11">제11조 (개인정보 보호책임자)</a>
+    <a href="privacy/#ko-p12">제12조 (권익침해 구제 방법)</a>
+    <a href="privacy/#ko-p13">제13조 (처리방침의 변경)</a>
+  </nav>
+  <article class="doc">
+    <header>
+      <h1 class="heading">개인정보 처리방침</h1>
+      <p class="body-s">시행일 2026년 10월 25일</p>
+      <p class="body-l">Addiem(이하 "앱")은 이용자의 PC에서 실행되는 학습 앱입니다. 앱 개발자(이하 "개발자")는 별도의 서버를 운영하지 않으며, 이용자의 학습 데이터를 수집하거나 전송받지 않습니다. 개발자는 「개인정보 보호법」 등 관련 법령을 준수하며, 이 처리방침으로 앱과 웹사이트가 어떤 정보를 어디에 저장하고 언제 어디로 전송하는지 알려 드립니다.</p>
+    </header>
+    <div class="glance">
+      <h2 class="title-s">한눈에 보기</h2>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-laptop"/></svg><div><h3 class="title-s">서버가 없습니다</h3><p>덱 · 카드 · 학습 기록은 이용자의 PC에 저장되며 개발자에게 전송되지 않습니다.</p></div></div>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-check-circle"/></svg><div><h3 class="title-s">광고 · 이용 분석을 하지 않습니다</h3><p>이용 기록을 수집하거나 외부로 전송하지 않습니다.</p></div></div>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-cloud"/></svg><div><h3 class="title-s">켠 기능만 인터넷을 사용합니다</h3><p>Google Drive 동기화, ChatGPT 연결, 모델 내려받기에 한합니다.</p></div></div>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg><div><h3 class="title-s">Google 데이터는 동기화에만 사용합니다</h3><p>drive.file · drive.appdata 권한만 사용하며 제한적 사용 요건을 준수합니다.</p></div></div>
+    </div>
+    <section id="ko-p1">
+      <h2 class="title-m">제1조 (처리하는 개인정보와 처리 목적)</h2>
+      <ol>
+        <li>개발자는 앱 이용을 위해 이용자의 개인정보를 수집하지 않습니다. 회원 가입 절차가 없으며, 앱이 처리하는 정보는 모두 이용자의 PC에 저장됩니다.</li>
+        <li>이용자가 이메일로 문의하는 경우, 개발자는 답변을 위해 이메일 주소와 문의 내용을 처리합니다.</li>
+      </ol>
+    </section>
+    <section id="ko-p2">
+      <h2 class="title-m">제2조 (이용자 PC에 저장되는 정보)</h2>
+      <p>덱 · 카드 · 학습 기록 · 미디어 · 추가한 자료(PDF · PPTX) · 설정은 이용자 PC의 앱 데이터 폴더(%APPDATA% 아래 Addiem 폴더)에 저장되며, 개발자는 이 정보에 접근할 수 없습니다.</p>
+    </section>
+    <section id="ko-p3">
+      <h2 class="title-m">제3조 (이용자가 켠 기능의 외부 전송)</h2>
+      <p>앱은 이용자가 직접 켜거나 실행한 다음 기능에서만 인터넷을 사용합니다. 전송은 이용자 PC에서 각 서비스로 직접 이루어지며 개발자를 거치지 않습니다. 각 서비스에서의 처리는 해당 사업자의 개인정보 처리방침을 따릅니다.</p>
+      <div class="table"><table>
+        <thead><tr><th>기능</th><th>받는 곳 (국가)</th><th>전송 항목</th><th>전송 시점</th></tr></thead>
+        <tbody>
+          <tr><td>Google Drive 동기화</td><td>Google LLC (미국)</td><td>덱 · 카드 · 학습 기록 · 설정 · 기기 이름, 그림 · 미디어. 원자료 파일(PDF · PPTX)과 모델 파일은 전송하지 않습니다. [암호로 잠그기]를 켜면 PC에서 암호화한 뒤 전송합니다.</td><td>동기화를 켠 뒤 동기화할 때</td></tr>
+          <tr><td>ChatGPT 연결 (선택)</td><td>OpenAI (미국)</td><td>이용자가 누른 기능에 필요한 카드 글자와 자료 구간 발췌. 원자료 파일 전체 · 그림 · 학습 기록 · 덱 이름은 전송하지 않습니다.</td><td>해당 버튼을 누를 때</td></tr>
+          <tr><td>모델 내려받기</td><td>Hugging Face (미국)</td><td>내려받기 요청만 보내며 이용자 데이터는 전송하지 않습니다.</td><td>[내려받기]를 누를 때</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+    <section id="ko-p4">
+      <h2 class="title-m">제4조 (Google 사용자 데이터)</h2>
+      <ol>
+        <li>앱은 Google Drive 동기화를 위해 다음 두 권한만 요청하며, 이용자 Drive의 다른 파일에는 접근하지 않습니다.
+          <ul><li>drive.file: 앱이 만든 파일과 폴더</li><li>drive.appdata: 앱 전용 숨김 폴더</li></ul></li>
+        <li>연결한 Google 계정의 이메일 주소와 Drive 저장 공간 사용량을 읽어 설정 화면에 표시하며, 이 정보는 이용자 PC에만 저장됩니다.</li>
+        <li>Google에서 받은 데이터는 동기화와 백업 기능에만 사용합니다. 판매하거나 광고에 사용하지 않고, 사람이 열람하지 않으며, 범용 인공지능 · 머신러닝 모델의 개발이나 학습에 사용하지 않습니다.</li>
+        <li>Addiem의 Google API 정보 사용 및 다른 앱으로의 이전은 제한적 사용(Limited Use) 요건을 포함한 <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API 서비스 사용자 데이터 정책</a>을 준수합니다.</li>
+      </ol>
+    </section>
+    <section id="ko-p5">
+      <h2 class="title-m">제5조 (보유 기간과 파기)</h2>
+      <ol>
+        <li>이용자 PC의 정보는 이용자가 직접 삭제하거나, 앱을 제거할 때 [애플리케이션 데이터 삭제하기]를 선택하면 삭제됩니다. Google Drive 연결을 끊을 때 Drive에 올린 앱 데이터를 함께 삭제할 수 있습니다.</li>
+        <li>문의 이메일은 처리가 끝나면 지체 없이 파기합니다.</li>
+        <li>전자적 파일은 복구할 수 없는 방법으로 삭제합니다.</li>
+      </ol>
+    </section>
+    <section id="ko-p6">
+      <h2 class="title-m">제6조 (제3자 제공과 처리 위탁)</h2>
+      <p>개발자는 개인정보를 제3자에게 제공하거나 처리를 위탁하지 않습니다. 제3조의 전송은 이용자가 선택한 기능에 따라 이용자 PC에서 각 서비스로 직접 이루어집니다.</p>
+    </section>
+    <section id="ko-p7">
+      <h2 class="title-m">제7조 (안전성 확보 조치)</h2>
+      <ul>
+        <li>로그인 토큰과 동기화 잠금 키는 Windows 자격 증명 관리자에만 저장합니다.</li>
+        <li>로그인은 시스템 기본 브라우저와 PKCE 방식으로 하며, 외부 전송은 HTTPS로 암호화됩니다.</li>
+        <li>[암호로 잠그기]를 켜면 Drive에 올리는 데이터를 이용자 PC에서 암호화합니다.</li>
+      </ul>
+    </section>
+    <section id="ko-p8">
+      <h2 class="title-m">제8조 (이용자의 권리와 행사 방법)</h2>
+      <ol>
+        <li>이용자는 언제든지 앱 설정에서 Google Drive · ChatGPT 연결을 끊을 수 있습니다. 연결을 끊으면 이용자 PC의 로그인 토큰을 삭제하며, ChatGPT는 OpenAI에 권한 취소를 요청합니다. <a href="https://myaccount.google.com/connections">Google 계정의 타사 앱 연결</a>에서도 접근 권한을 취소할 수 있습니다.</li>
+        <li>개발자가 처리하는 개인정보(문의 이메일)에 대해 열람 · 정정 · 삭제 · 처리정지를 요구할 수 있으며, 개발자는 지체 없이 조치합니다. 법정대리인이나 위임받은 사람을 통해서도 요구할 수 있습니다.</li>
+      </ol>
+    </section>
+    <section id="ko-p9">
+      <h2 class="title-m">제9조 (만 14세 미만 아동)</h2>
+      <p>개발자는 만 14세 미만 아동의 개인정보를 수집하지 않습니다. 만 14세 미만 아동이 문의하려면 법정대리인을 통해 연락해 주십시오.</p>
+    </section>
+    <section id="ko-p10">
+      <h2 class="title-m">제10조 (자동 수집 장치)</h2>
+      <p>앱과 웹사이트는 쿠키나 분석 도구를 사용하지 않습니다. 웹사이트는 선택한 언어를 브라우저에만 저장합니다. 웹사이트는 GitHub Pages로 제공되며, GitHub가 서비스 운영과 보안을 위해 접속 기록(IP 주소 등)을 처리할 수 있습니다.</p>
+    </section>
+    <section id="ko-p11">
+      <h2 class="title-m">제11조 (개인정보 보호책임자)</h2>
+      <p>개인정보 처리와 관련한 문의, 열람 등 요구, 불만 처리는 아래 보호책임자에게 연락해 주십시오.</p>
+      <ul><li>성명: 이정윤</li><li>이메일: <a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></li></ul>
+    </section>
+    <section id="ko-p12">
+      <h2 class="title-m">제12조 (권익침해 구제 방법)</h2>
+      <p>개인정보 침해에 대한 상담이나 신고가 필요하면 아래 기관에 문의할 수 있습니다.</p>
+      <ul>
+        <li>개인정보분쟁조정위원회: 1833-6972 (<a href="https://www.kopico.go.kr">www.kopico.go.kr</a>)</li>
+        <li>개인정보침해신고센터: (국번 없이) 118 (<a href="https://privacy.kisa.or.kr">privacy.kisa.or.kr</a>)</li>
+        <li>대검찰청: (국번 없이) 1301 (<a href="https://www.spo.go.kr">www.spo.go.kr</a>)</li>
+        <li>경찰청: (국번 없이) 182 (<a href="https://ecrm.police.go.kr">ecrm.police.go.kr</a>)</li>
+      </ul>
+    </section>
+    <section id="ko-p13">
+      <h2 class="title-m">제13조 (처리방침의 변경)</h2>
+      <p>이 처리방침을 변경하는 경우 시행 7일 전부터 웹사이트에 공지합니다. Google 사용자 데이터의 사용 방식을 바꾸는 경우에는 앱에서 다시 동의를 받습니다.</p>
+      <p>부칙: 이 처리방침은 2026년 10월 25일부터 시행합니다.</p>
+    </section>
+  </article>
+</div>
+
+<div class="wrap doc-layout" lang="en">
+  <nav class="toc" aria-label="Contents">
+    <p>Contents</p>
+    <a href="privacy/#en-p1">1. Personal information and purposes</a>
+    <a href="privacy/#en-p2">2. Information stored on your PC</a>
+    <a href="privacy/#en-p3">3. Data sent by features you turn on</a>
+    <a href="privacy/#en-p4">4. Google user data</a>
+    <a href="privacy/#en-p5">5. Retention and deletion</a>
+    <a href="privacy/#en-p6">6. Third parties and outsourcing</a>
+    <a href="privacy/#en-p7">7. Security measures</a>
+    <a href="privacy/#en-p8">8. Your rights</a>
+    <a href="privacy/#en-p9">9. Children under 14</a>
+    <a href="privacy/#en-p10">10. Automatic collection</a>
+    <a href="privacy/#en-p11">11. Privacy officer</a>
+    <a href="privacy/#en-p12">12. Remedies</a>
+    <a href="privacy/#en-p13">13. Changes to this policy</a>
+  </nav>
+  <article class="doc">
+    <header>
+      <h1 class="heading">Privacy Policy</h1>
+      <p class="body-s">Effective October 25, 2026</p>
+      <p class="body-l">Addiem (the "App") is a study app that runs on your PC. The App's developer (the "Developer") runs no server and does not collect or receive your study data. The Developer complies with the Personal Information Protection Act of the Republic of Korea and other applicable laws. This policy explains what the App and this website store and where, and when and where they send data.</p>
+      <p class="note">This English version is a translation for convenience. If it differs from the Korean version, the Korean version prevails.</p>
+    </header>
+    <div class="glance">
+      <h2 class="title-s">At a glance</h2>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-laptop"/></svg><div><h3 class="title-s">There is no server</h3><p>Decks, cards and study history are stored on your PC and never sent to the Developer.</p></div></div>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-check-circle"/></svg><div><h3 class="title-s">No ads or usage analytics</h3><p>The App does not collect usage data or send it anywhere.</p></div></div>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-cloud"/></svg><div><h3 class="title-s">Online only for features you turn on</h3><p>Google Drive sync, the ChatGPT connection and model downloads.</p></div></div>
+      <div class="fact"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg><div><h3 class="title-s">Google data is used only for sync</h3><p>Only the drive.file and drive.appdata scopes, in line with the Limited Use requirements.</p></div></div>
+    </div>
+    <section id="en-p1">
+      <h2 class="title-m">1. Personal information and purposes</h2>
+      <ol>
+        <li>The Developer does not collect your personal information to provide the App. There is no sign-up, and everything the App processes is stored on your PC.</li>
+        <li>If you contact the Developer by email, the Developer processes your email address and message to reply to you.</li>
+      </ol>
+    </section>
+    <section id="en-p2">
+      <h2 class="title-m">2. Information stored on your PC</h2>
+      <p>Decks, cards, study history, media, added materials (PDF and PPTX) and settings are stored in the App's data folder on your PC (the Addiem folder under %APPDATA%). The Developer cannot access them.</p>
+    </section>
+    <section id="en-p3">
+      <h2 class="title-m">3. Data sent by features you turn on</h2>
+      <p>The App goes online only for the features below, and only when you turn them on or run them. Data goes directly from your PC to each service and never passes through the Developer. Each service handles the data under its own privacy policy.</p>
+      <div class="table"><table>
+        <thead><tr><th>Feature</th><th>Recipient (country)</th><th>What is sent</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>Google Drive sync</td><td>Google LLC (USA)</td><td>Decks, cards, study history, settings, the device name, images and media. Source files (PDF and PPTX) and model files are never sent. With [Lock with password] on, data is encrypted on your PC before it is sent.</td><td>When syncing, after you turn sync on</td></tr>
+          <tr><td>ChatGPT connection (optional)</td><td>OpenAI (USA)</td><td>The card text and source excerpts needed for the feature you pressed. Whole source files, images, study history and deck names are never sent.</td><td>When you press the button</td></tr>
+          <tr><td>Model downloads</td><td>Hugging Face (USA)</td><td>Only the download request. No user data is sent.</td><td>When you press [Download]</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+    <section id="en-p4">
+      <h2 class="title-m">4. Google user data</h2>
+      <ol>
+        <li>For Google Drive sync, the App requests only these two scopes and never accesses other files in your Drive.
+          <ul><li>drive.file: files and folders the App created</li><li>drive.appdata: the App's hidden app-data folder</li></ul></li>
+        <li>The App reads the email address and Drive storage usage of the connected Google account to show them in Settings. This information is stored only on your PC.</li>
+        <li>Data received from Google is used only for sync and backup. It is not sold, not used for advertising, not read by humans, and not used to develop or train generalized AI or machine learning models.</li>
+        <li>Addiem's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</li>
+      </ol>
+    </section>
+    <section id="en-p5">
+      <h2 class="title-m">5. Retention and deletion</h2>
+      <ol>
+        <li>Information on your PC is deleted when you delete it, or when you uninstall the App with [Delete application data] selected. When you disconnect Google Drive, you can also delete the App's data in Drive.</li>
+        <li>Inquiry emails are destroyed without delay once the inquiry is resolved.</li>
+        <li>Electronic files are deleted in a way that cannot be recovered.</li>
+      </ol>
+    </section>
+    <section id="en-p6">
+      <h2 class="title-m">6. Third parties and outsourcing</h2>
+      <p>The Developer does not provide personal information to third parties or outsource its processing. The transfers in Section 3 go directly from your PC to each service, according to the features you choose.</p>
+    </section>
+    <section id="en-p7">
+      <h2 class="title-m">7. Security measures</h2>
+      <ul>
+        <li>Sign-in tokens and the sync lock key are stored only in Windows Credential Manager.</li>
+        <li>Sign-in uses your default browser with PKCE, and all transfers are encrypted with HTTPS.</li>
+        <li>With [Lock with password] on, data sent to Drive is encrypted on your PC.</li>
+      </ul>
+    </section>
+    <section id="en-p8">
+      <h2 class="title-m">8. Your rights</h2>
+      <ol>
+        <li>You can disconnect Google Drive or ChatGPT in the App's settings at any time. Disconnecting deletes the sign-in token on your PC, and for ChatGPT the App asks OpenAI to revoke access. You can also revoke access in <a href="https://myaccount.google.com/connections">your Google Account's third-party connections</a>.</li>
+        <li>For personal information the Developer processes (inquiry emails), you can request access, correction, deletion or suspension of processing, and the Developer will act without delay. You can also make requests through a legal representative or an authorized person.</li>
+      </ol>
+    </section>
+    <section id="en-p9">
+      <h2 class="title-m">9. Children under 14</h2>
+      <p>The Developer does not collect personal information from children under 14. A child under 14 who wants to make an inquiry should do so through a legal guardian.</p>
+    </section>
+    <section id="en-p10">
+      <h2 class="title-m">10. Automatic collection</h2>
+      <p>The App and this website use no cookies or analytics tools. The website stores your language choice only in your browser. The website is served by GitHub Pages, and GitHub may process access logs (such as IP addresses) to operate and secure the service.</p>
+    </section>
+    <section id="en-p11">
+      <h2 class="title-m">11. Privacy officer</h2>
+      <p>For questions, requests or complaints about personal information, contact the privacy officer.</p>
+      <ul><li>Name: 이정윤</li><li>Email: <a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></li></ul>
+    </section>
+    <section id="en-p12">
+      <h2 class="title-m">12. Remedies</h2>
+      <p>If you need advice on or want to report a privacy violation, you can contact these Korean agencies.</p>
+      <ul>
+        <li>Personal Information Dispute Mediation Committee: 1833-6972 (<a href="https://www.kopico.go.kr">www.kopico.go.kr</a>)</li>
+        <li>Personal Information Infringement Report Center (KISA): 118 (<a href="https://privacy.kisa.or.kr">privacy.kisa.or.kr</a>)</li>
+        <li>Supreme Prosecutors' Office: 1301 (<a href="https://www.spo.go.kr">www.spo.go.kr</a>)</li>
+        <li>Korean National Police Agency: 182 (<a href="https://ecrm.police.go.kr">ecrm.police.go.kr</a>)</li>
+      </ul>
+    </section>
+    <section id="en-p13">
+      <h2 class="title-m">13. Changes to this policy</h2>
+      <p>If this policy changes, the change is posted on this website at least 7 days before it takes effect. If the way Google user data is used changes, the App asks for your consent again.</p>
+      <p>Addendum: This policy takes effect on October 25, 2026.</p>
+    </section>
+  </article>
+</div>
+</div>
+
+<!-- ============================================================ 이용약관 -->
+<div data-view="terms">
+<div class="wrap doc-layout" lang="ko">
+  <nav class="toc" aria-label="목차">
+    <p>목차</p>
+    <a href="terms/#ko-t1">제1조 (약관의 효력과 변경)</a>
+    <a href="terms/#ko-t2">제2조 (무료 이용과 라이선스)</a>
+    <a href="terms/#ko-t3">제3조 (서비스의 변경과 중단)</a>
+    <a href="terms/#ko-t4">제4조 (이용자 데이터와 백업)</a>
+    <a href="terms/#ko-t5">제5조 (외부 서비스)</a>
+    <a href="terms/#ko-t6">제6조 (이용자의 의무)</a>
+    <a href="terms/#ko-t7">제7조 (보증의 부인)</a>
+    <a href="terms/#ko-t8">제8조 (책임의 제한)</a>
+    <a href="terms/#ko-t9">제9조 (준거법과 관할)</a>
+    <a href="terms/#ko-t10">제10조 (문의)</a>
+  </nav>
+  <article class="doc">
+    <header>
+      <h1 class="heading">이용약관</h1>
+      <p class="body-s">시행일 2026년 10월 25일</p>
+      <p class="body-l">이 약관은 Addiem 앱과 웹사이트를 이용하는 조건을 정합니다.</p>
+    </header>
+    <section id="ko-t1"><h2 class="title-m">제1조 (약관의 효력과 변경)</h2><ol><li>이용자가 앱을 내려받거나 사용하면 이 약관에 동의한 것으로 봅니다.</li><li>약관을 변경하는 경우 시행 7일 전부터 웹사이트에 공지합니다.</li></ol></section>
+    <section id="ko-t2"><h2 class="title-m">제2조 (무료 이용과 라이선스)</h2><p>앱은 무료로 제공됩니다. 소스 코드는 <a href="https://github.com/itisyijy/Addiem/blob/main/LICENSE">MIT 라이선스</a>로 공개되며, 이용자는 MIT 라이선스에 따라 앱을 사용 · 복제 · 수정 · 배포할 수 있습니다. 소스 코드의 사용 · 복제 · 수정 · 배포에 관해서는 MIT 라이선스가 이 약관보다 우선합니다.</p></section>
+    <section id="ko-t3"><h2 class="title-m">제3조 (서비스의 변경과 중단)</h2><p>개발자는 앱의 기능을 변경하거나 배포를 중단할 수 있습니다. 앱은 자동으로 업데이트하지 않으므로, 이미 설치한 앱은 계속 사용할 수 있습니다.</p></section>
+    <section id="ko-t4"><h2 class="title-m">제4조 (이용자 데이터와 백업)</h2><ol><li>학습 데이터는 이용자의 PC와, 이용자가 켠 경우 이용자의 Google Drive에 저장됩니다.</li><li>이용자는 자신의 데이터를 관리하고 백업할 책임이 있습니다. 앱의 [이 기기 백업]이나 Google Drive 동기화로 정기적으로 백업하시기 바랍니다.</li><li>동기화 잠금 암호를 잊으면 Drive에 올린 데이터는 복구할 수 없습니다.</li></ol></section>
+    <section id="ko-t5"><h2 class="title-m">제5조 (외부 서비스)</h2><p>Google Drive · ChatGPT · Hugging Face 등 외부 서비스를 이용하는 경우 각 서비스의 약관과 개인정보 처리방침이 적용됩니다. ChatGPT 기능은 이용자의 ChatGPT 요금제 사용량을 사용합니다.</p></section>
+    <section id="ko-t6"><h2 class="title-m">제6조 (이용자의 의무)</h2><p>이용자는 이용 권한이 있는 덱과 자료만 앱에 가져와야 하며, 타인의 저작권 등 권리를 침해해서는 안 됩니다.</p></section>
+    <section id="ko-t7"><h2 class="title-m">제7조 (보증의 부인)</h2><p>앱은 무료로 "있는 그대로" 제공되며, 개발자는 앱에 오류가 없거나 특정 목적(시험 결과 등)에 적합하다는 것을 보증하지 않습니다. 개념 관계 확인 등 실험 기능과 AI 제안은 틀릴 수 있으므로 참고용으로만 사용하시기 바랍니다.</p></section>
+    <section id="ko-t8"><h2 class="title-m">제8조 (책임의 제한)</h2><p>개발자는 앱 사용으로 이용자에게 생긴 손해에 대하여 책임을 지지 않습니다. 다만 개발자의 고의 또는 중대한 과실로 생긴 손해, 그리고 관련 법령상 책임을 제한할 수 없는 경우에는 그러하지 아니합니다.</p></section>
+    <section id="ko-t9"><h2 class="title-m">제9조 (준거법과 관할)</h2><p>이 약관은 대한민국 법률에 따라 해석되며, 분쟁이 생기면 「민사소송법」에 따른 관할 법원에서 해결합니다.</p></section>
+    <section id="ko-t10"><h2 class="title-m">제10조 (문의)</h2><p>약관에 관한 문의는 <a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a>으로 보내 주십시오.</p><p>부칙: 이 약관은 2026년 10월 25일부터 시행합니다.</p></section>
+  </article>
+</div>
+
+<div class="wrap doc-layout" lang="en">
+  <nav class="toc" aria-label="Contents">
+    <p>Contents</p>
+    <a href="terms/#en-t1">1. Effect and changes</a>
+    <a href="terms/#en-t2">2. Free use and license</a>
+    <a href="terms/#en-t3">3. Changes and discontinuation</a>
+    <a href="terms/#en-t4">4. Your data and backups</a>
+    <a href="terms/#en-t5">5. External services</a>
+    <a href="terms/#en-t6">6. Your obligations</a>
+    <a href="terms/#en-t7">7. Disclaimer of warranty</a>
+    <a href="terms/#en-t8">8. Limitation of liability</a>
+    <a href="terms/#en-t9">9. Governing law and jurisdiction</a>
+    <a href="terms/#en-t10">10. Contact</a>
+  </nav>
+  <article class="doc">
+    <header>
+      <h1 class="heading">Terms of Service</h1>
+      <p class="body-s">Effective October 25, 2026</p>
+      <p class="body-l">These terms set the conditions for using the Addiem app and website.</p>
+      <p class="note">This English version is a translation for convenience. If it differs from the Korean version, the Korean version prevails.</p>
+    </header>
+    <section id="en-t1"><h2 class="title-m">1. Effect and changes</h2><ol><li>By downloading or using the App, you agree to these terms.</li><li>If these terms change, the change is posted on this website at least 7 days before it takes effect.</li></ol></section>
+    <section id="en-t2"><h2 class="title-m">2. Free use and license</h2><p>The App is free. Its source code is published under the <a href="https://github.com/itisyijy/Addiem/blob/main/LICENSE">MIT License</a>, and you may use, copy, modify and distribute the App under that license. For use, copying, modification and distribution of the source code, the MIT License takes precedence over these terms.</p></section>
+    <section id="en-t3"><h2 class="title-m">3. Changes and discontinuation</h2><p>The Developer may change the App's features or stop distributing it. The App does not update itself, so an installed copy keeps working.</p></section>
+    <section id="en-t4"><h2 class="title-m">4. Your data and backups</h2><ol><li>Your study data is stored on your PC and, if you turn it on, in your Google Drive.</li><li>You are responsible for managing and backing up your data. Back up regularly with the App's [Back up this device] or Google Drive sync.</li><li>If you forget your sync lock password, the data in Drive cannot be recovered.</li></ol></section>
+    <section id="en-t5"><h2 class="title-m">5. External services</h2><p>When you use external services such as Google Drive, ChatGPT or Hugging Face, their own terms and privacy policies apply. ChatGPT features use your ChatGPT plan's usage.</p></section>
+    <section id="en-t6"><h2 class="title-m">6. Your obligations</h2><p>Only bring decks and materials into the App that you have the right to use, and do not infringe anyone's copyright or other rights.</p></section>
+    <section id="en-t7"><h2 class="title-m">7. Disclaimer of warranty</h2><p>The App is provided free and "as is". The Developer does not warrant that it is free of errors or fit for any particular purpose, such as exam results. Experimental features such as the concept relation check, and AI suggestions, can be wrong; use them only as a reference.</p></section>
+    <section id="en-t8"><h2 class="title-m">8. Limitation of liability</h2><p>The Developer is not liable for damages that arise from using the App, except for damages caused by the Developer's intent or gross negligence, and except where liability cannot be limited under applicable law.</p></section>
+    <section id="en-t9"><h2 class="title-m">9. Governing law and jurisdiction</h2><p>These terms are governed by the laws of the Republic of Korea. Disputes are resolved in the court with jurisdiction under the Korean Civil Procedure Act.</p></section>
+    <section id="en-t10"><h2 class="title-m">10. Contact</h2><p>Send questions about these terms to <a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a>.</p><p>Addendum: These terms take effect on October 25, 2026.</p></section>
+  </article>
+</div>
+</div>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-row">
+      <picture><source srcset="img/addiem-lockup-dark.svg" media="(prefers-color-scheme: dark)"><img src="img/addiem-lockup.svg" alt="Addiem" width="79" height="22"></picture>
+      <nav class="footer-links" lang="ko" aria-label="사이트 정보"><a href="privacy/" data-route="privacy">개인정보 처리방침</a><a href="terms/" data-route="terms">이용약관</a><a href="https://github.com/itisyijy/Addiem">GitHub</a><a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></nav>
+      <nav class="footer-links" lang="en" aria-label="Site"><a href="privacy/" data-route="privacy">Privacy Policy</a><a href="terms/" data-route="terms">Terms of Service</a><a href="https://github.com/itisyijy/Addiem">GitHub</a><a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></nav>
+    </div>
+    <p class="body-s" lang="ko">© 2026 Addiem · MIT 라이선스로 공개한 무료 앱이에요.</p>
+    <p class="body-s" lang="en">© 2026 Addiem · Free and open source under the MIT License.</p>
+  </div>
+</footer>
+
+<script>
+// SPA: 화면 링크(data-route)는 새로고침 없이 바꾸고, 주소는 History API 로 맞춘다. 직접 연 주소는 head 의 스크립트가 정했다
+(function () {
+  var d = document.documentElement;
+  var titles = {
+    home: { ko: "Addiem — 시험일까지, 핵심부터", en: "Addiem — Study to your exam date" },
+    privacy: { ko: "개인정보 처리방침 · Addiem", en: "Privacy Policy · Addiem" },
+    terms: { ko: "이용약관 · Addiem", en: "Terms of Service · Addiem" }
+  };
+  function render() {
+    var r = d.dataset.route, l = d.dataset.lang;
+    document.title = titles[r][l];
+    d.lang = l;
+    document.querySelectorAll(".nav-links a").forEach(function (a) {
+      if (a.dataset.route === r) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    });
+    document.querySelectorAll(".lang button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.lang === l)); });
+  }
+  function scrollToHash() {
+    var t = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (t) t.scrollIntoView(); else window.scrollTo(0, 0);
+  }
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest("a[data-route], .toc a");
+    if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    var r = a.dataset.route || a.closest("[data-view]").dataset.view;
+    if (a.href !== location.href) history.pushState(null, "", a.href);
+    d.dataset.route = r;
+    render();
+    scrollToHash();
+  });
+  window.addEventListener("popstate", function () {
+    var p = location.pathname.slice(new URL(document.baseURI).pathname.length);
+    d.dataset.route = p.indexOf("privacy") === 0 ? "privacy" : p.indexOf("terms") === 0 ? "terms" : "home";
+    render();
+  });
+  document.querySelectorAll(".lang button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      d.dataset.lang = b.dataset.lang;
+      try { localStorage.setItem("addiem-lang", b.dataset.lang); } catch (e) {}
+      render();
+    });
+  });
+  render();
+  if (location.hash) scrollToHash();
+})();
+</script>
+</body>
+</html>
