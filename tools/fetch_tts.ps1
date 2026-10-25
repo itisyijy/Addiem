@@ -1,12 +1,16 @@
 ﻿# AU20 읽어주기 음성(Supertonic 3 fp32 · F1)과 ONNX Runtime 을 src-tauri/resources/tts 에 채운다 (약 400MB, 커밋하지 않는다).
-# 기본: 이미 받아 둔 폴더(%LOCALAPPDATA%\neoanki-dev\tts)에서 복사한다. -Download 를 주면 고정 리비전에서 받는다.
+# 기본: 이미 받아 둔 폴더(%LOCALAPPDATA%\addiem-dev\tts, 없으면 예전 이름 폴더 neoanki-dev\tts)에서 복사한다. -Download 를 주면 고정 리비전에서 받는다.
 # 파일마다 SHA-256 을 확인하고, 맞지 않으면 멈춘다. 이미 맞는 파일은 건너뛴다.
 #   powershell -ExecutionPolicy Bypass -File tools\fetch_tts.ps1 [-Source <폴더>] [-Download]
 param(
-    [string]$Source = (Join-Path $env:LOCALAPPDATA "neoanki-dev\tts"),
+    [string]$Source = "",
     [switch]$Download
 )
 $ErrorActionPreference = "Stop"
+if (-not $Source) {
+    $Source = Join-Path $env:LOCALAPPDATA "addiem-dev\tts"
+    if (-not (Test-Path $Source)) { $Source = Join-Path $env:LOCALAPPDATA "neoanki-dev\tts" }
+}
 
 $Dest = Join-Path $PSScriptRoot "..\src-tauri\resources\tts"
 # Hugging Face Supertone/supertonic-3 (OpenRAIL-M) 고정 리비전 (2026-05-18)
@@ -40,7 +44,7 @@ $work = $null
 function OrtFile($inner) {
     # zip 은 한 번만 받는다
     if (-not $script:work) {
-        $script:work = Join-Path ([IO.Path]::GetTempPath()) "neoanki-ort-$PID"
+        $script:work = Join-Path ([IO.Path]::GetTempPath()) "addiem-ort-$PID"
         New-Item -ItemType Directory -Force $script:work | Out-Null
         $zip = Join-Path $script:work "ort.zip"
         Write-Host "받는 중 $OrtZip"

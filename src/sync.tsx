@@ -494,7 +494,7 @@ function ConnectModal({ from, onDone }: { from?: "home" | "settings" | "login"; 
           <Icon name="folder" size={16} className="c-secondary" />
           <span className="sync-perm__text">
             <span className="t-body-s">Addiem이 만든 파일만 보고 관리하기</span>
-            <span className="t-caption c-tertiary">"Neo-Anki 백업" 폴더 · Neo-Anki는 Addiem의 예전 이름이에요</span>
+            <span className="t-caption c-tertiary">"Addiem 백업" 폴더</span>
           </span>
         </span>
         <span className="sync-perm">
@@ -882,7 +882,7 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
           icon="merge"
           title="두 데이터 합치기"
           badge="권장"
-          text={`덱·카드·복습 기록을 합쳐 어느 쪽도 잃지 않아요. 같은 Anki 노트의 카드는 하나로 합치고, 내용이 다르면 나중에 고친 버전을 써요. 다른 버전은 30일 동안 ‘두 기기에서 고친 카드’에서 볼 수 있어요.${kind === "restore" ? " 복구하기 전의 이 기기 내용도 Drive에 다시 올라가요." : ""}`}
+          text={`덱·카드·복습 기록을 합쳐 어느 쪽도 잃지 않아요. 같은 노트의 카드는 하나로 합치고, 내용이 다르면 나중에 고친 버전을 써요. 다른 버전은 30일 동안 ‘두 기기에서 고친 카드’에서 볼 수 있어요.${kind === "restore" ? " 복구하기 전의 이 기기 내용도 Drive에 다시 올라가요." : ""}`}
         />
         <Option
           on={mode === "take"}
@@ -1136,7 +1136,7 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
               <Icon name="archive" size={18} className="c-secondary" />
               <span className="sync-perm__text">
                 <span className="t-body-m">지금 데이터는 이 기기에 백업 파일로 남겨요</span>
-                <span className="t-caption c-tertiary">neoanki-before-restore-{stamp}.zip · 설정 › 이 기기 백업</span>
+                <span className="t-caption c-tertiary">addiem-before-restore-{stamp}.zip · 설정 › 이 기기 백업</span>
               </span>
             </span>
             {p.lost_reviews + p.lost_changes > 0 ? (

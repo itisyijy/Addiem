@@ -2,7 +2,7 @@
 // 색은 tokens.css 의 변수만 바뀌므로 <html data-theme> 하나만 바꾸면 된다 (학습 세션도 그대로 유지)
 export type ThemePref = "system" | "light" | "dark";
 
-const KEY = "neoanki.theme";
+const KEY = "addiem.theme";
 const media = window.matchMedia("(prefers-color-scheme: dark)");
 
 export function getThemePref(): ThemePref {

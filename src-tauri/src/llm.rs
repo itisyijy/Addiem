@@ -1,6 +1,6 @@
 //! 8.3 서술형 2단계: 개념 관계 확인 (DECISIONS J). 본체 쪽: 모델 받기 · 지우기 · 상태, 추론 엔진(보조 실행 파일 src-tauri/llm) 띄우기 · 주고받기,
 //! 프롬프트 · 판정 규칙 · 캐시. 추론(candle)은 엔진이 한다: 본체는 AVX2 없이 빌드해 모든 CPU 에서 돌고, 엔진만 AVX2 로 빌드한다
-//! (candle 의 양자화 계산은 컴파일 때만 AVX2 를 켠다). 엔진은 CPU 가 AVX2 · FMA · F16C 를 지원하고, 앱 리소스 폴더의 llm/neoanki-llm.exe 가
+//! (candle 의 양자화 계산은 컴파일 때만 AVX2 를 켠다). 엔진은 CPU 가 AVX2 · FMA · F16C 를 지원하고, 앱 리소스 폴더의 llm/addiem-llm.exe 가
 //! 빌드 때 잰 크기 · SHA-256 과 같을 때만 그 절대 경로로 띄운다(현재 폴더 · PATH 를 찾지 않는다).
 //! 모델은 설치 파일에 넣지 않는다. 사용자가 크기 · 남은 공간 · 라이선스 · 출처를 보고 [내려받기]를 누를 때만 고정 리비전에서 받고 파일마다 크기와 SHA-256 을 확인한다.
 //! 모델이 없거나 · 이 PC 에서 쓸 수 없거나 · 엔진이 멈춰도 핵심어 검사와 평가는 그대로다. 결과는 비교 화면에 참고로만 보인다 (추천은 핵심어만, 디자인 J4)
@@ -110,7 +110,7 @@ fn free_bytes(_: &Path) -> Option<u64> {
 #[cfg(target_arch = "x86_64")]
 pub fn cpu_ok() -> bool {
     #[cfg(debug_assertions)]
-    if std::env::var_os("NEOANKI_LLM_NO_AVX2").is_some() {
+    if std::env::var_os("ADDIEM_LLM_NO_AVX2").is_some() {
         return false; // 개발 · 캡처: AVX2 없는 PC 흉내
     }
     std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") && std::is_x86_feature_detected!("f16c")
@@ -121,9 +121,9 @@ pub fn cpu_ok() -> bool {
     false
 }
 
-/// build.rs 가 resources/llm/neoanki-llm.exe 에서 잰 크기 · SHA-256 (없이 빌드하면 빈 값 → 엔진 없음)
-const ENGINE_SIZE: &str = env!("NEOANKI_LLM_SIZE");
-const ENGINE_SHA: &str = env!("NEOANKI_LLM_SHA");
+/// build.rs 가 resources/llm/addiem-llm.exe 에서 잰 크기 · SHA-256 (없이 빌드하면 빈 값 → 엔진 없음)
+const ENGINE_SIZE: &str = env!("ADDIEM_LLM_SIZE");
+const ENGINE_SHA: &str = env!("ADDIEM_LLM_SHA");
 
 fn sha256_file(path: &Path) -> Res<String> {
     let mut f = std::fs::File::open(path).map_err(err)?;
@@ -146,13 +146,13 @@ fn trusted(path: &Path) -> bool {
         && sha256_file(path).is_ok_and(|h| h == ENGINE_SHA)
 }
 
-/// 엔진 실행 파일: 앱 리소스 폴더의 절대 경로만. 디버그 빌드는 NEOANKI_LLM_BIN 으로 바꿀 수 있다 (측정 · 캡처)
+/// 엔진 실행 파일: 앱 리소스 폴더의 절대 경로만. 디버그 빌드는 ADDIEM_LLM_BIN 으로 바꿀 수 있다 (측정 · 캡처)
 pub fn engine_bin(app: &AppHandle) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
-    if let Some(p) = std::env::var_os("NEOANKI_LLM_BIN") {
+    if let Some(p) = std::env::var_os("ADDIEM_LLM_BIN") {
         return Some(p.into());
     }
-    let p = app.path().resource_dir().ok()?.join("llm").join("neoanki-llm.exe");
+    let p = app.path().resource_dir().ok()?.join("llm").join("addiem-llm.exe");
     (p.is_absolute() && trusted(&p)).then_some(p)
 }
 
@@ -263,10 +263,10 @@ pub async fn llm_delete(app: AppHandle) -> Res<()> {
     Ok(())
 }
 
-/// 받을 주소. 디버그 빌드는 NEOANKI_LLM_URL(파일 이름 앞부분)로 바꿀 수 있다 (캡처 · 오프라인 시험, 실제 모델을 다시 받지 않는다)
+/// 받을 주소. 디버그 빌드는 ADDIEM_LLM_URL(파일 이름 앞부분)로 바꿀 수 있다 (캡처 · 오프라인 시험, 실제 모델을 다시 받지 않는다)
 fn url_of(f: &File) -> String {
     #[cfg(debug_assertions)]
-    if let Ok(base) = std::env::var("NEOANKI_LLM_URL") {
+    if let Ok(base) = std::env::var("ADDIEM_LLM_URL") {
         return format!("{}/{}", base.trim_end_matches('/'), f.name);
     }
     f.url.to_string()
@@ -804,9 +804,9 @@ mod tests {
     }
 
     /// 8.3 측정: 엔진(보조 실행 파일)을 실제로 띄워 앱과 같은 차례로 (카드가 나오면 미리 하기 → 비교 뒤 판정).
-    /// `NEOANKI_EVAL83=<jsonl> NEOANKI_LLM_BIN=<neoanki-llm.exe> NEOANKI_LLM_DIR=<model.gguf · tokenizer.json 폴더> cargo test --lib eval83 -- --ignored --nocapture`
-    /// (`NEOANKI_EVAL_LIMIT=n` 앞 n개, `NEOANKI_EVAL_DUMP=<파일>` 자리마다 로그 확률을 JSON 줄로 남긴다,
-    /// `NEOANKI_EVAL_FROM_DUMP=<파일>` 엔진 없이 남긴 관계 · 로그 확률로 판정 규칙 · 가드만 다시 잰다).
+    /// `ADDIEM_EVAL83=<jsonl> ADDIEM_LLM_BIN=<addiem-llm.exe> ADDIEM_LLM_DIR=<model.gguf · tokenizer.json 폴더> cargo test --lib eval83 -- --ignored --nocapture`
+    /// (`ADDIEM_EVAL_LIMIT=n` 앞 n개, `ADDIEM_EVAL_DUMP=<파일>` 자리마다 로그 확률을 JSON 줄로 남긴다,
+    /// `ADDIEM_EVAL_FROM_DUMP=<파일>` 엔진 없이 남긴 관계 · 로그 확률로 판정 규칙 · 가드만 다시 잰다).
     /// 규칙만(핵심어 = 모범 답안 제안 칩 6개, 항목에 "keywords" 가 있으면 그것) · 모델 판정 · 모델 + 가드(written::guard, 앱과 같음) · 합침(merge 후보, 가드 뒤)을 case 별로 낸다.
     /// 추천 3 Good = correct, 2 Hard = partial, 1 Again = wrong, 없음 = none 으로 견준다
     #[test]
@@ -816,12 +816,12 @@ mod tests {
         // 합침 후보 (화면은 쓰지 않는다, J6): 관계가 거꾸로 · 부정 · 틀림이면 Again, 아니면 핵심어 추천 그대로
         let merge = |rules: Option<u8>, v: Option<Verdict>| if v == Some(Verdict::Wrong) { Some(1) } else { rules };
         use std::collections::BTreeMap;
-        let path = std::env::var("NEOANKI_EVAL83").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/eval83-dev.jsonl").into());
+        let path = std::env::var("ADDIEM_EVAL83").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/eval83-dev.jsonl").into());
         let items: Vec<Value> = std::fs::read_to_string(&path).unwrap().lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect();
-        let items = &items[..std::env::var("NEOANKI_EVAL_LIMIT").ok().and_then(|n| n.parse().ok()).unwrap_or(items.len()).min(items.len())];
-        let mut dump = std::env::var("NEOANKI_EVAL_DUMP").ok().map(|p| std::fs::File::create(p).unwrap());
+        let items = &items[..std::env::var("ADDIEM_EVAL_LIMIT").ok().and_then(|n| n.parse().ok()).unwrap_or(items.len()).min(items.len())];
+        let mut dump = std::env::var("ADDIEM_EVAL_DUMP").ok().map(|p| std::fs::File::create(p).unwrap());
         // 남긴 덤프 (id → 관계 · 로그 확률)
-        let saved: BTreeMap<String, (Vec<String>, Vec<Vec<f32>>)> = std::env::var("NEOANKI_EVAL_FROM_DUMP")
+        let saved: BTreeMap<String, (Vec<String>, Vec<Vec<f32>>)> = std::env::var("ADDIEM_EVAL_FROM_DUMP")
             .map(|p| {
                 std::fs::read_to_string(p).unwrap().lines().filter(|l| !l.trim().is_empty()).map(|l| {
                     let v: Value = serde_json::from_str(l).unwrap();
@@ -829,7 +829,7 @@ mod tests {
                 }).collect()
             })
             .unwrap_or_default();
-        let mut engine = match (std::env::var("NEOANKI_LLM_BIN"), std::env::var("NEOANKI_LLM_DIR")) {
+        let mut engine = match (std::env::var("ADDIEM_LLM_BIN"), std::env::var("ADDIEM_LLM_DIR")) {
             (Ok(bin), Ok(dir)) => {
                 let t = Instant::now();
                 let e = Engine::start(Path::new(&bin), &[], Path::new(&dir), &|| false).unwrap();

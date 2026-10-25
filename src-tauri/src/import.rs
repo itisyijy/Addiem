@@ -361,10 +361,10 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
         };
         let note_type = o.get("note_type").and_then(Value::as_str).unwrap_or(&default_type);
         // 목록 · 선택형 (Q10): note_type 이 list · choice (또는 앱 유형 이름)이거나 items · options 키가 있으면
-        let is = |short: &str, name: &str, key: &str| note_type.eq_ignore_ascii_case(short) || note_type == name || o.contains_key(key);
-        let special = if is("list", recall::LIST, "items") {
+        let is = |short: &str, names: [&str; 2], key: &str| note_type.eq_ignore_ascii_case(short) || names.contains(&note_type) || o.contains_key(key);
+        let special = if is("list", [recall::LIST, recall::OLD_LIST], "items") {
             Some(recall::LIST)
-        } else if is("choice", recall::CHOICE, "options") {
+        } else if is("choice", [recall::CHOICE, recall::OLD_CHOICE], "options") {
             Some(recall::CHOICE)
         } else {
             None
@@ -787,7 +787,7 @@ fn degraded_features(body: &str, voices: &[String]) -> Vec<&'static str> {
 
 fn open_package(path: &Path, work: &Path, voices: &[String]) -> Res<Package> {
     let file = std::fs::File::open(path).map_err(|e| format!("파일을 열 수 없어요: {e}"))?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|_| "Anki 패키지(zip) 형식이 아니에요.".to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| "덱 패키지(.apkg · .colpkg) 형식이 아니에요.".to_string())?;
     let names: HashSet<String> = zip.file_names().filter_map(Result::ok).map(|n| n.into_owned()).collect();
     // anki21b 가 우선이다. collection.anki2 는 구버전 경고용 스텁일 수 있다
     let entry = ["collection.anki21b", "collection.anki21", "collection.anki2"]
@@ -1524,7 +1524,7 @@ fn run_import_selected(
                 fields = out;
                 note_mid.insert(anid, mid);
             }
-            // .apkg 로 내보낼 때만 다는 출처 태그(Neo-Anki::출처::)는 들이지 않는다 (export::source_tags, 쌓이지 않게). 사용자의 출처:: 태그는 그대로
+            // .apkg 로 내보낼 때만 다는 출처 태그(Addiem::출처::, 예전 Neo-Anki::출처::)는 들이지 않는다 (export::source_tags, 쌓이지 않게). 사용자의 출처:: 태그는 그대로
             let tags = crate::export::without_source_tags(&tags);
             tx.execute(
                 "INSERT INTO note (note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid, import_batch_id)
@@ -2227,7 +2227,7 @@ mod tests {
     fn state(dir: &Path) -> AppState {
         std::fs::create_dir_all(dir.join("media")).unwrap();
         AppState {
-            db: std::sync::Mutex::new(db::open(&dir.join("neoanki.sqlite")).unwrap()),
+            db: std::sync::Mutex::new(db::open(&dir.join("addiem.sqlite")).unwrap()),
             fsrs: fsrs::FSRS::default(),
             data_dir: dir.to_path_buf(),
             undo: Default::default(),
@@ -2321,7 +2321,7 @@ mod tests {
     fn reimport_keeps_review_history() {
         // 이 앱에서 학습하고 기록을 포함해 내보낸 덱을 같은 DB 로 다시 가져온다 (I79).
         // 내보내기가 쓰는 모양 그대로: 노트 guid 는 note.anki_guid 에 남고, 카드에는 anki_card_id 가 없고, revlog id 는 기록 시각이다
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-revlog-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-revlog-{}-{}", std::process::id(), now_ms())));
         let s = state(&tmp.0.join("data"));
         let pkg_path = tmp.0.join("two.apkg");
         two_deck_package(&pkg_path);
@@ -2353,7 +2353,7 @@ mod tests {
     fn reimport_into_existing_cloze_type_keeps_new_cards() {
         // 같은 Anki 모델 id 의 빈칸 유형에 새 노트를 다시 가져온다 (같은 컬렉션에서 내보낸 두 번째 덱). 빈칸 카드 ord 는 빈칸 번호라 카드 종류로 맞추지 않는다
         use deck_update::testpkg::{self, Model, note};
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-czre-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-czre-{}-{}", std::process::id(), now_ms())));
         let s = state(&tmp.0.join("data"));
         let model = || Model { id: 8, name: "Cloze", fields: vec!["Text", "Back Extra"], templates: vec![("Cloze", "{{cloze:Text}}", "{{cloze:Text}}<br>{{Back Extra}}")], css: "" };
         let (p1, p2) = (tmp.0.join("a.apkg"), tmp.0.join("b.apkg"));
@@ -2369,7 +2369,7 @@ mod tests {
 
     #[test]
     fn selective_import() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-b2s-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-b2s-{}-{}", std::process::id(), now_ms())));
         let s = state(&tmp.0.join("data"));
         let pkg_path = tmp.0.join("two.apkg");
         two_deck_package(&pkg_path);
@@ -2418,7 +2418,7 @@ mod tests {
     #[test]
     fn media_name_clash_keeps_both_files() {
         // T2-01 · T7-02: 같은 이름 다른 내용이면 기존 파일은 두고 내용 해시를 붙인 새 이름으로 저장, 새 노트의 참조를 고친다 (Anki 와 같다)
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-clash-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-clash-{}-{}", std::process::id(), now_ms())));
         let s = state(&tmp.0.join("data"));
         let import = |file: &str, id: i64, notes: &[(&str, &str)], media: &[(&str, &[u8])]| {
             let p = tmp.0.join(file);
@@ -2460,7 +2460,7 @@ mod tests {
     #[test]
     fn windows_unsafe_media_names_are_renamed() {
         // T7-06 · T7-09: Windows 가 저장하지 못하는 이름 하나로 덱 전체가 실패하지 않는다. 안전한 이름으로 바꾸고 참조를 고친다
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-winname-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-winname-{}-{}", std::process::id(), now_ms())));
         let s = state(&tmp.0.join("data"));
         let long = format!("{}.png", "가".repeat(300));
         let media: [(&str, &[u8]); 10] = [
@@ -2552,7 +2552,7 @@ mod tests {
 
     #[test]
     fn broken_or_huge_package_leaves_no_temp_file() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-bomb-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-bomb-{}-{}", std::process::id(), now_ms())));
         let work = tmp.0.join("data");
         std::fs::create_dir_all(&work).unwrap();
         let temps = || files(&work).iter().filter(|n| n.starts_with("import-")).count();
@@ -2575,11 +2575,11 @@ mod tests {
         assert!(unpack(&mut zip, "m", "미디어", 2 << 20, &mut vec![]).unwrap_err().contains("최대 2 MB"));
         assert_eq!(unpack(&mut zip, "m", "미디어", 3 << 20, &mut vec![]).unwrap(), 3 << 20);
         // 지난 실행이 남긴 임시 컬렉션은 앱을 열 때 지운다
-        for f in ["import-1.sqlite", "import-1.sqlite-wal", "neoanki.sqlite"] {
+        for f in ["import-1.sqlite", "import-1.sqlite-wal", "addiem.sqlite"] {
             std::fs::write(work.join(f), b"x").unwrap();
         }
         clean_stale(&work);
-        assert_eq!(files(&work).into_iter().collect::<Vec<_>>(), ["neoanki.sqlite"]);
+        assert_eq!(files(&work).into_iter().collect::<Vec<_>>(), ["addiem.sqlite"]);
     }
 
     #[test]
@@ -2595,7 +2595,7 @@ mod tests {
             assert!(plan.iter().any(|p| p.contains("idx_note_guid")), "{plan:?}");
         }
         // T2-09: BOM 이 붙은 JSON 파일 (메모장 · PowerShell)
-        let p = std::env::temp_dir().join(format!("neoanki-bom-{}-{}.json", std::process::id(), now_ms()));
+        let p = std::env::temp_dir().join(format!("addiem-bom-{}-{}.json", std::process::id(), now_ms()));
         std::fs::write(&p, "\u{feff}[{\"front\":\"a\",\"back\":\"b\"}]").unwrap();
         let text = read_json_file(p.to_string_lossy().into_owned()).unwrap();
         let _ = std::fs::remove_file(&p);
@@ -2607,7 +2607,7 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_import_20k() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-bench-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-bench-{}-{}", std::process::id(), now_ms())));
         std::fs::create_dir_all(&tmp.0).unwrap();
         let pkg = |tag: &str, first: i64| {
             let notes: Vec<(String, String)> = (0..20_000).map(|i| (format!("{tag}{i}"), format!("{tag} 앞면 {i}"))).collect();

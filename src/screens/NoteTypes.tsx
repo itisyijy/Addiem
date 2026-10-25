@@ -58,7 +58,7 @@ export function NoteTypesEntry() {
           <span className="t-body-m-strong">카드를 만드는 틀이에요</span>
           <span className="t-body-s c-secondary">
             어떤 필드(입력 칸)를 받아 앞면 · 뒷면에 어떻게 놓을지 정해요.
-            {g && ` 앱 기본 ${n(g.app.length + g.drawn.length)}개 · Anki에서 가져옴 ${n(g.imported.length)}개 · 내가 만든 것 ${n(g.mine.length)}개`}
+            {g && ` 앱 기본 ${n(g.app.length + g.drawn.length)}개 · 가져온 것 ${n(g.imported.length)}개 · 내가 만든 것 ${n(g.mine.length)}개`}
           </span>
         </span>
         <Button variant="secondary" size="M" label="노트 유형 관리" onClick={() => nav({ name: "noteTypes" })} />
@@ -206,7 +206,7 @@ export function NoteTypes({ back }: { back?: Route }) {
         </div>
         {g.imported.length > 0 && (
           <>
-            <p className="t-label-s c-tertiary">Anki에서 가져옴</p>
+            <p className="t-label-s c-tertiary">가져온 것</p>
             <div className="ntl__group">{g.imported.map((r) => row(String(r.id), r, "download", r.name, typeSub(r, rows), r, items(r)))}</div>
           </>
         )}

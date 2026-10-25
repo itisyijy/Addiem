@@ -4,7 +4,7 @@
 
 - 버전: v0.2 (2026-10-16 QA T3 반영: 충돌은 나중에 고친 쪽 K28, 지우기 K29, 잠그기 · 다시 시작 K32 · K33)
 - 상태: **구현 중.** MVP 범위 8.6(Later)이지만 작성자가 G·H·I·J와 함께 지금 진행하기로 정했다 (2026-10-14). 6장 스키마 선행 작업은 들어갔다
-- 화면: Figma Row K (K0 흐름 보드, K1–K10). [Neo-Anki MVP UI](https://www.figma.com/design/xZsmRhJ4rvkjwYHfQyM5jx)
+- 화면: Figma Row K (K0 흐름 보드, K1–K10). [Addiem MVP UI](https://www.figma.com/design/xZsmRhJ4rvkjwYHfQyM5jx)
 - 관련: [ADR 0001](../adr/0001-tech-stack.md) "서버는 MVP 범위에 없다", [데이터 모델](data-model.md), [검토 대기 목록](../DECISIONS-PENDING-REVIEW.md) K절
 
 ## 1. 왜 Drive인가
@@ -14,7 +14,7 @@
 - AnkiWeb이 앱을 닫을 때 진행 상황을 자동으로 맞춰 주는 점을 매우 좋게 봤다.
 - AnkiWeb 말고 개인 드라이브 같은 다른 클라우드 선택지가 있으면 좋겠다고 했다.
 
-Drive를 저장소로 쓰면 **Neo-Anki 서버가 필요 없다.** 계정 시스템, 서버 운영비, 서버가 사용자 데이터를 보관하는 문제가 모두 사라진다. local-first 원칙과 맞는다. 대가는 서버가 없으니 합치는 일을 각 기기가 해야 한다는 점이다 (5장).
+Drive를 저장소로 쓰면 **Addiem 서버가 필요 없다.** 계정 시스템, 서버 운영비, 서버가 사용자 데이터를 보관하는 문제가 모두 사라진다. local-first 원칙과 맞는다. 대가는 서버가 없으니 합치는 일을 각 기기가 해야 한다는 점이다 (5장).
 
 ## 2. 원칙
 
@@ -45,8 +45,8 @@ Drive를 저장소로 쓰면 **Neo-Anki 서버가 필요 없다.** 계정 시스
 ## 4. Drive 안의 구조
 
 ```text
-내 드라이브/Neo-Anki 백업/              ← drive.file, 사용자에게 보인다
-  neoanki-2026-10-14-0912.zip          카드·기록·설정만 (약 6MB)
+내 드라이브/Addiem 백업/              ← drive.file, 사용자에게 보인다
+  addiem-2026-10-14-0912.zip          카드·기록·설정만 (약 6MB)
 
 appDataFolder/                          ← drive.appdata, Drive 화면에 안 보인다
   devices/<device_uid>.json             기기 이름, 마지막 동기화, 기기별로 어디까지 받았는지

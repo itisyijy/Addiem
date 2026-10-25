@@ -5,12 +5,12 @@
   </picture>
 </p>
 
-<p align="center"><b>Anki schedules your reviews. Addiem plans how you finish the material before your exam.</b></p>
+<p align="center"><b>Not just your next review date: Addiem plans how you finish the material before your exam.</b></p>
 
 <p align="center">
   <a href="https://github.com/itisyijy/Addiem/releases/latest"><img src="https://img.shields.io/badge/version-0.1.0-4433ff" alt="Version 0.1.0"></a>
   <img src="https://img.shields.io/badge/Windows-10%20·%2011-16151f" alt="Windows 10 · 11">
-  <img src="https://img.shields.io/badge/Anki-.apkg%20·%20.colpkg-16151f" alt="Works with Anki .apkg · .colpkg">
+  <img src="https://img.shields.io/badge/deck%20files-.apkg%20·%20.colpkg-16151f" alt="Works with .apkg · .colpkg">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-16151f" alt="MIT license"></a>
 </p>
 
@@ -18,7 +18,7 @@
 
 ![The home screen with 39 cards left today, and the study screen showing card 7 of 39 with its linked lecture slide](docs/images/readme/hero.png)
 
-**Addiem** is an Anki-compatible flashcard app for exam preparation. It manages your exam goal and the quality of your cards together, so you learn the core material first and finish on time. The name comes from the Latin *ad diem*, "until the day". In the logo, the diagonal crosses a grid of days and reaches the orange dot: your exam day.
+**Addiem** is a flashcard app for exam preparation that reads and writes `.apkg` and `.colpkg` deck files. It manages your exam goal and the quality of your cards together, so you learn the core material first and finish on time. The name comes from the Latin *ad diem*, "until the day". In the logo, the diagonal crosses a grid of days and reaches the orange dot: your exam day.
 
 The app's interface is in Korean.
 
@@ -26,7 +26,7 @@ The app's interface is in Korean.
 
 ## Overview
 
-- **Keep your Anki decks.** Import `.apkg` and `.colpkg`, including review history. Or create a new deck and start right away.
+- **Keep your existing decks.** Import `.apkg` and `.colpkg`, including review history. Or create a new deck and start right away.
 - **Set an exam date and importance per deck.** Addiem picks today's cards from the days left and each part's importance (core · normal · supplementary). Review intervals use FSRS.
 - **Link lecture material to cards.** Addiem reads highlights and headings from PDF and PPTX files, so you can open the slide a card came from while studying.
 - **Stored on your computer.** No account needed. Studying, importing and card checks work offline. Google Drive sync and ChatGPT are optional.
@@ -39,7 +39,7 @@ The app's interface is in Korean.
 The home screen shows the cards left today (reviews and new) and how many come from each deck. Press **Start today's study** and rate each card Again, Hard, Good or Easy. A whole session works from the keyboard (shortcuts are configurable).
 
 - A card you answer Again twice in one session is set aside so the rest come first. One hard card never blocks the day.
-- Built-in note types: basic, both directions, cloze, written answer, list, multiple choice and image occlusion. Sound, Anki `{{tts}}` read-aloud and math (KaTeX) work too.
+- Built-in note types: basic, both directions, cloze, written answer, list, multiple choice and image occlusion. Sound, template `{{tts}}` read-aloud and math (KaTeX) work too.
 - Light, dark or follow-system theme. In Windows high-contrast themes, the logo and text use system colors.
 
 <p>
@@ -74,9 +74,9 @@ Importance is set per sub-deck, not per card. Addiem suggests a first layout fro
 
 ![The importance screen with sub-decks sorted into core, normal and supplementary](docs/images/readme/importance.png)
 
-### Anki compatibility and deck updates
+### Deck file compatibility and deck updates
 
-- Import: Anki `.apkg` and `.colpkg` (deck structure, note types, tags, media, review history), JSON and CSV. Anything that can't be handled is reported on the result screen, never dropped silently. Source files are only read.
+- Import: `.apkg` and `.colpkg` (deck structure, note types, tags, media, review history), JSON and CSV. Anything that can't be handled is reported on the result screen, never dropped silently. Source files are only read.
 - Export: decks as `.apkg` (with or without review history) or CSV.
 - **Deck updates:** when you get a new version of a deck you already imported, Addiem offers **Import as update**. Notes the author changed are updated; your own field edits, review history and schedule are kept. If you both changed the same field, you see them side by side and choose. A backup is made first, and you can undo just that update later.
 
@@ -142,14 +142,14 @@ Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
 2. The app isn't code-signed yet, so a blue "Windows protected your PC" window may appear. Click **More info** → **Run anyway**.
 3. Open Addiem from the Start menu.
 
-- **If you used Neo-Anki:** Neo-Anki is Addiem's former name. Installing Addiem first removes the old Neo-Anki program (your study data stays) and opens with the same data. Backup folder and file names (`neoanki`) and the "Neo-Anki 백업" folder in Drive keep the old name so the data carries over.
+- **If you used a version from before the rename:** Installing removes the old program first (your study data stays). On first launch Addiem moves your study data, backup files, Drive backup folder and sign-ins over to the new name and opens with the same data.
 - **Updates:** there's no auto-update. Install the new version over the old one; study data is not deleted. The current version is shown at the bottom of Settings.
 - **Uninstall:** remove Addiem in Windows Settings › Apps. Study data stays. To delete it too, tick **Delete the application data** in the uninstaller.
-- If antivirus software (such as Microsoft Defender) blocks or removes the concept-relation engine (`llm\neoanki-llm.exe`), only that feature turns off (Settings › Written answers says the engine isn't installed). Keyword grading and everything else keep working.
+- If antivirus software (such as Microsoft Defender) blocks or removes the concept-relation engine (`llm\addiem-llm.exe`), only that feature turns off (Settings › Written answers says the engine isn't installed). Keyword grading and everything else keep working.
 
 ## Getting started
 
-1. On the first screen, create a deck with **New deck** (just a name), or bring in an Anki deck (`.apkg`, `.colpkg`) or a JSON or CSV file with **Import**.
+1. On the first screen, create a deck with **New deck** (just a name), or bring in a deck file (`.apkg`, `.colpkg`) or a JSON or CSV file with **Import**.
 2. Set the exam date under the deck's **Goal and study settings**. Without one, the deck keeps reviewing with no deadline.
 3. In **Adjust importance**, check the suggested core · normal · supplementary layout and move only what's wrong. You can skip this and still study.
 4. If you have lecture PDFs or PPTX files, add them under the deck's **Sources**.
@@ -157,7 +157,7 @@ Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
 
 ## Data and privacy
 
-- Decks, cards, review history, media and added sources are stored on your computer (`%APPDATA%\io.github.itisyijy.neoanki`). There is no Addiem server.
+- Decks, cards, review history, media and added sources are stored on your computer (`%APPDATA%\io.github.itisyijy.addiem`). There is no Addiem server.
 - The internet is used only in these cases, each one turned on or pressed by you:
   - **Google Drive sync:** uploads decks, cards, review history, settings, images and media, with only the `drive.file` and `drive.appdata` permissions. Source files (PDF, PPTX) and model files are not uploaded.
   - **ChatGPT (optional AI):** sends only the card text and source excerpts shown on screen at that moment to OpenAI. Whole source files, images, review history and deck names are not sent.
@@ -172,13 +172,13 @@ Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
 - **No auto-update.** Download and install new versions yourself.
 - **Google sign-in is limited to registered test users** until the Google OAuth consent screen is published.
 - **Concept relation check is experimental.** It's for reference and can be wrong. It needs a separate 1.1 GB download and a CPU with AVX2 (including FMA and F16C).
-- Anki add-ons aren't supported, and scripts (JavaScript) in card templates don't run. Cards that use them are reported in the import result.
-- No direct AnkiWeb sync. Exchange decks with Anki as `.apkg` files.
+- Add-ons from other flashcard apps aren't supported, and scripts (JavaScript) in card templates don't run. Cards that use them are reported in the import result.
+- No direct sync with other flashcard apps' sync services. Exchange decks with them as `.apkg` files.
 
 ## FAQ
 
-**Can I use it alongside Anki?**
-Yes. Addiem only reads Anki files and never changes them, and you can export a deck as `.apkg` back to Anki. Review history isn't merged automatically between the two apps, so study each deck in one app.
+**Can I use it alongside another flashcard app?**
+Yes. Addiem only reads the deck files you import and never changes them, and you can export a deck as `.apkg` back to that app. Review history isn't merged automatically between the two apps, so study each deck in one app.
 
 **What happens after the exam date?**
 The deck keeps reviewing on FSRS intervals like a deck without an exam date. Set a new date and the plan is divided again.
@@ -199,8 +199,6 @@ Design and engineering documents are in Korean.
 ## Built with
 
 [Tauri](https://tauri.app) · [React](https://react.dev) · [FSRS](https://github.com/open-spaced-repetition/fsrs-rs) (BSD-3-Clause) · [KaTeX](https://katex.org) (MIT) · [PDF.js](https://mozilla.github.io/pdf.js/) (Apache-2.0) · [DOMPurify](https://github.com/cure53/DOMPurify) · [Pretendard](https://github.com/orioncactus/pretendard) (OFL-1.1) · wordmark lettering from [Newsreader](https://github.com/productiontype/Newsreader) (OFL-1.1) · read-aloud voice [Supertonic](https://huggingface.co/Supertone/supertonic-3) (OpenRAIL-M) · [ONNX Runtime](https://onnxruntime.ai) (MIT) · downloadable models [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (MIT) and [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) (Apache-2.0)
-
-Anki is a trademark of Ankitects Pty Ltd. Addiem is an independent app, not affiliated with Anki.
 
 ## License
 

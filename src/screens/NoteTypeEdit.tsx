@@ -72,7 +72,7 @@ function fieldNameError(name: string, others: string[]) {
   const v = name.trim();
   if (!v) return "필드 이름을 입력해 주세요.";
   if (/[:{}"]/.test(v) || /^[#/^]/.test(v)) return '필드 이름에는 : { } " 를 쓸 수 없고, # / ^ 로 시작할 수 없어요.';
-  if (SPECIAL.includes(v)) return `'${v}'은 Anki 가 따로 쓰는 이름이에요.`;
+  if (SPECIAL.includes(v)) return `'${v}'은 템플릿이 따로 쓰는 이름이에요.`;
   if (others.some((o) => o.toLowerCase() === v.toLowerCase())) return `'${v}' 필드가 이미 있어요.`;
   return null;
 }
@@ -640,7 +640,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
 
   // ---------------------------------------------------------------- 그리기
 
-  const badge = d.native_kind ? "앱 기본" : d.user_made ? "내가 만든 것" : "Anki에서 가져옴";
+  const badge = d.native_kind ? "앱 기본" : d.user_made ? "내가 만든 것" : "가져온 것";
   const top = (
     <header className="nte__bar">
       <div className="nte__bar-left">
@@ -1003,7 +1003,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                 </button>
               )}
               {!editing && <span className="t-caption c-tertiary">{use}</span>}
-              {!editing && show(f.name) !== f.name && <span className="nte__dbname t-mono-key c-tertiary" title="템플릿 · Anki 에 쓰는 필드 이름">{f.name}</span>}
+              {!editing && show(f.name) !== f.name && <span className="nte__dbname t-mono-key c-tertiary" title="템플릿 · .apkg에 쓰는 필드 이름">{f.name}</span>}
               {!editing && restored(f) && !use && <span className="nte__restored t-caption c-accent">되살렸어요 · 카드 모양에 넣으려면 앞면 · 뒷면으로 끌어 오세요</span>}
               {!readOnly && !editing && (
                 <span className="nte__trash-wrap">
@@ -1295,7 +1295,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
         {pane("afmt")}
         {pane("css")}
         {!readOnly && <section className="nte__panel nte__options" aria-label="옵션">{deckOption()}</section>}
-        <p className="t-caption c-tertiary">Anki와 같은 문법이에요 · 스크립트(&lt;script&gt;)는 학습 화면에서 실행하지 않아요</p>
+        <p className="t-caption c-tertiary">.apkg 템플릿과 같은 문법이에요 · 스크립트(&lt;script&gt;)는 학습 화면에서 실행하지 않아요</p>
       </>
     );
   }

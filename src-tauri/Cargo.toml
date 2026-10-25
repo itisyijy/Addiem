@@ -1,7 +1,7 @@
 [package]
-name = "neo-anki"
+name = "addiem"
 version = "0.1.0"
-description = "시험일까지의 완주 전략을 관리하는 Anki 호환 학습 앱"
+description = "시험일까지의 완주 전략을 관리하는 학습 앱 (.apkg · .colpkg 호환)"
 authors = ["itisyijy"]
 edition = "2024"
 
@@ -11,7 +11,7 @@ edition = "2024"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "neo_anki_lib"
+name = "addiem_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 fn tmp(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("neoanki-sync-{tag}-{}", super::crypto::random_hex(6)))
+    std::env::temp_dir().join(format!("addiem-sync-{tag}-{}", super::crypto::random_hex(6)))
 }
 
 fn quiet(_: &str, _: u64, _: u64) {}
@@ -71,7 +71,7 @@ impl Dev {
     fn new(name: &str) -> Dev {
         let dir = tmp(name);
         std::fs::create_dir_all(dir.join("media")).unwrap();
-        let con = db::open(&dir.join("neoanki.sqlite")).unwrap();
+        let con = db::open(&dir.join("addiem.sqlite")).unwrap();
         con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_name'", [name]).unwrap();
         Dev { dir, db: Mutex::new(con) }
     }
@@ -678,8 +678,8 @@ fn backup_retention_and_names() {
     // 같은 날 두 개면 새 것만
     let gone = engine::prune_backups(&[("old".into(), now - 1000), ("new".into(), now)], now);
     assert_eq!(gone, ["old"]);
-    assert!(engine::backup_time("neoanki-2026-10-14-0912.zip").is_some());
-    assert!(engine::backup_time("neoanki-before-restore.zip").is_none());
+    assert!(engine::backup_time("addiem-2026-10-14-0912.zip").is_some());
+    assert!(engine::backup_time("addiem-before-restore.zip").is_none());
 }
 
 #[test]
@@ -854,8 +854,8 @@ fn copied_data_folder_gets_its_own_device_id() {
     let (a, _b, _) = pair(&env);
     let copy_dir = tmp("copy");
     std::fs::create_dir_all(copy_dir.join("media")).unwrap();
-    a.con().execute("VACUUM INTO ?1", [copy_dir.join("neoanki.sqlite").to_string_lossy()]).unwrap();
-    let clone = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("neoanki.sqlite")).unwrap()) };
+    a.con().execute("VACUUM INTO ?1", [copy_dir.join("addiem.sqlite").to_string_lossy()]).unwrap();
+    let clone = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("addiem.sqlite")).unwrap()) };
     let id = |d: &Dev| d.con().query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get::<_, String>(0)).unwrap();
     assert_eq!(id(&clone), id(&a));
     // 연결된 채로 복사됐다: A 가 먼저 올린 번호를 복사본이 다시 쓰려 하면 멈춘다
@@ -893,8 +893,8 @@ fn merge_old_copy(b_uid_prefix: &str) {
     a.review(&env.fsrs, card, 3, 5500);
     let copy_dir = tmp("old-copy");
     std::fs::create_dir_all(copy_dir.join("media")).unwrap();
-    a.con().execute("VACUUM INTO ?1", [copy_dir.join("neoanki.sqlite").to_string_lossy()]).unwrap();
-    let b = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("neoanki.sqlite")).unwrap()) };
+    a.con().execute("VACUUM INTO ?1", [copy_dir.join("addiem.sqlite").to_string_lossy()]).unwrap();
+    let b = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("addiem.sqlite")).unwrap()) };
     for t in db::SYNC_TABLES {
         b.con().execute(&format!("UPDATE {t} SET uid = ?1 || lower(hex(randomblob(15)))"), [b_uid_prefix]).unwrap();
     }
@@ -1558,8 +1558,8 @@ fn bench_merge_copy() {
     }
     let copy_dir = tmp("bench-copy");
     std::fs::create_dir_all(copy_dir.join("media")).unwrap();
-    a.con().execute("VACUUM INTO ?1", [copy_dir.join("neoanki.sqlite").to_string_lossy()]).unwrap();
-    let b = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("neoanki.sqlite")).unwrap()) };
+    a.con().execute("VACUUM INTO ?1", [copy_dir.join("addiem.sqlite").to_string_lossy()]).unwrap();
+    let b = Dev { dir: copy_dir.clone(), db: Mutex::new(db::open(&copy_dir.join("addiem.sqlite")).unwrap()) };
     if std::env::var("BENCH_DIFF").is_ok() {
         // 이 기기에만 있는 노트 (내용이 달라 같은 것으로 보지 않는다): 합친 뒤 모두 올린다
         b.con().execute("UPDATE note SET fields = json_array('B ' || id, '답')", []).unwrap();

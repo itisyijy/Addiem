@@ -1,7 +1,7 @@
 //! Google Drive 보관 · 동기화 (MVP 8.6, docs/engineering/drive-sync.md). 화면 명령과 백그라운드 작업.
 //!
 //! 네트워크는 모두 여기(Rust)서 쓴다. 웹뷰 CSP 의 connect-src 는 연결한 뒤에도 열지 않는다.
-//! 개발용: NEOANKI_SYNC_FOLDER=<폴더> 로 띄우면 Google 대신 그 폴더를 Drive 처럼 쓴다 (로그인 없음).
+//! 개발용: ADDIEM_SYNC_FOLDER=<폴더> 로 띄우면 Google 대신 그 폴더를 Drive 처럼 쓴다 (로그인 없음).
 //!
 //! 언제 (5.1): 앱 실행 받기 -> 올리기 · 학습을 마칠 때(화면이 sync_pause(false)) 받기 -> 올리기 ·
 //! 창을 닫을 때 올리기(최대 10초, K8) · 30분마다 받기 · [지금 동기화]. 학습 중에는 하지 않는다
@@ -212,7 +212,7 @@ fn with_ctx<T>(sh: &Arc<Shared>, f: impl FnOnce(&Ctx) -> Result<T, SyncError>) -
 /// lib.rs setup 에서 AppState 다음에 부른다
 pub fn setup(app: &AppHandle) {
     // 개발 빌드에서만. 배포 빌드에서 켜지면 연결 끊기가 실제 Google 토큰과 잠금 키를 지운다
-    let folder = std::env::var_os("NEOANKI_SYNC_FOLDER").filter(|v| !v.is_empty() && cfg!(debug_assertions)).map(PathBuf::from);
+    let folder = std::env::var_os("ADDIEM_SYNC_FOLDER").filter(|v| !v.is_empty() && cfg!(debug_assertions)).map(PathBuf::from);
     let (tx, rx) = mpsc::channel();
     let sh = Arc::new(Shared {
         app: app.clone(),
@@ -380,11 +380,11 @@ fn backup(sh: &Arc<Shared>, cx: &Ctx) -> Result<(), SyncError> {
     let now = crate::db::now_ms();
     let times: Vec<(String, i64)> =
         list.iter().filter_map(|e| e.path.strip_prefix("backups/").map(|n| (n.to_string(), engine::backup_time(n).unwrap_or(e.at)))).collect();
-    let today = chrono::Local::now().format("neoanki-%Y-%m-%d").to_string();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let newest = times.iter().map(|(_, t)| *t).max().unwrap_or(0);
     let due = match setting.as_str() {
         "weekly" => now - newest >= 7 * crate::db::DAY_MS,
-        _ => !times.iter().any(|(n, _)| n.starts_with(&today)),
+        _ => !times.iter().any(|(n, _)| crate::legacy::backup_rest(n).is_some_and(|r| r.starts_with(&today))),
     };
     if !due {
         return Ok(());
@@ -397,7 +397,7 @@ fn backup(sh: &Arc<Shared>, cx: &Ctx) -> Result<(), SyncError> {
     (cx.progress)("backup", 0, 1);
     let tmp = sh.state().data_dir.join("backups");
     let (zip, counts) = sh.with_db(|c| Ok((engine::backup_zip(c, &tmp)?, engine::counts(c)?)))?;
-    let name = chrono::Local::now().format("neoanki-%Y-%m-%d-%H%M.zip").to_string();
+    let name = chrono::Local::now().format("addiem-%Y-%m-%d-%H%M.zip").to_string();
     let size = zip.len();
     cx.store.put(&format!("backups/{name}"), &engine::seal_opt(zip, cx.key.as_ref()))?;
     let mut all = times;
@@ -831,7 +831,7 @@ fn local_backup(sh: &Shared, suffix: &str) -> Result<Option<PathBuf>, SyncError>
             return Ok(None);
         }
         let path = crate::commands::write_backup(c, &data_dir).map_err(store::other)?;
-        let to = path.with_file_name(format!("neoanki-{suffix}-{}.zip", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+        let to = path.with_file_name(format!("{}{suffix}-{}.zip", crate::legacy::BACKUP_PREFIX, chrono::Local::now().format("%Y%m%d-%H%M%S")));
         std::fs::rename(&path, &to).map_err(store::other)?;
         // 자동 백업 보관 (사용자 결정 2026-10-20, commands::prune_auto_backups)
         if let Some(dir) = to.parent() {
@@ -1184,7 +1184,7 @@ pub async fn sync_restore_preview(state: State<'_, SyncState>, name: String) -> 
     .map_err(err)
 }
 
-/// K9 되돌리기: ① 지금 DB 를 neoanki-before-restore-<시각>.zip 으로 ② Drive 백업으로 DB 복원 (그림은 동기화 공간에서)
+/// K9 되돌리기: ① 지금 DB 를 addiem-before-restore-<시각>.zip 으로 ② Drive 백업으로 DB 복원 (그림은 동기화 공간에서)
 /// ③ 세대를 올린 새 스냅샷 ④ 다른 기기는 다음 받기에서 K6-m. 하나라도 실패하면 ①로 되돌린다
 #[tauri::command]
 pub async fn sync_restore(state: State<'_, SyncState>, name: String) -> Res<()> {
@@ -1213,9 +1213,9 @@ fn restore_blocking(sh: &Arc<Shared>, name: &str) -> Result<(), SyncError> {
         sh.with_db(|c| engine::adopt_restored(c, &restored))?;
     }
     let data_dir = sh.state().data_dir.clone();
-    let db_path = data_dir.join("neoanki.sqlite");
+    let db_path = crate::db::file(&data_dir);
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let old = |suffix: &str| data_dir.join(format!(".neoanki-old-{stamp}.sqlite{suffix}"));
+    let old = |suffix: &str| data_dir.join(format!(".addiem-old-{stamp}.sqlite{suffix}"));
     let swap = |from: &dyn Fn(&str) -> PathBuf, to: &dyn Fn(&str) -> PathBuf| {
         for suffix in ["", "-wal", "-shm"] {
             if from(suffix).exists() {
@@ -1289,7 +1289,7 @@ pub async fn sync_backup_full(state: State<'_, SyncState>, name: String, path: S
             let mut zip = zip::ZipWriter::new(out);
             let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
             let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-            zip.start_file("neoanki.sqlite", deflate).map_err(store::other)?;
+            zip.start_file(crate::db::FILE, deflate).map_err(store::other)?;
             zip.write_all(&std::fs::read(&tmp).map_err(store::other)?).map_err(store::other)?;
             for (i, (file, sha)) in files.iter().enumerate() {
                 (cx.progress)("media", i as u64, files.len() as u64);
@@ -1615,7 +1615,7 @@ mod revoke_tests {
 
     #[test]
     fn revoke_only_without_other_devices() {
-        let dir = std::env::temp_dir().join(format!("neoanki-revoke-{}", crypto::random_hex(6)));
+        let dir = std::env::temp_dir().join(format!("addiem-revoke-{}", crypto::random_hex(6)));
         let s = FolderStore::new(&dir);
         let now = 1000 * crate::db::DAY_MS;
         let dev = |uid: &str, at: i64| s.put(&format!("devices/{uid}.json"), json!({ "uid": uid, "at": at }).to_string().as_bytes()).unwrap();

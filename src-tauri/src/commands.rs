@@ -972,7 +972,7 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
         "image_occlusion"
     } else if crate::recall::is_special(&nt.name, &nt.slots) {
         // Q 목록 · 선택형. 화면은 전용 편집기(Q24)로 연다
-        if nt.name.starts_with(crate::recall::LIST) { "list" } else { "choice" }
+        if crate::recall::is_list(&nt.name) { "list" } else { "choice" }
     } else if nt.cloze() {
         "cloze"
     } else if names.len() == 2 {
@@ -2477,16 +2477,16 @@ pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag:
     let dir = backup_dir(data_dir);
     std::fs::create_dir_all(&dir).map_err(err)?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let db_copy = dir.join(format!(".neoanki-{stamp}.sqlite"));
+    let db_copy = dir.join(format!(".addiem-{stamp}.sqlite"));
     let _ = std::fs::remove_file(&db_copy);
     con.execute("VACUUM INTO ?1", [db_copy.to_string_lossy()]).map_err(err)?;
 
     let suffix = if tag.is_empty() { String::new() } else { format!("-{tag}") };
-    let out = dir.join(format!("neoanki-{stamp}{suffix}.zip"));
+    let out = dir.join(format!("{}{stamp}{suffix}.zip", crate::legacy::BACKUP_PREFIX));
     let result = (|| -> Res<()> {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&out).map_err(err)?);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("neoanki.sqlite", opts).map_err(err)?;
+        zip.start_file(crate::db::FILE, opts).map_err(err)?;
         zip.write_all(&std::fs::read(&db_copy).map_err(err)?).map_err(err)?;
         // 그림과 원자료(PDF 등)는 이미 압축돼 있다. 다시 압축하지 않는다. models/ 는 앱이 받는 것이라 넣지 않는다
         let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -2549,7 +2549,7 @@ pub(crate) fn prune_auto_backups(con: &Connection, dir: &std::path::Path, now: i
 pub fn app_info(state: State<AppState>) -> Res<AppInfo> {
     let con = state.db.lock().map_err(err)?;
     let n = |sql: &str| -> Res<i64> { con.query_row(sql, [], |r| r.get(0)).map_err(err) };
-    let db_path = state.data_dir.join("neoanki.sqlite");
+    let db_path = db::file(&state.data_dir);
     Ok(AppInfo {
         startup_error: state.startup_error.lock().map_err(err)?.clone(),
         data_dir: state.data_dir.display().to_string(),
@@ -2757,7 +2757,7 @@ pub async fn create_backup(state: State<'_, AppState>, kind: Option<String>) -> 
 /// S1-6 "다시 시도". 학습 데이터를 다시 연다
 #[tauri::command]
 pub fn retry_open(state: State<AppState>) -> Res<()> {
-    let con = db::open(&state.data_dir.join("neoanki.sqlite")).map_err(|e| format!("이번에도 열지 못했어요: {e}"))?;
+    let con = db::open(&db::file(&state.data_dir)).map_err(|e| format!("이번에도 열지 못했어요: {e}"))?;
     *state.db.lock().map_err(err)? = con;
     *state.startup_error.lock().map_err(err)? = None;
     Ok(())
@@ -2776,15 +2776,15 @@ pub struct LocalBackup {
 
 /// 자동 백업의 이름 끝 (-update.zip …). update = 덱 업데이트 적용 전, restore = 복구 전, move = 노트 유형 옮기기 전,
 /// undo = 업데이트 되돌리기 전, notetype = 노트 유형 저장 전 (NT44), deck = 덱 삭제 전, wipe = 모든 데이터 삭제 전.
-/// 동기화 기기 백업(sync/mod.rs local_backup)은 이름 앞이 neoanki-before-sync- (sync) · neoanki-before-restore- (restore). 화면 이름은 Settings.tsx BACKUP_KIND
+/// 동기화 기기 백업(sync/mod.rs local_backup)은 이름 앞이 addiem-before-sync- (sync) · addiem-before-restore- (restore). 화면 이름은 Settings.tsx BACKUP_KIND
 /// cleanup = 덱 업데이트 결과에서 새 버전에 없는 노트 지우기 전 (DU59 "노트 정리 전 자동 백업")
 const BACKUP_KINDS: [&str; 8] = ["update", "restore", "move", "undo", "notetype", "deck", "wipe", "cleanup"];
 
-/// 자동 백업이면 (종류, 만든 시각 ms). 앱이 만드는 이름과 꼴이 꼭 맞을 때만: neoanki-<YYYYmmdd-HHMMSS>-<종류>.zip (write_backup_as),
-/// neoanki-before-sync-<시각>.zip · neoanki-before-restore-<시각>.zip (sync/mod.rs local_backup). 그 밖은 None (직접 만든 백업으로 본다)
+/// 자동 백업이면 (종류, 만든 시각 ms). 앱이 만드는 이름과 꼴이 꼭 맞을 때만: addiem-<YYYYmmdd-HHMMSS>-<종류>.zip (write_backup_as),
+/// addiem-before-sync-<시각>.zip · addiem-before-restore-<시각>.zip (sync/mod.rs local_backup). 예전 이름(addiem-)도 같다. 그 밖은 None (직접 만든 백업으로 본다)
 fn auto_backup(name: &str) -> Option<(&'static str, i64)> {
     use chrono::TimeZone;
-    let s = name.strip_prefix("neoanki-")?.strip_suffix(".zip")?;
+    let s = crate::legacy::backup_rest(name)?.strip_suffix(".zip")?;
     let (kind, stamp) = if let Some(t) = s.strip_prefix("before-sync-") {
         ("sync", t)
     } else if let Some(t) = s.strip_prefix("before-restore-") {
@@ -2851,7 +2851,7 @@ fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<
     let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path).map_err(err)?).map_err(|_| "백업 파일을 읽을 수 없어요.".to_string())?;
     let staged = data_dir.join(format!(".restore-{}.sqlite", now_ms()));
     let result = (|| -> Res<()> {
-        let f = zip.by_name("neoanki.sqlite").map_err(|_| "백업 안에 데이터 파일이 없어요. 이 앱에서 만든 백업 파일이 맞는지 확인해 주세요.".to_string())?;
+        let f = crate::legacy::zip_db(&mut zip).ok_or_else(|| "백업 안에 데이터 파일이 없어요. 이 앱에서 만든 백업 파일이 맞는지 확인해 주세요.".to_string())?;
         let mut used = copy_capped(f, &staged, MAX_RESTORE)?;
         // db::open 은 전역 설정(하루 시작 시각)을 바꾸므로 여기서는 SQLite 파일인지만 본다. 스키마 문제는 swap_in_db 가 되돌린다
         let check: rusqlite::Result<String> = Connection::open(&staged).and_then(|c| c.query_row("PRAGMA quick_check", [], |r| r.get(0)));
@@ -2880,10 +2880,10 @@ fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<
     }
 }
 
-/// 확인한 DB 로 바꾼다. 지금 파일은 지우지 않고 neoanki-before-restore-<시각>.sqlite 로 옆에 남긴다.
+/// 확인한 DB 로 바꾼다. 지금 파일은 지우지 않고 addiem-before-restore-<시각>.sqlite 로 옆에 남긴다.
 /// 중간에 실패하면 옮긴 파일을 되돌리고 원래 DB 를 다시 연다 (빈 데이터로 남지 않게)
 fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::path::Path) -> Res<()> {
-    let db_path = data_dir.join("neoanki.sqlite");
+    let db_path = db::file(data_dir);
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     // 파일을 옮기려면 연결부터 닫는다 (Windows 는 열린 파일을 옮기지 못한다)
     *con = db::open_in_memory().map_err(err)?;
@@ -2893,7 +2893,7 @@ fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::pa
         for suffix in ["", "-wal", "-shm"] {
             let from = std::path::PathBuf::from(format!("{}{suffix}", db_path.display()));
             if from.exists() {
-                let to = data_dir.join(format!("neoanki-before-restore-{stamp}.sqlite{suffix}"));
+                let to = data_dir.join(format!("{}before-restore-{stamp}.sqlite{suffix}", crate::legacy::BACKUP_PREFIX));
                 std::fs::rename(&from, &to).map_err(err)?;
                 moved.push((from, to));
             }
@@ -2921,7 +2921,7 @@ fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::pa
 }
 
 /// S1-6 "백업에서 복구" · 설정 › 이 기기 백업 [백업으로 복구]. name 이 없으면 가장 최근 백업 zip 으로 되돌린다.
-/// backup_first 면 바꾸기 전에 지금 상태를 백업한다 (-restore). 지금 파일은 지우지 않고 neoanki-before-restore-<시각>.sqlite 로 옆에도 남긴다.
+/// backup_first 면 바꾸기 전에 지금 상태를 백업한다 (-restore). 지금 파일은 지우지 않고 addiem-before-restore-<시각>.sqlite 로 옆에도 남긴다.
 /// 미디어는 없는 것만 채운다
 #[tauri::command]
 pub async fn restore_backup(state: State<'_, AppState>, name: Option<String>, backup_first: Option<bool>) -> Res<String> {
@@ -3041,7 +3041,7 @@ mod tests {
         zip_with(&no_db, &[("media/a.png", b"png")]);
         assert!(super::stage_restore(&no_db, &dir).unwrap_err().contains("데이터 파일이 없어요"));
         let garbage = dir.join("garbage.zip");
-        zip_with(&garbage, &[("neoanki.sqlite", b"not a database at all")]);
+        zip_with(&garbage, &[("addiem.sqlite", b"not a database at all")]);
         assert!(super::stage_restore(&garbage, &dir).is_err());
         assert!(leftovers(&dir).is_empty(), "임시 DB 를 남기지 않는다");
         let _ = std::fs::remove_dir_all(&dir);
@@ -3051,7 +3051,7 @@ mod tests {
     fn restore_swaps_in_backup_and_rolls_back_on_failure() {
         let dir = std::env::temp_dir().join(format!("na-restore-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut con = crate::db::open(&dir.join("neoanki.sqlite")).unwrap();
+        let mut con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
         set_marker(&con, "backup");
         let zip = super::write_backup(&con, &dir).unwrap();
         set_marker(&con, "live");
@@ -3065,7 +3065,7 @@ mod tests {
         super::swap_in_db(&mut con, &dir, &staged).unwrap();
         assert_eq!(marker(&con), "backup");
         assert!(leftovers(&dir).is_empty());
-        let before = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with("neoanki-before-restore-"));
+        let before = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with("addiem-before-restore-"));
         assert!(before, "지금 파일은 옆에 남긴다");
         drop(con);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3083,16 +3083,16 @@ mod tests {
         let kinds = ["update", "move", "undo", "notetype", "deck", "wipe", "restore"];
         let mut autos = vec![];
         for (i, days) in [1, 2].into_iter().chain(10..22).enumerate() {
-            autos.push(format!("neoanki-{}-{}.zip", at(days * day), kinds[i % kinds.len()]));
+            autos.push(format!("addiem-{}-{}.zip", at(days * day), kinds[i % kinds.len()]));
         }
-        autos.push(format!("neoanki-before-sync-{}.zip", at(30 * day)));
+        autos.push(format!("addiem-before-sync-{}.zip", at(30 * day)));
         let keep = [
-            format!("neoanki-{}.zip", at(40 * day)), // 직접 만든 백업 (오래됐어도)
-            format!("neoanki-before-restore-{}.sqlite", at(40 * day)),
-            "neoanki-old-update.zip".into(),
+            format!("addiem-{}.zip", at(40 * day)), // 직접 만든 백업 (오래됐어도)
+            format!("addiem-before-restore-{}.sqlite", at(40 * day)),
+            "addiem-old-update.zip".into(),
             "my-update.zip".into(),
-            format!("neoanki-{}-mine.zip", at(40 * day)),
-            format!("neoanki-{}-update.zip.part", at(40 * day)),
+            format!("addiem-{}-mine.zip", at(40 * day)),
+            format!("addiem-{}-update.zip.part", at(40 * day)),
         ];
         for n in autos.iter().chain(&keep) {
             std::fs::write(dir.join(n), b"x").unwrap();
@@ -3117,7 +3117,7 @@ mod tests {
         assert!(super::prune_auto_backups(&con, &dir, now).is_empty(), "다시 불러도 지울 것이 없다");
         // 7일 안의 자동 백업은 10개가 넘어도 남긴다: 오늘 12개를 더하면 7일 넘은 10..17일 것만 지운다
         for i in 0..12 {
-            std::fs::write(dir.join(format!("neoanki-{}-update.zip", at(i * 60_000))), b"x").unwrap();
+            std::fs::write(dir.join(format!("addiem-{}-update.zip", at(i * 60_000))), b"x").unwrap();
         }
         assert_eq!(sorted(super::prune_auto_backups(&con, &dir, now)), sorted(autos[2..10].to_vec()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3127,16 +3127,17 @@ mod tests {
     fn backup_kind_by_name() {
         // "직접 만든 백업"은 [백업 만들기]만. 자동 백업은 이름 끝 (동기화 기기 백업은 이름 앞)
         for (name, kind) in [
-            ("neoanki-20261020-101010.zip", "manual"),
-            ("neoanki-20261020-101010-deck.zip", "deck"),
-            ("neoanki-20261020-101010-wipe.zip", "wipe"),
-            ("neoanki-20261020-101010-cleanup.zip", "cleanup"),
-            ("neoanki-20261020-101010-notetype.zip", "notetype"),
-            ("neoanki-before-sync-20261020-101010.zip", "sync"),
-            ("neoanki-before-restore-20261020-101010.zip", "restore"),
-            ("neoanki-20261020-101010-mine.zip", "manual"),
+            ("addiem-20261020-101010.zip", "manual"),
+            ("addiem-20261020-101010-deck.zip", "deck"),
+            ("addiem-20261020-101010-wipe.zip", "wipe"),
+            ("addiem-20261020-101010-cleanup.zip", "cleanup"),
+            ("addiem-20261020-101010-notetype.zip", "notetype"),
+            ("addiem-before-sync-20261020-101010.zip", "sync"),
+            ("addiem-before-restore-20261020-101010.zip", "restore"),
+            ("addiem-20261020-101010-mine.zip", "manual"),
             ("my-update.zip", "manual"),
-            ("neoanki-old-update.zip", "manual"),
+            ("addiem-old-update.zip", "manual"),
+            ("neoanki-20261020-101010-deck.zip", "deck"), // 예전 이름(Neo-Anki) 시절 자동 백업
         ] {
             assert_eq!(super::backup_kind(name), kind, "{name}");
         }
@@ -3403,7 +3404,7 @@ mod tests {
     #[test]
     fn huge_media_is_not_inlined() {
         // T7-01: 큰 그림을 data URL 로 넣으면 렌더러가 멈춘다. 상한을 넘으면 크기만 알린다 (화면이 "너무 커서" 로 그린다)
-        let dir = std::env::temp_dir().join(format!("neoanki-media-{}-{}", std::process::id(), crate::db::now_ms()));
+        let dir = std::env::temp_dir().join(format!("addiem-media-{}-{}", std::process::id(), crate::db::now_ms()));
         std::fs::create_dir_all(dir.join("media")).unwrap();
         std::fs::write(dir.join("media/small.png"), b"png").unwrap();
         std::fs::File::create(dir.join("media/big.png")).unwrap().set_len(super::MAX_INLINE + 1).unwrap();

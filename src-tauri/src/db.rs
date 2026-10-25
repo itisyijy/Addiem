@@ -6,6 +6,14 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 const SCHEMA: &str = include_str!("../../db/schema.sql");
 pub const DAY_MS: i64 = 86_400_000;
+/// 데이터 폴더 안의 DB 파일 이름
+pub const FILE: &str = "addiem.sqlite";
+
+/// 데이터 폴더의 DB 파일. 예전 이름(neoanki.sqlite)을 아직 옮기지 못했으면 그것 (legacy.rs)
+pub fn file(dir: &Path) -> std::path::PathBuf {
+    let old = dir.join(crate::legacy::OLD_DB_FILE);
+    if !dir.join(FILE).exists() && old.exists() { old } else { dir.join(FILE) }
+}
 /// 하루 경계. 기본은 새벽 4시 이전을 전날로 친다 (study-queue-spec 2장). E1 에서 바꾼다.
 /// schema_meta.day_cutoff_hour 가 정본이고, 여기에는 열 때 읽어 둔다
 static DAY_CUTOFF_HOUR: AtomicI64 = AtomicI64::new(4);
@@ -276,6 +284,18 @@ const NATIVE_TYPES: [(&str, &str, &str, &[Template<'static>]); 6] = [
 ];
 
 pub(crate) fn seed_note_types(con: &Connection) -> rusqlite::Result<()> {
+    // 예전 이름(Neo-Anki) 시절의 앱 유형 이름 · 쉬운 편집 CSS 표시를 새 이름으로 (legacy.rs). 아래 seed_one 이 이름으로 채우기 전에.
+    // 각 기기가 열 때 스스로 바꾸고, 예전 앱이 보낸 이름도 다음에 열 때 바꾼다. 가져온 유형(모델 id)은 그 덱의 것이라 그대로 둔다
+    for (kind, old, new) in [("list", crate::recall::OLD_LIST, crate::recall::LIST), ("choice", crate::recall::OLD_CHOICE, crate::recall::CHOICE)] {
+        con.execute(
+            "UPDATE note_type SET name = ?3 WHERE name = ?2 AND (native_kind = ?1 OR (native_kind IS NULL AND anki_model_id IS NULL AND user_made = 0))",
+            [kind, old, new],
+        )?;
+    }
+    con.execute(
+        "UPDATE note_type SET css = replace(css, ?1, ?2) WHERE instr(css, ?1) > 0",
+        [crate::notetype::OLD_LAYOUT_MARK, crate::notetype::LAYOUT_MARK],
+    )?;
     for (kind, name, fields, templates) in NATIVE_TYPES {
         seed_one(con, kind, name, fields, templates)?;
     }
@@ -358,7 +378,7 @@ mod tests {
 
     #[test]
     fn sync_groundwork() {
-        let dir = std::env::temp_dir().join(format!("neoanki-sync-{}-{}", std::process::id(), now_ms()));
+        let dir = std::env::temp_dir().join(format!("addiem-sync-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let con = open(&dir.join("t.sqlite")).unwrap();
         let count = |sql: &str| con.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
@@ -406,7 +426,7 @@ mod tests {
     #[test]
     fn card_change_accepts_drafts_after_rebuild() {
         // 예전 DB: card_change.kind 가 'split' 만 받는다. 열면 표를 다시 만들어 'draft' 도 받고, 기존 행은 그대로
-        let dir = std::env::temp_dir().join(format!("neoanki-draft-{}-{}", std::process::id(), now_ms()));
+        let dir = std::env::temp_dir().join(format!("addiem-draft-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.sqlite");
         let con = open(&path).unwrap();
@@ -440,7 +460,7 @@ mod tests {
     fn card_change_accepts_rewrites_after_rebuild() {
         // 8.2 앞의 DB 두 가지: 'split' 만 받는 것(R1 앞) · 'split','draft' 를 받는 것. 열면 'rewrite' 도 받고 기존 행은 그대로, 다시 열어도 한 번만
         for old in ["('split')", "('split','draft')"] {
-            let dir = std::env::temp_dir().join(format!("neoanki-rewrite-{}-{}-{}", std::process::id(), now_ms(), old.len()));
+            let dir = std::env::temp_dir().join(format!("addiem-rewrite-{}-{}-{}", std::process::id(), now_ms(), old.len()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("t.sqlite");
             let con = open(&path).unwrap();
@@ -483,7 +503,7 @@ mod tests {
 
     #[test]
     fn schema_applies_and_seeds() {
-        let dir = std::env::temp_dir().join(format!("neoanki-test-{}", now_ms()));
+        let dir = std::env::temp_dir().join(format!("addiem-test-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let con = open(&dir.join("t.sqlite")).unwrap();
         let n: i64 = con.query_row("SELECT count(*) FROM note_type", [], |r| r.get(0)).unwrap();

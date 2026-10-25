@@ -1,4 +1,4 @@
-# Neo-Anki MVP 화면 흐름
+# Addiem MVP 화면 흐름
 
 ## 목적
 

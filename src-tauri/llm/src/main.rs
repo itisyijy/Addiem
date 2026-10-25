@@ -1,4 +1,4 @@
-//! Neo-Anki 8.3 개념 관계 확인 추론 엔진 (보조 실행 파일, DECISIONS J11~).
+//! Addiem 8.3 개념 관계 확인 추론 엔진 (보조 실행 파일, DECISIONS J11~).
 //! 본체(src-tauri/src/llm.rs)가 앱 리소스 폴더의 이 파일을 절대 경로로 띄우고 stdin/stdout 으로 한 줄짜리 JSON 을 주고받는다.
 //! 본체는 AVX2 없이 빌드해 모든 CPU 에서 돌고, 이 실행 파일만 +avx2,+fma,+f16c 로 빌드한다(tools/build_llm.ps1, candle 의 양자화 계산은
 //! 컴파일 때만 AVX2 를 켠다). 본체가 CPU 를 먼저 확인하고 지원할 때만 부른다.

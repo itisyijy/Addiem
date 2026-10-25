@@ -61,7 +61,7 @@ const isRecall = (k: Kind) => k === "list" || k === "choice";
 
 // ---------------------------------------------------------------- NT12 덱마다 마지막에 쓴 유형 (이 기기에만)
 
-export const LAST_TYPE = "neoanki.addCard.lastType"; // { [덱 id]: 노트 유형 id }. 모든 데이터 삭제가 같이 지운다
+export const LAST_TYPE = "addiem.addCard.lastType"; // { [덱 id]: 노트 유형 id }. 모든 데이터 삭제가 같이 지운다
 function lastType(deckId: number): number | undefined {
   try {
     return JSON.parse(localStorage.getItem(LAST_TYPE) ?? "{}")[deckId];
@@ -1062,7 +1062,7 @@ function TypeMenu({ open, setOpen, types, deckTypes, current, onPick, onEdit, on
           {others.map((r, i) =>
             item(
               r,
-              [shape(r), r.imported ? "Anki에서 가져옴" : "내가 만든 것", r.decks[0] ? `${r.decks[0]}에서 씀` : "아직 쓰는 덱이 없어요", twin(r, types)].filter(Boolean).join(" · "),
+              [shape(r), r.imported ? "가져온 것" : "내가 만든 것", r.decks[0] ? `${r.decks[0]}에서 씀` : "아직 쓰는 덱이 없어요", twin(r, types)].filter(Boolean).join(" · "),
               !mine.length && i === 0,
             ),
           )}

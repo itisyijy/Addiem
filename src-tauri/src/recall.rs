@@ -1,6 +1,6 @@
 //! 8.1 목록 회상형 · 선택형 (Figma Row Q · DECISIONS Q). 앱 전용 노트 유형 둘, 노트 1개 = 카드 1장 (Q1).
 //!
-//! 필드 (Q10): "Neo-Anki 목록 회상" = 질문 · 항목 · 순서 · 추가 설명, "Neo-Anki 선택형" = 질문 · 보기1–보기6 · 정답 · 섞기 · 추가 설명.
+//! 필드 (Q10): "Addiem 목록 회상" = 질문 · 항목 · 순서 · 추가 설명, "Addiem 선택형" = 질문 · 보기1–보기6 · 정답 · 섞기 · 추가 설명.
 //!   - 항목: 한 줄에 하나 (<br> 로 나눈다). 순서: "순서대로" | "순서 없이"
 //!   - 정답: 보기 번호 ("2", 여럿이면 "1,3"). 섞기: "섞기" | "섞지 않음"
 //!
@@ -23,8 +23,20 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-pub const LIST: &str = "Neo-Anki 목록 회상";
-pub const CHOICE: &str = "Neo-Anki 선택형";
+pub const LIST: &str = "Addiem 목록 회상";
+pub const CHOICE: &str = "Addiem 선택형";
+/// 예전 이름(Neo-Anki) 시절 유형 이름. 그때 내보낸 .apkg · JSON 도 알아본다. 앱 DB 의 이름은 db.rs seed_note_types 가 새 이름으로 바꾼다
+pub const OLD_LIST: &str = "Neo-Anki 목록 회상";
+pub const OLD_CHOICE: &str = "Neo-Anki 선택형";
+
+/// 목록 · 선택형 유형 이름인가 (예전 이름 포함). Anki 가 이름 뒤에 붙인 꼬리("+" 등)는 받는다
+pub(crate) fn is_list(nt: &str) -> bool {
+    nt.starts_with(LIST) || nt.starts_with(OLD_LIST)
+}
+
+pub(crate) fn is_choice(nt: &str) -> bool {
+    nt.starts_with(CHOICE) || nt.starts_with(OLD_CHOICE)
+}
 const LIST_FIELDS: [&str; 4] = ["질문", "항목", "순서", "추가 설명"];
 const CHOICE_FIELDS: [&str; 10] = ["질문", "보기1", "보기2", "보기3", "보기4", "보기5", "보기6", "정답", "섞기", "추가 설명"];
 pub const LIST_FIELDS_JSON: &str = r#"["질문","항목","순서","추가 설명"]"#;
@@ -63,12 +75,12 @@ fn same(names: &[String], want: &[&str]) -> bool {
 
 /// 목록 · 선택형 노트 유형인가 (이름 + 필드). Anki 가 이름 뒤에 붙인 꼬리("+" 등)는 받는다
 pub(crate) fn is_special(nt: &str, names: &[String]) -> bool {
-    (nt.starts_with(LIST) && same(names, &LIST_FIELDS)) || (nt.starts_with(CHOICE) && same(names, &CHOICE_FIELDS))
+    (is_list(nt) && same(names, &LIST_FIELDS)) || (is_choice(nt) && same(names, &CHOICE_FIELDS))
 }
 
 /// 이름은 우리 유형인데 필드가 달라 알아보지 못하는가 (Anki 에서 필드를 지우거나 이름을 바꿨다)
 pub(crate) fn unrecognized(nt: &str, names: &[String]) -> bool {
-    (nt.starts_with(LIST) || nt.starts_with(CHOICE)) && !is_special(nt, names)
+    (is_list(nt) || is_choice(nt)) && !is_special(nt, names)
 }
 
 /// 학습 화면이 직접 그리는 목록 · 선택형 카드. 질문 · 추가 설명은 HTML (화면이 살균한다), 항목 · 보기는 글자
@@ -123,7 +135,7 @@ pub(crate) fn special(nt: &str, names: &[String], fields: &str) -> Option<Specia
     }
     let v: Vec<String> = serde_json::from_str(fields).ok()?;
     let f = |i: usize| v.get(i).cloned().unwrap_or_default();
-    if nt.starts_with(LIST) {
+    if is_list(nt) {
         // 순서 없는 목록도 저장한 순서로 연다 (Q4)
         return Some(Special::List { question: f(0), items: quality::html_lines(&f(1)), ordered: plain(&f(2)) != UNORDERED, extra: f(3) });
     }
@@ -304,7 +316,7 @@ pub(crate) fn check_fields(nt: &str, names: &[String], values: &[String]) -> Res
         return Ok(());
     }
     let v = |i: usize| plain(values.get(i).map_or("", String::as_str));
-    if nt.starts_with(LIST) {
+    if is_list(nt) {
         return match v(2).as_str() {
             ORDERED | UNORDERED => Ok(()),
             _ => Err("순서 칸은 \"순서대로\" 또는 \"순서 없이\"로 써 주세요.".into()),
@@ -499,7 +511,7 @@ fn parse_distractors(text: &str, taken: &[String], count: usize) -> Result<Vec<S
     Ok(out)
 }
 
-/// 가짜 응답 (NEOANKI_AI_FAKE). 검증까지 보이게 정답(대소문자 · 띄어쓰기만 다름) · 보낸 보기 · 앞 제안 · 빈 글 · 너무 긴 글을 앞에 섞는다.
+/// 가짜 응답 (ADDIEM_AI_FAKE). 검증까지 보이게 정답(대소문자 · 띄어쓰기만 다름) · 보낸 보기 · 앞 제안 · 빈 글 · 너무 긴 글을 앞에 섞는다.
 /// 남는 것은 TCP 예시(Figma 237:16413)에 맞춘 고정 목록이라 다른 질문에는 엉뚱하다 (가짜다). 앞 제안은 검증이 버려
 /// [다시 제안]은 목록의 다음 것을 받고, 다 쓰면 "알맞은 오답을 만들지 못했어요"
 fn fake_distractors(correct: &[String], wrong: &[String], avoid: &[String]) -> String {

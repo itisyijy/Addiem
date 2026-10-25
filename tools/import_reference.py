@@ -1,4 +1,4 @@
-"""Anki 패키지 -> Neo-Anki 스키마 참조 적재기.
+"""Anki 패키지 -> Addiem 스키마 참조 적재기.
 
 목적은 두 가지다.
   1. db/schema.sql 이 실제 컬렉션을 담을 수 있는지 검증한다
@@ -678,7 +678,7 @@ def main():
     if len(sys.argv) < 2:
         return print(__doc__)
     pkg = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else "neoanki-imported.sqlite"
+    out = sys.argv[2] if len(sys.argv) > 2 else "addiem-imported.sqlite"
     if pkg.lower().endswith(".json"):
         run_json_import(pkg, out)
     else:

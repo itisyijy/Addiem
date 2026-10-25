@@ -1,4 +1,4 @@
-//! 실제 Anki(pylib 26.9.3) 검증 하네스의 Neo-Anki 쪽. 혼자 돌리지 않는다: `tools/qa-real-anki/real_anki.py all` 이
+//! 실제 Anki(pylib 26.9.3) 검증 하네스의 Addiem 쪽. 혼자 돌리지 않는다: `tools/qa-real-anki/real_anki.py all` 이
 //! pylib 로 만든 패키지를 NA_QR_WORK 에 두고 phase1 · phase2 를 부른다 (#[ignore], README 참고).
 //! 앱 함수를 그대로 쓴다: 가져오기 `run_import_anki`, 덱 업데이트 `deck_update::run · apply`, 내 편집 `save_note_fields` ·
 //! `notetype::save_css`, 평가 `answer_for_qa`(= answer_at), 내보내기 `export_for_qa`(= export).
@@ -51,7 +51,7 @@ fn state(dir: &Path, fresh: bool) -> AppState {
     }
     std::fs::create_dir_all(dir.join("media")).unwrap();
     AppState {
-        db: std::sync::Mutex::new(db::open(&dir.join("neoanki.sqlite")).unwrap()),
+        db: std::sync::Mutex::new(db::open(&dir.join("addiem.sqlite")).unwrap()),
         fsrs: fsrs::FSRS::default(),
         data_dir: dir.to_path_buf(),
         undo: Default::default(),
@@ -64,7 +64,7 @@ fn state(dir: &Path, fresh: bool) -> AppState {
 fn copy_state(src: &AppState, dir: &Path) -> AppState {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir.join("media")).unwrap();
-    src.db.lock().unwrap().execute("VACUUM INTO ?1", [dir.join("neoanki.sqlite").to_str().unwrap()]).unwrap();
+    src.db.lock().unwrap().execute("VACUUM INTO ?1", [dir.join("addiem.sqlite").to_str().unwrap()]).unwrap();
     for e in std::fs::read_dir(src.data_dir.join("media")).unwrap().flatten() {
         std::fs::copy(e.path(), dir.join("media").join(e.file_name())).unwrap();
     }

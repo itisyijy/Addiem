@@ -111,7 +111,7 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
           <span className="prefs__text">
             <span className="t-body-m-strong">백업 위치</span>
             {/* 사용자 결정 2026-10-20 (commands.rs prune_auto_backups) */}
-            <span className="t-body-s c-secondary">자동 백업은 최근 10개와 7일 안에 만든 것을 남기고, 그보다 오래된 것은 지워요 · 직접 만든 백업은 지우지 않아요 · 폴더와 파일 이름의 neoanki는 Addiem의 예전 이름이에요</span>
+            <span className="t-body-s c-secondary">자동 백업은 최근 10개와 7일 안에 만든 것을 남기고, 그보다 오래된 것은 지워요 · 직접 만든 백업은 지우지 않아요</span>
           </span>
           <span className="prefs__path">
             <span className="prefs__mono c-secondary" title={info.backup_dir}>
@@ -318,7 +318,7 @@ function Licenses() {
 }
 
 /** 복구한 뒤 다시 불러온 홈의 토스트 (값: 그 백업의 시각 글) */
-export const RESTORED_KEY = "neoanki.restored";
+export const RESTORED_KEY = "addiem.restored";
 const BACKUP_KIND: Record<LocalBackup["kind"], string> = {
   manual: "직접 만든 백업",
   update: "덱 업데이트 적용 전 자동 백업",

@@ -929,7 +929,7 @@ export function TableCards({ title = "표로 카드 만들기", sub, how = "표 
           {method === "cloze" && (
             <span className="tg-hide">
               <Checkbox label="같은 열의 다른 칸도 가리기" checked={hide} onChange={setHide} />
-              <span className="t-caption c-tertiary">옆 줄에서 답이 보이지 않게 · Anki로 보내도 그대로예요</span>
+              <span className="t-caption c-tertiary">옆 줄에서 답이 보이지 않게 · .apkg로 내보내도 그대로예요</span>
             </span>
           )}
         </div>

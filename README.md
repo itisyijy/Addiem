@@ -5,12 +5,12 @@
   </picture>
 </p>
 
-<p align="center"><b>Anki가 복습 시점을 관리한다면, Addiem은 시험일까지의 완주 전략을 관리해요.</b></p>
+<p align="center"><b>다음 복습 날짜만이 아니라, 시험일까지의 완주 전략을 관리해요.</b></p>
 
 <p align="center">
   <a href="https://github.com/itisyijy/Addiem/releases/latest"><img src="https://img.shields.io/badge/버전-0.1.0-4433ff" alt="버전 0.1.0"></a>
   <img src="https://img.shields.io/badge/Windows-10%20·%2011-16151f" alt="Windows 10 · 11">
-  <img src="https://img.shields.io/badge/Anki-.apkg%20·%20.colpkg-16151f" alt="Anki .apkg · .colpkg 호환">
+  <img src="https://img.shields.io/badge/덱%20파일-.apkg%20·%20.colpkg-16151f" alt=".apkg · .colpkg 호환">
   <a href="LICENSE"><img src="https://img.shields.io/badge/라이선스-MIT-16151f" alt="MIT 라이선스"></a>
 </p>
 
@@ -18,13 +18,13 @@
 
 ![오늘 남은 카드 39장이 보이는 홈 화면과, 그중 7번째 카드를 연결 자료와 함께 보는 학습 화면](docs/images/readme/hero.png)
 
-**Addiem**(에디엠)은 시험 목표와 카드 품질을 함께 관리해, 정해진 기간 안에 핵심 내용부터 외우도록 돕는 Anki 호환 학습 앱이에요. 이름은 라틴어 *ad diem*, '그날까지'에서 왔어요. 로고의 대각선은 날짜 칸을 지나 주황 점, 곧 시험일에 닿아요.
+**Addiem**(에디엠)은 시험 목표와 카드 품질을 함께 관리해, 정해진 기간 안에 핵심 내용부터 외우도록 돕는 학습 앱이에요. 덱 파일(`.apkg` · `.colpkg`)을 그대로 가져오고 내보내요. 이름은 라틴어 *ad diem*, '그날까지'에서 왔어요. 로고의 대각선은 날짜 칸을 지나 주황 점, 곧 시험일에 닿아요.
 
 **[설치 파일 내려받기](https://github.com/itisyijy/Addiem/releases/latest)** · [설치](#설치) · [시작하기](#시작하기) · [데이터와 개인정보](#데이터와-개인정보) · [알려진 제한](#알려진-제한)
 
 ## 소개
 
-- **쓰던 Anki 덱을 이어서 써요.** `.apkg` · `.colpkg`를 가져오고, 복습 기록도 함께 옮길 수 있어요. 새 덱을 만들어 바로 시작해도 돼요.
+- **쓰던 덱 파일을 이어서 써요.** `.apkg` · `.colpkg`를 가져오고, 복습 기록도 함께 옮길 수 있어요. 새 덱을 만들어 바로 시작해도 돼요.
 - **덱마다 시험일과 중요도를 정해요.** 남은 날짜와 핵심 · 일반 · 보충 중요도에 맞춰 오늘 볼 카드를 골라 줘요. 복습 간격은 FSRS로 계산해요.
 - **강의 자료와 카드를 이어요.** PDF · PPTX의 강조와 목차를 읽어, 카드가 어디서 나왔는지 학습 중에 바로 열어 볼 수 있어요.
 - **이 기기에 저장해요.** 계정이 없어도 되고, 학습 · 가져오기 · 카드 점검은 인터넷 없이 돼요. Google Drive 동기화와 ChatGPT 연결은 켜고 싶을 때만 켜요.
@@ -37,7 +37,7 @@
 홈에서 오늘 남은 카드(복습 · 신규)와 덱별 분량을 보고 [오늘 학습 시작]을 누르면 돼요. 평가는 Again · Hard · Good · Easy 네 가지이고, 키보드만으로도 한 번의 학습을 끝낼 수 있어요(단축키는 설정에서 바꿔요).
 
 - 같은 학습에서 Again을 두 번 받은 카드는 잠깐 접어 두고 나머지를 먼저 봐요. 어려운 카드 하나가 오늘 진도를 막지 않아요.
-- 앱 기본 노트 유형: 질문과 답변 · 양방향 · 빈칸 · 서술형 · 목록 · 선택형 · 그림 가리기. 소리 재생, Anki `{{tts}}` 읽어주기, 수식(KaTeX)도 돼요.
+- 앱 기본 노트 유형: 질문과 답변 · 양방향 · 빈칸 · 서술형 · 목록 · 선택형 · 그림 가리기. 소리 재생, 템플릿의 `{{tts}}` 읽어주기, 수식(KaTeX)도 돼요.
 - 화면 테마는 밝게 · 어둡게 · 시스템 따름 중에서 골라요. Windows 고대비 테마에서도 로고와 글자가 시스템 색으로 보여요.
 
 <p>
@@ -72,9 +72,9 @@
 
 ![하위 덱을 핵심 · 일반 · 보충으로 나눈 중요도 정하기 화면](docs/images/readme/importance.png)
 
-### Anki 호환과 덱 업데이트
+### 덱 파일 호환과 덱 업데이트
 
-- 가져오기: Anki `.apkg` · `.colpkg`(덱 구조 · 노트 유형 · 태그 · 미디어 · 복습 기록), JSON, CSV. 처리하지 못한 항목은 조용히 버리지 않고 결과 화면에 알려 줘요. 원본 파일은 읽기만 해요.
+- 가져오기: `.apkg` · `.colpkg`(덱 구조 · 노트 유형 · 태그 · 미디어 · 복습 기록), JSON, CSV. 처리하지 못한 항목은 조용히 버리지 않고 결과 화면에 알려 줘요. 원본 파일은 읽기만 해요.
 - 내보내기: 덱을 `.apkg`(복습 기록 포함 여부 선택)나 CSV로 내보내요.
 - **덱 업데이트:** 이미 가져온 덱의 새 버전 파일을 받으면 [업데이트로 가져오기]를 권해요. 만든 사람이 고친 노트는 새 버전으로 바꾸고, 내가 고친 필드와 복습 기록 · 일정은 지켜요. 같은 필드를 둘 다 고친 충돌은 나란히 보고 골라요. 적용 전에 백업을 만들고, 나중에 이 업데이트만 되돌릴 수도 있어요.
 
@@ -140,14 +140,14 @@ Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
 2. 아직 코드 서명이 없어서 "Windows의 PC 보호" 파란 창이 뜰 수 있어요. [추가 정보] → [실행]을 눌러요.
 3. 시작 메뉴에서 Addiem을 열어요.
 
-- **Neo-Anki를 쓰던 경우:** Addiem의 예전 이름이 Neo-Anki예요. Addiem을 설치하면 예전 Neo-Anki 프로그램을 먼저 지우고(학습 데이터는 그대로), 같은 데이터로 이어서 열려요. 백업 폴더 · 파일 이름의 `neoanki`와 Drive의 "Neo-Anki 백업" 폴더는 데이터를 잇기 위해 예전 이름 그대로 써요.
+- **이름을 바꾸기 전 버전을 쓰던 경우:** 설치하면 예전 프로그램을 먼저 지우고(학습 데이터는 그대로), 처음 열 때 학습 데이터 · 백업 파일 · Drive 백업 폴더 · 로그인 정보를 새 이름으로 옮겨 이어서 열려요.
 - **업데이트:** 자동 업데이트는 없어요. 새 버전 설치 파일로 다시 설치해요. 학습 데이터는 지워지지 않아요. 지금 버전은 설정 화면 맨 아래에 보여요.
 - **지우기:** Windows 설정 › 앱에서 Addiem을 제거해요. 학습 데이터는 남아요. 데이터까지 지우려면 제거 창에서 [애플리케이션 데이터 삭제하기]를 체크해요.
-- 백신(Microsoft Defender 등)이 개념 관계 확인 엔진(`llm\neoanki-llm.exe`)을 막거나 지우면 그 기능만 꺼지고(설정 › 서술형 채점에 "이 설치에는 개념 관계 확인 엔진이 없어 쓸 수 없어요"), 핵심어 채점과 나머지 기능은 계속 쓸 수 있어요.
+- 백신(Microsoft Defender 등)이 개념 관계 확인 엔진(`llm\addiem-llm.exe`)을 막거나 지우면 그 기능만 꺼지고(설정 › 서술형 채점에 "이 설치에는 개념 관계 확인 엔진이 없어 쓸 수 없어요"), 핵심어 채점과 나머지 기능은 계속 쓸 수 있어요.
 
 ## 시작하기
 
-1. 처음 화면에서 [새 덱 만들기]로 이름만 정해 덱을 만들거나, [가져오기]로 쓰던 Anki 덱(`.apkg` · `.colpkg`)이나 JSON · CSV 파일을 가져와요.
+1. 처음 화면에서 [새 덱 만들기]로 이름만 정해 덱을 만들거나, [가져오기]로 쓰던 덱 파일(`.apkg` · `.colpkg`)이나 JSON · CSV 파일을 가져와요.
 2. 덱 화면의 [목표 및 학습 설정]에서 시험일을 정해요. 정하지 않으면 시험일 없는 덱으로 계속 복습해요.
 3. [중요도 조정]에서 제안된 핵심 · 일반 · 보충 배치를 확인하고, 틀린 것만 옮겨요. 건너뛰어도 학습은 돼요.
 4. 강의 PDF · PPTX가 있으면 덱 화면의 [자료]에서 추가해요.
@@ -155,7 +155,7 @@ Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
 
 ## 데이터와 개인정보
 
-- 덱 · 카드 · 복습 기록 · 미디어 · 추가한 자료는 이 기기에 저장돼요(`%APPDATA%\io.github.itisyijy.neoanki`). Addiem 서버는 없어요.
+- 덱 · 카드 · 복습 기록 · 미디어 · 추가한 자료는 이 기기에 저장돼요(`%APPDATA%\io.github.itisyijy.addiem`). Addiem 서버는 없어요.
 - 인터넷은 아래 경우에만 써요. 모두 직접 켜거나 눌렀을 때예요.
   - **Google Drive 동기화:** 덱 · 카드 · 복습 기록 · 설정과 그림 · 미디어를 올려요. `drive.file` · `drive.appdata` 권한만 쓰고, 원자료 파일(PDF · PPTX)과 모델 파일은 올리지 않아요.
   - **ChatGPT (선택 AI):** 그때 화면에 보여 준 카드 글자와 자료 구간 발췌만 OpenAI로 보내요. 원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름은 보내지 않아요.
@@ -170,13 +170,13 @@ Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
 - **자동 업데이트가 없어요.** 새 버전은 설치 파일을 다시 받아 설치해요.
 - **Google 로그인은 아직 등록한 테스트 사용자만 돼요.** Google OAuth 동의 화면을 공개로 게시하기 전까지는 Drive 동기화를 쓸 수 있는 계정이 정해져 있어요.
 - **개념 관계 확인은 실험 기능이에요.** 참고용이고 틀릴 수 있어요. 약 1.1GB를 따로 받아야 하고, AVX2를 지원하는 CPU(FMA · F16C 포함)에서만 돌아요.
-- Anki 애드온은 지원하지 않고, 카드 템플릿의 스크립트(JavaScript)는 실행하지 않아요. 그런 카드가 있으면 가져오기 결과에 알려 줘요.
-- AnkiWeb과 직접 동기화하지 않아요. Anki와는 `.apkg` 파일로 주고받아요.
+- 다른 학습 앱의 애드온은 지원하지 않고, 카드 템플릿의 스크립트(JavaScript)는 실행하지 않아요. 그런 카드가 있으면 가져오기 결과에 알려 줘요.
+- 다른 학습 앱의 동기화 서비스와는 직접 동기화하지 않아요. 다른 앱과는 `.apkg` 파일로 주고받아요.
 
 ## 자주 묻는 질문
 
-**Anki와 같이 써도 되나요?**
-돼요. Addiem은 Anki 파일을 읽기만 하고 고치지 않아요. 덱을 `.apkg`로 내보내 Anki로 다시 가져갈 수도 있어요. 다만 두 앱의 복습 기록은 자동으로 합쳐지지 않으니, 한 덱은 한쪽에서 공부하는 걸 권해요.
+**다른 학습 앱과 같이 써도 되나요?**
+돼요. Addiem은 가져온 덱 파일을 읽기만 하고 고치지 않아요. 덱을 `.apkg`로 내보내 그 앱으로 다시 가져갈 수도 있어요. 다만 두 앱의 복습 기록은 자동으로 합쳐지지 않으니, 한 덱은 한쪽에서 공부하는 걸 권해요.
 
 **시험일이 지나면 어떻게 되나요?**
 시험일 없는 덱처럼 FSRS 간격대로 계속 복습해요. 새 시험일을 정하면 그날에 맞춰 다시 나눠요.
@@ -195,8 +195,6 @@ Google Drive 동기화를 켜거나, 설정 › 이 기기 백업에서 만든 �
 ## 함께 쓴 오픈소스
 
 [Tauri](https://tauri.app) · [React](https://react.dev) · [FSRS](https://github.com/open-spaced-repetition/fsrs-rs) (BSD-3-Clause) · [KaTeX](https://katex.org) (MIT) · [PDF.js](https://mozilla.github.io/pdf.js/) (Apache-2.0) · [DOMPurify](https://github.com/cure53/DOMPurify) · [Pretendard](https://github.com/orioncactus/pretendard) (OFL-1.1) · 워드마크 글자 [Newsreader](https://github.com/productiontype/Newsreader) (OFL-1.1) · 읽어주기 음성 [Supertonic](https://huggingface.co/Supertone/supertonic-3) (OpenRAIL-M) · [ONNX Runtime](https://onnxruntime.ai) (MIT) · 내려받는 모델 [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (MIT) · [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) (Apache-2.0)
-
-Anki는 Ankitects Pty Ltd의 상표예요. Addiem은 Anki와 제휴하지 않은 별개의 앱이에요.
 
 ## 라이선스
 

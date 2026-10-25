@@ -125,7 +125,7 @@ const CAPTION_NO = /^(그림|표|도표|사진|Fig\.?|Figure|Table)\s*[\dA-Z][\w
 const labelOf = (items: PdfItem[], it: PdfItem) => it.name.match(CAPTION_NO)?.[0] ?? `${it.kind === "figure" ? "그림" : "표"} ${numberOf(items, it)}`;
 
 // 무시한 제안 · 목록에서 뺀 그림은 이 기기에만 둔다 (동기화하지 않는 작은 기록). 자료 id 가 키라 모든 데이터 삭제 때 같이 지운다 (QA T4-11)
-export const HIDDEN = "neoanki.figures.hidden";
+export const HIDDEN = "addiem.figures.hidden";
 const readHidden = (): Record<string, string[]> => {
   try {
     return JSON.parse(localStorage.getItem(HIDDEN) ?? "{}");

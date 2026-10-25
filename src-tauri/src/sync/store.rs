@@ -1,8 +1,8 @@
 //! 동기화 저장소 (drive-sync.md 4장). "파일을 새로 쓰고, 목록을 보고, 내려받기"만 쓴다 (9장).
 //!
-//! 경로 규칙: `backups/<이름>` 은 사용자에게 보이는 "Neo-Anki 백업" 폴더, 나머지는 앱 전용 숨김 공간이다.
+//! 경로 규칙: `backups/<이름>` 은 사용자에게 보이는 "Addiem 백업" 폴더, 나머지는 앱 전용 숨김 공간이다.
 //!   - DriveStore: Google Drive v3 REST. 숨김 공간은 appDataFolder (drive.appdata), 보이는 폴더는 drive.file
-//!   - FolderStore: 로컬 폴더. 테스트와 개발용 (NEOANKI_SYNC_FOLDER)
+//!   - FolderStore: 로컬 폴더. 테스트와 개발용 (ADDIEM_SYNC_FOLDER)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,7 +10,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use ureq::http::{Method, Request};
 
-pub const BACKUP_FOLDER: &str = "Neo-Anki 백업";
+pub const BACKUP_FOLDER: &str = "Addiem 백업";
+/// 예전 이름(Neo-Anki) 시절 폴더. 찾으면 이름만 바꿔 그대로 쓴다 (DriveStore::folder)
+const OLD_BACKUP_FOLDER: &str = "Neo-Anki 백업";
 const API: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3";
 
@@ -198,9 +200,18 @@ pub fn folder_list_req(token: &str, folder: &str, page: Option<&str>) -> Req {
 }
 
 /// drive.file 권한은 앱이 만든 파일만 보인다. 사용자가 같은 이름 폴더를 직접 만들어도 섞이지 않는다
-pub fn find_folder_req(token: &str) -> Req {
-    let q = format!("name = '{BACKUP_FOLDER}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false");
+pub fn find_folder_req(token: &str, name: &str) -> Req {
+    let q = format!("name = '{name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false");
     req(Method::GET, &url(&format!("{API}/files"), &[("q", &q), ("spaces", "drive"), ("fields", "files(id)")]), token).body(vec![]).unwrap()
+}
+
+/// 폴더 이름 바꾸기 (안의 백업 · 공유 설정은 그대로)
+pub fn rename_req(token: &str, id: &str, name: &str) -> Req {
+    let body = serde_json::json!({ "name": name }).to_string();
+    req(Method::PATCH, &url(&format!("{API}/files/{id}"), &[("fields", "id")]), token)
+        .header("Content-Type", "application/json; charset=UTF-8")
+        .body(body.into_bytes())
+        .unwrap()
 }
 
 pub fn create_folder_req(token: &str) -> Req {
@@ -357,11 +368,18 @@ impl DriveStore {
         if let Some(id) = self.folder.lock().map_err(other)?.clone() {
             return Ok(Some(id));
         }
-        let found = self.call(&find_folder_req)?.json()?["files"][0]["id"].as_str().map(String::from);
-        let id = match found {
+        let find = |name: &str| -> SRes<Option<String>> { Ok(self.call(&|t| find_folder_req(t, name))?.json()?["files"][0]["id"].as_str().map(String::from)) };
+        let id = match find(BACKUP_FOLDER)? {
             Some(id) => Some(id),
-            None if create => self.call(&create_folder_req)?.json()?["id"].as_str().map(String::from),
-            None => None,
+            None => match find(OLD_BACKUP_FOLDER)? {
+                // 이름을 못 바꿔도 예전 폴더를 그대로 쓴다. 다음에 다시 바꾼다
+                Some(id) => {
+                    let _ = self.call(&|t| rename_req(t, &id, BACKUP_FOLDER));
+                    Some(id)
+                }
+                None if create => self.call(&create_folder_req)?.json()?["id"].as_str().map(String::from),
+                None => None,
+            },
         };
         *self.folder.lock().map_err(other)? = id.clone();
         Ok(id)
@@ -494,9 +512,12 @@ mod tests {
         assert_eq!((r.method(), r.body().as_slice()), (&Method::PUT, &b"abc"[..]));
         assert!(r.headers().get("Authorization").is_none(), "세션 주소에는 토큰을 다시 싣지 않는다");
 
-        let r = find_folder_req("tok");
+        let r = rename_req("tok", "F1", BACKUP_FOLDER);
+        assert_eq!((r.method(), r.uri().to_string()), (&Method::PATCH, "https://www.googleapis.com/drive/v3/files/F1?fields=id".to_string()));
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(r.body()).unwrap()["name"], "Addiem 백업");
+        let r = find_folder_req("tok", BACKUP_FOLDER);
         let q: HashMap<_, _> = url::Url::parse(&r.uri().to_string()).unwrap().query_pairs().into_owned().collect();
-        assert_eq!(q["q"], "name = 'Neo-Anki 백업' and mimeType = 'application/vnd.google-apps.folder' and trashed = false");
+        assert_eq!(q["q"], "name = 'Addiem 백업' and mimeType = 'application/vnd.google-apps.folder' and trashed = false");
         assert_eq!(q["spaces"], "drive");
         let r = folder_list_req("tok", "F1", None);
         let q: HashMap<_, _> = url::Url::parse(&r.uri().to_string()).unwrap().query_pairs().into_owned().collect();
@@ -516,16 +537,16 @@ mod tests {
 
     #[test]
     fn folder_store_round_trip() {
-        let dir = std::env::temp_dir().join(format!("neoanki-store-{}", crate::sync::crypto::random_hex(6)));
+        let dir = std::env::temp_dir().join(format!("addiem-store-{}", crate::sync::crypto::random_hex(6)));
         let s = FolderStore::new(&dir);
         s.put("changes/d1/00000001.jsonl.gz", b"a").unwrap();
         s.put("devices/d1.json", b"1").unwrap();
         s.put("devices/d1.json", b"2").unwrap();
-        s.put("backups/neoanki-2026-10-14-0912.zip", b"zip").unwrap();
+        s.put("backups/addiem-2026-10-14-0912.zip", b"zip").unwrap();
         assert_eq!(s.get("devices/d1.json").unwrap(), b"2");
         assert_eq!(s.list("changes/").unwrap().iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), ["changes/d1/00000001.jsonl.gz"]);
-        assert_eq!(s.list("backups/").unwrap()[0].path, "backups/neoanki-2026-10-14-0912.zip");
-        assert!(dir.join(BACKUP_FOLDER).join("neoanki-2026-10-14-0912.zip").exists(), "백업은 보이는 폴더에");
+        assert_eq!(s.list("backups/").unwrap()[0].path, "backups/addiem-2026-10-14-0912.zip");
+        assert!(dir.join(BACKUP_FOLDER).join("addiem-2026-10-14-0912.zip").exists(), "백업은 보이는 폴더에");
         s.delete("devices/d1.json").unwrap();
         s.delete("devices/d1.json").unwrap();
         assert!(matches!(s.get("devices/d1.json"), Err(SyncError::NotFound(_))));

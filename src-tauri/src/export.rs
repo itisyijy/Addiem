@@ -222,12 +222,10 @@ pub fn export_preview(state: State<AppState>, deck_id: i64) -> Res<ExportPreview
         cards: count("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?,
         media: media.len(),
         reviews: count("SELECT count(*) FROM review_log WHERE card_id IN (SELECT id FROM card WHERE deck_id IN ($IDS)) AND kind IS NULL")?,
-        recall_cards: count(&format!(
+        recall_cards: count(
             "SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
-             WHERE c.deck_id IN ($IDS) AND nt.name IN ('{}', '{}')",
-            crate::recall::LIST,
-            crate::recall::CHOICE
-        ))?,
+             WHERE c.deck_id IN ($IDS) AND nt.native_kind IN ('list', 'choice')",
+        )?,
     })
 }
 
@@ -480,10 +478,11 @@ struct Card {
 }
 
 /// 겹치면 1씩 올린다. Anki id 는 표마다 유일하면 된다
-/// 8.4 그림 · 표 영역에서 만든 노트의 출처 태그 (.apkg 만, DECISIONS IT32): `Neo-Anki::출처::4장_회귀분석::슬라이드_3` · `Neo-Anki::출처::3장::12쪽`.
-/// 이 앱이 단 태그만 알아보게 `Neo-Anki::` 아래에 둔다. 사용자가 직접 단 `출처::…` 태그는 내보내기 · 가져오기 모두 건드리지 않는다 (QA T2-02).
+/// 8.4 그림 · 표 영역에서 만든 노트의 출처 태그 (.apkg 만, DECISIONS IT32): `Addiem::출처::4장_회귀분석::슬라이드_3` · `Addiem::출처::3장::12쪽`.
+/// 이 앱이 단 태그만 알아보게 `Addiem::` 아래에 둔다 (예전 이름 `Neo-Anki::` 도 이 앱 것으로 본다). 사용자가 직접 단 `출처::…` 태그는 내보내기 · 가져오기 모두 건드리지 않는다 (QA T2-02).
 /// 노트 글은 건드리지 않는다 (IT14). 앱 안 연결은 source_link 가 그대로 하고, 다시 가져오면 이 태그는 뺀다 (import.rs)
-pub(crate) const SOURCE_TAG: &str = "Neo-Anki::출처::";
+pub(crate) const SOURCE_TAG: &str = "Addiem::출처::";
+const OLD_SOURCE_TAG: &str = "Neo-Anki::출처::";
 
 fn source_tags(con: &Connection) -> Res<HashMap<i64, Vec<String>>> {
     let mut st = con
@@ -517,7 +516,7 @@ fn with_source_tags(tags: &str, sources: &[String]) -> String {
 
 /// 이 앱이 단 출처 태그만 뺀다. Anki 는 태그 대소문자를 컬렉션에 이미 있는 태그에 맞추므로 영문 부분은 대소문자를 가리지 않는다
 pub(crate) fn without_source_tags(tags: &str) -> String {
-    let ours = |t: &str| t.get(..SOURCE_TAG.len()).is_some_and(|h| h.eq_ignore_ascii_case(SOURCE_TAG));
+    let ours = |t: &str| [SOURCE_TAG, OLD_SOURCE_TAG].iter().any(|p| t.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)));
     tags.split_whitespace().filter(|t| !ours(t)).collect::<Vec<_>>().join(" ")
 }
 
@@ -635,7 +634,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     cards.retain(|c| type_of.get(&c.note_id).is_some_and(|t| models[t].draws(c.ord)));
     let skipped_cards = all - cards.len();
     if cards.is_empty() {
-        return Err(format!("내보낼 수 있는 카드가 없어요. 카드 종류가 없는 카드 {skipped_cards}장은 Anki가 받지 않아요."));
+        return Err(format!("내보낼 수 있는 카드가 없어요. 카드 종류가 없는 카드 {skipped_cards}장은 .apkg에 넣을 수 없어요."));
     }
     let kept: HashSet<i64> = cards.iter().map(|c| c.note_id).collect();
     notes.retain(|n| kept.contains(&n.id));
@@ -1032,7 +1031,8 @@ fn checksum(field: &str) -> i64 {
     sha1(strip_tags(field).as_bytes())[..4].iter().fold(0, |n, b| (n << 8) | i64::from(*b))
 }
 
-/// Anki guid64 처럼 64비트 값을 base91 로 쓴다. 노트마다 고정이라 다시 내보내도 같다
+/// Anki guid64 처럼 64비트 값을 base91 로 쓴다. 노트마다 고정이라 다시 내보내도 같다.
+/// 씨앗의 "neo-anki" 는 예전 이름이지만 바꾸지 않는다: 바꾸면 이미 내보낸 노트와 guid 가 달라져 Anki 에 두 벌이 된다
 fn guid_for(id: i64, created_at: i64) -> String {
     const TABLE: &[u8; 91] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&()*+,-./:;<=>?@[]^_`{|}~";
     let mut n = sha1(format!("neo-anki:{id}:{created_at}").as_bytes())[..8].iter().fold(0u64, |n, b| (n << 8) | u64::from(*b));
@@ -1139,7 +1139,7 @@ mod tests {
     fn state(dir: &Path) -> AppState {
         std::fs::create_dir_all(dir.join("media")).unwrap();
         AppState {
-            db: Mutex::new(db::open(&dir.join("neoanki.sqlite")).unwrap()),
+            db: Mutex::new(db::open(&dir.join("addiem.sqlite")).unwrap()),
             fsrs: fsrs::FSRS::default(),
             data_dir: dir.to_path_buf(),
             undo: Mutex::new(vec![]),
@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn csv_rows() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-csv-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-csv-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0);
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('정보처리기사', 0, 0)", []).unwrap();
@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn round_trip_through_importer() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-export-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-export-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         let deck = |name: &str, parent: Option<i64>| {
@@ -1327,7 +1327,7 @@ mod tests {
     /// AU7 소리: 필드의 [sound:] 글자와 소리 파일이 내보내기 · 가져오기를 그대로 지난다. 빠진 파일만 경고 (AU5)
     #[test]
     fn sound_round_trip() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-sound-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-sound-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
@@ -1368,7 +1368,7 @@ mod tests {
     #[test]
     fn layout_css_exports_after_anki_default() {
         use crate::notetype as nt;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-ntcss-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-ntcss-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('줄', 0, 0)", []).unwrap();
@@ -1412,7 +1412,7 @@ mod tests {
     #[test]
     fn user_note_type_round_trip() {
         use crate::notetype as nt;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-nt-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-nt-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
@@ -1484,7 +1484,7 @@ mod tests {
         // Q2-01 · Q2-02: 동기화로 템플릿이 하나도 없는 유형 · 지워진 카드 종류의 카드가 남았다. 그대로 쓰면 Anki 가 패키지를 통째로 거부하거나
         // 다시 센 ord 로 다른 카드 종류에 붙어 앞면이 빈 카드가 된다. 그 카드는 빼고 수를 알린다. 다른 카드는 나간다
         use crate::notetype as nt;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-orphan-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-orphan-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
@@ -1520,7 +1520,7 @@ mod tests {
         // Q2-12: 줄 순서와 쓰는 카드는 기기마다 같아야 한다 (정수 id 는 기기마다 다르다). 노트는 만든 시각 · uid, 카드는 카드 종류 순서.
         // 앞면이 빈 카드(NT49)는 건너뛰고, 모두 비었으면 그 노트는 빼고 센다
         use crate::notetype as nt;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-csvord-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-csvord-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
@@ -1552,7 +1552,7 @@ mod tests {
     fn csv_cells_leave_hint_boxes_out() {
         // Q4 L6: {{hint:}} 는 화면에서 펼치기 상자라 CSV 칸에 이름 · 내용이 섞이지 않게 뺀다 (카드 목록과 같다)
         use crate::notetype as nt;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-csvhint-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-csvhint-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('특수', 0, 0)", []).unwrap();
@@ -1577,7 +1577,7 @@ mod tests {
         // 그 카드의 복습 기록은 카드 없이 통계에만 남고, 결과에 한 줄로 알린다.
         // Q2-13: 이 앱에서 지운(숨긴) 필드의 값은 숨긴 자리에 넣고 알린다 (NT10)
         use crate::notetype as nt;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-redel-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-redel-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('영단어', 0, 0)", []).unwrap();
@@ -1615,7 +1615,7 @@ mod tests {
     #[test]
     fn image_occlusion_round_trip() {
         use crate::occlusion;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-io-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-io-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('해부학', 0, 0)", []).unwrap();
@@ -1683,7 +1683,7 @@ mod tests {
     #[test]
     fn list_recall_round_trip() {
         use crate::recall::{self, Special};
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-list-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-list-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let deck_id = {
             let con = a.db.lock().unwrap();
@@ -1734,7 +1734,7 @@ mod tests {
     #[test]
     fn choice_round_trip() {
         use crate::recall::{self, Special};
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-choice-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-choice-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let deck_id = {
             let con = a.db.lock().unwrap();
@@ -1792,12 +1792,12 @@ mod tests {
     }
 
     /// 실제 Anki 가 만든 그림 가리기 .apkg 를 가져와 본다 (손으로 돌린다. 개인 데이터일 수 있어 파일은 저장소에 두지 않는다):
-    ///   NEOANKI_IO_APKG=<경로> cargo test real_anki_io_package -- --ignored --nocapture
+    ///   ADDIEM_IO_APKG=<경로> cargo test real_anki_io_package -- --ignored --nocapture
     #[test]
     #[ignore]
     fn real_anki_io_package() {
-        let path = std::env::var("NEOANKI_IO_APKG").expect("NEOANKI_IO_APKG");
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-io-real-{}-{}", std::process::id(), now_ms())));
+        let path = std::env::var("ADDIEM_IO_APKG").expect("ADDIEM_IO_APKG");
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-io-real-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0);
         let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &a, &path, false, &mut vec![]).unwrap()).unwrap();
         println!("import: notes {} cards {} check_cards {} issues {}", res["notes"], res["cards"], res["check_cards"], res["issues"]);
@@ -1822,7 +1822,7 @@ mod tests {
         let out = tmp.0.join("again.apkg");
         let root: i64 = con.query_row("SELECT deck_id FROM card LIMIT 1", [], |r| r.get(0)).unwrap();
         export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap();
-        std::fs::copy(&out, std::env::var("NEOANKI_IO_OUT").unwrap_or_else(|_| format!("{path}.neo.apkg"))).unwrap();
+        std::fs::copy(&out, std::env::var("ADDIEM_IO_OUT").unwrap_or_else(|_| format!("{path}.neo.apkg"))).unwrap();
     }
 
     /// QA (실제 Anki 26.9.2 왕복, 2026-10-16): Anki 가 내보낸 기본 유형(originalStockKind 1 Basic · 2 앞뒤 · 4 type-in · 5 Cloze)을
@@ -1830,7 +1830,7 @@ mod tests {
     /// ("기본값으로 되돌리기"가 사라진다). Anki 처럼 모델에 표시를 붙인 패키지로 확인한다 (I78)
     #[test]
     fn imported_stock_kind_survives_export() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-stock-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-stock-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('QA', 0, 0)", []).unwrap();
@@ -1881,7 +1881,7 @@ mod tests {
     #[test]
     fn exam_marks_survive_round_trip() {
         use crate::exam::{self, ExamState};
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-exam-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-exam-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('QA', 0, 0)", []).unwrap();
@@ -1916,7 +1916,7 @@ mod tests {
     /// IT: 그림 · 표 영역에 이은 노트만 .apkg 에 출처 태그가 붙고 (노트 글은 그대로), 다시 가져오면 그 태그는 빠진다
     #[test]
     fn region_source_tag_on_apkg_only() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-srctag-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-srctag-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('회귀', 0, 0)", []).unwrap();
@@ -1944,7 +1944,7 @@ mod tests {
         let tags = |front: &str| -> String { col.query_row("SELECT tags || '|' || flds FROM notes WHERE flds LIKE ?1", [format!("{front}%")], |r| r.get(0)).unwrap() };
         assert_eq!(
             tags("그림 카드"),
-            " 과목::1 출처::4장_회귀분석::슬라이드_3 Neo-Anki::출처::3장::12쪽 Neo-Anki::출처::4장_회귀분석::슬라이드_3 |그림 카드\u{1f}b",
+            " 과목::1 출처::4장_회귀분석::슬라이드_3 Addiem::출처::3장::12쪽 Addiem::출처::4장_회귀분석::슬라이드_3 |그림 카드\u{1f}b",
             "이 앱이 단 옛 출처 태그만 빼고 지금 연결로. 사용자가 단 같은 모양의 출처:: 태그는 그대로 (T2-02), 노트 글도 그대로"
         );
         assert_eq!(tags("글 카드"), "|글 카드\u{1f}b", "글 강조 구간은 출처 태그가 없다");
@@ -1982,7 +1982,7 @@ mod tests {
     /// 릴리스 QA: .apkg 왕복으로 가져온 빈칸 유형도 앱 Cloze 처럼 빈칸 원문을 한 번 쓴다 (c1 카드 화면만 쓰면 c2 부터 빈칸이 빠진다)
     #[test]
     fn csv_imported_cloze_keeps_every_cloze() {
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-csv-cloze-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-csv-cloze-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let con = a.db.lock().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('QA', 0, 0)", []).unwrap();
@@ -2003,13 +2003,13 @@ mod tests {
 
     /// 실제 Anki 가 만든 .apkg · .colpkg 를 복습 기록과 함께 가져와 요약을 찍고, 맨 위 덱을 기록과 함께 다시 내보낸다 (손으로 돌리는 QA).
     /// Anki 쪽 비교는 그 결과를 Anki 로 다시 읽어서 한다:
-    ///   NEOANKI_RT_IN=<패키지> NEOANKI_RT_OUT=<내보낼 .apkg> cargo test real_anki_roundtrip -- --ignored --nocapture
+    ///   ADDIEM_RT_IN=<패키지> ADDIEM_RT_OUT=<내보낼 .apkg> cargo test real_anki_roundtrip -- --ignored --nocapture
     #[test]
     #[ignore]
     fn real_anki_roundtrip() {
-        let input = std::env::var("NEOANKI_RT_IN").expect("NEOANKI_RT_IN");
-        let out = PathBuf::from(std::env::var("NEOANKI_RT_OUT").expect("NEOANKI_RT_OUT"));
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt-{}-{}", std::process::id(), now_ms())));
+        let input = std::env::var("ADDIEM_RT_IN").expect("ADDIEM_RT_IN");
+        let out = PathBuf::from(std::env::var("ADDIEM_RT_OUT").expect("ADDIEM_RT_OUT"));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-rt-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0);
         let res = serde_json::to_value(crate::import::run_import_anki(&|_, _, _| {}, &a, &input, true, &mut vec![]).unwrap()).unwrap();
         println!("import: {res}");
@@ -2037,7 +2037,7 @@ mod tests {
         // NT76: 카드 종류의 덱은 Anki 템플릿 did (deck override). 내보낼 때 그 덱의 Anki 덱 id, 가져올 때 이번 패키지의 그 덱. 패키지에 없는 덱이면 비운다
         use crate::notetype as nt;
         use std::io::Read;
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-tdid-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-tdid-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let out = tmp.0.join("앞뒤.apkg");
         {
@@ -2120,7 +2120,7 @@ mod tests {
     fn my_deck_round_trip_through_anki_uses_the_export_as_base() {
         // DU55 (A): 앱에서 만든 노트는 처음 내보낼 때의 값이 원본. Anki 에서만 고친 노트는 "새 버전", 내보낸 뒤 앱에서만 고친 노트는 "내 것",
         // 둘 다 고쳤으면 충돌(기본 내 것). 앱 기본 유형은 내보낸 모델 id 로 찾고 정의는 건드리지 않는다
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-rt55-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let out = tmp.0.join("내 덱.apkg");
         let (deck, basic, before_type, before_types) = {
@@ -2180,7 +2180,7 @@ mod tests {
         // 코디네이터 고정 테스트 (DU55): 공유 덱 v1 → 앱에서 고침 → 내 덱 내보내기 → 만든 사람의 v2 업데이트 = 내 수정을 지킨다.
         // 내보내기는 가져온 노트의 원본(만든 사람 기준)을 덮지 않는다
         use crate::import::deck_update::testpkg::{self, Model, note};
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55s-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-rt55s-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let model = || Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")], css: "" };
         let (p1, p2) = (tmp.0.join("v1.apkg"), tmp.0.join("v2.apkg"));
@@ -2207,7 +2207,7 @@ mod tests {
     fn reimport_from_anki_never_resets_study_state() {
         // 사용자 결정 2026-10-19 ②: 복습 기록 병합은 미룬다. 지금 길(업데이트 · 새 노트만 더하기)이 이미 있는 카드의 일정 · 상태를 덮거나 초기화하지 않고,
         // Anki 카드 ↔ 우리 카드가 노트 guid + 카드 순서로 이어지는지 고정한다 (내보내기는 카드 id 를 남기지 않는다: anki_card_id 는 신규 순서에 쓰인다)
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55r-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-rt55r-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let out = tmp.0.join("내 덱.apkg");
         let schedule = |a: &AppState| strings(&a.db.lock().unwrap(), "SELECT id || state || coalesce(due_at, '') || coalesce(stability, '') || reps || lapses FROM card ORDER BY id");
@@ -2252,7 +2252,7 @@ mod tests {
     #[test]
     fn my_note_type_round_trip_takes_the_template_changed_in_anki() {
         // DU55: 사용자 유형은 처음 내보낼 때의 정의가 원본. Anki 에서 고친 카드 종류 앞면은 "새 버전"으로 들어온다 (충돌이 아니다)
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55t-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-rt55t-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let out = tmp.0.join("내 유형.apkg");
         let (ntid, deck) = {
@@ -2283,7 +2283,7 @@ mod tests {
     fn types_without_a_model_id_are_found_again_by_the_exported_id() {
         // 코디네이터 QA (실제 Anki): 모델 id 가 남지 않는 유형(앱 기본 · 모델 id 없는 사용자 유형)을 내보냈다 다시 가져오면 새 유형이 생겼다.
         // 내보낸 id 를 origin "m" 에 남기고 가져오기 · 업데이트가 모델 id 다음에 그것으로 찾는다
-        let tmp = TempDir(std::env::temp_dir().join(format!("neoanki-rt55m-{}-{}", std::process::id(), now_ms())));
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-rt55m-{}-{}", std::process::id(), now_ms())));
         let a = state(&tmp.0.join("a"));
         let out = tmp.0.join("덱.apkg");
         let (deck, mine) = {

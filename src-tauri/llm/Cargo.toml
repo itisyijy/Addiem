@@ -1,7 +1,7 @@
 [package]
-name = "neoanki-llm"
+name = "addiem-llm"
 version = "0.1.0"
-description = "Neo-Anki 8.3 개념 관계 확인 추론 엔진 (본체와 따로 AVX2 로 빌드하는 보조 실행 파일, tools/build_llm.ps1)"
+description = "Addiem 8.3 개념 관계 확인 추론 엔진 (본체와 따로 AVX2 로 빌드하는 보조 실행 파일, tools/build_llm.ps1)"
 authors = ["itisyijy"]
 edition = "2024"
 

@@ -215,7 +215,7 @@ odid <> 0 인 카드: 455장
 
 **복습 이력이 온전히 들어 있다.** 스파이크 3의 "이전 가능한가"에 대한 답은 기술적으로 "가능하다"다.
 
-다만 `cards`의 `ivl`, `factor`, `due`, `reps`, `lapses`를 Neo-Anki 스케줄러의 상태로 어떻게 매핑할지는 [ADR 7장의 SRS 경계](../adr/0001-tech-stack.md)가 정해진 뒤에야 답할 수 있다. 데이터가 있다는 것과 의미를 보존한다는 것은 다른 문제다.
+다만 `cards`의 `ivl`, `factor`, `due`, `reps`, `lapses`를 Addiem 스케줄러의 상태로 어떻게 매핑할지는 [ADR 7장의 SRS 경계](../adr/0001-tech-stack.md)가 정해진 뒤에야 답할 수 있다. 데이터가 있다는 것과 의미를 보존한다는 것은 다른 문제다.
 
 62%가 아직 신규 카드라는 점도 참고할 만하다. 이 사용자는 덱을 다 돌지 못한 상태다.
 
@@ -241,6 +241,6 @@ con.create_collation("unicase", lambda a, b: (a.lower() > b.lower()) - (a.lower(
 | `media` protobuf의 정확한 구조 | 구현 시점. 이름·인덱스 매핑이라 단순할 것으로 보인다 |
 | `decks.kind` protobuf에서 필터 덱 판정 | `odid`로 우회 가능하므로 급하지 않다 |
 | 구버전 `.apkg`(`collection.anki2` 본체)도 지원하는가 | 별도 샘플로 확인 필요. 이 파일에는 스텁만 있다 |
-| Anki 스케줄 상태 → Neo-Anki 매핑 | ADR 7장 확정 후 |
+| Anki 스케줄 상태 → Addiem 매핑 | ADR 7장 확정 후 |
 
 세 번째가 실질적으로 남은 유일한 위험이다. 오래된 덱을 공유받는 사용자는 구버전 포맷을 가져올 수 있다.

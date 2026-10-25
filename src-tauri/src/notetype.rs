@@ -513,7 +513,7 @@ fn field_name(nt: &Nt, name: &str, except: Option<usize>) -> Res<String> {
         return Err("필드 이름에는 : { } \" 를 쓸 수 없고, # / ^ 로 시작할 수 없어요.".into());
     }
     if SPECIAL.contains(&n) {
-        return Err(format!("'{n}'은 Anki 가 따로 쓰는 이름이에요."));
+        return Err(format!("'{n}'은 템플릿이 따로 쓰는 이름이에요."));
     }
     if nt.visible().iter().any(|(s, x)| Some(*s) != except && x.to_lowercase() == n.to_lowercase()) {
         return Err(format!("'{n}' 필드가 이미 있어요."));
@@ -1331,15 +1331,17 @@ impl Look {
     }
 }
 
-const LAYOUT_MARK: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */";
+pub(crate) const LAYOUT_MARK: &str = "/* Addiem 쉬운 편집 · 줄 크기와 정렬 */";
+/// 예전 이름(Neo-Anki) 시절 표시. 앱 DB 는 db.rs seed_note_types 가 바꾸고, 그때 내보낸 .apkg 를 다시 가져온 CSS 도 알아본다
+pub(crate) const OLD_LAYOUT_MARK: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */";
 /// 줄 상자의 CSS. 템플릿이 줄 상자를 쓰면 저장할 때 노트 유형 CSS 끝에 붙인다 (첫 줄로 이미 있는지 본다).
 /// 학습 화면은 노트 CSS 를 카드 안에 가두므로(cardCss.ts scopeCss) 앱 화면은 그대로다
-pub const LAYOUT_CSS: &str = "/* Neo-Anki 쉬운 편집 · 줄 크기와 정렬 */\ndiv.nt-s { font-size: 13px; }\ndiv.nt-m { font-size: 20px; }\ndiv.nt-l { font-size: 30px; }\ndiv.nt-left { text-align: left; }\ndiv.nt-center { text-align: center; }\n";
+pub const LAYOUT_CSS: &str = "/* Addiem 쉬운 편집 · 줄 크기와 정렬 */\ndiv.nt-s { font-size: 13px; }\ndiv.nt-m { font-size: 20px; }\ndiv.nt-l { font-size: 30px; }\ndiv.nt-left { text-align: left; }\ndiv.nt-center { text-align: center; }\n";
 const BOX: &str = "<div class=\"nt-";
 
 /// 템플릿이 줄 상자를 쓰는데 CSS 에 없으면 붙인다
 pub fn with_layout_css(css: &str, used: bool) -> String {
-    if !used || css.contains(LAYOUT_MARK) {
+    if !used || css.contains(LAYOUT_MARK) || css.contains(OLD_LAYOUT_MARK) {
         css.to_string()
     } else if css.trim().is_empty() {
         LAYOUT_CSS.into()
@@ -1350,7 +1352,7 @@ pub fn with_layout_css(css: &str, used: bool) -> String {
 
 /// 내보내기: 줄 상자 CSS 만 있는 유형은 빈 CSS 처럼 Anki 기본 CSS 를 쓴다 (그 뒤에 줄 상자 CSS)
 pub fn without_layout_css(css: &str) -> String {
-    css.replace(LAYOUT_CSS, "")
+    css.replace(LAYOUT_CSS, "").replace(&LAYOUT_CSS.replace(LAYOUT_MARK, OLD_LAYOUT_MARK), "")
 }
 
 pub(crate) fn uses_box(t: &Tpl) -> bool {
