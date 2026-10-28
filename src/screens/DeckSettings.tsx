@@ -436,7 +436,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
       </div>
       {leaving && (
         <DiscardModal
-          title="바꾼 설정이 있어요"
+          title="고친 내용이 있어요"
           text="저장하지 않고 나갈까요?"
           keep="계속 고치기"
           discard="버리고 나가기"
