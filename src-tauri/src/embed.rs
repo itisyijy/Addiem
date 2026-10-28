@@ -35,6 +35,8 @@ pub const MODEL_KEY: &str = "multilingual-e5-small@614241f";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
+/// 마지막 받기가 실패하거나 멈춘 까닭 (crate::dl::keep_failure)
+static FAILED: Mutex<Option<String>> = Mutex::new(None);
 static LOADED: Mutex<Option<Arc<Embedder>>> = Mutex::new(None);
 
 fn model_dir(data_dir: &Path) -> PathBuf {
@@ -54,6 +56,10 @@ pub struct ModelStatus {
     bytes: u64,
     name: &'static str,
     analyzing: Option<crate::source::Progress>,
+    /// 마지막 받기가 실패하거나 멈춘 까닭 (다시 들어온 화면도 보인다, QA T7-04)
+    failed: Option<String>,
+    /// 덱마다 마지막으로 끝난 분석 (다시 들어온 배너가 결과를 보인다, QA T6-03)
+    analyzed: std::collections::BTreeMap<i64, crate::source::Analyzed>,
 }
 
 /// 받는 중에 앱이 닫혀 남은 .part 를 지운다 (받는 중이 아닐 때만. 그동안 새 받기가 시작되지 않게 깃발을 잠깐 쥔다)
@@ -76,6 +82,8 @@ pub fn model_status(state: State<AppState>) -> ModelStatus {
         bytes: FILES.iter().map(|f| f.1).sum(),
         name: REPO,
         analyzing: crate::source::analyzing(),
+        failed: crate::dl::failure(&FAILED),
+        analyzed: crate::source::analyzed(),
     }
 }
 
@@ -101,11 +109,14 @@ pub async fn model_download(app: AppHandle) -> Res<()> {
         })
     })
     .await
-    .map_err(err);
+    .map_err(err)
+    .and_then(|r| r);
+    // 까닭은 null 이벤트 전에 남긴다 (이벤트를 받은 화면이 상태를 다시 읽는다)
+    let res = crate::dl::keep_failure(&FAILED, res);
     DOWNLOADING.store(false, Ordering::SeqCst);
     // 어떻게 끝나든(다 받음 · 실패 · 멈춤) null: 받기를 시작하지 않은 화면(다시 들어온 배너)도 막대를 지우고 상태를 다시 읽는다 (QA T6-03)
     let _ = app.emit("model-progress", None::<DownloadProgress>);
-    res?
+    res
 }
 
 #[tauri::command]

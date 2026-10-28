@@ -59,6 +59,8 @@ const MARGIN: u64 = 200_000_000;
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
+/// 마지막 받기가 실패하거나 멈춘 까닭 (crate::dl::keep_failure)
+static FAILED: Mutex<Option<String>> = Mutex::new(None);
 /// 확인 차례 · 미리 하기 차례. 새 확인 · 멈추기 · 지우기 · 떠나기가 올리면 돌던 일이 멈춘다 (미리 하기는 비교를 눌러도 이어서 쓴다)
 static JOB: AtomicU64 = AtomicU64::new(0);
 static PREP: AtomicU64 = AtomicU64::new(0);
@@ -180,6 +182,8 @@ pub struct LlmStatus {
     off: bool,
     /// 지난 확인 한 번에 걸린 시간 (ms)
     last_ms: Option<u64>,
+    /// 마지막 받기가 실패하거나 멈춘 까닭 (다시 들어온 설정도 보인다, QA T7-04)
+    failed: Option<String>,
 }
 
 /// 받는 중에 앱이 닫혀 남은 .part 를 지운다 (받는 중이 아닐 때만. 그동안 새 받기가 시작되지 않게 깃발을 잠깐 쥔다)
@@ -212,6 +216,7 @@ pub fn llm_status(app: AppHandle) -> LlmStatus {
         engine: engine_bin(&app).is_some(),
         off: OFF.load(Ordering::SeqCst),
         last_ms: Some(LAST_MS.load(Ordering::SeqCst)).filter(|&m| m > 0),
+        failed: crate::dl::failure(&FAILED),
     }
 }
 
@@ -233,11 +238,13 @@ pub async fn llm_download(app: AppHandle) -> Res<()> {
     CANCEL.store(false, Ordering::SeqCst);
     let dir = model_dir(&app.state::<AppState>().data_dir);
     let a = app.clone();
-    let res = tauri::async_runtime::spawn_blocking(move || download(&a, &dir)).await.map_err(err);
+    let res = tauri::async_runtime::spawn_blocking(move || download(&a, &dir)).await.map_err(err).and_then(|r| r);
+    // 까닭은 null 이벤트 전에 남긴다 (이벤트를 받은 화면이 상태를 다시 읽는다)
+    let res = crate::dl::keep_failure(&FAILED, res);
     DOWNLOADING.store(false, Ordering::SeqCst);
     // 어떻게 끝나든(다 받음 · 실패 · 멈춤) null: 받기를 시작하지 않은 화면(설정에 다시 들어옴)도 막대를 지우고 상태를 다시 읽는다 (QA T7-04)
     let _ = app.emit("llm-progress", None::<DownloadProgress>);
-    res?
+    res
 }
 
 #[tauri::command]

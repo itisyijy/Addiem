@@ -8,7 +8,7 @@
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다 (시험에서는 2초)
@@ -126,6 +126,19 @@ fn stream(url: &str, limit: u64, idle: Duration, cancel: &dyn Fn() -> bool, mut 
     }
 }
 
+/// 받기가 어떻게 끝났는지 slot 에 남긴다: 실패 · 멈춤이면 그 문구, 다 받으면 비운다.
+/// 받기를 시작하지 않은 화면(다시 들어온 설정 · 배너)도 상태 명령으로 까닭을 보인다 (QA T6-03 · T7-04)
+pub fn keep_failure(slot: &Mutex<Option<String>>, res: Result<(), String>) -> Result<(), String> {
+    if let Ok(mut s) = slot.lock() {
+        *s = res.as_ref().err().cloned();
+    }
+    res
+}
+
+pub fn failure(slot: &Mutex<Option<String>>) -> Option<String> {
+    slot.lock().ok().and_then(|s| s.clone())
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -199,6 +212,16 @@ pub mod tests {
         // 사용자가 멈췄으면 지웠다고 알린다 (화면은 회색)
         assert_eq!(fetch(&server(1000, 10, Duration::from_secs(5)), 1000, "", &part, &|| true, |_| {}), Err(format!("{STOPPED} · 받던 파일은 지웠어요")));
         assert!(!part.exists());
+    }
+
+    /// QA T6-03 · T7-04 나머지: 끝난 받기의 실패 · 멈춤 까닭은 다음 받기가 다 받을 때까지 남는다
+    #[test]
+    fn last_failure_stays_until_a_download_succeeds() {
+        let slot = Mutex::new(None);
+        assert_eq!(keep_failure(&slot, Err(STALLED.into())), Err(STALLED.into()));
+        assert_eq!(failure(&slot).as_deref(), Some(STALLED));
+        keep_failure(&slot, Ok(())).unwrap();
+        assert_eq!(failure(&slot), None);
     }
 
     #[test]
