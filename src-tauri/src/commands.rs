@@ -2215,6 +2215,8 @@ pub struct SessionSummary {
     /// 지금 다시 계산한 오늘 남은 분량 (같은 덱 범위, 같은 신규 배율)
     remaining_review: usize,
     remaining_new: usize,
+    /// 남은 카드 중 오늘 이미 본 카드 (학습 단계로 다시 나온다). 학습한 카드에도 들어 있어 합계가 맞게 따로 센다 (QA T2-01)
+    remaining_seen: usize,
     tomorrow: usize,
     tomorrow_review: usize,
     tomorrow_new: usize,
@@ -2256,7 +2258,14 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         )
         .map_err(err)
     };
-    let studied = one("count(DISTINCT r.card_id)")?;
+    let seen: std::collections::HashSet<i64> = {
+        let mut st = con
+            .prepare(&format!("SELECT DISTINCT r.card_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({scope}) AND r.kind IS NULL"))
+            .map_err(err)?;
+        let rows = st.query_map([since], |r| r.get(0)).map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)?
+    };
+    let studied = seen.len() as i64;
     // 접어둔 카드 복귀는 신규로 세지 않는다 (D1 · 홈과 같게, I82)
     let new_done = one("count(DISTINCT CASE WHEN r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 THEN r.card_id END)")?;
     let again = one("coalesce(sum(r.rating = 1), 0)")?;
@@ -2319,6 +2328,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         buried,
         remaining_review: plan.ordered().len() - plan.new.len(),
         remaining_new: plan.new.len(),
+        remaining_seen: plan.ordered().iter().filter(|c| seen.contains(&c.id)).count(),
         tomorrow,
         tomorrow_review: next.ordered().len() - next.new.len(),
         tomorrow_new: next.new.len(),

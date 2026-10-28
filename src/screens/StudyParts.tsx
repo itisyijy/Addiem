@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Icon } from "../ui";
 import { n, studyDate, useNav } from "../nav";
+import { plainEnter } from "../keys";
 import { cram, splitLater, type CramPlan, type Keyword } from "../written";
 import "../styles/study.css";
 
@@ -68,7 +69,8 @@ export function KeywordEditor({ keywords, suggestions, onChange, onDismiss }: {
             placeholder="핵심어"
             aria-label="핵심어 직접 추가 · Enter 로 넣기"
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              // 한글 조합 중 Enter 는 글자만 마친다 (남은 글자가 칸에 남거나 칩이 하나 더 생기지 않게, QA T8-07)
+              if (plainEnter(e)) {
                 e.preventDefault();
                 add(e.currentTarget.value, "user");
                 e.currentTarget.value = "";

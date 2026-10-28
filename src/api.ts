@@ -333,6 +333,8 @@ export type SessionSummary = {
   buried: BuriedCard[];
   remaining_review: number;
   remaining_new: number;
+  /** 남은 카드 중 오늘 이미 본 카드 (학습 단계). 학습한 카드에도 들어 있다 */
+  remaining_seen: number;
   tomorrow: number;
   tomorrow_review: number;
   tomorrow_new: number;
