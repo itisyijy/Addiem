@@ -190,6 +190,16 @@
   .wordmark path, .logo [fill="var(--brand-path)"] { fill: CanvasText; }
   .logo [fill="var(--brand-grid)"] { fill: GrayText; }
   .wordmark circle, .logo [fill="var(--brand-day)"] { fill: Highlight; }
+  /* 아이콘은 mask + 배경색이라 고대비가 배경을 지우면 같이 사라졌다 (QA T8-01). 시스템 글자색으로 칠한다 */
+  .icon { forced-color-adjust: none; background-color: CanvasText; }
+  /* 주 버튼 · 고른 세그먼트 · 켠 토글은 배경으로만 구분돼 고대비에서 보이지 않았다. 시스템 강조색으로 */
+  .btn--primary, .segment__item.is-selected, .checkbox__box.is-on { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  .btn--primary .icon, .segment__item.is-selected .icon, .checkbox__box.is-on .icon { background-color: HighlightText; }
+  .btn--primary .kbd { background: transparent; border: 1px solid HighlightText; color: HighlightText; }
+  .toggle { forced-color-adjust: none; border: 1px solid CanvasText; background: Canvas; }
+  .toggle::after { background: CanvasText; }
+  .toggle[aria-checked="true"] { border-color: Highlight; background: Highlight; }
+  .toggle[aria-checked="true"]::after { background: HighlightText; }
 }
 
 /* TopNav */

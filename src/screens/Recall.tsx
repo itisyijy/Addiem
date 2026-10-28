@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { Button, Checkbox, Icon, Kbd, Segment, type IconName, type Rating } from "../ui";
 import { eul, eun, gwa, iga, n, ro } from "../nav";
 import { plainText } from "../cardHtml";
+import { plainEnter } from "../keys";
 import { aiApi, aiError, type AiError } from "../api";
 import { AiConnect, ScopeLine, SendList, UsingPlan, openUsage, refreshAi, sendConfirmed, setSendConfirmed, useAiStatus, type SendRow } from "../ai";
 import { CIRCLED, choiceLabel, listLabel, optionKey, recall, wantedDistractors, type ChoiceDraft, type ListDraft, type Special } from "../recall";
@@ -238,9 +239,6 @@ function useFocusRow() {
     next: (i: number, rows: string[]) => rows[i] === "" && (input(i)?.focus(), true),
   };
 }
-
-/** 한글 조합 중 Enter 는 글자를 마치는 키다 */
-const plainEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing;
 
 /** 목록: 항목(한 줄에 하나 · Enter 로 다음 줄) + [순서대로 | 순서 없이]. 2개 미만은 저장할 때 막고, 10개를 넘으면 경고만 (Q4) */
 export function ListEditor({ value, onChange }: { value: ListDraft; onChange: (v: ListDraft) => void }) {
