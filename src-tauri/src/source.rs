@@ -142,6 +142,9 @@ pub fn source_add(state: State<AppState>, deck_id: i64, path: String) -> Res<Mat
     let slides = if kind == "pptx" { Some(pptx_read(&bytes)) } else { None };
     let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("자료.{kind}"));
     let mut con = state.db.lock().map_err(err)?;
+    if let Some(old) = same_file(&con, &state.data_dir, deck_id, &kind, &bytes)? {
+        return Err(format!("이미 넣은 자료와 같은 파일이에요 ({old})."));
+    }
     let tx = con.transaction().map_err(err)?;
     let now = now_ms();
     tx.execute(
@@ -166,6 +169,21 @@ pub fn source_add(state: State<AppState>, deck_id: i64, path: String) -> Res<Mat
     }
     tx.commit().map_err(err)?;
     material(&con, id)
+}
+
+/// 이 덱(하위 덱 포함)에 바이트까지 같은 자료가 이미 있으면 그 이름. 같은 파일이 두 줄로 들어가 구간 · 미연결 수가 두 배가 됐다 (QA T6-07).
+/// 이 기기에 복사본이 없는 자료(동기화로 목록만 받음)는 견주지 않는다
+fn same_file(con: &Connection, data_dir: &Path, deck_id: i64, kind: &str, bytes: &[u8]) -> Res<Option<String>> {
+    let ids = subtree(con, deck_id)?;
+    let mut st = con.prepare(&format!("SELECT m.file_name, m.rel_path FROM source_material m WHERE m.deck_id IN ({ids}) AND m.kind = ?1 ORDER BY {MATERIAL_ORDER}")).map_err(err)?;
+    let rows: Vec<(String, String)> = st.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let same = |rel: &str| {
+        let path = data_dir.join(rel);
+        crate::commands::safe_rel_path(rel, "sources")
+            && path.metadata().is_ok_and(|m| m.len() == bytes.len() as u64)
+            && std::fs::read(&path).is_ok_and(|b| b == bytes)
+    };
+    Ok(rows.into_iter().find(|(_, rel)| same(rel)).map(|(name, _)| name))
 }
 
 /// 자료를 지운다. 카드는 그대로, 연결만 사라진다 (CASCADE). 복사본 파일도 지운다
@@ -1456,17 +1474,57 @@ pub struct Analysis {
     linked: usize,
     /// 자료로 바꾼 중요도 제안 (하위 덱 수)
     suggested: usize,
+    /// 다른 분석이 도는 중이라 줄에 섰다. 그 분석이 끝나면 이어서 하고, 끝나면 "source-analyze" null 이 온다
+    queued: bool,
+}
+
+/// 분석하는 동안 들어온 분석 요청 (덱 id). 지금 분석이 끝나면 이어서 한다 (QA T6-05: 분석 중에 넣은 자료가 오류를 띄우고 분석되지 않았다)
+static QUEUED: Mutex<Vec<i64>> = Mutex::new(vec![]);
+
+/// 분석을 시작하면 true. 이미 분석 중이면 그 덱을 줄에 세우고 false
+fn begin(deck_id: i64) -> bool {
+    let mut q = QUEUED.lock().unwrap_or_else(|e| e.into_inner());
+    if !ANALYZING.swap(true, Ordering::SeqCst) {
+        return true;
+    }
+    if !q.contains(&deck_id) {
+        q.push(deck_id);
+    }
+    false
+}
+
+/// 줄에 선 다음 덱. 없으면 분석을 끝낸다 (begin 과 같은 잠금 안에서 깃발을 내려 그 사이 들어온 요청을 잃지 않는다)
+fn next_queued() -> Option<i64> {
+    let mut q = QUEUED.lock().unwrap_or_else(|e| e.into_inner());
+    if q.is_empty() {
+        if let Ok(mut p) = PROGRESS.lock() {
+            *p = None;
+        }
+        ANALYZING.store(false, Ordering::SeqCst);
+        return None;
+    }
+    Some(q.remove(0))
 }
 
 #[tauri::command]
 pub async fn source_analyze(app: AppHandle, deck_id: i64) -> Res<Analysis> {
-    if ANALYZING.swap(true, Ordering::SeqCst) {
-        return Err("이미 자료를 분석하고 있어요.".into());
+    if !begin(deck_id) {
+        return Ok(Analysis { linked: 0, suggested: 0, queued: true });
     }
-    let res = tauri::async_runtime::spawn_blocking(move || analyze(&app, deck_id)).await.map_err(err);
-    ANALYZING.store(false, Ordering::SeqCst);
-    *PROGRESS.lock().map_err(err)? = None;
-    res?
+    let mut first = None;
+    let mut deck = deck_id;
+    loop {
+        let a = app.clone();
+        let res = tauri::async_runtime::spawn_blocking(move || analyze(&a, deck)).await.map_err(err).and_then(|r| r);
+        first.get_or_insert(res);
+        match next_queued() {
+            Some(d) => deck = d,
+            None => break,
+        }
+    }
+    // 어떻게 끝나든 null: 분석을 시작하지 않은 화면(다시 들어온 자료 화면 · 중요도 배너)도 막대를 지우고 다시 읽는다 (QA T6-04)
+    let _ = app.emit("source-analyze", None::<Progress>);
+    first.unwrap_or_else(|| Err("분석하지 못했어요.".into()))
 }
 
 fn text_hash(text: &str) -> String {
@@ -1618,8 +1676,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
         let mut segs = vec![];
         for (m, _) in &materials {
-            // 그림 · 표 영역은 강조가 아니라 자동 연결 · 중요도 제안에 넣지 않는다. 목차 제목도 (짧은 제목에 카드가 끌린다, AUTO_LINK)
-            segs.push(segments_of(&con, *m)?.into_iter().filter(|s| !is_region(&s.signals) && !is_heading(&s.signals)).collect::<Vec<_>>());
+            segs.push(link_candidates(segments_of(&con, *m)?));
         }
         (ids, cards, materials, segs)
     };
@@ -1641,10 +1698,14 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
     }
 
     let con = state.db.lock().map_err(err)?;
-    // 사용자가 직접 이은 카드와 끊은 연결은 그대로 둔다. 자동 연결만 새로 만든다
-    let seg_ids = segs.iter().flatten().map(|s| s.id.to_string()).collect::<Vec<_>>().join(",");
-    let seg_ids = if seg_ids.is_empty() { "-1".to_string() } else { seg_ids };
-    con.execute(&format!("DELETE FROM source_link WHERE method = 'auto' AND segment_id IN ({seg_ids})"), []).map_err(err)?;
+    // 사용자가 직접 이은 카드와 끊은 연결은 그대로 둔다. 자동 연결만 새로 만든다 (이번에 후보에서 빠진 구간의 옛 자동 연결도 지운다, QA T6-06)
+    let mat_ids = materials.iter().map(|m| m.0.to_string()).collect::<Vec<_>>().join(",");
+    let mat_ids = if mat_ids.is_empty() { "-1".to_string() } else { mat_ids };
+    con.execute(
+        &format!("DELETE FROM source_link WHERE method = 'auto' AND segment_id IN (SELECT id FROM source_segment WHERE material_id IN ({mat_ids}))"),
+        [],
+    )
+    .map_err(err)?;
     let manual: std::collections::HashSet<i64> = {
         let mut st = con.prepare("SELECT DISTINCT card_id FROM source_link WHERE method = 'manual'").map_err(err)?;
         st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
@@ -1662,7 +1723,15 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
     }
     let suggested = suggest(&con, &ids)?;
     exam::suggest_all(&con)?; // 자료 제안을 다시 만들면 기출 근거 줄도 다시 붙인다 (N3)
-    Ok(Analysis { linked: links.len(), suggested })
+    Ok(Analysis { linked: links.len(), suggested, queued: false })
+}
+
+/// 자동 연결 · 중요도 제안에 쓸 구간. 그림 · 표 영역은 강조가 아니고, 목차 제목은 짧아 카드가 끌린다 (AUTO_LINK).
+/// 같은 쪽 제목과 글이 같은 볼드뿐인 구간도 뺀다: 슬라이드 제목의 굵은 글씨는 서식이지 강조가 아니다 (QA T6-06: 표지 제목에 카드 9장이 붙었다)
+fn link_candidates(segs: Vec<Segment>) -> Vec<Segment> {
+    let titles: Vec<(i64, String)> = segs.iter().filter(|s| is_heading(&s.signals)).map(|s| (s.page, heading_of(&s.text).1.trim().to_string())).collect();
+    let title_bold = |s: &Segment| s.signals == ["bold"] && titles.iter().any(|(p, t)| *p == s.page && t == s.text.trim());
+    segs.into_iter().filter(|s| !is_region(&s.signals) && !is_heading(&s.signals) && !title_bold(s)).collect()
 }
 
 /// 하위 덱 중요도 제안. 제안을 붙인 덱 수
@@ -2444,6 +2513,55 @@ mod tests {
         assert_eq!(deep.0.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 1, 2, 1]);
         assert_eq!(deep.0[1], (1, "자료구조 요약".to_string(), 2, 3, 2, Some("제목에 '요약'".to_string())));
         assert_eq!(deep.1, vec![("세부 강조".to_string(), 1), ("요약 강조".to_string(), 1)]);
+    }
+
+    /// QA T6-05: 분석 중에 들어온 요청은 오류가 아니라 줄에 서고, 지금 분석이 끝나면 차례로 돈다. 줄이 비면 깃발을 내린다
+    #[test]
+    fn analysis_requests_during_analysis_queue_up() {
+        assert!(begin(7));
+        assert!(!begin(8));
+        assert!(!begin(8), "같은 덱은 한 번만 선다");
+        assert!(!begin(7), "지금 도는 덱도 다시 선다 (새 자료가 빠졌을 수 있다)");
+        assert_eq!((next_queued(), next_queued(), next_queued()), (Some(8), Some(7), None));
+        assert!(!ANALYZING.load(Ordering::SeqCst));
+        assert!(begin(9), "끝난 뒤에는 바로 시작한다");
+        assert_eq!(next_queued(), None);
+    }
+
+    /// QA T6-06: 슬라이드 제목의 굵은 글씨(제목과 글이 같은 볼드뿐인 구간)는 자동 연결 후보가 아니다. 다른 쪽 · 다른 신호는 남는다
+    #[test]
+    fn title_bold_is_not_a_link_candidate() {
+        let (con, _) = outline_db(&[]);
+        add_seg(&con, 1, 0, "네트워크 3강: 전송 계층", "bold");
+        add_seg(&con, 1, -1, "## 네트워크 3강: 전송 계층", "heading");
+        add_seg(&con, 1, 1, "TCP", "bold");
+        add_seg(&con, 2, 0, "네트워크 3강: 전송 계층", "bold");
+        add_seg(&con, 3, 0, "흐름 제어", "highlight,bold");
+        add_seg(&con, 3, -1, "## 흐름 제어", "heading");
+        add_seg(&con, 4, 0, "그림 · 4쪽", "figure");
+        let got: Vec<(i64, String)> = link_candidates(segments_of(&con, 1).unwrap()).into_iter().map(|s| (s.page, s.text)).collect();
+        assert_eq!(got, vec![(1, "TCP".into()), (2, "네트워크 3강: 전송 계층".into()), (3, "흐름 제어".into())]);
+    }
+
+    /// QA T6-07: 같은 덱(하위 덱 포함)에 바이트가 같은 자료가 있으면 찾는다. 내용이 다르거나 다른 덱이면 없다
+    #[test]
+    fn same_file_is_found_by_bytes_in_the_deck_tree() {
+        let dir = std::env::temp_dir().join(format!("na-source-same-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sources")).unwrap();
+        std::fs::write(dir.join("sources/1.pdf"), b"PDF-A").unwrap();
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute_batch(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'D', 0, 0), (2, '하위', 0, 0), (3, '다른', 0, 0);
+             UPDATE deck SET parent_id = 1 WHERE id = 2;
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, created_at, updated_at) VALUES (1, 2, 'lecture.pdf', 'sources/1.pdf', 'pdf', 0, 0),
+               (2, 1, '없는 파일.pdf', 'sources/9.pdf', 'pdf', 0, 0);",
+        )
+        .unwrap();
+        assert_eq!(same_file(&con, &dir, 1, "pdf", b"PDF-A").unwrap().as_deref(), Some("lecture.pdf"));
+        assert_eq!(same_file(&con, &dir, 1, "pdf", b"PDF-B").unwrap(), None);
+        assert_eq!(same_file(&con, &dir, 1, "pptx", b"PDF-A").unwrap(), None);
+        assert_eq!(same_file(&con, &dir, 3, "pdf", b"PDF-A").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
