@@ -251,7 +251,7 @@ pub struct IdleDeck {
     next_due: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn home(state: State<AppState>) -> Res<Home> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -465,7 +465,7 @@ pub struct ArchivedDeck {
 }
 
 /// 보관한 최상위 덱 (부모가 보관되지 않은 덱 포함). 되살리거나 지울 때 쓴다
-#[tauri::command]
+#[tauri::command(async)]
 pub fn archived_decks(state: State<AppState>) -> Res<Vec<ArchivedDeck>> {
     let con = state.db.lock().map_err(err)?;
     let mut st = con
@@ -686,7 +686,7 @@ fn again_counts(con: &Connection, ids: &str, today: i64) -> Res<(i64, i64)> {
     .map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -953,7 +953,7 @@ pub struct NoteEdit {
     special: Option<crate::recall::Special>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let con = state.db.lock().map_err(err)?;
     let (fields, ntid, exam): (String, i64, crate::exam::ExamState) = con
@@ -1188,7 +1188,7 @@ fn tag_filter(tag: &str) -> String {
 }
 
 /// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기"
-#[tauri::command]
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn list_cards(
     state: State<AppState>,
@@ -1609,7 +1609,7 @@ pub struct ConfigPreview {
     today_new: usize,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> Res<ConfigPreview> {
     let con = state.db.lock().map_err(err)?;
     let decks = load_decks(&con)?;
@@ -1726,7 +1726,7 @@ pub struct BoardDeck {
 }
 
 /// B4. 카드가 직접 들어 있는 덱들. 카드는 자기 덱의 중요도를 상속하므로 중요도는 이 단위로 정한다
-#[tauri::command]
+#[tauri::command(async)]
 pub fn importance_board(state: State<AppState>, deck_id: i64) -> Res<Vec<BoardDeck>> {
     let con = state.db.lock().map_err(err)?;
     // N3 기출 근거는 카드 이동 · 자료 연결 · 기출 표시로 바뀐다. 볼 때 맞춘다 (바뀐 덱만 고친다)
@@ -1795,7 +1795,7 @@ pub struct TargetInfo {
     days: i64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<QueueSummary> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -2552,7 +2552,7 @@ pub(crate) fn prune_auto_backups(con: &Connection, dir: &std::path::Path, now: i
     gone
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn app_info(state: State<AppState>) -> Res<AppInfo> {
     let con = state.db.lock().map_err(err)?;
     let n = |sql: &str| -> Res<i64> { con.query_row(sql, [], |r| r.get(0)).map_err(err) };
@@ -2617,7 +2617,7 @@ fn plan_rate(planned: i64, done: i64) -> f64 {
     (done as f64 / planned as f64).min(1.0)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -2717,7 +2717,7 @@ pub struct HeatDay {
 pub const HEATMAP_DAYS: i64 = 52 * 7;
 
 /// E2-h 학습 기록 히트맵. 오늘까지 52주. deck_id 가 있으면 그 덱(하위 덱 포함)만. 기록이 없는 날은 빠진다
-#[tauri::command]
+#[tauri::command(async)]
 pub fn heatmap(state: State<AppState>, deck_id: Option<i64>) -> Res<Vec<HeatDay>> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
