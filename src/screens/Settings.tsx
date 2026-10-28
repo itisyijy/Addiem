@@ -6,7 +6,7 @@ import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
 import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useOverlayScope } from "../nav";
 import {
-  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
+  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, plainEnter, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
   type ActionId,
 } from "../keys";
 import { Modal } from "./NewDeck";
@@ -330,6 +330,7 @@ const BACKUP_KIND: Record<LocalBackup["kind"], string> = {
   wipe: "모든 데이터 삭제 전 자동 백업",
   sync: "동기화 전 자동 백업",
   cleanup: "노트 정리 전 자동 백업",
+  other: "백업 폴더에 넣은 파일",
 };
 const size = (b: number) => (b < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(1)}MB`);
 
@@ -353,7 +354,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
     api.localBackups().then(
       (l) => {
         setList(l);
-        setPick((p) => (p && l.some((b) => b.name === p) ? p : l[0]?.name));
+        // 처음 고른 것은 앱이 만든 백업 중 가장 최근 것 (넣은 파일은 직접 고를 때만)
+        setPick((p) => (p && l.some((b) => b.name === p) ? p : (l.find((b) => b.kind !== "other") ?? l[0])?.name));
       },
       (e) => setError(errorText(e)),
     );
@@ -378,7 +380,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
   const update = updates.find((x) => x.backup === pick && !x.blocked);
   if (undo !== null) return <UndoConfirm batch={undo} onClose={() => setUndo(null)} />;
   return (
-    <Modal title="백업으로 복구할까요?" onClose={onClose} variant="confirm" icon="rotate" className="restore">
+    // 복구하는 동안은 닫지 않는다: 다른 화면의 명령이 복구가 끝날 때까지 기다리다 갑자기 새로 고쳐진다 (QA T9-07)
+    <Modal title="백업으로 복구할까요?" onClose={busy ? () => {} : onClose} variant="confirm" icon="rotate" className="restore">
       <p className="t-body-m c-secondary">지금 데이터가 이 백업 때로 바뀌어요 · 이 백업 뒤에 한 학습은 빠져요. 복구하기 전에 지금 상태를 백업해 두니 다시 되돌릴 수 있어요.</p>
       {list && list.length === 0 && <p className="t-body-s c-tertiary">이 기기 백업이 아직 없어요</p>}
       {list && list.length > 0 && (
@@ -391,7 +394,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
                 {/* 같은 분에 만든 백업끼리만 초까지 (DU51) */}
                 <span className="t-body-m-strong">{when(b.at, list.some((o) => o !== b && when(o.at) === when(b.at)))}</span>
                 <span className="t-caption c-tertiary">
-                  {BACKUP_KIND[b.kind]} · {size(b.bytes)}
+                  {BACKUP_KIND[b.kind]}
+                  {b.kind === "other" && ` (${b.name})`} · {size(b.bytes)}
                 </span>
               </span>
             </label>
@@ -412,7 +416,7 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
       )}
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="modal__actions">
-        <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+        <Button variant="ghost" size="M" label="취소" shortcut="Esc" disabled={busy} onClick={onClose} />
         <Button variant="danger" size="M" icon="rotate" label={busy ? "복구하는 중…" : "이 백업으로 복구"} disabled={!pick || busy} onClick={run} />
       </div>
     </Modal>
@@ -464,7 +468,7 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
         value={typed}
         autoFocus
         onChange={(e) => setTyped(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && run()}
+        onKeyDown={(e) => plainEnter(e) && run()}
         error={error}
       />
       <div className="modal__actions">
@@ -868,6 +872,9 @@ function Archived({ focus }: { focus: boolean }) {
 const eun = (w: string) => (eul(w) === "을" ? "은" : "는");
 const wa = (w: string) => (eul(w) === "을" ? "과" : "와");
 const RATE_NAMES = ["Again", "Hard", "Good", "Easy"];
+/** 글을 쓰는 칸에서도 받는 동작. Ctrl · Alt 없는 키는 주지 않는다 (keys.ts load() 의 needsModifier 와 같은 규칙, 통합 때 그것으로 바꾼다) */
+const TYPING: ActionId[] = ["save", "math"];
+const typingSafe = (chord: string) => /(^|\+)(Ctrl|Alt)\+/.test(chord);
 
 /** 행을 눌러 새 키를 누르면 바뀐다. 한 번에 한 행만 녹음. 겹침은 같은 범위 안에서만 막는다 */
 function KeysTable() {
@@ -904,6 +911,8 @@ function KeysTable() {
       const fixed = reservedLabel(rec.id, chord);
       if (fixed) return setNote(`${keyLabel(chord)}${eun(keyLabel(chord))} '${fixed}'에 고정된 키예요`);
       const me = actionOf(rec.id);
+      // 저장 · 수식 넣기는 글을 쓰는 칸에서 받는다. 글자 키로 정하면 그 글자를 칠 때 저장된다 (QA T2-05)
+      if (TYPING.includes(rec.id) && !typingSafe(chord)) return setNote(`'${me.label}'${eun(me.label)} 글을 쓰는 중에도 받는 키라 Ctrl이나 Alt와 함께 눌러 주세요`);
       const other = ACTIONS.find((a) => a.id !== rec.id && map[a.id].includes(chord));
       if (rec.id === "rate") {
         // 평가 4개는 한 행에서 차례로. 같은 범위의 다른 동작 키나 이미 고른 키는 받지 않는다

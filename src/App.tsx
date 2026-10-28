@@ -57,7 +57,8 @@ export default function App() {
   const bare = focused || route.name === "noteTypeEdit";
 
   // 전역 단축키 N · I (E1 기본 단축키). 학습 흐름과 작성 중인 카드 추가 화면에서는 끈다
-  const globalKeys = !["study", "summary", "addCard", "noteTypeEdit"].includes(route.name);
+  // 데이터를 열지 못한 복구 안내(S1-6)에서는 화면을 바꾸지 못하니 상단 메뉴와 함께 끈다 (QA T5-13 · T8-11)
+  const globalKeys = !broken && !["study", "summary", "addCard", "noteTypeEdit"].includes(route.name);
   useKey({ action: "newDeck" }, useCallback(() => nav({ name: "newDeck" }), [nav]), globalKeys);
   useKey({ action: "import" }, useCallback(() => nav({ name: "import", pick: true }), [nav]), globalKeys);
 
@@ -66,7 +67,7 @@ export default function App() {
       <NavContext.Provider value={nav}>
         <div className="app">
           {!bare && <Backdrop />}
-          {!bare && (
+          {!bare && !broken && (
             <div className="app__nav">
               <TopNav
                 onHome={() => nav({ name: "home" })}
