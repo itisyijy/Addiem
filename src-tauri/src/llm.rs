@@ -232,8 +232,11 @@ pub async fn llm_download(app: AppHandle) -> Res<()> {
     }
     CANCEL.store(false, Ordering::SeqCst);
     let dir = model_dir(&app.state::<AppState>().data_dir);
-    let res = tauri::async_runtime::spawn_blocking(move || download(&app, &dir)).await.map_err(err);
+    let a = app.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || download(&a, &dir)).await.map_err(err);
     DOWNLOADING.store(false, Ordering::SeqCst);
+    // 어떻게 끝나든(다 받음 · 실패 · 멈춤) null: 받기를 시작하지 않은 화면(설정에 다시 들어옴)도 막대를 지우고 상태를 다시 읽는다 (QA T7-04)
+    let _ = app.emit("llm-progress", None::<DownloadProgress>);
     res?
 }
 

@@ -94,14 +94,17 @@ pub async fn model_download(app: AppHandle) -> Res<()> {
     CANCEL.store(false, Ordering::SeqCst);
     let dir = model_dir(&app.state::<AppState>().data_dir);
     let base = format!("https://huggingface.co/{REPO}/resolve/{REVISION}");
+    let a = app.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         download(&dir, &base, |done, total| {
-            let _ = app.emit("model-progress", DownloadProgress { done, total });
+            let _ = a.emit("model-progress", DownloadProgress { done, total });
         })
     })
     .await
     .map_err(err);
     DOWNLOADING.store(false, Ordering::SeqCst);
+    // 어떻게 끝나든(다 받음 · 실패 · 멈춤) null: 받기를 시작하지 않은 화면(다시 들어온 배너)도 막대를 지우고 상태를 다시 읽는다 (QA T6-03)
+    let _ = app.emit("model-progress", None::<DownloadProgress>);
     res?
 }
 

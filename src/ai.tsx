@@ -7,6 +7,7 @@ import { Badge, Button, Icon, Spinner, type BadgeTone, type IconName } from "./u
 import { useToast } from "./toast";
 import { n } from "./nav";
 import { Head, Sheet, when } from "./sync";
+import { Modal } from "./screens/NewDeck";
 import { placeOf, SIGNAL_LABEL, SIGNAL_TONE, type Sent } from "./sourceApi";
 // OpenAI 공식 로그인 버튼 로고 (developers.openai.com/assets/siwc/sign-in-buttons, 고치지 않고 쓴다)
 import logoWhite from "./assets/brand/chatgpt-logo-white.svg";
@@ -64,6 +65,20 @@ export const setSendConfirmed = (on: boolean, segs = 0) => {
 };
 
 export const openUsage = () => aiApi.openUsage().catch(() => {});
+
+/** 기다림이 30초를 넘으면 true. ChatGPT 기다림이 모두 같은 때 · 같은 말(SLOW)로 알린다 (QA T7-09) */
+export function useSlow(busy: boolean) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!busy) return setSlow(false);
+    const t = setTimeout(() => setSlow(true), 30_000);
+    return () => clearTimeout(t);
+  }, [busy]);
+  return slow;
+}
+export const SLOW = "30초가 넘게 걸리고 있어요";
+/** [취소] · 창 닫기로 보내던 요청을 멈췄을 때의 토스트. 화면은 바로 돌아오지만 이미 보낸 요청은 ChatGPT 가 끝까지 처리한다 (QA R-05) */
+export const STOPPED = { title: "요청을 멈췄어요", text: "이미 보낸 요청은 사용량에 들어가요." };
 
 // ---------------------------------------------------------------- 로그인 버튼 (OpenAI 지침: "Continue with ChatGPT")
 
@@ -316,9 +331,11 @@ export function AiSection() {
   const toast = useToast();
   const [connecting, setConnecting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [asking, setAsking] = useState(false);
   if (!s) return null;
-  // 확인 없이 바로 끊는다. 진행 중인 묶기도 멈춘다 (L1-c)
+  // 다시 쓰려면 브라우저 로그인이 필요해 한 번 묻는다 (QA T7-10). 진행 중인 묶기도 멈춘다 (L1-c)
   const disconnect = async () => {
+    setAsking(false);
     setBusy(true);
     try {
       const revoked = await aiApi.disconnect();
@@ -354,8 +371,17 @@ export function AiSection() {
           </div>
           <div className="ai-foot">
             <span className="t-caption c-tertiary">끊으면 진행 중인 요청도 멈추고 이후 AI 요청을 보내지 않아요. 이미 만든 카드는 남아요.</span>
-            <Button variant="danger" size="M" icon="link-off" label="연결 끊기" busy={busy} onClick={disconnect} />
+            <Button variant="danger" size="M" icon="link-off" label="연결 끊기" busy={busy} onClick={() => setAsking(true)} />
           </div>
+          {asking && (
+            <Modal title="ChatGPT 연결을 끊을까요?" onClose={() => setAsking(false)} variant="confirm" icon="link-off">
+              <p className="t-body-m c-secondary">다시 쓰려면 브라우저에서 ChatGPT에 다시 로그인해야 해요. 이미 만든 카드는 그대로예요.</p>
+              <div className="modal__actions">
+                <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={() => setAsking(false)} />
+                <Button variant="danger" size="M" icon="link-off" label="연결 끊기" onClick={disconnect} />
+              </div>
+            </Modal>
+          )}
         </>
       ) : (
         <>

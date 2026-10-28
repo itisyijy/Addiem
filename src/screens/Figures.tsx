@@ -3,7 +3,7 @@
 // 그림 → 그림 가리기(M2 편집기) · 그림을 앞면에 둔 카드, 표 → 표로 카드 만들기(IT3). EMF · WMF 는 만들지 않는다 (IT11).
 // 만든 카드는 그 쪽 · 영역 구간에 이어진다 (IT9). 흐름(useFlows) · 메뉴 · 오른쪽 목록 · 차례로 만들기(IT8)는 PDF 도 같이 쓴다
 import "../styles/figures.css";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { api, errorText, qualityApi } from "../api";
 import { sanitize } from "../cardHtml";
@@ -179,10 +179,23 @@ export function FigMenu({ entries, tail, className = "", style, onClose }: {
   style?: React.CSSProperties;
   onClose: () => void;
 }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [up, setUp] = useState(false);
+  // 목록 줄 · 그림 칸 아래에 여는 메뉴가 창 아래로 잘리거나 차례로 만들기 막대([다음])를 덮으면 위로 연다 (QA T6-09). 위치를 받은 메뉴(PDF 쪽 위)는 그대로
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (style || !el) return;
+    const r = el.getBoundingClientRect();
+    const bar = el.closest(".src-list")?.querySelector(".src-pick")?.getBoundingClientRect();
+    const limit = bar && bar.top >= r.top ? Math.min(bar.top, window.innerHeight) : window.innerHeight;
+    const host = el.parentElement?.getBoundingClientRect();
+    if (r.bottom > limit && host && host.top - r.height > 0) setUp(true);
+  }, [style]);
   return (
     <div
+      ref={box}
       className={`menu__list menu--panel fig-menu ${className}`}
-      style={style}
+      style={style ?? (up ? { top: "auto", bottom: "100%" } : undefined)}
       role="menu"
       aria-label="그림 메뉴"
       onKeyDown={menuKeys}
@@ -401,6 +414,9 @@ export function Figures({ m, objs, error, segs, deckId, head, pill, linking, onL
     document.getElementById(`fig-${key}`)?.scrollIntoView({ block: "nearest" });
   });
   const flows = useFlows(deckId, onChanged, () => bulk.run && bulk.next(), bulk.run ? `차례로 만들기 ${n(bulk.run.at + 1)} / ${n(bulk.run.keys.length)}` : undefined);
+  // 차례로 만들기 막대가 떠 있으면 Esc 는 차례로 만들기를 멈춘다 (QA T6-10). 겹침으로 올려 화면 Esc(덱으로)가 받지 않게
+  useOverlayScope(!!bulk.run);
+  useKey("Escape", bulk.stop, !!bulk.run && menu === null, { modal: true });
   const openTable = (it: Item) => flows.table({ sub: `표 ${it.k + 1} · ${place(it)}`, rows: it.table!.rows, region: region(it), deckId: it.o.deck_id });
   const open = (it: Item, where: string) => (it.table ? openTable(it) : setMenu(`${where}:${it.key}`));
   const src = (it: Item): FigSource => ({

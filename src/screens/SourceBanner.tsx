@@ -21,7 +21,8 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
   const [hasMaterial, setHasMaterial] = useState(false);
   const [hasOutline, setHasOutline] = useState(false);
   const [dl, setDl] = useState<{ done: number; total: number } | null>(null);
-  const [progress, setProgress] = useAnalyzeProgress(model?.analyzing);
+  // 분석이 끝나면(다른 화면에서 시작했어도) 보드를 다시 읽는다 (QA T6-03)
+  const [progress] = useAnalyzeProgress(model?.analyzing, onChanged);
   const [hidden, setHidden] = useState(later);
   const [error, setError] = useState<string>();
   const [result, setResult] = useState<number | null>(null);
@@ -36,22 +37,26 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
       .catch(() => {});
   }, [deckId]);
   useEffect(() => {
-    const off = listen<{ done: number; total: number }>("model-progress", (e) => setDl(e.payload));
+    // null: 받기가 끝났다 (다 받음 · 실패 · 멈춤). 받기를 시작하지 않은 배너(다시 들어온 화면)도 막대를 지우고 상태를 다시 읽는다 (QA T6-03)
+    const off = listen<{ done: number; total: number } | null>("model-progress", (e) => {
+      setDl(e.payload);
+      if (!e.payload) refreshModel().catch(() => {});
+    });
     return () => {
       off.then((f) => f());
     };
   }, []);
 
+  // 막대는 "source-analyze" 이벤트가 지운다. 다른 분석이 도는 중이면 줄에 서고 결과는 그 뒤 이벤트로 (QA T6-05)
   const analyze = async () => {
     setError(undefined);
     try {
       const r = await sourceApi.analyze(deckId);
-      setResult(r.suggested);
+      if (!r.queued) setResult(r.suggested);
       onChanged();
     } catch (e) {
       setError(errorText(e));
     }
-    setProgress(null);
   };
 
   const download = async () => {

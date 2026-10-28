@@ -7,10 +7,10 @@ import { aiApi, aiError, api, errorText, qualityApi, type AiError, type CardChan
 import { n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { Badge, Button, Checkbox, Icon, Spinner } from "../ui";
-import { AiConnect, AiErrorBox, ScopeLine, SendList, UsingPlan, refreshAi, sendConfirmed, sentRows, setSendConfirmed, useAiStatus } from "../ai";
+import { AiConnect, AiErrorBox, ScopeLine, SendList, SLOW, STOPPED, UsingPlan, refreshAi, sendConfirmed, sentRows, setSendConfirmed, useAiStatus, useSlow } from "../ai";
 import { placeOf, ragApi, type Sent } from "../sourceApi";
 import { SegmentPanel } from "./SourcePanel";
-import { DiscardModal, Modal } from "./NewDeck";
+import { DiscardModal, Modal, useModalClose } from "./NewDeck";
 import { splitLater } from "../written";
 
 type View = "all" | "mismatch" | "format" | "again" | "long" | "multi";
@@ -591,6 +591,15 @@ function Evidence({ check, onOpen }: { check: CardCheck; onOpen: (id: number) =>
   );
 }
 
+/** 이번 실행에서 AI로 확인을 받은 카드. 다시 열면 저절로 다시 보내지 않고 보낼 내용을 먼저 보인다 (QA T7-03: 다시 열자마자 또 보내 사용량을 썼다) */
+const aiChecked = new Set<number>();
+
+/** 창 안의 닫기 버튼. 고친 것이 있으면 X · Esc 처럼 먼저 묻는다 (Modal dirty) */
+function CloseButton({ label }: { label: string }) {
+  const close = useModalClose();
+  return <Button variant="ghost" size="M" label={label} onClick={close} />;
+}
+
 /**
  * CQ2 서식 고치기 · CQ3 AI로 확인. 승인([이대로 고치기]) 전에는 아무것도 바뀌지 않는다.
  * AI 는 누를 때만 보내고(row [AI로 확인]), 처음 보낼 때 한 번 보낼 내용을 묻는다 (L4 · R3 와 같은 확인, 연결 구간은 뺄 수 있다)
@@ -619,6 +628,8 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
   const seq = useRef(0);
   const inFlight = useRef(false);
   const started = useRef(false);
+  const aiSlow = useSlow(aiBusy);
+  const toast = useToast();
 
   useEffect(() => {
     qualityApi.rewrite(cardId).then(
@@ -652,6 +663,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
         inFlight.current = false;
         setAiBusy(false);
         refreshAi();
+        aiChecked.add(cardId);
         setCheck(x);
         if (x.fix) setValue([x.fix.question, x.fix.answer]);
       },
@@ -671,11 +683,14 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
   useEffect(() => {
     if (mode !== "ai" || !r || segs === null || started.current) return;
     started.current = true;
-    if (sendConfirmed(segs.length)) send(segs.map((s) => s.id));
+    if (sendConfirmed(segs.length) && !aiChecked.has(cardId)) send(segs.map((s) => s.id));
     else setAsking(true);
   }, [mode, r, segs]);
   const stop = () => {
-    if (inFlight.current) aiApi.cancel().catch(() => {});
+    if (inFlight.current) {
+      aiApi.cancel().catch(() => {});
+      toast(STOPPED);
+    }
     inFlight.current = false;
     seq.current++;
     onClose();
@@ -706,6 +721,8 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
   const proposal = mode === "format" ? [r.new_question, r.new_answer] : check?.fix ? [check.fix.question, check.fix.answer] : null;
   const asProposed = !!proposal && proposal.every((p, i) => tidy(p) === tidy(value[i]));
   const how = mode === "format" && !asProposed ? "edit" : mode;
+  // 제안을 손봤다: 바깥 클릭 · X · Esc · [그대로 두기]가 묻지 않고 버리던 것 (QA T7-03)
+  const edited = !!proposal && !asProposed;
   const apply = () => {
     setBusy(true);
     qualityApi.rewriteApply(cardId, value[0], value[1], how).then((id) => onDone(id, how), (e) => {
@@ -761,7 +778,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
       <section className="rewrite__card rewrite__card--plain" aria-busy>
         <span className="ai-busy">
           <Spinner size={16} />
-          <span className="t-label-m c-secondary">ChatGPT가 확인하는 중…</span>
+          <span className="t-label-m c-secondary">{aiSlow ? `${SLOW} · [취소]로 멈출 수 있어요` : "ChatGPT가 확인하는 중…"}</span>
           <button type="button" className="ai-link t-label-s" onClick={stop}>
             취소
           </button>
@@ -818,7 +835,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
 
   return (
     <>
-      <Modal title={title} sub={sub} onClose={stop} className={`split rewrite ${panelSeg !== null ? "has-panel" : ""}`}>
+      <Modal title={title} sub={sub} onClose={stop} dirty={edited} className={`split rewrite ${panelSeg !== null ? "has-panel" : ""}`}>
         {mode === "format" ? (
           <p className="quality__info split__why t-body-s">
             <Icon name="info" size={16} />
@@ -874,7 +891,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
           <span className="split__actions">
             {fix ? (
               <>
-                <Button variant="ghost" size="M" label={mode === "format" ? "고치지 않기" : "그대로 두기"} onClick={stop} />
+                <CloseButton label={mode === "format" ? "고치지 않기" : "그대로 두기"} />
                 <Button size="M" icon="check" label="이대로 고치기" disabled={!changed || lockedChange} busy={busy} busyLabel="고치는 중…" onClick={apply} />
               </>
             ) : check && !check.fix ? (
@@ -997,17 +1014,24 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
     const t = setTimeout(() => setAiSlow(true), 30_000);
     return () => clearTimeout(t);
   }, [aiBusy, aiSlow]);
-  // 창을 닫으면 보내던 요청도 멈춘다
+  // 창을 닫으면 보내던 요청도 멈춘다 (멈췄다고 알린다, QA R-05)
+  const toast = useToast();
   useEffect(
     () => () => {
-      if (inFlight.current) aiApi.cancel().catch(() => {});
+      if (inFlight.current) {
+        aiApi.cancel().catch(() => {});
+        toast(STOPPED);
+      }
     },
     [],
   );
 
   /** 규칙 제안으로 돌아간다. 보내던 요청은 멈춘다 */
   const toRule = () => {
-    if (inFlight.current) aiApi.cancel().catch(() => {});
+    if (inFlight.current) {
+      aiApi.cancel().catch(() => {});
+      toast(STOPPED);
+    }
     inFlight.current = false;
     seq.current++;
     setAiBusy(false);
@@ -1130,6 +1154,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
       title="카드 나누기 제안"
       sub={fromAi ? "ChatGPT가 비슷한 내용끼리 나눈 제안이에요. 그대로 쓰기 전에 확인하고 고쳐 주세요." : "규칙으로 나눈 제안이에요. 고쳐서 써도 되고, 나누지 않아도 돼요."}
       onClose={onClose}
+      dirty={edited}
       className={`split ${panelSeg !== null ? "has-panel" : ""}`}
     >
       <p className="quality__info split__why t-body-s">
@@ -1172,7 +1197,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
               </span>
               {aiSlow && (
                 <span className="ai-slow">
-                  <span className="t-caption c-tertiary">30초가 넘게 걸리고 있어요.</span>
+                  <span className="t-caption c-tertiary">{SLOW}.</span>
                   <Button variant="secondary" size="M" label="계속 기다리기" onClick={() => setAiSlow(false)} />
                   <Button variant="ghost" size="M" label="규칙으로 나누기" onClick={toRule} />
                 </span>
