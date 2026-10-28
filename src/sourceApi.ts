@@ -178,7 +178,8 @@ export const sourceApi = {
   regionDeck: (materialId: number, page: number) => invoke<number>("source_region_deck", { materialId, page }),
   /** IT3 미리보기 · 카드 수 (저장하지 않는다) */
   tableCards: (table: TableSpec) => invoke<RegionCard[]>("source_table_cards", { table }),
-  analyze: (deckId: number) => invoke<{ linked: number; suggested: number }>("source_analyze", { deckId }),
+  /** queued: 다른 분석이 도는 중이라 줄에 섰다 (그 뒤에 돌고, 끝나면 "source-analyze" null) */
+  analyze: (deckId: number) => invoke<{ linked: number; suggested: number; queued: boolean }>("source_analyze", { deckId }),
   /** 이 기기에서 분석한 뒤에 생긴 카드 수 (분석한 적이 없으면 0) */
   unanalyzed: (deckId: number) => invoke<number>("source_unanalyzed", { deckId }),
   modelStatus: () => invoke<ModelStatus>("model_status"),

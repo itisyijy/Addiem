@@ -63,7 +63,11 @@ function LlmRow() {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    const off = listen<{ done: number; total: number }>("llm-progress", (e) => setDl(e.payload));
+    // null: 받기가 끝났다 (다 받음 · 실패 · 멈춤). 받기를 시작하지 않은 칸(설정에 다시 들어옴)도 막대를 지우고 상태를 다시 읽는다 (QA T7-04)
+    const off = listen<{ done: number; total: number } | null>("llm-progress", (e) => {
+      setDl(e.payload);
+      if (!e.payload) refreshLlm();
+    });
     return () => {
       off.then((f) => f());
     };
