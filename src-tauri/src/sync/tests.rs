@@ -2516,3 +2516,204 @@ fn tidied_missing_notes_follow_to_the_other_device() {
     assert!(b.id("note", &note).is_none(), "지운 노트는 다른 기기에서도 지워진다");
 }
 
+// ---------------------------------------------------------------- QA 2026-10-28 실사용 T5 · R (K45–)
+
+/// A 가 노트 내용을 고쳐 올리고 B 가 받는다. 받은 내용 · K7 기록 없음 · 두 기기 같음을 본다 (T5-01)
+fn edit_reaches(env: &Env, from: &Dev, to: &Dev, note: &str, text: &str) {
+    let x = json!([text, "답"]).to_string();
+    from.edit_at(db::now_ms() + 1000, "UPDATE note SET fields = ?2 WHERE uid = ?1", params![note, x]);
+    env.sync(from);
+    env.sync(to);
+    assert_eq!(to.fields(note), x, "다른 기기가 고친 내용을 받는다");
+    assert!(to.conflicts().is_empty(), "이어서 고친 것은 두 기기에서 고친 것이 아니다: {:?}", to.conflicts());
+    env.sync(from);
+    assert_eq!(from.dump(), to.dump());
+}
+
+#[test]
+fn rejoined_device_keeps_receiving_edits() {
+    // T5-01 경우 1: B 가 [연결 끊기 · Drive 데이터 남기기] 뒤 다시 연결해 [합치기]. 그 뒤 A 가 고친 노트 내용이 B 에 간다.
+    // 끊으면 B 의 행 시계가 없어져 다시 합칠 때 B 의 HLC(행 시각 + 새 기기 id)로 읽혔고, 같은 값인데 Drive 것보다 커서
+    // A 의 다음 수정이 "B 가 유형을 옮긴 것을 모르고 고친 것"(K41)으로 버려졌다. 그 뒤 B 가 뒷면만 고치면 A 의 앞면까지 덮였다
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let deck_b = b.n("SELECT id FROM deck WHERE name = '2과목'");
+    b.con().execute("UPDATE deck SET name = '2과목 (B)' WHERE id = ?1", [deck_b]).unwrap();
+    for d in [&b, &a] {
+        env.sync(d);
+    }
+    let old_b = b.me();
+    super::forget_local(&b.con()).unwrap();
+    env.store.delete(&format!("devices/{old_b}.json")).unwrap();
+    engine::join(&b.db, &env.cx(&b), Join::Merge, json!({})).unwrap();
+    assert_ne!(b.me(), old_b, "Drive 에 옛 id 의 변경 파일이 있어 새 id 로 합류한다 (K35)");
+    for d in [&b, &a] {
+        env.sync(d);
+    }
+    let note = a.uid("note", a.n("SELECT id FROM note"));
+    edit_reaches(&env, &a, &b, &note, "A 가 다시 연결한 뒤 고친 앞면");
+    // B 가 뒷면만 고쳐도 A 의 앞면은 남는다
+    let y = json!(["A 가 다시 연결한 뒤 고친 앞면", "B 가 고친 뒷면"]).to_string();
+    b.edit_at(db::now_ms() + 2000, "UPDATE note SET fields = ?2 WHERE uid = ?1", params![note, y]);
+    env.sync(&b);
+    env.sync(&a);
+    assert_eq!(a.fields(&note), y);
+    assert_eq!(a.dump(), b.dump());
+    // 반대 방향도
+    edit_reaches(&env, &b, &a, &note, "B 가 고친 앞면");
+}
+
+#[test]
+fn same_package_on_two_devices_keeps_receiving_edits() {
+    // T5-01 경우 2: 같은 .apkg 를 두 기기가 따로 가져온 뒤 처음 합치기. 그 뒤 수정이 오간다.
+    // 노트 시각은 패키지 값이라 같을 수도(그러면 기기 id 가 큰 B 가 늘 이겼다), 나중에 가져온 쪽이 클 수도 있다
+    same_package(1000);
+    same_package(2000);
+}
+
+fn same_package(b_updated_at: i64) {
+    let env = Env::new();
+    let a = Dev::new("노트북");
+    let da = a.deck("공통", None);
+    let (n1, _) = a.note(da, "같은 .apkg 질문", Some("G1"), 1000);
+    engine::join(&a.db, &env.cx(&a), Join::New, json!({})).unwrap();
+    let b = Dev::new("데스크톱");
+    let dbk = b.deck("공통", None);
+    b.note(dbk, "같은 .apkg 질문", Some("G1"), b_updated_at);
+    let report = engine::join(&b.db, &env.cx(&b), Join::Merge, json!({})).unwrap();
+    assert_eq!(report.conflicts, 0, "내용이 같으면 K7 에 남기지 않는다");
+    for d in [&b, &a] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), b.dump());
+    let note = a.uid("note", n1);
+    edit_reaches(&env, &a, &b, &note, "A 가 합친 뒤 고친 앞면");
+    edit_reaches(&env, &b, &a, &note, "B 가 그 뒤 고친 앞면");
+    edit_reaches(&env, &a, &b, &note, "A 가 다시 고친 앞면");
+}
+
+#[test]
+fn copied_data_folder_moves_to_its_own_id_before_pushing() {
+    // T5-02: 동기화 중인 A 의 데이터 폴더를 통째로 복사해 다른 곳에서 열었다. 복사본이 먼저 올려도 원래 기기 A 가 막히지 않고,
+    // 세 기기가 서로의 수정을 받는다 (예전에는 복사본이 A 의 id 로 올려 A 가 멈추고 A 는 복사본의 수정을 받지 못했다)
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    for d in [&a, &b] {
+        let fp = format!("fp-{}", d.me());
+        assert!(!engine::check_copy(&d.con(), &fp).unwrap(), "처음에는 지문만 남긴다");
+    }
+    a.deck("복사 전 A 덱", None);
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    let copy_dir = tmp("copy");
+    std::fs::create_dir_all(copy_dir.join("media")).unwrap();
+    a.con().execute("VACUUM INTO ?1", [copy_dir.join("addiem.sqlite").to_string_lossy()]).unwrap();
+    let clone = Dev { db: Mutex::new(db::open(&copy_dir.join("addiem.sqlite")).unwrap()), dir: copy_dir };
+    let a_id = a.me();
+    assert!(engine::check_copy(&clone.con(), "fp-copy").unwrap(), "다른 곳에서 열면 새 기기 id");
+    assert!(!engine::check_copy(&a.con(), &format!("fp-{a_id}")).unwrap(), "원래 기기는 그대로");
+    assert!(!engine::check_copy(&clone.con(), "fp-copy").unwrap(), "한 번만");
+    assert_ne!(clone.me(), a_id);
+    clone.deck("복사본 덱", None);
+    env.sync(&clone);
+    a.deck("A 의 새 덱", None);
+    env.sync(&a); // 막히지 않는다 (env.sync 는 오류면 멈춘다)
+    for d in [&clone, &b, &a, &clone] {
+        env.sync(d);
+    }
+    assert_eq!(a.dump(), clone.dump());
+    assert_eq!(a.dump(), b.dump());
+    assert_eq!(a.n("SELECT count(*) FROM deck WHERE name IN ('복사본 덱', 'A 의 새 덱', '복사 전 A 덱')"), 3);
+}
+
+#[test]
+fn backup_made_under_an_old_lock_opens_with_that_password() {
+    // T5-03 · R-02: 잠근 채 Drive 백업이 생긴 뒤 잠금을 풀고 새 암호로 다시 잠갔다. 그 백업은 지금 키로 열리지 않지만 그때 암호로는 열린다.
+    // 잠금을 바꾸기 전 crypto.json 을 kdf/ 에 남긴다. 옛 앱(v0.1.0)은 그 파일을 모르니 건너뛴다
+    use super::crypto;
+    let env = Env::new();
+    let (old_key, old_kdf) = crypto::new_key("예전 암호 1234").unwrap();
+    super::replace_crypto(&env.store, Some(&serde_json::to_vec(&old_kdf).unwrap())).unwrap();
+    let zip = b"PK backup zip".to_vec();
+    let name = "backups/addiem-2026-10-28-1300.zip";
+    env.store.put(name, &crypto::seal(&old_key, &zip)).unwrap();
+    // 잠금 풀기 → 새 암호로 다시 잠그기 (Drive 에서 일어나는 일만: set_lock 이 부르는 것과 같다)
+    super::replace_crypto(&env.store, None).unwrap();
+    let (new_key, new_kdf) = crypto::new_key("새 암호 5678").unwrap();
+    super::replace_crypto(&env.store, Some(&serde_json::to_vec(&new_kdf).unwrap())).unwrap();
+    assert_eq!(env.files("kdf/").len(), 1, "예전 잠금 하나 (지금 잠금은 crypto.json)");
+    assert!(env.files("kdf/").iter().all(|p| !p.starts_with("crypto.json")), "잠금 감지(앞부분 일치)에 걸리지 않는다");
+    assert_eq!(env.store.list("crypto.json").unwrap().len(), 1);
+    assert!(env.store.list("backups/").unwrap().iter().all(|e| !e.path.contains("kdf")), "백업 목록에 섞이지 않는다");
+    let data = env.store.get(name).unwrap();
+    assert!(matches!(super::open_backup(&env.store, data.clone(), Some(new_key), None), Err(SyncError::Locked)), "지금 키로 안 열리면 암호 칸");
+    assert_eq!(super::open_backup(&env.store, data.clone(), Some(new_key), Some("예전 암호 1234")).unwrap(), zip, "그때 암호로 연다");
+    assert_eq!(super::open_backup(&env.store, data, Some(old_key), None).unwrap(), zip, "이 기기에 그 키가 있으면 묻지 않는다");
+    // 옛 앱이 Drive 를 읽는 길(engine::remote)은 kdf/ 를 어느 것으로도 보지 않는다
+    let r = engine::remote(&env.store).unwrap();
+    assert!(r.locked && r.is_empty() && r.changes.is_empty() && r.devices.is_empty() && r.media.is_empty());
+}
+
+#[test]
+fn choice_counts_come_from_a_device_that_has_everything() {
+    // R-01: 고르는 창의 Drive 숫자를 "이 세대에 마지막으로 맞춘 기기"가 적은 값에서 가져와, 다 받지 못한(빈) 기기가 마지막이면 0 으로 보였다
+    let env = Env::new();
+    let (a, b, _) = pair(&env);
+    let deck = a.n("SELECT id FROM deck WHERE name = '2과목'");
+    a.note(deck, "두 번째 카드", None, 2000);
+    for d in [&a, &b] {
+        env.sync(d);
+    }
+    // 그 뒤 A 가 하나 더 올렸지만 B 는 아직 받지 않았다. 빈 기기가 가장 최근에 기기 파일을 썼다
+    a.note(deck, "세 번째 카드", None, 3000);
+    env.sync(&a);
+    let now = db::now_ms() + 60_000;
+    env.store
+        .put("devices/zz.json", json!({ "uid": "zz", "gen": 1, "at": now, "pos": {}, "seq": 0, "counts": { "decks": 0, "cards": 0, "reviews": 0, "media_bytes": 0 } }).to_string().as_bytes())
+        .unwrap();
+    let r = engine::remote(&env.store).unwrap();
+    let devices = engine::read_devices(&env.store, &r);
+    assert_eq!(super::drive_counts(&env.store, &r, &devices)["cards"], 3, "모두 받은 A 의 숫자");
+    // 모두 받은 기기가 없으면 스냅샷 머리 (처음 올린 A 의 1장)
+    let only_zz: Vec<J> = devices.into_iter().filter(|d| d["uid"] == "zz").collect();
+    assert_eq!(super::drive_counts(&env.store, &r, &only_zz)["cards"], 1);
+}
+
+#[test]
+fn truncated_media_is_fetched_again() {
+    // T5-04 Drive 쪽: 그림을 받다 끊겨 잘린 파일이 제 이름으로 남으면, 예전에는 "있는 파일"이라 다시 받지 않았다
+    for key in [None, Some([9u8; 32])] {
+        let env = Env::new();
+        let a = Dev::new("노트북");
+        let png = vec![7u8; 5000];
+        std::fs::write(a.dir.join("media/neo-big.png"), &png).unwrap();
+        a.con().execute("INSERT INTO media (filename, rel_path, sha256, byte_size, created_at) VALUES ('neo-big.png', 'media/neo-big.png', '', 5000, 1)", []).unwrap();
+        engine::join(&a.db, &env.cx_key(&a, key), Join::New, json!({})).unwrap();
+        let b = Dev::new("데스크톱");
+        engine::join(&b.db, &env.cx_key(&b, key), Join::Take, json!({})).unwrap();
+        let file = b.dir.join("media/neo-big.png");
+        assert_eq!(std::fs::read(&file).unwrap(), png);
+        std::fs::write(&file, &png[..1200]).unwrap();
+        let r = engine::remote(&env.store).unwrap();
+        assert_eq!(engine::fetch_media(&b.db, &env.cx_key(&b, key), &r.media).unwrap(), 1, "잘린 파일은 다시 받는다");
+        assert_eq!(std::fs::read(&file).unwrap(), png);
+        assert_eq!(engine::fetch_media(&b.db, &env.cx_key(&b, key), &r.media).unwrap(), 0, "온전한 파일은 다시 받지 않는다 (잠근 Drive 의 크기도 맞게 센다)");
+        let left: Vec<_> = std::fs::read_dir(b.dir.join("media")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "임시 파일이 남지 않는다: {left:?}");
+    }
+}
+
+#[test]
+fn network_errors_read_without_os_text() {
+    // R-04: "인터넷에 연결되지 않았어요 (io: … (os error 10061))" 처럼 OS 원문이 보였고, 끊긴 연결(10054)도 "연결되지 않았어요"였다
+    for (raw, want) in [
+        ("io: 현재 연결은 원격 호스트에 의해 강제로 끊겼습니다. (os error 10054)", "끊겼어요"),
+        ("io: 대상 컴퓨터에서 연결을 거부했으므로 연결하지 못했습니다. (os error 10061)", "연결할 수 없어요"),
+        ("Connection reset by peer (os error 104)", "끊겼어요"),
+        ("dns failed", "인터넷에 연결되지 않았어요"),
+    ] {
+        let text = SyncError::Offline(raw.into()).to_string();
+        assert!(text.contains(want) && !text.contains("os error") && !text.contains("니다"), "{text}");
+    }
+}

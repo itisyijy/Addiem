@@ -99,6 +99,9 @@ pub fn key_fits(key: &[u8; 32], kdf: &KdfParams) -> bool {
     unseal(key, &check).ok().as_deref() == Some(CHECK)
 }
 
+/// 암호화로 늘어나는 크기: MAGIC + nonce + 태그
+pub const SEALED_EXTRA: u64 = 4 + 24 + 16;
+
 /// 파일 하나 암호화: MAGIC + 24바이트 nonce + 암호문(태그 포함). nonce 는 파일마다 새 난수
 pub fn seal(key: &[u8; 32], plain: &[u8]) -> Vec<u8> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).expect("키 길이 32");

@@ -38,7 +38,12 @@ pub enum SyncError {
 impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SyncError::Offline(e) => write!(f, "인터넷에 연결되지 않았어요 ({e})"),
+            // OS 원문(언어 · 번호)은 보이지 않는다 (QA R-04, K51). 원문은 값에 남는다
+            SyncError::Offline(e) if ["10053", "10054", "reset", "aborted"].iter().any(|k| e.contains(k)) => {
+                f.write_str("Drive와 연결이 끊겼어요. 다시 연결되면 이어서 맞춰요.")
+            }
+            SyncError::Offline(e) if e.contains("10061") || e.contains("refused") => f.write_str("Drive에 연결할 수 없어요. 다시 연결되면 이어서 맞춰요."),
+            SyncError::Offline(_) => f.write_str("인터넷에 연결되지 않았어요. 연결되면 이어서 맞춰요."),
             SyncError::Auth => write!(f, "Google 로그인이 만료됐어요. 다시 로그인해 주세요."),
             SyncError::Quota => write!(f, "Drive 공간이 부족해요."),
             SyncError::NewerSchema => write!(f, "Drive 데이터가 더 새 버전의 앱에서 만들어졌어요. 앱을 업데이트해 주세요."),

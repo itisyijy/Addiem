@@ -184,6 +184,32 @@ pub fn mark_restored(con: &Connection) -> SRes<()> {
     Ok(())
 }
 
+/// 새 기기 id (db.rs NEW_UID 와 같은 꼴: 앞 12자리 ms 시각 + 난수)
+fn new_device_uid() -> String {
+    format!("{:012x}{}", db::now_ms(), crypto::random_hex(10))
+}
+
+/// 연결된 데이터 폴더를 복사해 다른 곳(다른 경로 · 다른 컴퓨터)에서 열었는가 (QA T5-02, K46). 지문은 부르는 쪽이 만든다 (경로 + 컴퓨터 이름).
+/// 다르면 올리기 전에 새 기기 id 로 옮긴다: 같은 id 둘이면 먼저 올린 쪽이 다른 쪽을 막고 서로의 변경을 받지 못한다.
+/// 옛 id 의 받은 위치(pos)는 그대로 둬, 원래 기기가 그 뒤 올리는 변경을 다른 기기 것처럼 받는다. 바꿨으면 true.
+/// 지문이 없으면(이 기능 전에 연결했다) 지금 것을 남긴다: 이 기능 전에 만든 복사본은 알아보지 못한다
+pub fn check_copy(con: &Connection, fingerprint: &str) -> SRes<bool> {
+    ensure_tables(con)?;
+    if gen_of(con)? == 0 {
+        return Ok(false);
+    }
+    let known = local(con, "fingerprint")?;
+    set_local(con, "fingerprint", fingerprint)?;
+    if known.is_none_or(|f| f == fingerprint) {
+        return Ok(false);
+    }
+    con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [new_device_uid()]).map_err(dbe)?;
+    set_local(con, "my_seq", "0")?;
+    // 원래 기기가 만든 Drive 백업 · 올린 기록은 이 기기 것이 아니다
+    con.execute("DELETE FROM sync_local WHERE key IN ('my_backups', 'last_push')", []).map_err(dbe)?;
+    Ok(true)
+}
+
 /// Drive 가 아는 이 기기 id 의 마지막 번호: 변경 파일과 기기 파일(devices/<나>.json) 중 큰 것.
 /// 정리(5.5)는 기기 파일의 번호 뒤 파일을 지우지 않는다. 변경 파일이 모두 지워졌어도 기기 파일에 남는다
 fn pushed_top(r: &Remote, devices: &[J], me: &str) -> i64 {
@@ -871,7 +897,8 @@ pub struct Remote {
     /// 기기 -> (번호, 경로) 오름차순
     pub changes: BTreeMap<String, Vec<(i64, String)>>,
     pub devices: Vec<String>,
-    pub media: HashSet<String>,
+    /// 그림 경로 -> 크기
+    pub media: HashMap<String, u64>,
     pub locked: bool,
     /// 숨김 공간 전체 크기 (K4 "Addiem이 쓰는 공간")
     pub bytes: u64,
@@ -904,7 +931,7 @@ pub fn remote(store: &dyn Store) -> SRes<Remote> {
         } else if e.path.starts_with("devices/") && e.path.ends_with(".json") {
             r.devices.push(e.path);
         } else if e.path.starts_with("media/") {
-            r.media.insert(e.path);
+            r.media.insert(e.path, e.size);
         } else if e.path == "crypto.json" {
             r.locked = true;
         }
@@ -1064,16 +1091,20 @@ fn release_anchors(tx: &Transaction, me: &str, generation: i64, devices: &[J]) -
     .map_err(dbe)
 }
 
-/// 이 기기에 없는 그림을 받는다. 데이터를 먼저 합치고 그림은 뒤에서 (K6-f)
-pub fn fetch_media(db: &Mutex<Connection>, cx: &Ctx, have_remote: &HashSet<String>) -> SRes<usize> {
+/// 이 기기에 없는 그림을 받는다. 데이터를 먼저 합치고 그림은 뒤에서 (K6-f).
+/// 받다 끊겨 Drive 것보다 작은 파일도 다시 받는다. 임시 이름(.<이름>.part)에 쓰고 바꿔, 끊겨도 잘린 파일이 제 이름으로 남지 않는다 (QA T5-04 Drive 쪽, K50)
+pub fn fetch_media(db: &Mutex<Connection>, cx: &Ctx, have_remote: &HashMap<String, u64>) -> SRes<usize> {
     let rows: Vec<(String, String)> = {
         let con = lock(db)?;
         let mut st = con.prepare("SELECT filename, sha256 FROM media WHERE length(sha256) = 64").map_err(dbe)?;
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
     };
+    // Drive 파일 크기 - 잠근 파일의 머리 · nonce · 태그 = 그림 크기
+    let overhead = if cx.key.is_some() { crypto::SEALED_EXTRA } else { 0 };
+    let short = |name: &str, size: u64| std::fs::metadata(cx.media_dir.join(name)).map_or(true, |m| m.len() < size.saturating_sub(overhead));
     let todo: Vec<_> = rows
         .into_iter()
-        .filter(|(name, sha)| safe_media_name(name).is_ok() && !cx.media_dir.join(name).exists() && have_remote.contains(&media_path(sha, name, cx.key())))
+        .filter(|(name, sha)| safe_media_name(name).is_ok() && have_remote.get(&media_path(sha, name, cx.key())).is_some_and(|size| short(name, *size)))
         .collect();
     if todo.is_empty() {
         return Ok(0);
@@ -1085,7 +1116,9 @@ pub fn fetch_media(db: &Mutex<Connection>, cx: &Ctx, have_remote: &HashSet<Strin
         let bytes = open_opt(cx.store.get(&media_path(sha, name, cx.key()))?, cx.key())?;
         // 받은 그림이 해시와 다르면 버린다 (중간에 깨진 파일)
         if crypto::hex(&crypto::sha256(&bytes)) == *sha {
-            std::fs::write(cx.media_dir.join(name), bytes).map_err(other)?;
+            let part = cx.media_dir.join(format!(".{name}.part"));
+            std::fs::write(&part, bytes).map_err(other)?;
+            std::fs::rename(&part, cx.media_dir.join(name)).map_err(other)?;
             n += 1;
         }
     }
@@ -1658,7 +1691,11 @@ impl Applier<'_> {
     fn update(&mut self, table: &Table, uid: &str, rowid: i64, f: &Fold) -> SRes<Step> {
         let t = table.name;
         let Some((_, local)) = export(self.tx, table, rowid)? else { return Ok(Step::Done) };
-        let mut clock = load_clock(self.tx, t, uid)?.unwrap_or_else(|| Clock::implicit(&local, &self.me));
+        let stored = load_clock(self.tx, t, uid)?;
+        // 처음 합치기의 시계 없는 이 기기 행 (연결 전에 생겼다 · 연결을 끊었다 다시 합친다): 값이 Drive 와 같은 열은 Drive 의 HLC 로 (K45).
+        // 이 기기 HLC(행 시각 + 이 기기 id)로 두면 같은 값인데 Drive 것보다 나중으로 읽혀, 다른 기기가 그 뒤 고친 내용을 K41 이 버렸다 (QA T5-01)
+        let fresh = stored.is_none() && self.mode == Mode::Merge;
+        let mut clock = stored.unwrap_or_else(|| Clock::implicit(&local, &self.me));
         let pend = self.pend(t, uid).cloned();
         if t == "review_log" {
             // 복습 기록은 바뀌지 않는다 (합집합). 단 카드를 지웠다가 되살려 받은 기기에서 비어 버린 카드 참조는 채운다 (K29)
@@ -1690,7 +1727,11 @@ impl Applier<'_> {
                         }
                         Some(*h > lt)
                     }
-                    None if f.cols.contains_key("fields") => f.base.as_deref().filter(|b| *b != "0" && *b < lt.as_str()).map(|_| false),
+                    // 이 기기가 옮긴 적이 있을 때만 (유형 열 HLC 가 행 기본값과 따로 있다). 행 기본값은 만든 · 합친 시각이지 옮긴 시각이 아니다 (K45)
+                    None if f.cols.contains_key("fields") => {
+                        let moved_here = max_of(clock.cols.get("note_type_id").map(String::as_str), pend.as_ref().and_then(|p| p.col("note_type_id")));
+                        f.base.as_deref().filter(|b| *b != "0" && moved_here.is_some_and(|m| *b < m)).map(|_| false)
+                    }
                     None => None,
                 }
             } else {
@@ -1767,6 +1808,8 @@ impl Applier<'_> {
                     if self.mode == Mode::Merge {
                         self.local_won.insert((t.into(), uid.to_string()));
                     }
+                } else if fresh {
+                    clock.cols.insert(c.clone(), h.clone());
                 }
             }
             if srs_differs && self.mode == Mode::Merge {
@@ -1821,6 +1864,14 @@ impl Applier<'_> {
             if applied {
                 self.report.applied += 1;
             }
+        }
+        if fresh {
+            // 위에서 정하지 않은 열(이 기기 값이 이긴 열 · Drive 가 보내지 않은 열)은 이 기기 HLC 그대로, 행 기본값은 그중 가장 작은 것
+            let mine = clock.base.clone();
+            for c in &table.cols {
+                clock.cols.entry(c.clone()).or_insert_with(|| mine.clone());
+            }
+            clock.base = clock.cols.values().min().cloned().unwrap_or(mine);
         }
         // 열 HLC 를 행 기본값보다 작게 남길 필요는 없다
         let base = clock.base.clone();
@@ -2501,8 +2552,7 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
         // [연결 끊기]는 Drive 의 기기 파일을 지우므로 변경 파일도 본다, Q2-09)
         let me = device_uid(&con)?;
         if gen_of(&con)? == 0 && (r.devices.contains(&format!("devices/{me}.json")) || r.changes.contains_key(&me)) {
-            let fresh = format!("{:012x}{}", db::now_ms(), crypto::random_hex(10));
-            con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [&fresh]).map_err(dbe)?;
+            con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [new_device_uid()]).map_err(dbe)?;
             set_local(&con, "my_seq", "0")?;
         }
     }
@@ -2537,10 +2587,14 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
             let (header, mut recs) = decode(cx.store.get(&snap.path)?, cx.key())?;
             let me = { device_uid(&*lock(db)?)? };
             let mut pos: BTreeMap<String, i64> = header["covers"].as_object().into_iter().flatten().map(|(d, s)| (d.clone(), s.as_i64().unwrap_or(0))).collect();
-            // 스냅샷 뒤의 변경도 함께
+            // 스냅샷 뒤의 변경도 함께. 파일마다 받는 데 시간이 걸린다: 고르는 창이 진행을 보인다 (R-03)
+            let total: usize = r.changes.iter().map(|(d, f)| f.iter().filter(|(s, _)| *s > pos.get(d).copied().unwrap_or(0)).count()).sum();
+            let mut done = 0;
             for (d, files) in &r.changes {
                 for (s, p) in files {
                     if *s > pos.get(d).copied().unwrap_or(0) {
+                        (cx.progress)("pull", done, total as u64);
+                        done += 1;
                         if let Some((h, file_recs)) = read_change(cx, p, r.locked)?
                             && h["gen"].as_i64().unwrap_or(0) == generation
                         {
