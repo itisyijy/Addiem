@@ -1055,9 +1055,41 @@ export const syncApi = {
 };
 // ================================================================ K · Google Drive 보관·동기화 — 끝
 
-/** Rust 쪽 오류는 사용자에게 보여줄 문장으로 온다 */
+/**
+ * 라이브러리 · OS 원문 오류를 우리말 문장으로 (QA T8-10 · T8-13 · T5-12 · T4-25).
+ * OS 원문은 Windows 언어에 따라 우리말(합니다체)로도 오므로 코드로 찾는다
+ */
+const RAW_ERRORS: [RegExp, string][] = [
+  [/Query returned no rows/i, "찾는 항목이 없어요. 다른 기기에서 지웠을 수 있어요. 화면을 다시 열어 주세요."],
+  [/\(os error 2\)/, "파일을 찾을 수 없어요. 옮기거나 지웠는지 확인해 주세요."],
+  [/\(os error 3\)/, "폴더를 찾을 수 없어요."],
+  [/\(os error 5\)/, "이 위치에 접근할 권한이 없어요."],
+  [/\(os error 32\)/, "다른 프로그램이 이 파일을 쓰고 있어요. 그 프로그램을 닫고 다시 시도해 주세요."],
+  [/\(os error 112\)/, "디스크 공간이 모자라요. 공간을 비우고 다시 시도해 주세요."],
+  [/database is locked/i, "다른 작업이 데이터를 쓰고 있어요. 잠시 뒤 다시 시도해 주세요."],
+  [/UNIQUE constraint failed/i, "같은 항목이 이미 있어요."],
+  [/file is not a database/i, "데이터 파일이 손상됐거나 이 앱의 파일이 아니에요."],
+];
+const HANGUL = /[가-힣]/;
+
+/** Rust 쪽 오류는 대부분 사용자에게 보여줄 문장으로 온다. 원문이 섞여 오면 그 부분만 바꾸고, 앞뒤의 우리말 문장은 남긴다 */
 export function errorText(e: unknown): string {
-  return typeof e === "string" ? e : e instanceof Error ? e.message : "알 수 없는 오류가 났어요.";
+  const raw = typeof e === "string" ? e : e instanceof Error ? e.message : "";
+  if (!raw) return "알 수 없는 오류가 났어요.";
+  for (const [re, text] of RAW_ERRORS) {
+    const m = re.exec(raw);
+    if (!m) continue;
+    // 원문 앞의 우리말 문장 ("백업도 열지 못했어요: …"). OS 원문은 "…니다" 라 마지막 "…요" 까지가 앱 문장이다
+    const before = raw.slice(0, m.index);
+    const end = [...before.matchAll(/요(?=[\s.:·(]|$)/g)].pop();
+    const lead = end ? before.slice(0, end.index + 1) : "";
+    const after = raw.slice(m.index + m[0].length);
+    const tail = HANGUL.test(after) ? after.slice(after.search(HANGUL)).trim() : "";
+    return [lead && `${lead}.`, text, tail].filter(Boolean).join(" ");
+  }
+  if (HANGUL.test(raw)) return raw;
+  console.warn("오류 원문:", raw);
+  return "처리하지 못했어요. 잠시 뒤 다시 시도해 주세요.";
 }
 
 /** 사용자가 [멈추기]를 눌러 끝난 모델 받기 (dl.rs STOPPED). 오류가 아니라 회색으로 보인다 (J18) */

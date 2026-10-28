@@ -133,8 +133,16 @@ export function useKeymap() {
 const SAME: Record<string, string> = { NumpadEnter: "Enter", NumpadSubtract: "Minus", NumpadAdd: "Equal", NumpadDecimal: "Period" };
 const normCode = (code: string) => SAME[code] ?? code.replace(/^Numpad(\d)$/, "Digit$1");
 
-/** 키 입력 하나를 저장 형식으로. 조합 키만 누른 경우는 null */
+/** 한글 조합 중인 키 입력. 조합 중 Enter · Esc 는 글자를 마치는 키다. Windows 한글 IME 는 keyCode 229 로 알린다 */
+export const composing = (e: KeyboardEvent) => e.isComposing || e.keyCode === 229;
+
+/** 확인용 Enter (조합 중 · Ctrl · Cmd 가 아닌). 입력 칸의 onKeyDown 과 document 리스너가 같이 쓴다 */
+export const plainEnter = (e: React.KeyboardEvent | KeyboardEvent) =>
+  e.key === "Enter" && !e.ctrlKey && !e.metaKey && !composing("nativeEvent" in e ? e.nativeEvent : e);
+
+/** 키 입력 하나를 저장 형식으로. 조합 키만 누른 경우와 한글 조합 중인 키는 null (조합 중 키가 단축키로 새지 않게) */
 export function chordOf(e: KeyboardEvent): string | null {
+  if (composing(e)) return null;
   if (["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"].includes(e.code)) return null;
   return [e.ctrlKey || e.metaKey ? "Ctrl" : "", e.altKey ? "Alt" : "", e.shiftKey ? "Shift" : "", normCode(e.code)].filter(Boolean).join("+");
 }
