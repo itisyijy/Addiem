@@ -23,9 +23,9 @@ $repo = "C:\path\to\Addiem-worktree"   # 합친 브랜치의 worktree (메인 �
 
 | 단계 | 누가 | 하는 일 |
 |---|---|---|
-| make | pylib | 컬렉션을 만들고 (FSRS 켬) Basic · 앞뒤 · Cloze(c1 여러 개 · 힌트) · type-in · Image Occlusion · 사용자 정의 유형(`{{Tags}}` `{{Deck}}` `{{Subdeck}}` `{{Card}}` `{{Type}}` `{{text:}}` `{{hint:}}` 조건부, 카드 종류 둘) · 미디어(그림 · 소리) · 덱 3단 · 태그 · 7번 공부 · 일시 정지 1장 → `v1_modern`(anki21b) · `v1_legacy`(anki21) · `v1_anki2`(anki2 하나로 다시 묶음). Anki 렌더 기준 `ref_v1.json`. 만든 사람의 편집(값 · 태그 · 충돌 · 합침 · 노트 삭제 · 새 필드 · 이름 바뀐 필드 · 새 카드 종류 · 빈칸 번호 바꿈 · CSS · 템플릿 · 새 노트) → `v2_modern` |
-| phase1 | Rust (`src-tauri/src/qa_real_anki.rs`) | 세 형식 가져오기(기록 옮기기) · 같은 파일 다시 가져오기, v1 위에 내 편집 · 노트 삭제 · CSS · 공부(앱 함수) → `inspect_update` · `apply_update` v2 판정 · 일정 · 기록 · 빈칸 번호 · 멱등, 앱에서 만든 노트 하나 더해 내보내기 (`neo_state.json`) |
-| anki | pylib | 1: Neo 상태와 Anki 기준 비교 (노트 · 필드 · 태그 · 유형 · 미디어 sha1 · 상태 · 기한 · FSRS · 기록 · 덱 · 렌더). 3: `neo_export.apkg` 를 새 컬렉션에 가져와 같은 비교. 4: Anki 에서 노트 2개 고치고 2장 공부 · 새 노트 → `anki_rt.apkg` |
+| make | pylib | 컬렉션을 만들고 (FSRS 켬) Basic · 앞뒤 · Cloze(c1 여러 개 · 힌트) · type-in · Image Occlusion · 사용자 정의 유형(`{{Tags}}` `{{Deck}}` `{{Subdeck}}` `{{Card}}` `{{Type}}` `{{text:}}` `{{hint:}}` 조건부, 카드 종류 둘) · 미디어(그림 · 소리) · 덱 3단 · 태그 · 7번 공부 · 일시 정지 1장 · 복습 카드 1장을 올린 필터 덱(`QA원본::맞춤 학습`, v1 만) → `v1_modern`(anki21b) · `v1_legacy`(anki21) · `v1_anki2`(anki2 하나로 다시 묶음). Anki 렌더 기준 `ref_v1.json`. 만든 사람의 편집(값 · 태그 · 충돌 · 합침 · 노트 삭제 · 새 필드 · 이름 바뀐 필드 · 새 카드 종류 · 빈칸 번호 바꿈 · CSS · 템플릿 · 새 노트) → `v2_modern`. 중첩 빈칸 노트 하나(`QA중첩`) → `nested.apkg` · `ref_nested.json` |
+| phase1 | Rust (`src-tauri/src/qa_real_anki.rs`) | 세 형식 가져오기(기록 옮기기) · 같은 파일 다시 가져오기, `nested.apkg` 가져오기 (`neo_nested.json`), v1 위에 내 편집 · 노트 삭제 · CSS · 공부(앱 함수) → `inspect_update` · `apply_update` v2 판정 · 일정 · 기록 · 빈칸 번호 · 멱등, 앱에서 만든 노트 하나 더해 내보내기 (`neo_state.json`) |
+| anki | pylib | 1: Neo 상태와 Anki 기준 비교 (노트 · 필드 · 태그 · 유형 · 미디어 sha1 · 상태 · 기한 · FSRS · 기록 · 덱 · 렌더), 필터 덱 카드 기한 (`F1-*`), 중첩 빈칸 카드 수 · 렌더 (`N1*`). 3: `neo_export.apkg` 를 새 컬렉션에 가져와 같은 비교. 4: Anki 에서 노트 2개 고치고 2장 공부 · 새 노트 → `anki_rt.apkg` |
 | phase2 | Rust | `anki_rt.apkg` 를 같은 시작점 두 벌에: 새 노트만 더하기(기록 옮기기, I79) · 업데이트로 가져오기 |
 | report | | `report.md` |
 

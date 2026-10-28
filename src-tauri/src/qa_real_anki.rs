@@ -367,6 +367,13 @@ fn phase1() {
         }
     }
 
+    // 중첩 빈칸 노트 하나 (T2-06). 카드 수 · 렌더 비교는 real_anki.py N1
+    let nested = state(&w.join("neo_nested"), true);
+    match import(&nested, &w.join("nested.apkg"), false) {
+        Ok(_) => write(&w.join("neo_nested.json"), &snapshot(&nested, "QA중첩")),
+        Err(e) => ck.add("N0", A1, "nested.apkg 가져오기", false, e),
+    }
+
     // ---- 2 덱 업데이트: v1 가져오기 → 내 편집 · 공부 → v2 (만든 사람 편집) 업데이트
     let du = state(&w.join("neo_du"), true);
     import(&du, &w.join("v1_modern.apkg"), true).unwrap();

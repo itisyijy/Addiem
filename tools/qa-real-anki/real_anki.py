@@ -48,6 +48,8 @@ SPECIAL_Q = (
 SPECIAL_A = "{{FrontSide}}<hr id=answer>{{Back}}<span class=qa-text>{{text:Back}}</span>"
 CUSTOM = "QA 특수필드"
 ROOT = "QA원본"
+FILTERED = f"{ROOT}::맞춤 학습"  # v1 을 내보낼 때 basic1 의 복습 카드가 올라가 있는 필터 덱 (P0-5). 덱으로 내보내기는 루트 아래 덱의 카드만 담는다
+NESTED = "QA중첩"  # 중첩 빈칸 노트 하나만 든 덱 (nested.apkg, T2-06)
 PROBES = ["qa-tags", "qa-deck", "qa-sub", "qa-card", "qa-type", "qa-hint", "qa-text"]
 
 
@@ -97,9 +99,11 @@ def snapshot(col, root):
         ms = c.memory_state
         key = card_key(col, c)
         revs = col.db.list("select id from revlog where cid = ? and ease between 1 and 4 order by id", cid)
+        # 필터 덱에 올라간 카드의 due 는 필터 덱 안 순서다. 원래 기한은 odue
+        due = c.odue if c.odid and c.odue else c.due
         cards.append({
             "key": key, "guid": n.guid, "ord": c.ord, "deck": col.decks.name(c.odid or c.did), "type": c.type, "queue": c.queue,
-            "due_days": (c.due - today) if c.type == 2 else None, "due_secs": c.due if c.type in (1, 3) and c.queue == 1 else None,
+            "due_days": (due - today) if c.type == 2 else None, "due_secs": c.due if c.type in (1, 3) and c.queue == 1 else None,
             "ivl": c.ivl, "reps": c.reps, "lapses": c.lapses,
             "s": ms.stability if ms else None, "d": ms.difficulty if ms else None, "revlog": revs, "id": c.id,
         })
@@ -193,6 +197,15 @@ def make(work):
     answer(col, cid("tin1"), 3)
     col.sched.suspend_cards([cid("rev2", 1)])
 
+    # 필터 덱 (Anki 맞춤 학습): basic1 의 복습 카드를 올린 채 내보낸다. 카드의 due 는 필터 덱 안 순서(-100000 부근), 원래 기한은 odue (P0-5)
+    fd = col.sched.get_or_create_filtered_deck(deck_id=0)
+    fd.name = FILTERED
+    del fd.config.search_terms[:]
+    fd.config.search_terms.add(search=f"nid:{notes['basic1'].id}", limit=100, order=0)
+    fd.config.reschedule = True
+    fid = col.sched.add_or_update_filtered_deck(fd).id
+    roles["filtered_key"] = card_key(col, col.get_card(cid("basic1")))
+
     def export(name, legacy):
         p = os.path.join(work, name)
         col.export_anki_package(
@@ -214,6 +227,20 @@ def make(work):
     ref["roles"] = roles
     ref["fsrs"] = bool(col.get_config("fsrs", False))
     dump(os.path.join(work, "ref_v1.json"), ref)
+    with zipfile.ZipFile(leg) as z:
+        raw = z.read("collection.anki21")
+    leg_col = os.path.join(adir, "v1_legacy_col.anki2")
+    with open(leg_col, "wb") as f:
+        f.write(raw)
+    import sqlite3
+    with sqlite3.connect(leg_col) as db:
+        frows = db.execute("select c.due, c.odue, c.type, d.decks from cards c, col d where c.odid != 0").fetchall()
+    fdecks = [v["name"] for v in json.loads(frows[0][3]).values() if v.get("dyn")] if frows else []
+    check("P0-filtered", "0 준비", "v1 패키지에 실제 필터 덱과 거기 올라간 복습 카드가 있다 (due = 필터 덱 안 순서, odue = 원래 기한)",
+          len(frows) == 1 and frows[0][0] < 0 < frows[0][1] and frows[0][2] == 2 and fdecks == [FILTERED],
+          f"odid 있는 카드 (due, odue, type) {[r[:3] for r in frows]} · 패키지의 필터 덱 {fdecks}")
+    col.sched.empty_filtered_deck(fid)  # v2 는 지금처럼 (필터 덱 없이)
+    col.decks.remove([fid])
 
     # ---- 만든 사람의 v2 (deck-update.md 2장 판정표 · 6 유형 · 3 새/사라진 노트)
     def setf(role, **kv):
@@ -254,6 +281,18 @@ def make(work):
     ref2 = snapshot(col, ROOT)
     ref2["roles"] = roles
     dump(os.path.join(work, "ref_v2.json"), ref2)
+
+    # 중첩 빈칸 (T2-06): 다른 덱에 노트 하나, 따로 내보낸다. Anki 는 c1 · c2 카드 두 장을 만든다
+    nd = col.decks.id(NESTED)
+    nn = col.new_note(mm.by_name("Cloze"))
+    nn["Text"] = "{{c1::a {{c2::b}} c}}"
+    col.add_note(nn, nd)
+    col.export_anki_package(
+        out_path=os.path.join(work, "nested.apkg"),
+        options=ExportAnkiPackageOptions(with_scheduling=False, with_deck_configs=False, with_media=False, legacy=False),
+        limit=DeckIdLimit(deck_id=nd),
+    )
+    dump(os.path.join(work, "ref_nested.json"), snapshot(col, NESTED))
     col.close()
     sizes = {p: os.path.getsize(os.path.join(work, p)) for p in ["v1_modern.apkg", "v1_legacy.apkg", "v1_anki2.apkg", "v2_modern.apkg"]}
     entries = {p: zipfile.ZipFile(os.path.join(work, p)).namelist() for p in sizes}
@@ -421,6 +460,29 @@ def compare_snap(cid, area, anki, neo, label, export, plus=False):
 # ------------------------------------------------------------------ anki: 1 비교, Neo 내보내기 → Anki, 그다음 Anki 에서 고치고 공부 → 내보내기
 
 
+def filtered_check(ref1, neo, variant):
+    """P0-5: 필터 덱에 올라가 있던 복습 카드가 원래 기한(odue)으로 들어온다 (1752년이 되지 않는다)"""
+    key = ref1["roles"]["filtered_key"]
+    a = next((c for c in ref1["cards"] if c["key"] == key), None)
+    n = next((c for c in neo["cards"] if c["key"] == key), None)
+    ok = a is not None and n is not None and a["type"] == 2 and n["state"] == "review" and (a["due_days"], a["ivl"]) == (n["due_days"], max(1, round(n["ivl"]))) and a["deck"] == n["deck"]
+    check(f"F1-{variant}", "1 가져오기", "필터 덱에 올라가 있던 복습 카드: 상태 · 기한(오늘부터 일수) · 간격 · 원래 덱이 Anki 와 같다 (P0-5)", ok,
+          json.dumps({"anki": a and {k: a[k] for k in ("deck", "type", "due_days", "ivl")}, "neo": n and {k: n[k] for k in ("deck", "state", "due_days", "ivl")}}, ensure_ascii=False))
+
+
+def nested_check(work):
+    """T2-06 중첩 빈칸 {{c1::a {{c2::b}} c}}: Anki 와 카드 수 · 렌더가 같다 (렌더 고침은 render.rs)"""
+    ref = load(os.path.join(work, "ref_nested.json"))
+    p = os.path.join(work, "neo_nested.json")
+    neo = load(p) if os.path.exists(p) else {"cards": [], "renders": {}}
+    keys = lambda s: sorted(c["key"].rsplit("|", 1)[1] for c in s["cards"])
+    check("N1", "1 가져오기", "중첩 빈칸 노트의 카드 수 · 빈칸 번호가 Anki 와 같다 (c1 · c2)", keys(ref) == keys(neo), f"Anki {keys(ref)} · Neo {keys(neo)}")
+    diffs = [{"key": k.rsplit("|", 1)[1], "side": s, "anki": norm_text(r[s]), "neo": norm_text(neo["renders"].get(k, {}).get(s, ""))}
+             for k, r in sorted(ref["renders"].items()) for s in "qa"]
+    diffs = [d for d in diffs if d["anki"] != d["neo"]]
+    check("N2", "1 가져오기", "중첩 빈칸 렌더: 카드마다 앞 · 뒷면 화면 글자가 Anki 와 같다", not diffs, f"다름 {len(diffs)}: " + json.dumps(diffs, ensure_ascii=False))
+
+
 def anki_side(work):
     Collection, ExportAnkiPackageOptions, DeckIdLimit, ImportAnkiPackageRequest, ImportAnkiPackageOptions, _ = anki_mod()
     ref1 = load(os.path.join(work, "ref_v1.json"))
@@ -428,6 +490,8 @@ def anki_side(work):
         p = os.path.join(work, f"neo_v1_{variant}.json")
         if os.path.exists(p):
             compare_snap(f"I-{variant}-", "1 가져오기", ref1, load(p), f"v1 {label} → Neo", export=False)
+            filtered_check(ref1, load(p), variant)
+    nested_check(work)
     neo = load(os.path.join(work, "neo_state.json"))
     adir = os.path.join(work, "anki")
     p = os.path.join(adir, "fromneo.anki2")
