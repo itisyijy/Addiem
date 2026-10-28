@@ -1041,6 +1041,10 @@ fn rename_refs(html: &str, renamed: &HashMap<String, String>) -> String {
     out
 }
 
+/// 카드의 실제 기한 (SQL 식). 필터 덱에 올라간 카드는 due 가 필터 덱 안 순서(-100000 부근)이고 원래 기한은 odue 다.
+/// 분 단위 학습 카드(epoch 초)는 필터 덱에서도 due 를 그대로 둔다
+const REAL_DUE: &str = "CASE WHEN odid <> 0 AND odue <> 0 AND due < 1000000000 THEN odue ELSE due END";
+
 /// 카드의 실제 덱. 필터 덱에 올라간 카드는 odid 가 원래 덱이다
 fn real_deck(did: i64, odid: i64) -> i64 {
     if odid != 0 { odid } else { did }
@@ -1128,11 +1132,11 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>,
     };
     let mut st = pkg
         .col
-        .prepare(
-            "SELECT c.id, c.nid, c.did, c.odid, c.type, c.queue, c.due, n.mid, n.guid, n.flds LIKE '%[latex]%',
-                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{document}%' OR n.flds LIKE '%\\usepackage%'
+        .prepare(&format!(
+            "SELECT c.id, c.nid, c.did, c.odid, c.type, c.queue, {REAL_DUE}, n.mid, n.guid, n.flds LIKE '%[latex]%',
+                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{{document}}%' OR n.flds LIKE '%\\usepackage%'
              FROM cards c JOIN notes n ON n.id = c.nid",
-        )
+        ))
         .map_err(err)?;
     let mut rows = st.query([]).map_err(err)?;
     let mut by: std::collections::BTreeMap<i64, (DeckStat, HashSet<i64>)> = Default::default();
@@ -1274,7 +1278,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
         )?,
         overdue: pkg
             .col
-            .query_row("SELECT count(*) FROM cards WHERE type = 2 AND queue <> -1 AND due < ?1", [overdue_before], |r| r.get::<_, i64>(0))
+            .query_row(&format!("SELECT count(*) FROM cards WHERE type = 2 AND queue <> -1 AND {REAL_DUE} < ?1"), [overdue_before], |r| r.get::<_, i64>(0))
             .map_err(err)? as usize,
         deck_tree,
         degraded_types: pkg.types.iter().filter(|(_, t)| !t.degraded.is_empty()).map(|(id, _)| *id).collect(),
@@ -1573,7 +1577,7 @@ fn run_import_selected(
     {
         let mut st = pkg
             .col
-            .prepare("SELECT id, nid, did, ord, queue, odid, type, due, ivl, factor, reps, lapses, coalesce(data, '') FROM cards ORDER BY due, id")
+            .prepare(&format!("SELECT id, nid, did, ord, queue, odid, type, {REAL_DUE} AS d, ivl, factor, reps, lapses, coalesce(data, '') FROM cards ORDER BY d, id"))
             .map_err(err)?;
         let rows = st
             .query_map([], |r| {
@@ -1906,7 +1910,8 @@ struct Schedule {
 
 /// Anki 카드 한 장의 일정 -> 우리 일정.
 /// 기억 상태는 Anki 가 FSRS 로 남긴 값(cards.data 의 s, d)을 먼저 쓰고, 없으면 SM-2 간격과 ease 에서 바꾼다.
-/// 기한: 복습과 하루 단위 학습(queue 3)은 컬렉션 생성일(crt)부터의 일수, 분 단위 학습(queue 1)은 epoch 초
+/// 기한(c.due 는 REAL_DUE 값): 복습과 하루 단위 학습은 컬렉션 생성일(crt)부터의 일수, 분 단위 학습은 epoch 초.
+/// 필터 덱은 queue 를 바꿔 두기도 해서(학습 카드가 queue 2) 단위는 queue 가 아니라 값의 크기로 가린다
 fn schedule(c: &AnkiCard, crt_day: i64, fsrs: &fsrs::FSRS) -> Schedule {
     let day_start = |day: i64| db::study_day_end_ms(day - 1) + 1;
     let memory = serde_json::from_str::<Value>(&c.data)
@@ -1921,8 +1926,8 @@ fn schedule(c: &AnkiCard, crt_day: i64, fsrs: &fsrs::FSRS) -> Schedule {
         }
         2 => sched("review", Some(day_start(crt_day + c.due)), c.ivl.max(1) as f64, None),
         t => {
-            // 1 = 학습 중, 3 = 재학습. queue 3 이면 기한이 일수, 아니면 epoch 초
-            let due_at = if c.queue == 3 { day_start(crt_day + c.due) } else { c.due * 1000 };
+            // 1 = 학습 중, 3 = 재학습. 10억보다 작으면 일수, 아니면 epoch 초
+            let due_at = if c.due < 1_000_000_000 { day_start(crt_day + c.due) } else { c.due * 1000 };
             sched(if t == 3 { "relearning" } else { "learning" }, Some(due_at), 0.0, Some(0))
         }
     };
@@ -2192,6 +2197,10 @@ mod tests {
         let s = schedule(&learning, crt, &f);
         assert_eq!((s.state, s.due_at, s.step), ("learning", Some(1_800_000_000_000), Some(0)));
 
+        // 필터 덱(일정 바꾸지 않음)에 올라간 하루 단위 학습 카드: queue 2 인데 기한은 일수 (P0-5)
+        let filtered_learning = AnkiCard { ctype: 1, queue: 2, due: 100, ..learning };
+        assert_eq!(db::study_day(schedule(&filtered_learning, crt, &f).due_at.unwrap()), crt + 100);
+
         // 일시 정지는 상태만 바꾼다. 신규는 일정이 없다
         let suspended = AnkiCard { queue: -1, ctype: 2, due: 100, ivl: 10, factor: 2500, reps: 5, lapses: 1, data: String::new() };
         assert_eq!(schedule(&suspended, crt, &f).state, "suspended");
@@ -2292,13 +2301,14 @@ mod tests {
                         "20": {"name": "B", "dyn": 0}, "30": {"name": "F", "dyn": 1}}"#;
         col.execute("INSERT INTO col VALUES (1, 0, 0, 0, 11, 0, 0, 0, '{}', ?1, ?2, '{}', '{}')", params![models, decks]).unwrap();
         // (노트, 그림, 카드가 있는 덱, 원래 덱)
-        for (n, img, did, odid) in [(1, "a1.png", 11, 0), (2, "a2.png", 12, 0), (3, "b.png", 20, 0), (4, "f.png", 30, 11)] {
+        // 필터 덱 카드는 Anki 처럼 due 가 필터 덱 안 순서, 원래 기한(5일)은 odue
+        for (n, img, did, odid, due, odue) in [(1, "a1.png", 11, 0, 5, 0), (2, "a2.png", 12, 0, 5, 0), (3, "b.png", 20, 0, 5, 0), (4, "f.png", 30, 11, -100_000, 5)] {
             col.execute(
                 "INSERT INTO notes VALUES (?1, ?2, 7, 0, 0, ?4, ?3, '', 0, 0, '')",
                 params![n, format!("guid{n}"), format!("앞 {n}\x1f<img src=\"{img}\">"), if n == 1 { "기출::2023_중간" } else { "" }],
             )
             .unwrap();
-            col.execute("INSERT INTO cards VALUES (?1, ?2, ?3, 0, 0, 0, 2, 2, 5, 3, 2500, 2, 0, 0, 0, ?4, 0, '')", params![100 + n, n, did, odid])
+            col.execute("INSERT INTO cards VALUES (?1, ?2, ?3, 0, 0, 0, 2, 2, ?5, 3, 2500, 2, 0, 0, ?6, ?4, 0, '')", params![100 + n, n, did, odid, due, odue])
                 .unwrap();
             col.execute("INSERT INTO revlog VALUES (?1, ?2, 0, 3, 3, 1, 2500, 1000, 1)", params![1_000 + n, 100 + n]).unwrap();
         }
@@ -2383,6 +2393,8 @@ mod tests {
         let b = row(20);
         assert_eq!((b.cards, b.notes, b.existing_notes), (1, 1, 1), "이미 있는 노트도 트리의 장수에는 센다");
         assert_eq!((b.new_cards, b.reviews, b.overdue, b.types.len()), (0, 0, 0, 0), "들어가지 않을 카드는 사전 검사에서 뺀다");
+        let on_day5 = deck_stats(&pkg, &HashSet::new(), &HashSet::new(), 5).unwrap();
+        assert_eq!(on_day5.iter().find(|d| d.id == 11).unwrap().overdue, 0, "필터 덱 카드의 밀림은 원래 기한(odue)으로 센다 (P0-5)");
         assert_eq!(n(4342), "4,342");
         assert_eq!((n(0), n(999), n(1_000_000)), ("0".into(), "999".into(), "1,000,000".into()));
         drop(pkg);
@@ -2398,6 +2410,7 @@ mod tests {
         assert_eq!(strings("SELECT filename FROM media ORDER BY filename"), ["a1.png", "f.png"], "고른 노트가 쓰는 미디어만");
         assert!(!s.data_dir.join("media/a2.png").exists() && !s.data_dir.join("media/b.png").exists());
         assert_eq!(strings("SELECT anki_revlog_id || '' FROM review_log ORDER BY 1"), ["1001", "1004"], "고른 카드의 기록만");
+        assert_eq!(strings("SELECT DISTINCT due_at || '' FROM card").len(), 1, "필터 덱 카드도 원래 기한(odue = 5일)으로 들어온다 (P0-5)");
         assert_eq!(
             strings("SELECT anki_guid || ' ' || exam_hits || ' ' || exam_names FROM note WHERE exam_hits > 0"),
             [r#"guid1 1 ["2023 중간"]"#],

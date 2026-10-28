@@ -971,7 +971,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     };
     let mut cards: HashMap<i64, Vec<PCard>> = HashMap::new();
     {
-        let mut st = pkg.col.prepare("SELECT id, nid, did, odid, ord, queue FROM cards ORDER BY due, id").map_err(err)?;
+        let mut st = pkg.col.prepare(&format!("SELECT id, nid, did, odid, ord, queue FROM cards ORDER BY {REAL_DUE}, id")).map_err(err)?;
         let rows = st
             .query_map([], |r| Ok((r.get::<_, i64>(1)?, PCard { id: r.get(0)?, did: r.get(2)?, odid: r.get(3)?, ord: r.get(4)?, queue: r.get(5)? })))
             .map_err(err)?;
