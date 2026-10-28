@@ -1003,7 +1003,8 @@ export type SyncProbe = {
 export type SyncAuthEvent = { ok: boolean; reason: "timeout" | "cancelled" | "denied" | "scopes" | "error" | null; message: string | null; probe: SyncProbe | null };
 export type SyncJoinMode = "new" | "take" | "merge" | "fresh";
 export type SyncJoinOpts = { mode: SyncJoinMode; device_name?: string; backup?: "daily" | "weekly" | "off"; password?: string; later?: boolean };
-export type DriveBackup = { name: string; at: number; size: number; device: string | null; cards: number | null; reviews: number | null };
+/** mine: 이 기기가 만든 백업 */
+export type DriveBackup = { name: string; at: number; size: number; device: string | null; cards: number | null; reviews: number | null; mine: boolean };
 /** K9 머리: 무엇이 사라지는지 */
 export type RestorePreview = {
   name: string;
@@ -1041,10 +1042,12 @@ export const syncApi = {
   setLock: (password: string | null) => invoke<void>("sync_set_lock", { password }),
   unlock: (password: string) => invoke<void>("sync_unlock", { password }),
   backups: () => invoke<DriveBackup[]>("sync_backups"),
-  restorePreview: (name: string) => invoke<RestorePreview>("sync_restore_preview", { name }),
-  restore: (name: string) => invoke<void>("sync_restore", { name }),
+  /** password: 이 기기 키로 열리지 않는 백업(잠금을 바꾸기 전에 만들었다)을 그때 암호로 연다 */
+  restorePreview: (name: string, password?: string) => invoke<RestorePreview>("sync_restore_preview", { name, password }),
+  /** 복구 전 데이터를 남긴 이 기기 백업 파일 이름 */
+  restore: (name: string, password?: string) => invoke<string | null>("sync_restore", { name, password }),
   /** [그림까지 묶어 내려받기]. path 는 저장 대화상자에서 */
-  backupFull: (name: string, path: string) => invoke<string>("sync_backup_full", { name, path }),
+  backupFull: (name: string, path: string, password?: string) => invoke<string>("sync_backup_full", { name, path, password }),
   deleteBackup: (name: string) => invoke<void>("sync_delete_backup", { name }),
   pruneBackups: () => invoke<number>("sync_prune_backups"),
   openFolder: () => invoke<void>("sync_open_folder"),

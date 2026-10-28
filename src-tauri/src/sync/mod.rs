@@ -190,7 +190,18 @@ fn key_of(sh: &Shared) -> Option<[u8; 32]> {
     *k
 }
 
+/// 이 데이터 폴더가 지금 있는 곳: 정규화한 경로 + 컴퓨터 이름 (K46). 복사본은 다르다. 대소문자는 가리지 않는다 (같은 폴더를 다르게 적어 띄워도 같다)
+fn fingerprint(sh: &Shared) -> String {
+    let dir = &sh.state().data_dir;
+    let path = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+    let host = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
+    crypto::hex(&crypto::sha256(format!("{}|{host}", path.display()).to_lowercase().as_bytes()))
+}
+
+/// Drive 작업마다 먼저: 복사한 데이터 폴더면 새 기기 id 로 (engine::check_copy). 모든 Drive 작업이 여기를 지난다
 fn with_ctx<T>(sh: &Arc<Shared>, f: impl FnOnce(&Ctx) -> Result<T, SyncError>) -> Result<T, SyncError> {
+    let fp = fingerprint(sh);
+    sh.with_db(|c| engine::check_copy(c, &fp))?;
     let store = store_of(sh)?;
     let locked = sh.with_db(|c| Ok(engine::local(c, "lock")?.as_deref() == Some("1")))?;
     // 잠갔을 때만 키를 쓴다. 다른 기기가 잠금을 푼 Drive 를 옛 키로 읽거나 잠그면 서로 읽지 못한다
@@ -319,7 +330,11 @@ fn run_once(sh: &Arc<Shared>, pull: bool, push: bool) -> Result<Outcome, SyncErr
     if !conn || !enabled {
         return Ok(Outcome::Skip);
     }
-    sh.set(|s| s.state = "syncing".into());
+    // 다시 맞추기 시작하면 지난 오류 문장은 지운다 (다시 연결된 뒤에도 남아 있었다, R-04)
+    sh.set(|s| {
+        s.state = "syncing".into();
+        s.error = None;
+    });
     with_ctx(sh, |cx| {
         let db = sh.db();
         if pull {
@@ -679,13 +694,7 @@ fn probe(sh: &Arc<Shared>) -> Result<Probe, SyncError> {
             .filter_map(|d| d["name"].as_str())
             .collect();
         let last = devices.iter().filter(|d| d["gen"].as_i64() == Some(r.generation())).max_by_key(|d| d["at"].as_i64().unwrap_or(0));
-        let counts = match last {
-            Some(d) => d["counts"].clone(),
-            None => match r.newest(r.generation()) {
-                Some(s) => engine::decode(store.get(&s.path)?, None).map(|(h, _)| h["counts"].clone()).unwrap_or(J::Null),
-                None => J::Null,
-            },
-        };
+        let counts = drive_counts(&*store, &r, &devices);
         Some(json!({
             "gen": r.generation(), "locked": r.locked, "devices": devices.len(), "names": names, "bytes": r.bytes,
             "device": last.and_then(|d| d["name"].as_str()), "at": last.and_then(|d| d["at"].as_i64()), "counts": counts,
@@ -700,6 +709,22 @@ fn probe(sh: &Arc<Shared>) -> Result<Probe, SyncError> {
         ))
     })?;
     Ok(Probe { account, remote, local, device_name: name })
+}
+
+/// 고르는 창(K3 · K6-m)의 Drive 숫자 (QA R-01, K49): Drive 의 변경 파일을 모두 받은 기기가 적은 숫자 (그중 가장 최근).
+/// 그런 기기가 없으면 그 세대 스냅샷 머리 (잠갔으면 모른다). "마지막으로 맞춘 기기"는 다 받기 전이거나 빈 상태에서 적었을 수 있다
+fn drive_counts(store: &dyn Store, r: &engine::Remote, devices: &[J]) -> J {
+    let g = r.generation();
+    let caught_up = |d: &J| {
+        r.changes.iter().all(|(dev, files)| {
+            let own = if d["uid"].as_str() == Some(dev.as_str()) { d["seq"].as_i64().unwrap_or(0) } else { 0 };
+            d["pos"][dev.as_str()].as_i64().unwrap_or(0).max(own) >= files.last().map_or(0, |(s, _)| *s)
+        })
+    };
+    match devices.iter().filter(|d| d["gen"].as_i64() == Some(g) && caught_up(d)).max_by_key(|d| d["at"].as_i64().unwrap_or(0)) {
+        Some(d) => d["counts"].clone(),
+        None => r.newest(g).and_then(|s| store.get(&s.path).ok()).and_then(|b| engine::decode(b, None).ok()).map_or(J::Null, |(h, _)| h["counts"].clone()),
+    }
 }
 
 #[tauri::command]
@@ -774,11 +799,37 @@ fn lock_plan(kind: &str, password: Option<&str>, local_lock: bool, has_key: bool
     })
 }
 
+/// 예전 잠금을 남기는 곳 (K48): kdf/<내용 해시>.json. crypto.json 으로 시작하면 안 된다 (잠금 감지가 앞부분 일치다).
+/// backups/ 밑도 아니다 (백업 목록에 섞인다). 옛 앱은 모르는 이름이라 건너뛴다 (engine::remote)
+fn kdf_path(raw: &[u8]) -> String {
+    format!("kdf/{}.json", &crypto::hex(&crypto::sha256(raw))[..32])
+}
+
+/// Drive 잠금을 바꾼다: crypto.json 을 new 로, None 이면 지운다. 그 전 잠금은 kdf/ 에 남긴다 (K48, QA T5-03):
+/// 그 잠금으로 만든 Drive 백업은 지우지 않으므로, 암호를 바꾸거나 잠금을 푼 뒤에도 그때 암호로 열 수 있어야 한다.
+/// salt 와 확인값만 있다 (비밀이 아니다, crypto.json 과 같다)
+fn replace_crypto(store: &dyn Store, new: Option<&[u8]>) -> Result<(), SyncError> {
+    match store.get("crypto.json") {
+        Ok(old) => {
+            let path = kdf_path(&old);
+            if store.list(&path)?.is_empty() {
+                store.put(&path, &old)?;
+            }
+        }
+        Err(SyncError::NotFound(_)) => {}
+        Err(e) => return Err(e),
+    }
+    match new {
+        Some(raw) => store.put("crypto.json", raw),
+        None => store.delete("crypto.json"),
+    }
+}
+
 fn set_lock(sh: &Arc<Shared>, store: &dyn Store, plan: LockPlan, remote_locked: bool) -> Result<(), SyncError> {
     match plan {
         LockPlan::Off => {
             if remote_locked {
-                store.delete("crypto.json")?;
+                replace_crypto(store, None)?;
                 // 잠근 동안의 그림 이름(HMAC)은 평문 Drive 에서 쓸 수 없다. 스냅샷이 다시 올린다
                 for e in store.list("media/")? {
                     store.delete(&e.path)?;
@@ -796,7 +847,7 @@ fn set_lock(sh: &Arc<Shared>, store: &dyn Store, plan: LockPlan, remote_locked: 
                 store.delete(&e.path)?;
             }
             let raw = serde_json::to_string(&kdf).map_err(store::other)?;
-            store.put("crypto.json", raw.as_bytes())?;
+            replace_crypto(store, Some(raw.as_bytes()))?;
             save_key(sh, key)?;
             keep_crypto(sh, raw.as_bytes())?;
             sh.with_db(|c| engine::set_local(c, "lock", "1"))
@@ -857,21 +908,23 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
         Some(a) => a,
         None => store.about()?.0,
     };
-    sh.with_db(|c| {
-        if let Some(n) = o.device_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-            c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [n]).map_err(store::other)?;
-        }
-        engine::set_local(c, "account", &account)?;
-        // 고르는 창 · 다시 시작은 백업 설정을 보내지 않는다: 사용자가 끈 백업을 "매일"로 되돌리지 않는다. 처음 연결이면 매일
-        match o.backup.as_deref() {
-            Some(b) => engine::set_local(c, "backup", b)?,
-            None if engine::local(c, "backup")?.is_none() => engine::set_local(c, "backup", "daily")?,
-            None => {}
-        }
-        engine::set_local(c, "enabled", if o.later { "0" } else { "1" })
-    })?;
+    let save_settings = || {
+        sh.with_db(|c| {
+            if let Some(n) = o.device_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [n]).map_err(store::other)?;
+            }
+            engine::set_local(c, "account", &account)?;
+            // 고르는 창 · 다시 시작은 백업 설정을 보내지 않는다: 사용자가 끈 백업을 "매일"로 되돌리지 않는다. 처음 연결이면 매일
+            match o.backup.as_deref() {
+                Some(b) => engine::set_local(c, "backup", b)?,
+                None if engine::local(c, "backup")?.is_none() => engine::set_local(c, "backup", "daily")?,
+                None => {}
+            }
+            engine::set_local(c, "enabled", if o.later { "0" } else { "1" })
+        })
+    };
     if o.later {
-        return Ok(());
+        return save_settings();
     }
     let remote_locked = store.list("crypto.json")?.len() == 1;
     match (o.mode, o.password.as_deref()) {
@@ -902,12 +955,26 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
     if o.mode != Join::New {
         local_backup(sh, "before-sync")?;
     }
+    // 계정 · 설정은 잠금을 확인하고 합치기 전 백업을 만든 뒤에 쓴다 (K47): 틀린 암호로 멈추거나 그 백업으로 되돌려도 반쯤 연결된 채 남지 않는다
+    save_settings()?;
     let reason = match o.mode {
         Join::Fresh => json!({ "kind": fresh_kind, "device_name": sh.with_db(|c| engine::meta(c, "device_name"))? }),
         _ => json!({ "kind": "new" }),
     };
     drop(store);
-    with_ctx(sh, |cx| engine::join(sh.db(), cx, o.mode, reason).map(|_| ()))?;
+    if let Err(e) = with_ctx(sh, |cx| engine::join(sh.db(), cx, o.mode, reason).map(|_| ())) {
+        // 처음 합류하다 멈췄으면 연결 전으로 (다시 고르면 다시 쓴다)
+        let _ = sh.with_db(|c| {
+            if engine::gen_of(c)? == 0 {
+                c.execute("DELETE FROM sync_local WHERE key IN ('account', 'enabled')", []).map_err(store::other)?;
+            }
+            Ok(())
+        });
+        return Err(e);
+    }
+    // 이 데이터 폴더가 있는 곳을 남긴다 (K46)
+    let fp = fingerprint(sh);
+    sh.with_db(|c| engine::check_copy(c, &fp))?;
     if let Ok(mut s) = sh.status.lock() {
         s.choice = None;
         s.state = "idle".into();
@@ -1095,12 +1162,15 @@ pub struct DriveBackup {
     pub device: Option<String>,
     pub cards: Option<i64>,
     pub reviews: Option<i64>,
+    /// 이 기기가 만든 백업 (지우기 확인 창이 다른 기기 것을 알린다, T5-09)
+    pub mine: bool,
 }
 
 fn backups_of(sh: &Arc<Shared>) -> Result<Vec<DriveBackup>, SyncError> {
     let store = store_of(sh)?;
     let r = engine::remote(&*store)?;
     let devices = engine::read_devices(&*store, &r);
+    let mine: Vec<J> = sh.with_db(|c| Ok(engine::local(c, "my_backups")?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()))?;
     let mut out: Vec<DriveBackup> = store
         .list("backups/")?
         .into_iter()
@@ -1113,6 +1183,7 @@ fn backups_of(sh: &Arc<Shared>) -> Result<Vec<DriveBackup>, SyncError> {
                 device: info.as_ref().and_then(|(n, _)| n.as_str().map(String::from)),
                 cards: info.as_ref().and_then(|(_, b)| b["cards"].as_i64()),
                 reviews: info.as_ref().and_then(|(_, b)| b["reviews"].as_i64()),
+                mine: mine.iter().any(|b| b["name"].as_str() == Some(&name)),
                 name,
             })
         })
@@ -1127,11 +1198,30 @@ pub async fn sync_backups(state: State<'_, SyncState>) -> Res<Vec<DriveBackup>> 
     tauri::async_runtime::spawn_blocking(move || backups_of(&sh).map_err(err)).await.map_err(err)?
 }
 
-fn download_backup(sh: &Arc<Shared>, name: &str) -> Result<PathBuf, SyncError> {
+/// Drive 백업 zip 을 연다. 잠그기 전에 만든 백업은 평문이다 (잠가도 지우지 않는다). 사용자가 골라 되돌리는 것이라 그대로 연다.
+/// 암호문은 이 기기 키로 먼저, 안 되면 넣은 암호로 지금 잠금과 예전 잠금(kdf/)을 차례로 열어 본다 (K48). 암호가 없으면 Locked (화면이 암호 칸을 보인다)
+fn open_backup(store: &dyn Store, data: Vec<u8>, key: Option<[u8; 32]>, password: Option<&str>) -> Result<Vec<u8>, SyncError> {
+    if !crypto::is_sealed(&data) {
+        return Ok(data);
+    }
+    if let Some(zip) = key.and_then(|k| crypto::unseal(&k, &data).ok()) {
+        return Ok(zip);
+    }
+    let Some(password) = password.filter(|p| !p.is_empty()) else { return Err(SyncError::Locked) };
+    let saved = store.list("kdf/")?.into_iter().map(|e| e.path);
+    for path in std::iter::once("crypto.json".to_string()).chain(saved) {
+        let Some(kdf) = store.get(&path).ok().and_then(|raw| serde_json::from_slice::<crypto::KdfParams>(&raw).ok()) else { continue };
+        if let Some(zip) = crypto::open_key(password, &kdf).ok().flatten().and_then(|k| crypto::unseal(&k, &data).ok()) {
+            return Ok(zip);
+        }
+    }
+    Err(store::other("암호가 맞지 않아요"))
+}
+
+fn download_backup(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Result<PathBuf, SyncError> {
     let store = store_of(sh)?;
     let data = store.get(&format!("backups/{name}"))?;
-    // 잠그기 전에 만든 백업은 평문이다 (잠가도 지우지 않는다). 사용자가 골라 되돌리는 것이라 그대로 연다
-    let zip = if crypto::is_sealed(&data) { engine::open_opt(data, key_of(sh).as_ref())? } else { data };
+    let zip = open_backup(&*store, data, key_of(sh), password)?;
     let tmp = sh.state().data_dir.join("backups").join(format!(".drive-{}.sqlite", crypto::random_hex(6)));
     std::fs::create_dir_all(tmp.parent().expect("부모")).map_err(store::other)?;
     engine::unzip_db(&zip, &tmp)?;
@@ -1154,10 +1244,10 @@ pub struct RestorePreview {
 
 /// K9 머리: 무엇이 사라지는지 숫자로 먼저
 #[tauri::command]
-pub async fn sync_restore_preview(state: State<'_, SyncState>, name: String) -> Res<RestorePreview> {
+pub async fn sync_restore_preview(state: State<'_, SyncState>, name: String, password: Option<String>) -> Res<RestorePreview> {
     let sh = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<RestorePreview, SyncError> {
-        let tmp = download_backup(&sh, &name)?;
+        let tmp = download_backup(&sh, &name, password.as_deref())?;
         let result = sh.with_db(|c| {
             c.execute("ATTACH DATABASE ?1 AS b", [tmp.to_string_lossy()]).map_err(store::other)?;
             let n = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(store::other);
@@ -1187,11 +1277,11 @@ pub async fn sync_restore_preview(state: State<'_, SyncState>, name: String) -> 
 /// K9 되돌리기: ① 지금 DB 를 addiem-before-restore-<시각>.zip 으로 ② Drive 백업으로 DB 복원 (그림은 동기화 공간에서)
 /// ③ 세대를 올린 새 스냅샷 ④ 다른 기기는 다음 받기에서 K6-m. 하나라도 실패하면 ①로 되돌린다
 #[tauri::command]
-pub async fn sync_restore(state: State<'_, SyncState>, name: String) -> Res<()> {
+pub async fn sync_restore(state: State<'_, SyncState>, name: String, password: Option<String>) -> Res<Option<String>> {
     let sh = state.0.clone();
     let r = tauri::async_runtime::spawn_blocking({
         let sh = sh.clone();
-        move || restore_blocking(&sh, &name)
+        move || restore_blocking(&sh, &name, password.as_deref())
     })
     .await
     .map_err(err)?;
@@ -1199,14 +1289,15 @@ pub async fn sync_restore(state: State<'_, SyncState>, name: String) -> Res<()> 
     r.map_err(err)
 }
 
-fn restore_blocking(sh: &Arc<Shared>, name: &str) -> Result<(), SyncError> {
+/// 복구 전 데이터를 남긴 이 기기 백업 파일 이름을 돌려준다 (화면이 그 이름을 보인다, T5-17)
+fn restore_blocking(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Result<Option<String>, SyncError> {
     let _g = sh.run.lock().map_err(store::other)?;
     sh.set(|s| {
         s.state = "syncing".into();
         s.phase = Some("restore".into());
     });
-    let tmp = download_backup(sh, name)?;
-    local_backup(sh, "before-restore")?;
+    let tmp = download_backup(sh, name, password)?;
+    let kept = local_backup(sh, "before-restore")?.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     // 이 기기의 정체 (기기 id · 이름 · HLC) 와 연결 설정은 백업이 아니라 지금 것을 쓴다
     {
         let restored = crate::db::open(&tmp).map_err(|e| store::other(format!("백업을 열지 못했어요: {e}")))?;
@@ -1269,16 +1360,16 @@ fn restore_blocking(sh: &Arc<Shared>, name: &str) -> Result<(), SyncError> {
         s.phase = None;
         s.changed_seq += 1;
     });
-    Ok(())
+    Ok(kept)
 }
 
 /// K4 ⋯ [그림까지 묶어 내려받기]: Drive 백업 + 그림을 이 기기 백업(I19)과 같은 zip 으로
 #[tauri::command]
-pub async fn sync_backup_full(state: State<'_, SyncState>, name: String, path: String) -> Res<String> {
+pub async fn sync_backup_full(state: State<'_, SyncState>, name: String, path: String, password: Option<String>) -> Res<String> {
     let sh = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<String, SyncError> {
         use std::io::Write;
-        let tmp = download_backup(&sh, &name)?;
+        let tmp = download_backup(&sh, &name, password.as_deref())?;
         let files: Vec<(String, String)> = {
             let c = Connection::open(&tmp).map_err(store::other)?;
             let mut st = c.prepare("SELECT filename, sha256 FROM media").map_err(store::other)?;
