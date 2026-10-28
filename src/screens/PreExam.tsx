@@ -5,14 +5,15 @@ import { Badge, Button, Icon, Segment } from "../ui";
 import { eul, n, useKey, useNav, type Route } from "../nav";
 import { useToast } from "../toast";
 import { cram as cramApi, type CramPlan, type MixCard, type MixRun, type MixStats, type MixSummary } from "../written";
+import { Modal } from "./NewDeck";
 import "../styles/study.css";
 
 const CRAM_SCOPES = ["핵심만", "핵심 + 취약 챕터", "불안한 카드 전부"];
-/** P2 취약 비율: 일반 몇 장마다 취약 1장 (전체의 1/5 · 1/3 · 1/2) */
+/** P2 취약 비율: 일반 몇 장마다 취약 1장. 취약 카드가 많으면 남는 것은 끝에 이어 나와 실제 비율은 달라서 % 로 적지 않는다 (QA T3-15) */
 const RATIOS = [
-  { label: "20%", every: 4 },
-  { label: "약 33%", every: 2 },
-  { label: "50%", every: 1 },
+  { label: "4장마다", every: 4 },
+  { label: "2장마다", every: 2 },
+  { label: "1장마다", every: 1 },
 ];
 const SIZES = [60, 120, 200];
 const MAX_SIZE = 500; // mix_cards 상한
@@ -108,6 +109,9 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
     { key: "again", dot: "accent", title: "최근 2주에 틀린 카드", desc: "Again 1번 이상", count: plan.again },
   ];
   const weakCount = mix.filter((c) => c.weak).length;
+  // 일반 카드 사이에 다 못 끼운 취약 카드 (끝에 줄지어 나온다)
+  const lastFull = mix.map((c) => !c.weak).lastIndexOf(true);
+  const weakTail = lastFull < 0 ? 0 : mix.length - 1 - lastFull;
   const pct = plan && plan.learned > 0 ? Math.round((plan.round_seen * 100) / plan.learned) : 0;
 
   return (
@@ -216,7 +220,9 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           <div className="cram__scope">
             <span className="summary__row-text">
               <span className="t-body-m-strong">취약 카드 비율</span>
-              <span className="t-caption c-tertiary">일반 {every === 1 ? "1장" : `${every}장`}마다 취약 1장</span>
+              <span className="t-caption c-tertiary">
+                일반 {every === 1 ? "1장" : `${every}장`}마다 취약 1장{weakTail > 0 && ` · 남는 취약 ${n(weakTail)}장은 끝에 이어서 나와요`}
+              </span>
             </span>
             <Segment boxed label="취약 카드 비율" options={RATIOS.map((r) => ({ label: r.label, value: r.every }))} value={every} onChange={setEvery} />
           </div>
@@ -297,7 +303,9 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
     await cramApi.mixRestart(run.deckId).catch((e) => setError(errorText(e)));
     nav({ name: "summary", deckIds: [run.deckId], cram: true });
   };
-  useKey("Enter", () => (roundDone ? restart() : next ? goOn() : undefined), !!sum && (roundDone || !!next));
+  // 회독 진행을 0% 로 되돌리기 전에 묻는다 (Enter 한 번에 지워지지 않게, QA T3-12)
+  const [asking, setAsking] = useState(false);
+  useKey("Enter", () => (roundDone ? setAsking(true) : next ? goOn() : undefined), !!sum && (roundDone || !!next));
   const rated = stats.full[0] + stats.weak[0];
   const pct = (seen: number, learned: number) => (learned ? Math.round((seen * 100) / learned) : 0);
   const againLine = (a: number, seen: number) => (seen === 0 ? "이번엔 없었어요" : a ? `Again ${n(a)}장 · 나머지는 기억났어요` : "Again 없이 모두 기억났어요");
@@ -327,7 +335,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
         {roundDone && <p className="cram__done t-title-s">이미 학습한 카드를 한 번 다 봤어요</p>}
         <div className="cram__cta">
           {roundDone ? (
-            <Button icon="rotate" label="처음부터 다시" shortcut="Enter" onClick={restart} />
+            <Button icon="rotate" label="처음부터 다시" shortcut="Enter" onClick={() => setAsking(true)} />
           ) : next ? (
             <Button icon="arrow-right" label={`이어서 ${n(next)}장`} shortcut="Enter" onClick={goOn} />
           ) : null}
@@ -374,6 +382,15 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
           </div>
         )}
       </section>
+      {asking && (
+        <Modal title="회독을 처음부터 다시 셀까요?" onClose={() => setAsking(false)} variant="confirm" icon="rotate">
+          <p className="t-body-m c-secondary">회독 진행이 0%로 돌아가요. 평가 기록과 복습 일정은 그대로예요.</p>
+          <div className="modal__actions">
+            <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={() => setAsking(false)} />
+            <Button size="M" icon="rotate" label="처음부터 다시" onClick={restart} />
+          </div>
+        </Modal>
+      )}
     </main>
   );
 }

@@ -12,7 +12,7 @@ import { findMath, withMath } from "../math";
 import {
   cram as cramApi, exam as examApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
 } from "../written";
-import { Modal } from "./NewDeck";
+import { Modal, useModalClose } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { RichField, makeCloze, toCloze, fromCloze, tagRefs, TYPE_LABEL, type FieldHandle } from "./AddCard";
 import { CramHint, KeywordEditor } from "./StudyParts";
@@ -329,6 +329,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const mixRoles = useRef(new Map<number, (string | null)[]>());
   const mixStats = useRef<MixStats>({ full: [0, 0], weak: [0, 0], again: [0, 0], due: 0 });
   const mixReplayed = useRef(false); // 접어둔 카드는 회독(혼합 · 압축) 끝에 한 번 더
+  const mixDue = useRef(new Set<number>()); // P3 "오늘 예정이던 N장": 자리(전체 · 취약)와 상관없이 한 번씩 (QA T3-04)
   const openedAt = useRef(Date.now()); // P3 "N장 회독 · M분": 이 화면에서 쓴 시간 (같은 날 이어 쓴 세션의 쉬던 시간은 빼고)
   const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
@@ -349,7 +350,16 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const scroller = useRef<HTMLDivElement>(null);
   const foldBox = useRef<HTMLDivElement>(null);
   const [total, setTotal] = useState(0);
+  // 진행 "N / 전체": 이 화면에서 한 번이라도 평가하거나 접은 카드 수. 학습 단계로 다시 나오는 카드는 한 번만 센다 (QA T2-01)
+  const seen = useRef(new Set<number>());
   const [done, setDone] = useState(0);
+  /** 처음 본 카드면 세고 true */
+  const see = (id: number) => {
+    if (seen.current.has(id)) return false;
+    seen.current.add(id);
+    setDone(seen.current.size);
+    return true;
+  };
   const [card, setCard] = useState<Shown | null>(null);
   const [phase, setPhase] = useState<"q" | "a">("q");
   const [folded, setFolded] = useState<Folded[]>([]);
@@ -380,8 +390,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   // 8.3 개념 관계 확인 (로컬 모델을 받았고 이 PC 에서 쓸 수 있을 때 비교 화면에서 저절로, 참고용)
   const concept = useConcept({ cardId: card?.view.id ?? null, typed, on: phase === "a" && !!compare, writing: phase === "q" && !!card?.written?.written, toastBusy: !!rated || !!toast });
 
+  const ended = useRef(false); // 세션을 닫았다 (Esc 두 번에 두 번 닫지 않게 · 떠날 때 닫을지)
   const finish = useCallback(
     async (completed: boolean) => {
+      if (ended.current) return;
+      ended.current = true;
       // H3: 세션이 없다 (오늘의 학습과 따로). 몇 장 훑었는지만 알리고 홈으로
       if (cram) {
         notify({ title: `압축 회독 ${n(cramDone.current.size)}장을 훑었어요`, text: "복습 일정과 오늘의 학습은 그대로예요." });
@@ -389,7 +402,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       }
       if (session.current === null) return nav({ name: "home" });
       setPref(HINTS_SEEN, true); // "다음 학습부터는 숨겨요"
-      const summary = await api.finishSession(session.current, completed, deckIds, scale);
+      let summary;
+      try {
+        summary = await api.finishSession(session.current, completed, deckIds, scale);
+      } catch (e) {
+        ended.current = false;
+        return setError(errorText(e));
+      }
       if (mix) {
         const minutes = Math.max(summary.studied > 0 ? 1 : 0, Math.round((Date.now() - openedAt.current) / 60_000));
         return nav({ name: "mixDone", sessionId: session.current, run: mix, stats: mixStats.current, minutes, completed });
@@ -397,6 +416,15 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       nav({ name: "done", sessionId: session.current, summary, completed, deckIds, scale });
     },
     [nav, deckIds, scale, cram, notify, mix],
+  );
+  // 그만하기 없이 화면을 떠나면(연결 자료 열기 · 노트 유형 편집 등) 그만둔 것으로 닫는다. 같은 날 다시 시작하면 이어 쓴다 (QA T2-04 · T6-13)
+  useEffect(
+    () => () => {
+      if (!ended.current && session.current !== null) api.finishSession(session.current, false, deckIds, scale).catch(() => {});
+    },
+    // 처음 값으로 충분하다 (화면이 사는 동안 바뀌지 않는다)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   );
 
   const show = useCallback(async (id: number, at: "q" | "a" = "q", face?: Face) => {
@@ -446,7 +474,6 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           else await api.unburyCard(session.current!, f);
         }
         setFolded([]);
-        setDone((d) => d - ids.length);
         queue.current.push(...ids);
         continue;
       }
@@ -636,6 +663,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       // Q9 빠뜨림 · 고른 보기는 평가가 남을 때 같이 저장된다 (이 기기에만. 되돌리면 그 전 값으로)
       const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current, c.view.special ? marks : null);
       if (res.action === "day_rollover") {
+        ended.current = true; // 백엔드가 세션을 닫았다
         // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 세션은 닫혔고 방금 평가는 남지 않았다. 새 날의 학습을 다시 짠다
         notify({ title: "새 학습일이 시작됐어요", text: "오늘의 학습을 새로 만들었어요. 방금 평가는 남기지 않았어요." });
         return nav(mix ? { name: "home" } : { name: "summary", deckIds });
@@ -648,11 +676,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           st[k][0] += 1;
           if (r === 1) st.again[role === null ? 0 : 1] += 1;
         }
-        if (mix.dueToday.includes(c.view.id) && role === null) st.due += 1;
+        if (mix.dueToday.includes(c.view.id) && !mixDue.current.has(c.view.id)) {
+          mixDue.current.add(c.view.id);
+          st.due += 1;
+        }
       }
-      const counted = res.action !== "again_later";
-      if (counted) setDone((d) => d + 1);
-      else later.current.push({ id: c.view.id, due: Date.now() + (res.due_in_ms ?? 60_000) });
+      const counted = see(c.view.id);
+      if (res.action === "again_later") later.current.push({ id: c.view.id, due: Date.now() + (res.due_in_ms ?? 60_000) });
       setLast({ id: c.view.id, rating: r, phase: "a", counted, folded: res.action === "buried", log: res.log, face: faceNow });
       if (res.action === "buried") fold(c, true);
       else {
@@ -666,8 +696,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     guard(async () => {
       const c = card!;
       await backend.bury(c.view.id);
-      setDone((d) => d + 1);
-      setLast({ id: c.view.id, rating: null, phase, counted: true, folded: true, face: faceNow });
+      setLast({ id: c.view.id, rating: null, phase, counted: see(c.view.id), folded: true, face: faceNow });
       fold(c, false);
       await advance();
     });
@@ -677,7 +706,6 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     guard(async () => {
       for (const id of ids) await backend.unbury(id);
       setFolded((list) => list.filter((f) => !ids.includes(f.id)));
-      setDone((d) => d - ids.length);
       setToast(null);
       setFoldMenu(false);
       setLast((l) => (l && ids.includes(l.id) ? null : l)); // 꺼낸 카드의 접기는 이미 풀렸다
@@ -697,7 +725,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       setRated(null);
       if (id === null) return;
       if (id === u.id) {
-        if (u.counted) setDone((d) => d - 1);
+        if (u.counted) {
+          seen.current.delete(id);
+          setDone(seen.current.size);
+        }
         if (u.folded) {
           setFolded((list) => list.filter((f) => f.id !== id)); // 두 번째 Again 으로 접혔던 카드면 접힘도 풀린다
           setToast(null);
@@ -737,11 +768,21 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     if (writing) writeBox.current?.focus({ preventScroll: true });
   }, [writing, card]);
   // 자동 저장 ("지난번에 쓴 답"). 빈 글은 저장하지 않는다
+  const unsaved = useRef<{ id: number; text: string } | null>(null);
+  const flushAnswer = useCallback(() => {
+    const u = unsaved.current;
+    unsaved.current = null;
+    if (u) writtenApi.saveAnswer(u.id, u.text).catch(() => {});
+  }, []);
   useEffect(() => {
-    if (!writing || !typed.trim() || !card) return;
-    const t = setTimeout(() => writtenApi.saveAnswer(card.view.id, typed).catch(() => {}), 600);
+    if (!writing || !card) return;
+    unsaved.current = typed.trim() ? { id: card.view.id, text: typed } : null;
+    if (!unsaved.current) return;
+    const t = setTimeout(flushAnswer, 600);
     return () => clearTimeout(t);
-  }, [typed, writing, card]);
+  }, [typed, writing, card, flushAnswer]);
+  // 기다리는 동안 카드가 바뀌거나 화면을 떠나면(Esc 두 번 등) 바로 저장한다 (QA T2-10)
+  useEffect(() => flushAnswer, [card, flushAnswer]);
   /** 답 보기. 쓴 답이 있으면 J2 비교 (핵심어 판정 · 평가 추천) */
   const reveal = () => {
     if (!card || phase !== "q") return;
@@ -1393,6 +1434,12 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
 // ---------------------------------------------------------------- C3-e 카드 편집 (학습 중 E · 카드 목록)
 
+/** 창의 [취소]. 바깥 클릭 · Esc 와 같이 고친 것이 있으면 묻는다 */
+function CancelButton() {
+  const close = useModalClose();
+  return <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={close} />;
+}
+
 type FieldRole = "front" | "rich" | "line";
 /** 앞뒤 둘 다 (Basic and reversed): 필드 두 개가 모두 앞면 템플릿에 쓰인다 */
 const isReversed = (note: NoteEdit) => note.kind === "basic" && note.front[0] && note.front[1];
@@ -1450,7 +1497,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   const [choice, setChoice] = useState<ChoiceDraft | null>(null);
   // NT13 머리 "노트 유형 · 이름 [편집]". touched: 무엇이든 고쳤다 ([편집]으로 떠나기 전에 묻는다)
   const [typeLabel, setTypeLabel] = useState<string>();
-  const touched = useRef(false);
+  const [touched, setTouched] = useState(false);
+  const loaded = useRef({ list: "null", choice: "null" }); // 목록 · 선택형 처음 값 (넣은 오답 보기도 고친 것이다, QA T7-13)
   const [leaving, setLeaving] = useState<Route | null>(null);
   const nav = useNav();
 
@@ -1470,8 +1518,11 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
       const clozeRefs = own && d ? d.templates.flatMap((t) => tagRefs(t.qfmt)).filter((r) => r.cloze).map((r) => r.name) : [];
       const clozeAt = n.names.map((name, i) => (own ? clozeRefs.includes(name) : n.kind === "cloze" && i === 0));
       setNote({ ...n, roles, own, clozeAt });
-      if (n.special?.kind === "list") setList({ items: n.special.items.length ? n.special.items : [""], ordered: n.special.ordered });
-      else if (n.special?.kind === "choice") setChoice(choiceDraft(n.special));
+      const l = n.special?.kind === "list" ? { items: n.special.items.length ? n.special.items : [""], ordered: n.special.ordered } : null;
+      const c = n.special?.kind === "choice" ? choiceDraft(n.special) : null;
+      loaded.current = { list: JSON.stringify(l), choice: JSON.stringify(c) };
+      setList(l);
+      setChoice(c);
       if (w?.capable) {
         setWn(w);
         setKws(w.keywords);
@@ -1551,16 +1602,21 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
     }
   };
 
+  // 무엇이든 고쳤다: 닫을 때(Esc · 바깥 · X · 취소) · [편집]으로 떠날 때 버릴지 먼저 묻는다 (QA T1-02 · T8-05 · T7-13)
+  const changed =
+    !!note &&
+    (touched ||
+      (level !== null && level !== card?.importance) ||
+      (deckId !== undefined && deckId !== here?.id) ||
+      JSON.stringify(exam) !== JSON.stringify(note.exam) ||
+      JSON.stringify(list) !== loaded.current.list ||
+      JSON.stringify(choice) !== loaded.current.choice ||
+      (!!wn && (write !== wn.write || JSON.stringify(kws) !== JSON.stringify(wn.keywords))));
+
   /** NT13 [편집]: 그 노트 유형 편집기로. 고친 것이 있으면 버릴지 먼저 묻는다 */
   const toType = () => {
     if (!note) return;
     const to: Route = { name: "noteTypeEdit", id: note.note_type_id, note: note.note_id, back };
-    const changed =
-      touched.current ||
-      (level !== null && level !== card?.importance) ||
-      (deckId !== undefined && deckId !== here?.id) ||
-      JSON.stringify(exam) !== JSON.stringify(note.exam) ||
-      (!!wn && (write !== wn.write || JSON.stringify(kws) !== JSON.stringify(wn.keywords)));
     setError(undefined);
     if (changed) setLeaving(to);
     else nav(to);
@@ -1634,10 +1690,11 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
         }
         className={`modal--edit ${wn || list || choice ? "modal--written" : ""}`}
         onClose={() => (confirming ? setConfirming(false) : leaving ? setLeaving(null) : onClose())}
+        dirty={changed && !confirming && !leaving}
       >
         <div
           className="edit"
-          onInput={() => (touched.current = true)}
+          onInput={() => setTouched(true)}
           onKeyDown={(e) => {
             if (confirming || leaving) return;
             if (matchAction("save", e.nativeEvent) >= 0) {
@@ -1751,7 +1808,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
             {card && <Button variant="ghost" size="M" icon="trash" label="카드 삭제" className="edit__delete" onClick={() => setConfirming(true)} />}
             {/* 떠날 때 묻는 창이 떠 있으면 오류는 그 창 안에만 */}
             <span className="edit__msg t-body-s c-danger">{leaving ? null : error}</span>
-            <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+            <CancelButton />
             <Button size="M" icon="check" label="저장" shortcut={actionKey("save")} onClick={() => save()} disabled={!note} busy={saving} busyLabel="저장 중…" />
           </div>
         </div>

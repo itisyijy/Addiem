@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, planApi, type ConfigPreview, type DeckConfig, type DeckDetail } from "../api";
 import { Button, Icon, Toggle } from "../ui";
-import { n, studyDate, useKey, useNav } from "../nav";
+import { n, studyDate, useKey, useLeaveGuard, useNav, type Route } from "../nav";
+import { DiscardModal } from "./NewDeck";
 
 const WEEKDAY = "일월화수목금토";
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -54,6 +55,14 @@ export function DeckSettings({ deckId }: { deckId: number }) {
   }, [deckId]);
   const dateInput = useRef<HTMLInputElement>(null);
   const pauseInput = useRef<HTMLInputElement>(null);
+  const [leaving, setLeaving] = useState<Route | null>(null);
+  const [busy, setBusy] = useState(false);
+  // 바꾼 값이 있으면 Esc · 취소 · 뒤로 · 상단 메뉴로 떠날 때 먼저 묻는다 (QA T3-10 · T8-15)
+  useLeaveGuard((r) => {
+    if (!edit || !saved || JSON.stringify(edit) === JSON.stringify(saved)) return false;
+    setLeaving(r);
+    return true;
+  });
 
   useEffect(() => {
     api.deckDetail(deckId).then((d) => {
@@ -106,13 +115,18 @@ export function DeckSettings({ deckId }: { deckId: number }) {
   })();
 
   const save = async () => {
+    if (busy) return; // 두 번 누르면 두 번째가 덱 상세의 같은 자리 버튼을 누르지 않게 (QA T3-16)
+    setBusy(true);
     try {
       await api.saveDeckConfig(edit);
-      back();
+      nav({ name: "deck", deckId }, true);
     } catch (e) {
       setError(errorText(e));
+      setBusy(false);
     }
   };
+  // 자기 설정이 없는 하위 덱: 상위 덱 목표를 따른다 (QA T3-09). 이 화면의 미리보기는 이 덱만의 설정이라 지금 계획은 덱 상세 값으로 보인다
+  const inherited = !!deck.target_from && !saved.target_date && saved.daily_new_limit === null && saved.today_new === null;
 
   const days = (p: ConfigPreview) => (p.days === null ? "없음" : `${n(Math.max(p.days, 0))}일`);
   const rows: [string, string, string][] = warn
@@ -131,7 +145,8 @@ export function DeckSettings({ deckId }: { deckId: number }) {
     const r = after.remaining_new;
     if (paused && !after.resume_date) return `쉬는 동안은 신규 카드가 들어오지 않아요. 다시 시작하면 남은 신규 ${n(r)}장을 남은 날로 다시 나눠요`;
     if (!hasDate) return `목표일이 없어서 하루 ${n(after.per_day)}장씩 꾸준히 넣어요. 남은 신규 ${n(r)}장`;
-    if (after.days === null || after.days <= 0) return `목표일이 지났거나 오늘이에요. 남은 신규 ${n(r)}장을 상한만큼 넣어요`;
+    if (after.days === null || after.days <= 0)
+      return `목표일이 지났거나 오늘이에요. 남은 신규 ${n(r)}장을 ${edit.daily_new_limit === null ? "오늘 모두" : `상한 ${n(edit.daily_new_limit)}장씩`} 넣어요`;
     if (warn && after.never_finish) return `남은 신규 ${n(r)}장 ÷ ${n(after.days)}일 = 하루 ${n(after.needed_per_day ?? 0)}장 필요 · 상한이 0장이라 끝나지 않아요`;
     if (warn) {
       const took = after.days + (after.overflow_days ?? 0);
@@ -140,7 +155,8 @@ export function DeckSettings({ deckId }: { deckId: number }) {
     const exact = r / after.days;
     if (paused && after.resume_date)
       return `남은 신규 ${n(r)}장 ÷ 쉬지 않는 ${n(after.days)}일 = ${Number.isInteger(exact) ? n(exact) : exact.toFixed(1)} → ${shortDate(after.resume_date)}부터 하루 ${n(Math.ceil(exact))}장`;
-    return `남은 신규 ${n(r)}장 ÷ ${n(after.days)}일 = ${Number.isInteger(exact) ? n(exact) : exact.toFixed(1)} → 하루 ${n(Math.ceil(exact))}장${Number.isInteger(exact) ? "" : " (올림)"}`;
+    // 0.1 보다 작으면 "0.0" 이 되지 않게 둘째 자리까지 (QA T3-26)
+    return `남은 신규 ${n(r)}장 ÷ ${n(after.days)}일 = ${Number.isInteger(exact) ? n(exact) : exact.toFixed(exact < 0.1 ? 2 : 1)} → 하루 ${n(Math.ceil(exact))}장${Number.isInteger(exact) ? "" : " (올림)"}`;
   })();
 
   return (
@@ -152,6 +168,11 @@ export function DeckSettings({ deckId }: { deckId: number }) {
       <div className="deck__title">
         <h1 className="t-title-l">목표 및 학습 설정</h1>
         <p className="t-body-s c-secondary">이 덱과 이 설정을 따르는 하위 덱에 적용돼요. 저장하면 이후에 시작하는 학습부터 새 계획을 써요.</p>
+        {inherited && (
+          <p className="t-body-s c-accent">
+            지금은 상위 덱 「{deck.target_from!.name}」 목표({deck.target_from!.dday === 0 ? "D-day" : `D-${n(deck.target_from!.dday)}`})를 따라요. 여기서 정하면 이 덱만 따로 계산해요.
+          </p>
+        )}
       </div>
 
       <div className="settings">
@@ -306,7 +327,12 @@ export function DeckSettings({ deckId }: { deckId: number }) {
             <Icon name="rotate" size={18} />
             {changed ? "바꾼 뒤 계획" : "지금 계획"}
           </h2>
-          {rows.map(([label, a, b]) => (
+          {inherited && !changed && (
+            <p className="recalc__formula t-body-s c-secondary">
+              상위 덱 「{deck.target_from!.name}」의 하루 신규 {n(deck.per_day)}장을 하위 덱과 함께 나눠 써요. 오늘 이 덱에서는 신규 {n(deck.today_new)}장 · 학습 {n(deck.today_review + deck.today_new + deck.today_returning)}장이에요.
+            </p>
+          )}
+          {!(inherited && !changed) && rows.map(([label, a, b]) => (
             <div key={label} className="recalc__row">
               <span className="t-body-m c-secondary">{label}</span>
               {/* 바뀐 줄만 "전 → 후" */}
@@ -321,7 +347,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
               </span>
             </div>
           ))}
-          <p className="recalc__formula t-body-s c-secondary">{formula}</p>
+          {!(inherited && !changed) && <p className="recalc__formula t-body-s c-secondary">{formula}</p>}
           {adjust && adjust.delta !== 0 && (
             <p className="recalc__adjust t-body-s c-accent">
               충돌 조정으로 {adjust.delta > 0 ? "+" : ""}
@@ -353,12 +379,10 @@ export function DeckSettings({ deckId }: { deckId: number }) {
                 </span>
               </div>
               <div className="recalc__warn-actions">
-                <Button
-                  variant="secondary"
-                  size="M"
-                  label={`상한 ${n(after.needed_per_day ?? 0)}장으로`}
-                  onClick={() => set({ daily_new_limit: after.needed_per_day })}
-                />
+                {/* 필요한 장수를 모르면(목표일이 오늘 · 지난 날) 눌러도 바뀌지 않는다 (QA T3-02) */}
+                {after.needed_per_day !== null && (
+                  <Button variant="secondary" size="M" label={`상한 ${n(after.needed_per_day)}장으로`} onClick={() => set({ daily_new_limit: after.needed_per_day })} />
+                )}
                 {suggested && (
                   <Button variant="secondary" size="M" label={`목표일 ${shortDate(suggested)}로`} onClick={() => set({ target_date: suggested })} />
                 )}
@@ -408,8 +432,18 @@ export function DeckSettings({ deckId }: { deckId: number }) {
       <div className="settings__footer">
         {error && <span className="t-body-s c-danger">{error}</span>}
         <Button variant="ghost" label="취소" onClick={back} />
-        <Button label="저장" onClick={save} />
+        <Button label="저장" onClick={save} busy={busy} />
       </div>
+      {leaving && (
+        <DiscardModal
+          title="고친 내용이 있어요"
+          text="저장하지 않고 나갈까요?"
+          keep="계속 고치기"
+          discard="버리고 나가기"
+          onKeep={() => setLeaving(null)}
+          onDiscard={() => nav(leaving, true)}
+        />
+      )}
     </main>
   );
 }

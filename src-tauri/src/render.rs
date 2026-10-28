@@ -211,90 +211,168 @@ fn sections(tpl: &str, fields: &HashMap<String, String>) -> String {
     }
 }
 
-/// {{c1::답}} 또는 {{c1::답::힌트}}. 이 카드의 번호만 가린다
+/// {{c1::답}} 또는 {{c1::답::힌트}}. 이 카드의 번호만 가린다. 중첩 빈칸은 바깥이 안쪽까지 통째로 가린다 (Anki 2.1.56+)
 pub fn cloze(text: &str, n: u32, is_back: bool) -> String {
     let mut out = String::new();
-    let mut rest = text;
-    while let Some((start, num, answer, hint, end)) = next_cloze(rest) {
-        out.push_str(&rest[..start]);
-        if let Some(body) = answer.strip_prefix("image-occlusion:") {
-            out.push_str(&crate::occlusion::layer(num, body, num == n, is_back));
-        } else if num == n {
-            if is_back {
-                out.push_str(&format!("<span class=\"cloze\">{answer}</span>"));
-            } else {
-                // C3-b 디자인: 힌트가 없으면 넓은 빈칸으로 보인다
-                let shown = hint.map_or("\u{a0}".repeat(6), |h| h.to_string());
-                out.push_str(&format!("<span class=\"cloze\">[{shown}]</span>"));
-            }
-        } else {
-            out.push_str(answer);
-        }
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
+    reveal(&parse_clozes(text), n, is_back, false, &mut out);
     out
+}
+
+fn reveal(nodes: &[Node], n: u32, is_back: bool, inside: bool, out: &mut String) {
+    for node in nodes {
+        match node {
+            Node::Text(t) => out.push_str(if inside { shown(t) } else { t }),
+            Node::Cloze(c) => {
+                if let Some(io) = c.io() {
+                    out.push_str(&crate::occlusion::layer(c.num, &io["image-occlusion:".len()..], c.num == n, is_back));
+                } else if c.num == n && !is_back {
+                    // C3-b 디자인: 힌트가 없으면 넓은 빈칸으로 보인다
+                    let shown = c.hint().map_or("\u{a0}".repeat(6), str::to_string);
+                    out.push_str(&format!("<span class=\"cloze\">[{shown}]</span>"));
+                } else if c.num == n {
+                    out.push_str("<span class=\"cloze\">");
+                    reveal(&c.nodes, n, is_back, true, out);
+                    out.push_str("</span>");
+                } else {
+                    reveal(&c.nodes, n, is_back, true, out);
+                }
+            }
+        }
+    }
 }
 
 /// {{cloze-only:필드}} (읽어주기용, rslib reveal_cloze_text_only): 이 카드 빈칸의 답만 ", " 로. 질문 면은 힌트, 없으면 "..."
 fn cloze_only(text: &str, n: u32, is_back: bool) -> String {
     let mut out = vec![];
-    let mut rest = text;
-    while let Some((_, num, answer, hint, end)) = next_cloze(rest) {
-        if num == n && !answer.starts_with("image-occlusion:") {
-            out.push(if is_back { answer } else { hint.unwrap_or("...") });
+    each_cloze(&parse_clozes(text), &mut |c| {
+        if c.num == n && c.io().is_none() {
+            out.push(if is_back { c.text() } else { c.hint().unwrap_or("...").to_string() });
         }
-        rest = &rest[end..];
-    }
+    });
     out.join(", ")
 }
 
 /// 카드를 만드는 빈칸 번호. c0 은 카드가 없다 (Anki IO 의 글자 칸). 번호 - 1 이 template_ord 라 0 이 들어가면 넘친다
 pub fn cloze_numbers(text: &str) -> BTreeSet<u32> {
     let mut nums = BTreeSet::new();
-    let mut rest = text;
-    while let Some((_, num, _, _, end)) = next_cloze(rest) {
-        if num > 0 {
-            nums.insert(num);
+    each_cloze(&parse_clozes(text), &mut |c| {
+        if c.num > 0 {
+            nums.insert(c.num);
         }
-        rest = &rest[end..];
-    }
+    });
     nums
 }
 
-/// 빈칸마다 (번호, 답). 덱 업데이트가 "빈칸 글은 같고 번호만 바뀐 노트"를 알아볼 때 쓴다
-pub fn cloze_parts(text: &str) -> Vec<(u32, &str)> {
+/// 빈칸마다 (번호, 답). 덱 업데이트가 "빈칸 글은 같고 번호만 바뀐 노트"를 알아볼 때 쓴다. 중첩이면 바깥 답은 안쪽 답까지 이은 글
+pub fn cloze_parts(text: &str) -> Vec<(u32, String)> {
     let mut out = vec![];
-    let mut rest = text;
-    while let Some((_, num, answer, _, end)) = next_cloze(rest) {
-        out.push((num, answer));
-        rest = &rest[end..];
-    }
+    each_cloze(&parse_clozes(text), &mut |c| out.push((c.num, c.text())));
     out
 }
 
-/// (시작, 번호, 답, 힌트, 끝)
-fn next_cloze(s: &str) -> Option<(usize, u32, &str, Option<&str>, usize)> {
-    let mut from = 0;
-    while let Some(i) = s[from..].find("{{c") {
-        let start = from + i;
-        let after = &s[start + 3..];
-        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() && after[digits.len()..].starts_with("::") {
-            let body_start = start + 3 + digits.len() + 2;
-            if let Some(len) = s[body_start..].find("}}") {
-                let body = &s[body_start..body_start + len];
-                // IO 칸의 값에는 \: 로 이스케이프한 :: 가 들어갈 수 있다. Anki 도 힌트를 나누지 않는다
-                let (answer, hint) = match body.split_once("::").filter(|_| !body.starts_with("image-occlusion:")) {
-                    Some((a, h)) => (a, Some(h)),
-                    None => (body, None),
-                };
-                return Some((start, digits.parse().ok()?, answer, hint, body_start + len + 2));
-            }
+/// 빈칸 하나. rslib cloze.rs 와 같은 규칙: `}}` 는 가장 안쪽의 열린 빈칸을 닫고, 빈칸 안 글 조각의 `::` 뒤는 힌트 (뒤 조각이 이긴다)
+struct Cloze<'a> {
+    num: u32,
+    nodes: Vec<Node<'a>>,
+}
+
+enum Node<'a> {
+    Text(&'a str),
+    Cloze(Cloze<'a>),
+}
+
+/// 빈칸 안 글 조각에서 보이는 부분 (`::힌트` 앞)
+fn shown(t: &str) -> &str {
+    t.split_once("::").map_or(t, |x| x.0)
+}
+
+impl Cloze<'_> {
+    /// 그림 가리기 칸의 값 (`image-occlusion:...`). \: 로 이스케이프한 :: 가 들어갈 수 있다. Anki 도 힌트를 나누지 않는다
+    fn io(&self) -> Option<&str> {
+        match self.nodes.as_slice() {
+            [Node::Text(t)] if t.starts_with("image-occlusion:") => Some(t),
+            _ => None,
         }
-        from = start + 3;
     }
-    None
+
+    fn hint(&self) -> Option<&str> {
+        self.nodes.iter().filter_map(|n| if let Node::Text(t) = n { t.split_once("::").map(|x| x.1) } else { None }).next_back()
+    }
+
+    /// 가린 글 전부 (안쪽 빈칸의 답까지, 힌트는 뺀다)
+    fn text(&self) -> String {
+        if let Some(io) = self.io() {
+            return io.to_string();
+        }
+        self.nodes
+            .iter()
+            .map(|n| match n {
+                Node::Text(t) => shown(t).to_string(),
+                Node::Cloze(c) => c.text(),
+            })
+            .collect()
+    }
+}
+
+fn each_cloze<'a>(nodes: &[Node<'a>], f: &mut impl FnMut(&Cloze<'a>)) {
+    for node in nodes {
+        if let Node::Cloze(c) = node {
+            f(c);
+            each_cloze(&c.nodes, f);
+        }
+    }
+}
+
+/// `{{c12::` 이면 그 길이와 번호
+fn open_cloze(s: &str) -> Option<(usize, u32)> {
+    let after = s.strip_prefix("{{c")?;
+    let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let num = after[..digits].parse().ok()?;
+    after[digits..].starts_with("::").then_some((3 + digits + 2, num))
+}
+
+/// 필드 글을 빈칸 나무로. 닫히지 않은 빈칸은 글자 그대로 둔다. 10단계보다 깊은 여는 표기는 버린다 (Anki 와 같다, 재귀 깊이도 막는다)
+fn parse_clozes(s: &str) -> Vec<Node<'_>> {
+    let mut open: Vec<(usize, Cloze)> = vec![];
+    let mut top = vec![];
+    fn add<'a>(open: &mut [(usize, Cloze<'a>)], top: &mut Vec<Node<'a>>, n: Node<'a>) {
+        open.last_mut().map_or(top, |o| &mut o.1.nodes).push(n);
+    }
+    let (mut i, mut text) = (0, 0);
+    while i < s.len() {
+        let token = if let Some((len, num)) = open_cloze(&s[i..]) {
+            Some((len, Some(num)))
+        } else {
+            s[i..].starts_with("}}").then_some((2, None))
+        };
+        let Some((len, num)) = token else {
+            i += s[i..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        };
+        if text < i {
+            add(&mut open, &mut top, Node::Text(&s[text..i]));
+        }
+        match num {
+            Some(num) if open.len() < 10 => open.push((i, Cloze { num, nodes: vec![] })),
+            Some(_) => {}
+            None => match open.pop() {
+                Some((_, c)) => add(&mut open, &mut top, Node::Cloze(c)),
+                None => add(&mut open, &mut top, Node::Text("}}")),
+            },
+        }
+        i += len;
+        text = i;
+    }
+    if text < s.len() {
+        add(&mut open, &mut top, Node::Text(&s[text..]));
+    }
+    while let Some((at, c)) = open.pop() {
+        add(&mut open, &mut top, Node::Text(&s[at..at + open_cloze(&s[at..]).map_or(0, |x| x.0)]));
+        for n in c.nodes {
+            add(&mut open, &mut top, n);
+        }
+    }
+    top
 }
 
 /// 화면에 아무것도 보이지 않는 HTML 인가 (&nbsp;, <br> 만 있는 칸). 그림만 있으면 비어 있지 않다
@@ -411,6 +489,31 @@ mod tests {
         assert_eq!(c1.back, "<span class=\"cloze\">서울</span>은 한국의 수도");
         let c2 = render_card("{{cloze:Text}}", "{{cloze:Text}}", &fields, 1);
         assert_eq!(c2.front, "서울은 <span class=\"cloze\">[나라]</span>의 수도");
+    }
+
+    #[test]
+    fn nested_clozes_follow_anki() {
+        // QA T2-06: 바깥 빈칸은 안쪽까지 통째로 가리고, 안쪽 번호도 카드가 된다 (Anki 2.1.56+)
+        let blank = format!("<span class=\"cloze\">[{}]</span>", "\u{a0}".repeat(6));
+        let text = "중첩: {{c1::바깥 {{c2::안쪽}} 끝}}";
+        assert_eq!(cloze_numbers(text).into_iter().collect::<Vec<_>>(), [1, 2]);
+        assert_eq!((cloze(text, 1, false), cloze(text, 1, true)), (format!("중첩: {blank}"), "중첩: <span class=\"cloze\">바깥 안쪽 끝</span>".into()));
+        assert_eq!((cloze(text, 2, false), cloze(text, 2, true)), (format!("중첩: 바깥 {blank} 끝"), "중첩: 바깥 <span class=\"cloze\">안쪽</span> 끝".into()));
+        // 힌트는 그 빈칸의 글 조각에서만: 안쪽 힌트가 바깥 힌트가 되지 않는다
+        let hinted = "{{c1::a {{c2::b::안}} c::밖}}";
+        assert_eq!(cloze(hinted, 1, false), "<span class=\"cloze\">[밖]</span>");
+        assert_eq!(cloze(hinted, 2, false), "a <span class=\"cloze\">[안]</span> c");
+        assert_eq!(cloze(hinted, 1, true), "<span class=\"cloze\">a b c</span>");
+        assert_eq!(cloze(hinted, u32::MAX, true), "a b c", "노트 유형 바꾸기의 빈칸 풀기도 안쪽까지");
+        assert_eq!(cloze_parts(hinted), [(1, "a b c".to_string()), (2, "b".to_string())]);
+        assert_eq!((cloze_only(hinted, 1, false), cloze_only(hinted, 1, true)), ("밖".to_string(), "a b c".to_string()));
+        // 닫히지 않은 빈칸 · 짝 없는 }} 는 글자 그대로
+        assert_eq!(cloze("{{c1::a {{c2::b}} c", 2, false), format!("{{{{c1::a {blank} c"));
+        assert_eq!(cloze("x}} {{c1::y}}", 1, true), "x}} <span class=\"cloze\">y</span>");
+        assert_eq!(cloze_numbers("{{c99999999999::x}} {{c::y}}"), BTreeSet::new());
+        // 깊이는 10단계까지 (Anki 와 같다). 아주 깊어도 넘치지 않는다
+        let deep = "{{c1::".repeat(100_000) + "x" + &"}}".repeat(100_000);
+        assert_eq!(cloze_numbers(&deep).into_iter().collect::<Vec<_>>(), [1]);
     }
 
     #[test]
