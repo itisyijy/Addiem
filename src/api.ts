@@ -634,8 +634,9 @@ export const api = {
   addCard: (card: NewCard) => invoke<number>("add_card", { card }),
   /** deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
   /** cardIds: 이 카드들만 (C1-xr "찾지 못한 미디어" [카드 보기]) */
-  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false) =>
-    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly }),
+  /** after: 이 카드 id 다음부터 (이어 받기). bare: 질문 · 답을 비운 가벼운 행 (전부 고르기) */
+  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false, after: number | null = null, bare = false) =>
+    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly, after, bare }),
   /** C1-w [약함으로] / [해제] */
   setDeckWeak: (deckId: number, weak: boolean) => invoke<void>("set_deck_weak", { deckId, weak }),
   /** C1-w [아니에요] (14일 제안 쉼) / recovered: "요즘 괜찮아요" 안내를 닫음 */
