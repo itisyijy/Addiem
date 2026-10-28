@@ -4,7 +4,7 @@ import type { AnkiPreview, ImportResult, SessionSummary, UpdateSummary } from ".
 import type { UndoSummary } from "./api";
 import type { Draft, DraftAmount } from "./sourceApi";
 import type { MixRun, MixStats } from "./written";
-import { matchAction, type ActionId } from "./keys";
+import { composing, matchAction, type ActionId } from "./keys";
 
 export type Route =
   | { name: "home" }
@@ -115,7 +115,7 @@ export function useKey(
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       // 창 Esc 가 먼저 처리해 창이 닫힌 뒤라도 화면이 같은 키를 또 받지 않게
-      if (e.defaultPrevented) return;
+      if (e.defaultPrevented || composing(e)) return; // 한글 조합 중 키는 조합만 끝낸다
       if (openOverlays > 0 && !modal) return;
       const t = e.target instanceof HTMLElement ? e.target : null;
       const typing =
