@@ -3,11 +3,11 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSPr
 import { parseCsv } from "../csv";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api, errorText, type AnkiPreview, type ImportIssue, type ImportProgress, type ImportResult, type JsonPreview } from "../api";
 import { Badge, Button, Icon, Spinner, StatTile, Toggle, type IconName } from "../ui";
 import { eul, lockNav, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
+import { useFileDrop } from "../fileDrop";
 import { Modal } from "./NewDeck";
 import { UpdateChoice } from "./DeckUpdate";
 import "../styles/import.css";
@@ -27,6 +27,9 @@ const EXAMPLE = String.raw`{ "deck": "정보처리기사",
 const mb = (bytes: number) => (bytes < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`);
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const JSON_FILE = /\.json$/i;
+/** 붙여넣기 · 파일 선택 · 끌어놓기가 같은 상한 (import.rs read_json_file · parse_json) */
+const MAX_TEXT = 20 * 1024 * 1024;
+const TOO_BIG = "20MB가 넘는 파일은 나눠서 가져와 주세요.";
 
 /**
  * 결과 화면(B3)에 넘길 것 중 ImportResult 에 없는 값. 라우트(nav.tsx)를 넓히지 않으려고
@@ -76,35 +79,37 @@ export function Import({ tab: initial, deckId = null, pick = false, path }: { ta
       {tab === "anki" ? (
         <AnkiImport onLock={setLocked} autoPick={autoPick} initialPath={path} />
       ) : tab === "json" ? (
-        <JsonImport deckId={deckId} onCancel={back} />
+        <JsonImport deckId={deckId} onCancel={back} onLock={setLocked} />
       ) : (
-        <CsvImport deckId={deckId} onCancel={back} />
+        <CsvImport deckId={deckId} onCancel={back} onLock={setLocked} />
       )}
     </main>
   );
 }
 
 /**
- * 파일 끌어놓기. Tauri 는 파일 드롭을 HTML drop 이 아니라 웹뷰 이벤트(경로)로 준다.
- * 탭마다 그 탭이 보이는 동안만 듣는다. accept 는 모듈 상수로 넘긴다 (바뀌면 다시 구독)
+ * 파일 끌어놓기 (공용 useFileDrop). 탭마다 그 탭이 보이는 동안만 듣고, 파일은 하나씩 가져온다.
+ * 맞는 파일을 여러 개 놓으면 첫 파일만 살펴보고 그렇다고 알린다 (T4-21)
  */
-function useFileDrop(enabled: boolean, accept: RegExp, onFile: (path: string) => void) {
-  const [drag, setDrag] = useState<"over" | "wrong" | null>(null);
-  const handler = useRef(onFile);
-  handler.current = onFile;
-  useEffect(() => {
-    if (!enabled) return;
-    const un = getCurrentWebview().onDragDropEvent(({ payload: p }) => {
-      if (p.type === "enter" || p.type === "over") setDrag("over");
-      else if (p.type === "leave") setDrag(null);
-      else if (p.paths[0] && accept.test(p.paths[0])) {
-        setDrag(null);
-        handler.current(p.paths[0]);
-      } else setDrag("wrong");
-    });
-    return () => void un.then((f) => f());
-  }, [enabled, accept]);
-  return [drag, setDrag] as const;
+function useOneFile(enabled: boolean, accept: RegExp, onFile: (path: string) => void) {
+  const toast = useToast();
+  return useFileDrop(
+    enabled,
+    ({ paths }) => {
+      if (paths.length > 1) toast({ title: "파일은 한 번에 하나씩 가져와요", text: `${baseName(paths[0])}만 살펴봐요` });
+      onFile(paths[0]);
+    },
+    accept,
+  );
+}
+
+/** 가져오는 동안 앱 전체의 화면 전환을 막는다 (TopNav, N · I 단축키 포함). 결과로 넘어가기 전에 꼭 푼다 */
+function useLock(onLock: (v: boolean) => void) {
+  useEffect(() => () => lockNav(false), []);
+  return (v: boolean) => {
+    lockNav(v);
+    onLock(v);
+  };
 }
 
 /** B2-0 끌어놓기 영역. 탭마다 문구만 다르다 (B2-c "CSV 파일을 여기로 끌어오세요") */
@@ -175,22 +180,27 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
   // B2-u0: 이미 가져온 노트가 있으면 먼저 방식을 고른다 (업데이트 · 새 노트만). adding = 지금의 가져오기
   const [adding, setAdding] = useState(false);
 
+  // 늦게 온 살펴보기 결과는 버린다 (먼저 고른 큰 파일이 나중에 고른 파일의 화면을 덮지 않게, T4-03)
+  const seq = useRef(0);
   const inspect = async (p: string) => {
+    const my = ++seq.current;
     setPath(p);
     setInfo(null);
     setFailed(undefined);
     setChecking(true);
     try {
       const i = await api.inspectAnki(p);
-      setAdding(false);
+      if (my !== seq.current) return;
+      // 같은 파일에서 남은 덱을 마저 가져오면 업데이트를 묻지 않고 덱 고르기로 (T4-09). [방식 바꾸기]로 돌아갈 수 있다
+      setAdding(!!i.update?.same_file);
       setInfo(i);
       // 업데이트로 알아본 파일(B2-u0)의 기록은 덱을 만든 사람 것일 수 있어 기본은 신규로 (DU52). 화면에서 바꿀 수 있다
       setHistory(i.reviews > 0 && !i.update);
       setSel(new Set(i.deck_tree.map((d) => d.id)));
     } catch (e) {
-      setFailed(safe(errorText(e)));
+      if (my === seq.current) setFailed(safe(errorText(e)));
     } finally {
-      setChecking(false);
+      if (my === seq.current) setChecking(false);
     }
   };
 
@@ -198,7 +208,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
     const p = await open({ multiple: false, directory: false, filters: [{ name: "덱 패키지", extensions: ["apkg", "colpkg"] }] });
     if (typeof p === "string") inspect(p);
   };
-  const [drag] = useFileDrop(!importing, ANKI_FILE, inspect);
+  const [drag] = useOneFile(!importing && !checking, ANKI_FILE, inspect);
 
   // StrictMode 는 마운트 효과를 두 번 돌린다. 창이 두 번 뜨지 않게 ref 로 막는다
   const autoPicked = useRef(false);
@@ -214,12 +224,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
     }
   }, [autoPick, initialPath]);
 
-  // 가져오는 동안 앱 전체의 화면 전환을 막는다 (TopNav, N · I 단축키 포함). 결과로 넘어가기 전에 꼭 푼다
-  const lock = (v: boolean) => {
-    lockNav(v);
-    onLock(v);
-  };
-  useEffect(() => () => lockNav(false), []);
+  const lock = useLock(onLock);
 
   const run = async () => {
     if (!path || !info || importing || none || nothingNew) return;
@@ -264,6 +269,7 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
       <Icon name="alert" size={20} className="c-danger" />
       <span className="import__fail-text">
         <span className="t-body-m-strong c-danger">가져오지 못했어요</span>
+        {path && <span className="t-body-s">{baseName(path)}</span>}
         <span className="t-body-s c-secondary">{failed}</span>
         <Button variant="secondary" size="M" icon="folder" label="다른 파일 고르기" onClick={pick} />
       </span>
@@ -319,7 +325,9 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
         ? info.note_types_ok === info.note_types
           ? `${n(info.note_types)}종 모두 지원 (필드 치환 템플릿)`
           : `${n(info.note_types)}종 중 ${n(info.note_types_ok)}종 지원 (필드 치환 템플릿)`
-        : typesOk === types.length
+        : none
+          ? "고른 덱 없음"
+          : typesOk === types.length
           ? `고른 덱이 쓰는 ${n(types.length)}종 모두 지원`
           : `고른 덱이 쓰는 ${n(types.length)}종 중 ${n(typesOk)}종 지원`,
     },
@@ -717,11 +725,14 @@ function skippedJson(text: string, issues: ImportIssue[]) {
   }
 }
 
-function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () => void }) {
+function JsonImport({ deckId, onCancel, onLock }: { deckId: number | null; onCancel: () => void; onLock: (v: boolean) => void }) {
   const nav = useNav();
+  const lock = useLock(onLock);
   const [mode, setMode] = useState<"paste" | "file">("paste");
   const [text, setText] = useState("");
   const [source, setSource] = useState("붙여넣기");
+  // 고른 · 놓은 파일. 내용은 입력 칸에 넣지 않고 이름과 크기만 보인다 (큰 글을 칸에 넣으면 화면 메모리가 수백 MB 늘어난다, T9-03)
+  const [picked, setPicked] = useState<{ name: string; bytes: number } | null>(null);
   const [preview, setPreview] = useState<JsonPreview | null>(null);
   const [example, setExample] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -744,24 +755,31 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
     return () => clearTimeout(t);
   }, [text, deckId]);
 
+  const takeFile = (name: string, content: string, bytes: number) => {
+    setText(content);
+    setSource(name);
+    setPicked({ name, bytes });
+    setMode("file");
+    setError(undefined);
+  };
   const readFile = (f: File) => {
+    if (f.size > MAX_TEXT) return setError(TOO_BIG); // 끌어놓기와 같은 상한 (T4-11)
     const r = new FileReader();
-    r.onload = () => {
-      setText(String(r.result));
-      setSource(f.name);
-    };
+    r.onload = () => takeFile(f.name, String(r.result).replace(/^\uFEFF/, ""), f.size);
     r.readAsText(f);
+  };
+  const toPaste = () => {
+    setMode("paste");
+    if (!picked) return;
+    setPicked(null);
+    setText("");
+    setSource("붙여넣기");
   };
 
   // .json 끌어놓기. 웹뷰 이벤트는 경로만 주므로 내용은 백엔드에서 읽는다
-  const [drag] = useFileDrop(!busy, JSON_FILE, (path) =>
+  const [drag] = useOneFile(!busy, JSON_FILE, (path) =>
     api.readJsonFile(path).then(
-      (t) => {
-        setText(t);
-        setSource(baseName(path));
-        setMode("file");
-        setError(undefined);
-      },
+      (t) => takeFile(baseName(path), t, new Blob([t]).size),
       (e) => setError(errorText(e)),
     ),
   );
@@ -770,12 +788,15 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
   const run = async () => {
     if (!preview || preview.ok === 0 || busy) return;
     setBusy(true);
+    lock(true); // 가져오는 동안 다른 화면으로 가면 끝날 때 결과 화면이 튀어나온다 (T4-14)
     try {
       const result = await api.importJson(text, source, deckId);
       // 결과 화면에는 원문이 없어서 복사할 항목과 덱 이름을 여기서 만들어 넘긴다
       carried.set(result, { roots: preview.roots, skipped: skippedJson(text, result.issues) });
+      lock(false);
       nav({ name: "importResult", result });
     } catch (e) {
+      lock(false);
       setError(errorText(e));
       setBusy(false);
     }
@@ -787,7 +808,7 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
         {drag === "over" && <div className="import__json-drop t-title-m">놓으면 바로 검사해요</div>}
         <div className="import__json-head">
           <span className="import__tabs t-label-m">
-            <button className={mode === "paste" ? "c-primary" : "c-tertiary"} onClick={() => setMode("paste")}>
+            <button className={mode === "paste" ? "c-primary" : "c-tertiary"} onClick={toPaste}>
               붙여넣기
             </button>
             <button
@@ -799,20 +820,43 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
             >
               파일 선택
             </button>
-            <input ref={file} type="file" accept=".json,application/json" hidden onChange={(e) => e.target.files?.[0] && readFile(e.target.files[0])} />
+            <input
+              ref={file}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = ""; // 같은 파일을 다시 골라도 onChange 가 오게
+                if (f) readFile(f);
+              }}
+            />
           </span>
           <Button variant="ghost" size="M" icon="info" label="형식 예시 보기" onClick={() => setExample(true)} />
         </div>
-        <textarea
-          className="import__text"
-          spellCheck={false}
-          value={text}
-          placeholder={EXAMPLE}
-          onChange={(e) => {
-            setText(e.target.value);
-            setSource("붙여넣기");
-          }}
-        />
+        {mode === "file" && picked ? (
+          <div className="import__file">
+            <span className="import__file-icon">
+              <Icon name="file" size={22} className="c-accent" />
+            </span>
+            <span className="import__file-text">
+              <span className="t-body-m-strong">{picked.name}</span>
+              <span className="t-body-s c-secondary">{mb(picked.bytes)}</span>
+            </span>
+            <Button variant="ghost" size="M" label="다른 파일" onClick={() => file.current?.click()} />
+          </div>
+        ) : (
+          <textarea
+            className="import__text"
+            spellCheck={false}
+            value={text}
+            placeholder={EXAMPLE}
+            onChange={(e) => {
+              setText(e.target.value);
+              setSource("붙여넣기");
+            }}
+          />
+        )}
       </div>
 
       {preview && (
@@ -834,6 +878,12 @@ function JsonImport({ deckId, onCancel }: { deckId: number | null; onCancel: () 
                   <span className="t-title-l c-warn">{n(preview.warnings)}</span>
                   <span className="t-body-s c-secondary">경고</span>
                 </span>
+                {preview.existing > 0 && (
+                  <span>
+                    <span className="t-title-l c-secondary">{n(preview.existing)}</span>
+                    <span className="t-body-s c-secondary">이미 있는 노트 · 다시 넣지 않아요</span>
+                  </span>
+                )}
               </div>
               <IssueList issues={preview.issues} />
             </>
@@ -986,8 +1036,9 @@ function PillSelect<T extends string>({ label, value, options, onChange, accent 
   );
 }
 
-function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () => void }) {
+function CsvImport({ deckId, onCancel, onLock }: { deckId: number | null; onCancel: () => void; onLock: (v: boolean) => void }) {
   const nav = useNav();
+  const lock = useLock(onLock);
   const [file, setFile] = useState<{ name: string; bytes: ArrayBuffer } | null>(null);
   const [failed, setFailed] = useState<string>();
   const [enc, setEnc] = useState<Enc | null>(null); // null = 자동
@@ -1007,7 +1058,7 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
     setHeader(null);
     setPreview(null);
   };
-  const [drag] = useFileDrop(!busy, TABLE_FILE, (path) =>
+  const [drag] = useOneFile(!busy, TABLE_FILE, (path) =>
     api.readTableFile(path).then(
       (b) => load(baseName(path), b),
       (e) => setFailed(errorText(e)),
@@ -1070,12 +1121,15 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
   const run = async () => {
     if (!file || !json || !preview || preview.ok === 0 || busy) return;
     setBusy(true);
+    lock(true);
     try {
       const result = await api.importJson(json, file.name, deckId);
       result.issues = csvIssues(result.issues);
       carried.set(result, { roots: preview.roots, skipped: skippedJson(json, result.issues) });
+      lock(false);
       nav({ name: "importResult", result });
     } catch (e) {
+      lock(false);
       setError(errorText(e));
       setBusy(false);
     }
@@ -1090,7 +1144,8 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
       onChange={(e) => {
         const f = e.target.files?.[0];
         e.target.value = ""; // 같은 파일을 다시 골라도 onChange 가 오게
-        if (f) f.arrayBuffer().then((b) => load(f.name, b));
+        if (f && f.size > MAX_TEXT) setFailed(TOO_BIG);
+        else if (f) f.arrayBuffer().then((b) => load(f.name, b));
       }}
     />
   );
@@ -1219,6 +1274,12 @@ function CsvImport({ deckId, onCancel }: { deckId: number | null; onCancel: () =
                 <span className="csv__count">
                   <span className="t-title-m c-warn">{n(preview.warnings)}</span>
                   <span className="t-body-s c-secondary">경고</span>
+                </span>
+              )}
+              {preview.existing > 0 && (
+                <span className="csv__count">
+                  <span className="t-title-m c-secondary">{n(preview.existing)}</span>
+                  <span className="t-body-s c-secondary">이미 있는 노트 · 다시 넣지 않아요</span>
                 </span>
               )}
               {issues.slice(0, 3).map((i, k) => (
@@ -1378,7 +1439,9 @@ export function ImportResultScreen({ result: r }: { result: ImportResult }) {
               ? "원본 파일은 그대로예요"
               : r.skipped > 0
                 ? `항목 ${n(r.notes + r.skipped)}개 중 ${n(r.notes)}개를 가져왔어요 · 기존 카드는 그대로예요`
-                : `항목 ${n(r.notes)}개를 모두 가져왔어요 · 기존 카드는 그대로예요`}
+                : r.issues.some((i) => i.kind === "existing")
+                  ? `항목 ${n(r.notes)}개를 가져왔어요 · 이미 있는 노트는 다시 넣지 않았어요`
+                  : `항목 ${n(r.notes)}개를 모두 가져왔어요 · 기존 카드는 그대로예요`}
           </span>
         </span>
       </div>

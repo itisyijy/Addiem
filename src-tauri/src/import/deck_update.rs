@@ -253,6 +253,8 @@ pub struct UpdateHint {
     known_decks: Vec<String>,
     /// 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15)
     suggested: bool,
+    /// 이미 있는 노트가 모두 가져온 그대로다 (같은 파일에서 고르지 않은 덱을 마저 가져온다). 업데이트를 권하지 않고 [새 노트만 더하기]로 바로 간다 (T4-09)
+    same_file: bool,
 }
 
 #[derive(Serialize)]
@@ -488,7 +490,7 @@ fn hint(con: &Connection, guids: &[&str], decks: &BTreeSet<i64>) -> Res<UpdateHi
     for id in roots_of(con, if same_deck.is_empty() { &their_decks } else { &same_deck })? {
         known.push(con.query_row("SELECT name FROM deck WHERE id = ?1", [id], |r| r.get(0)).map_err(err)?);
     }
-    Ok(UpdateHint { notes: guids.len(), existing_notes: existing, gone_notes: gone, suggested, known_decks: known })
+    Ok(UpdateHint { notes: guids.len(), existing_notes: existing, gone_notes: gone, suggested, known_decks: known, same_file: false })
 }
 
 /// 이번 패키지 덱(Anki 덱 id)으로 가져온 우리 덱
@@ -511,8 +513,28 @@ pub(super) fn file_hint(con: &Connection, pkg: &Package) -> Res<Option<UpdateHin
     let guids: Vec<String> = pkg.col.prepare("SELECT guid FROM notes").and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)?;
     let refs: Vec<&str> = guids.iter().map(String::as_str).collect();
     let decks: BTreeSet<i64> = card_deck_ids(pkg, |_| true)?;
-    let hint = hint(con, &refs, &decks)?;
+    let mut hint = hint(con, &refs, &decks)?;
+    if hint.existing_notes > 0 && unchanged(con, pkg)? {
+        hint.suggested = false;
+        hint.same_file = true;
+    }
     Ok((hint.existing_notes > 0).then_some(hint))
+}
+
+/// 파일의 노트 중 이미 있는 것이 모두 가져올 때 값(note.origin 해시) 그대로인가. 원본을 모르는 노트가 있으면 아니다
+fn unchanged(con: &Connection, pkg: &Package) -> Res<bool> {
+    let mut ours = con.prepare_cached("SELECT origin FROM note WHERE anki_guid = ?1 LIMIT 1").map_err(err)?;
+    let mut st = pkg.col.prepare("SELECT guid, flds FROM notes").map_err(err)?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(err)?;
+    for row in rows {
+        let (guid, flds) = row.map_err(err)?;
+        let Some(origin) = ours.query_row([&guid], |r| r.get::<_, Option<String>>(0)).optional().map_err(err)? else { continue };
+        let same = origin.and_then(|o| serde_json::from_str::<NoteOrigin>(&o).ok()).is_some_and(|o| o.f == flds.split(SEP).map(h).collect::<Vec<_>>());
+        if !same {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// 카드가 실제로 있는 Anki 덱 (필터 덱은 원래 덱)
@@ -1972,6 +1994,24 @@ mod tests {
 
     fn import(s: &AppState, p: &Path) {
         run_import_anki(&|_, _, _| {}, s, p.to_str().unwrap(), false, &mut vec![]).unwrap();
+    }
+
+    #[test]
+    fn same_file_again_goes_straight_to_adding_the_rest() {
+        // T4-09: 일부 덱만 가져온 파일을 다시 고르면 (이미 있는 노트가 그대로) 업데이트를 권하지 않는다. 한 노트라도 바뀌었으면 지금처럼 권한다
+        let t = tmp("samefile");
+        let s = state(&t.0.join("data"));
+        let basic = || Model { id: 7, name: "Basic", fields: vec!["Front", "Back"], templates: vec![("Card 1", "{{Front}}", "{{Back}}")], css: "" };
+        let notes = |back: &str| vec![note(1, "g1", 7, &["a", back], &[(1, 0)]), note(2, "g2", 7, &["c", "d"], &[(2, 0)])];
+        let (p1, p2) = (t.0.join("a.apkg"), t.0.join("a2.apkg"));
+        testpkg::write(&p1, &[basic()], &[(1, "A"), (2, "B")], &notes("b"), &[]);
+        testpkg::write(&p2, &[basic()], &[(1, "A"), (2, "B")], &notes("b2"), &[]);
+        run_import_selected(&|_, _, _| {}, &s, p1.to_str().unwrap(), false, Some(&HashSet::from([1])), &[], &mut vec![]).unwrap();
+        let hint = |p: &Path| file_hint(&s.db.lock().unwrap(), &open_package(p, &s.data_dir, &[]).unwrap()).unwrap().unwrap();
+        let same = hint(&p1);
+        assert!(same.same_file && !same.suggested);
+        let newer = hint(&p2);
+        assert!(!newer.same_file && newer.suggested);
     }
 
     fn update(s: &AppState, p: &Path, choices: &Choices, dry: bool) -> UpdateSummary {

@@ -359,7 +359,10 @@ export type ImportResult = {
   issues: ImportIssue[];
 };
 export type JsonPreview = {
+  /** 들어갈 항목 (이미 있는 노트는 뺐다) */
   ok: number;
+  /** 대상 덱에 같은 노트가 이미 있어 건너뛸 항목 */
+  existing: number;
   skipped: number;
   warnings: number;
   issues: ImportIssue[];
@@ -431,6 +434,8 @@ export type UpdateHint = {
   known_decks: string[];
   /** 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15) */
   suggested: boolean;
+  /** 이미 있는 노트가 모두 가져온 그대로: 같은 파일에서 남은 덱을 마저 가져온다 ([새 노트만 더하기]로 바로) */
+  same_file: boolean;
 };
 /** B2-k · B2-kt 고른 것. take_new: 충돌 필드를 새 버전으로 할 노트 id, new_looks: [노트 유형 id, ord | null(CSS)] */
 /** take_new: 충돌 필드를 모두 새 버전으로 할 노트, take_new_fields: 필드마다 [노트 id, 자리] (DU54). 둘 중 어디 있어도 새 버전 */
@@ -569,7 +574,8 @@ export type ExportResult = {
 };
 /** C1-xe 덱 상자 */
 /** recall_cards: 목록 회상 · 선택형 카드 수 (Anki 에서는 보기만 해요) */
-export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number; recall_cards: number };
+/** archived: 빠지는 보관한 하위 덱 수 */
+export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number; recall_cards: number; archived: number };
 /** export_apkg 가 보내는 "export-progress" 이벤트 (C1-xp) */
 export type ExportProgress = { step: "notes" | "reviews" | "media" | "zip"; done: number; total: number };
 export type BoardDeck ={ id: number; label: string; path: string[]; cards: number; importance: Level; source: string; reason: string | null };
