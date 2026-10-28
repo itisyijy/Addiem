@@ -1094,6 +1094,8 @@ pub struct CardRow {
     sounds: [bool; 2],
     /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). C2 상태 배지 "앞면 빔"
     front_empty: bool,
+    /// 노트 유형 (NT9 [다른 유형으로 옮기기]는 한 유형만, T1-35)
+    note_type_id: i64,
 }
 
 /// 그림 가리기 카드의 자리 (M3 배지 "그림 가리기 · n/N", M4 행)
@@ -1292,6 +1294,7 @@ pub(crate) fn card_list(
                     occlusion,
                     sounds,
                     front_empty,
+                    note_type_id: nt,
                 })
             };
             if bare {
@@ -3231,7 +3234,7 @@ mod tests {
         assert_eq!(next.rows[0].question, "q2");
         let all = list(5, None, true);
         assert_eq!(ids(&all), cards);
-        assert!(all.rows.iter().all(|r| r.question.is_empty() && r.deck_path == ["t"]), "그리지 않아도 덱 · 상태는 있다");
+        assert!(all.rows.iter().all(|r| r.question.is_empty() && r.deck_path == ["t"] && r.note_type_id == first.rows[0].note_type_id), "그리지 않아도 덱 · 상태 · 노트 유형(T1-35)은 있다");
     }
 
     /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)

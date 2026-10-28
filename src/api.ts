@@ -132,6 +132,7 @@ export type CardRow = {
   sounds: [boolean, boolean];
   /** 앞면이 빈 카드 (학습에 나오지 않는다, NT49) */
   front_empty: boolean;
+  note_type_id: number;
 };
 /** 그림 가리기 카드의 자리. ordinal: 칸 번호(편집기 focus), n/count: "그림 가리기 · n/N" */
 export type IoPos = { ordinal: number; n: number; count: number };

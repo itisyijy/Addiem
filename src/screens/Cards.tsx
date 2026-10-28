@@ -352,6 +352,8 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
     clearSelection(); // 보이지 않게 된 카드를 고른 채로 두지 않는다
   };
   const sameLevel = picked.every((c) => c.importance === picked[0]?.importance) ? picked[0]?.importance : undefined;
+  // NT9 다른 유형으로 옮기기는 한 유형의 노트만. 섞였으면 메뉴에서 미리 막고 몇 종인지 알린다 (T1-35)
+  const pickedTypes = new Set(picked.map((c) => c.note_type_id)).size;
   const ownCount = picked.filter((c) => c.own_importance).length;
 
   return (
@@ -608,6 +610,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                   role="menuitem"
                   className="menu__item t-body-m"
                   autoFocus
+                  disabled={pickedTypes > 1}
                   onClick={() => {
                     closeMenus();
                     setChanging([...new Set(picked.map((c) => c.note_id))]);
@@ -616,7 +619,11 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                   <Icon name="layers" size={16} />
                   <span className="menu__text">
                     <span className="t-body-m">다른 유형으로 옮기기</span>
-                    <span className="t-caption c-tertiary">고른 카드의 노트 {n(new Set(picked.map((c) => c.note_id)).size)}개</span>
+                    <span className="t-caption c-tertiary">
+                      {pickedTypes > 1
+                        ? `노트 유형 ${n(pickedTypes)}종이 섞여 있어요 · 한 유형만 골라 주세요`
+                        : `고른 카드의 노트 ${n(new Set(picked.map((c) => c.note_id)).size)}개`}
+                    </span>
                   </span>
                 </button>
                 {picked.some((c) => c.state === "suspended") && (
