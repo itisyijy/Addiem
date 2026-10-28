@@ -762,25 +762,32 @@ function JsonImport({ deckId, onCancel, onLock }: { deckId: number | null; onCan
     setMode("file");
     setError(undefined);
   };
+  const clearFile = () => {
+    setPicked(null);
+    setText("");
+    setSource("붙여넣기");
+  };
+  // 새로 고른 파일을 못 읽으면 앞 파일도 비운다. 오류 옆에 앞 파일과 켜진 [가져오기]가 남아 누르면 앞 파일이 들어갔다 (QA V2-02)
+  const failFile = (message: string) => {
+    if (picked) clearFile();
+    setError(message);
+  };
   const readFile = (f: File) => {
-    if (f.size > MAX_TEXT) return setError(TOO_BIG); // 끌어놓기와 같은 상한 (T4-11)
+    if (f.size > MAX_TEXT) return failFile(TOO_BIG); // 끌어놓기와 같은 상한 (T4-11)
     const r = new FileReader();
     r.onload = () => takeFile(f.name, String(r.result).replace(/^\uFEFF/, ""), f.size);
     r.readAsText(f);
   };
   const toPaste = () => {
     setMode("paste");
-    if (!picked) return;
-    setPicked(null);
-    setText("");
-    setSource("붙여넣기");
+    if (picked) clearFile();
   };
 
   // .json 끌어놓기. 웹뷰 이벤트는 경로만 주므로 내용은 백엔드에서 읽는다
   const [drag] = useOneFile(!busy, JSON_FILE, (path) =>
     api.readJsonFile(path).then(
       (t) => takeFile(baseName(path), t, new Blob([t]).size),
-      (e) => setError(errorText(e)),
+      (e) => failFile(errorText(e)),
     ),
   );
   const shownError = drag === "wrong" ? "JSON 파일(.json)만 넣을 수 있어요. 덱 패키지와 CSV는 다른 탭에서 가져와요." : error;
@@ -868,7 +875,8 @@ function JsonImport({ deckId, onCancel, onLock }: { deckId: number | null; onCan
               <div className="import__counts">
                 <span>
                   <span className="t-title-l">{n(preview.ok)}</span>
-                  <span className="t-body-s c-secondary">검사를 통과한 항목</span>
+                  {/* 이미 있는 노트를 뺀 수라 "검사를 통과한"이 0이면 검사에 걸린 것처럼 읽혔다 (QA V2-03) */}
+                  <span className="t-body-s c-secondary">{preview.existing > 0 ? "새로 넣을 항목" : "검사를 통과한 항목"}</span>
                 </span>
                 <span>
                   <span className="t-title-l c-danger">{n(preview.skipped)}</span>
@@ -1264,7 +1272,7 @@ function CsvImport({ deckId, onCancel, onLock }: { deckId: number | null; onCanc
             <>
               <span className="csv__count">
                 <span className="t-title-m">{n(preview.ok)}</span>
-                <span className="t-body-s c-secondary">검사를 통과한 항목</span>
+                <span className="t-body-s c-secondary">{preview.existing > 0 ? "새로 넣을 항목" : "검사를 통과한 항목"}</span>
               </span>
               <span className="csv__count">
                 <span className="t-title-m c-danger">{n(preview.skipped)}</span>

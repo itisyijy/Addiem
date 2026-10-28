@@ -498,6 +498,11 @@ fn deck_notes(con: &Connection, deck: i64, batch: Option<i64>) -> Res<HashSet<(i
     rows.collect::<Result<_, _>>().map_err(err)
 }
 
+/// 이미 있어 넣지 않는 항목(번호)의 경고 · 참고는 뺀다. 넣지 않은 항목에 "가져왔어요"가 붙었다 (QA V2-03)
+fn drop_existing(issues: Vec<Issue>, existing: &HashSet<usize>) -> Vec<Issue> {
+    issues.into_iter().filter(|i| i.severity == "skipped" || !i.index.is_some_and(|x| existing.contains(&x))).collect()
+}
+
 /// 덱마다 한 번만 읽는다
 fn known_in<'a>(known: &'a mut HashMap<i64, HashSet<(i64, String)>>, con: &Connection, deck: i64, batch: Option<i64>) -> Res<&'a HashSet<(i64, String)>> {
     Ok(match known.entry(deck) {
@@ -538,13 +543,10 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
     let mut new_paths: HashSet<Vec<String>> = HashSet::new();
     let mut roots: Vec<String> = vec![];
     let mut known = HashMap::new();
-    let mut existing = 0;
+    let mut existing = HashSet::new();
     for c in &cards {
         let path = relative_path(&c.deck, target.as_ref().map(|t| t.1.as_str()));
         let root_name = target.as_ref().map(|t| t.1.clone()).or_else(|| path.first().cloned()).unwrap_or_default();
-        if !roots.contains(&root_name) {
-            roots.push(root_name);
-        }
         let mut parent = target.as_ref().map(|t| t.0);
         let mut missing = false;
         for d in 1..=path.len() {
@@ -563,14 +565,21 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
                 new_paths.insert(path[..d].to_vec());
             }
         }
-        if let Some(deck) = parent.filter(|_| !missing) {
-            existing += known_in(&mut known, con, deck, None)?.contains(&json_note_key(con, c)?) as usize;
+        if let Some(deck) = parent.filter(|_| !missing)
+            && known_in(&mut known, con, deck, None)?.contains(&json_note_key(con, c)?)
+        {
+            existing.insert(c.index);
+            continue;
+        }
+        if !roots.contains(&root_name) {
+            roots.push(root_name);
         }
     }
+    let issues = drop_existing(issues, &existing);
     let skipped = issues.iter().filter(|i| i.severity == "skipped").count();
     Ok(JsonPreview {
-        ok: cards.len() - existing,
-        existing,
+        ok: cards.len() - existing.len(),
+        existing: existing.len(),
         skipped,
         // 참고(info)는 경고에 세지 않는다. 결과 화면과 같은 수 (T4-07)
         warnings: issues.iter().filter(|i| i.severity == "warning").count(),
@@ -610,18 +619,18 @@ fn run_import_json(con: &mut Connection, text: &str, source: String, deck_id: Op
     let mut card_tags: HashMap<i64, Vec<Option<(i64, String)>>> = HashMap::new();
     let mut made = 0;
     let mut known = HashMap::new();
-    let mut existing = 0;
+    let mut existing = HashSet::new();
     for c in &cards {
         let path = relative_path(&c.deck, target.as_ref().map(|t| t.1.as_str()));
         let did = match (&target, path.is_empty()) {
             (Some((id, _)), true) => *id,
             _ => decks.ensure(&tx, target.as_ref().map(|t| t.0), &path, now)?,
         };
-        used.insert(did);
         if known_in(&mut known, &tx, did, Some(batch))?.contains(&json_note_key(&tx, c)?) {
-            existing += 1;
+            existing.insert(c.index);
             continue;
         }
+        used.insert(did); // 넣은 덱만 "가져온 덱"으로 센다 (QA V2-03)
         let n = match c.kind {
             recall::LIST | recall::CHOICE => recall::insert(&tx, c.kind, did, &c.fields, c.importance, &c.tags, Some(batch)).map(|_| 1),
             kind => {
@@ -641,16 +650,16 @@ fn run_import_json(con: &mut Connection, text: &str, source: String, deck_id: Op
 
     let roots = roots_of(&tx, &used)?;
     let skipped = issues.iter().filter(|i| i.severity == "skipped").count();
-    let mut issues = issues;
-    if existing > 0 {
-        issues.push(issue("info", "existing", format!("이미 있는 노트 {}개는 다시 넣지 않았어요", n(existing))));
+    let mut issues = drop_existing(issues, &existing);
+    if !existing.is_empty() {
+        issues.push(issue("info", "existing", format!("이미 있는 노트 {}개는 다시 넣지 않았어요", n(existing.len()))));
     }
     let result = ImportResult {
         source,
         kind: "json".into(),
         decks: roots.len(),
         subdecks: decks.created.iter().filter(|id| !roots.contains(id)).count(),
-        notes: cards.len() - existing,
+        notes: cards.len() - existing.len(),
         cards: made,
         skipped,
         root_deck_id: target.as_ref().map(|t| t.0).or_else(|| (roots.len() == 1).then(|| *roots.iter().next().unwrap())),
@@ -2535,6 +2544,22 @@ mod tests {
         assert_eq!(r.issues.iter().filter(|i| i.kind == "existing").map(|i| i.detail.as_str()).collect::<Vec<_>>(), ["이미 있는 노트 1개는 다시 넣지 않았어요"]);
         let notes: i64 = con.query_row("SELECT count(*) FROM note", [], |r| r.get(0)).unwrap();
         assert_eq!(notes, 5);
+    }
+
+    #[test]
+    fn json_reimport_drops_notes_and_decks_of_items_it_skips() {
+        // V2-03: 이미 있어 넣지 않는 항목에는 "가져왔어요" 참고가 붙지 않고, 카드가 하나도 안 들어간 덱은 들어갈 덱 · 가져온 덱에 없다
+        let mut con = db::open_in_memory().unwrap();
+        let first = r#"[{"front": "a", "back": "1", "deck": "A", "note_type": "서술형"}, {"front": "b", "back": "2", "deck": "B"}]"#;
+        run_import_json(&mut con, first, "f".into(), None).unwrap();
+        let again = r#"[{"front": "a", "back": "1", "deck": "A", "note_type": "서술형"}, {"front": "c", "back": "3", "deck": "B"}]"#;
+        let p = json_preview(&con, again, None).unwrap();
+        assert_eq!((p.ok, p.existing), (1, 1));
+        assert!(p.issues.is_empty(), "{:?}", p.issues.iter().map(|i| &i.detail).collect::<Vec<_>>());
+        assert_eq!(p.roots, ["B"]);
+        let r = run_import_json(&mut con, again, "f".into(), None).unwrap();
+        assert_eq!(r.issues.iter().map(|i| i.kind).collect::<Vec<_>>(), ["existing"]);
+        assert_eq!((r.notes, r.decks, r.roots.len()), (1, 1, 1));
     }
 
     #[test]
