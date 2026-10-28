@@ -54,6 +54,7 @@ appDataFolder/                          ← drive.appdata, Drive 화면에 안 �
   changes/<device_uid>/<seq>.jsonl.gz   그 기기의 변경 묶음. 새 파일로만 쓴다
   media/<sha256>.<ext>                  그림. 내용 해시가 이름이라 같은 파일은 한 번만
   crypto.json                           (암호 잠금을 켰을 때만) salt, KDF 매개변수, 키 확인값
+  kdf/<해시>.json                       바꾸거나 푼 예전 잠금의 crypto.json. 그때 잠근 Drive 백업을 예전 암호로 연다 (K48)
 ```
 
 - **공유되는 가변 파일이 없다.** `devices/` 는 기기마다 자기 파일만 고치고, `snapshot/`·`changes/`·`media/` 는 새로 만들기만 한다. Drive API v3에는 조건부 쓰기가 없으므로, 동시 쓰기 충돌을 구조로 없앴다.
