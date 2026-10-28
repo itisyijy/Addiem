@@ -425,7 +425,7 @@ export type AnkiPreview = {
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
 /** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
-export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "cleanup" };
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "cleanup" | "other" };
 /** DU59 새 버전에 없는 노트 정리의 수 (확인 창 · 결과). backup: 지우기 전에 만든 백업 이름 */
 /** 학습 중지면 notes · cards 는 이번에 바꾼 것만, changed 는 그 카드 (토스트 [되돌리기]) */
 export type TidySummary = { notes: number; cards: number; studied: number; suspended: number; backup: string | null; changed: number[] };
@@ -765,11 +765,14 @@ export const api = {
   /** kind "notetype": 노트 유형 저장 전 자동 백업 (목록에 그 이름으로). 없으면 직접 만든 백업 */
   createBackup: (kind?: "notetype" | "deck") => invoke<string>("create_backup", { kind: kind ?? null }),
   retryOpen: () => invoke<void>("retry_open"),
-  /** 가장 최근 백업으로 되돌린다. 쓴 백업 파일 이름을 돌려준다 */
-  /** name 이 없으면 가장 최근 백업. backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */
+  /** S1-6 백업이 없을 때: 열지 못한 파일은 데이터 폴더에 남기고 빈 데이터로 연다 */
+  startFresh: () => invoke<void>("start_fresh"),
+  /** name 이 없으면 최근 백업부터 차례로 보고 처음으로 쓸 수 있는 것. 쓴 백업 파일 이름을 돌려준다.
+   *  backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */
   restoreBackup: (name: string | null = null, backupFirst = false) => invoke<string>("restore_backup", { name, backupFirst }),
   localBackups: () => invoke<LocalBackup[]>("local_backups"),
   openBackupDir: () => invoke<void>("open_backup_dir"),
+  openDataDir: () => invoke<void>("open_backup_dir", { data: true }),
   setCutoffHour: (hour: number) => invoke<void>("set_cutoff_hour", { hour }),
   wipeAll: (backup: boolean) => invoke<string | null>("wipe_all", { backup }),
 };
