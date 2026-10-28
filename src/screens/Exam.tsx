@@ -1,11 +1,12 @@
 // 8.4 기출 표시 창 (N2 여러 장 · I1 자료 구간: 시험 고르기 · 새 시험) · N1 카드 편집의 기출 줄 · N4 덱 상세 한 줄. 사실만 보인다 (점수 없음)
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ExamState } from "../api";
 import { Button, Icon } from "../ui";
 import { n, useNav } from "../nav";
-import { plainEnter } from "../keys";
+import { matchAction, plainEnter } from "../keys";
 import { exam } from "../written";
-import { Modal } from "./NewDeck";
+import { Modal, ModalCancel } from "./NewDeck";
 import "../styles/study.css";
 
 /** 시험 하나를 고르거나 새로 적는다. 같은 시험이 이미 있는 노트는 건너뛴다 (표시는 노트마다 한 번) */
@@ -55,6 +56,7 @@ export function ExamDialog({ deckId, notes, cards, title, sub, unit = "노트", 
       }
       onClose={onClose}
       className="exam-dialog"
+      dirty={!!fresh.trim()} // 적은 새 시험 이름을 Esc · 바깥 클릭에 말없이 버리지 않는다 (QA V4-05)
     >
       <div className="exam__list" role="radiogroup" aria-label="시험">
         {list.map((e) => (
@@ -89,8 +91,9 @@ export function ExamDialog({ deckId, notes, cards, title, sub, unit = "노트", 
         </p>
       )}
       <div className="modal__actions">
-        <Button variant="ghost" label="취소" onClick={onClose} />
-        <Button icon="target" label={notes.length === 1 ? "표시" : `새 시험 표시 ${n(todo.length)}개 추가`} disabled={!ok} onClick={() => onConfirm(name, todo)} />
+        <ModalCancel />
+        {/* 무엇을 표시할지 버튼이 말한다. 기존 시험을 골라도 "새 시험"이라 했다 (QA V2-06) */}
+        <Button icon="target" label={`${pick !== null ? `"${pick}"` : "새 시험"} 표시${notes.length === 1 ? "" : ` ${n(todo.length)}개 추가`}`} disabled={!ok} onClick={() => onConfirm(name, todo)} />
       </div>
     </Modal>
   );
@@ -180,17 +183,30 @@ function ExamPop({ deckId, names, onChange, onClose }: { deckId: number | null; 
   useEffect(() => {
     exam.list(deckId).then((l) => setList(l.map((e) => e.name)), () => {});
   }, [deckId]);
-  useEffect(() => {
-    const close = (e: MouseEvent) => !box.current?.parentElement?.contains(e.target as Node) && onClose();
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [onClose]);
   const shown = [...new Set([...list, ...names])];
   const add = (text = fresh) => {
     const name = text.trim();
     if (name && !names.includes(name)) onChange([...names, name]);
     setFresh("");
   };
+  // 바깥 클릭은 뗄 때 적은 이름을 더하고 닫는다 (N21). 누를 때 닫으면 칸이 blur 없이 사라져 이름이 버려지고,
+  // 팝오버가 줄며 창이 움직여 [저장]을 뗀 곳이 다른 요소가 됐다 (QA V2-01). 뒤따르는 click([저장])은 더한 값으로 저장한다
+  const outside = useRef(false);
+  useEffect(() => {
+    const down = (e: MouseEvent) => (outside.current = !box.current?.parentElement?.contains(e.target as Node));
+    const up = () =>
+      outside.current &&
+      flushSync(() => {
+        add();
+        onClose();
+      });
+    document.addEventListener("mousedown", down, true);
+    document.addEventListener("mouseup", up, true);
+    return () => {
+      document.removeEventListener("mousedown", down, true);
+      document.removeEventListener("mouseup", up, true);
+    };
+  });
   // 조합 중에 칸을 떠나면 확정된 글자로 더한다 (조합 중 글자로 먼저 더하고 확정 글자가 칸에 다시 남지 않게)
   const typing = useRef(false);
   const blurred = useRef(false);
@@ -219,13 +235,15 @@ function ExamPop({ deckId, names, onChange, onClose }: { deckId: number | null; 
               add();
             }
           }}
+          // 저장 키(Ctrl Enter)도 적은 이름을 넣고 저장한다: 창의 저장 처리는 bubble 단계에서 새로 그린 값을 읽는다
+          onKeyDownCapture={(e) => matchAction("save", e.nativeEvent) >= 0 && flushSync(() => add())}
           onCompositionStart={() => (typing.current = true)}
           onCompositionEnd={(e) => {
             typing.current = false;
             if (blurred.current) add(e.currentTarget.value);
             blurred.current = false;
           }}
-          onBlur={() => (typing.current ? (blurred.current = true) : add())}
+          onBlur={() => !outside.current && (typing.current ? (blurred.current = true) : add())} // 바깥을 눌러 떠나면 뗄 때 더한다
         />
       </span>
       <p className="t-caption c-tertiary">횟수는 표시한 시험 수로 세요. 같은 시험을 두 번 세지 않아요.</p>
