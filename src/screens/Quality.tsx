@@ -10,7 +10,7 @@ import { Badge, Button, Checkbox, Icon, Spinner } from "../ui";
 import { AiConnect, AiErrorBox, ScopeLine, SendList, SLOW, STOPPED, UsingPlan, refreshAi, sendConfirmed, sentRows, setSendConfirmed, useAiStatus, useSlow } from "../ai";
 import { placeOf, ragApi, type Sent } from "../sourceApi";
 import { SegmentPanel } from "./SourcePanel";
-import { DiscardModal, Modal, useModalClose } from "./NewDeck";
+import { DiscardModal, Modal, ModalCancel } from "./NewDeck";
 import { splitLater } from "../written";
 
 type View = "all" | "mismatch" | "format" | "again" | "long" | "multi";
@@ -594,11 +594,6 @@ function Evidence({ check, onOpen }: { check: CardCheck; onOpen: (id: number) =>
 /** 이번 실행에서 AI로 확인을 받은 카드. 다시 열면 저절로 다시 보내지 않고 보낼 내용을 먼저 보인다 (QA T7-03: 다시 열자마자 또 보내 사용량을 썼다) */
 const aiChecked = new Set<number>();
 
-/** 창 안의 닫기 버튼. 고친 것이 있으면 X · Esc 처럼 먼저 묻는다 (Modal dirty) */
-function CloseButton({ label }: { label: string }) {
-  const close = useModalClose();
-  return <Button variant="ghost" size="M" label={label} onClick={close} />;
-}
 
 /**
  * CQ2 서식 고치기 · CQ3 AI로 확인. 승인([이대로 고치기]) 전에는 아무것도 바뀌지 않는다.
@@ -891,7 +886,7 @@ function RewriteModal({ cardId, mode, onClose, onKeep, onEdit, onDone }: {
           <span className="split__actions">
             {fix ? (
               <>
-                <CloseButton label={mode === "format" ? "고치지 않기" : "그대로 두기"} />
+                <ModalCancel label={mode === "format" ? "고치지 않기" : "그대로 두기"} />
                 <Button size="M" icon="check" label="이대로 고치기" disabled={!changed || lockedChange} busy={busy} busyLabel="고치는 중…" onClick={apply} />
               </>
             ) : check && !check.fix ? (

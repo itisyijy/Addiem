@@ -109,7 +109,7 @@ const MATERIAL_ORDER: &str = "m.created_at, m.uid, m.id";
 const LINK_ORDER: &str = "l.created_at, l.uid, l.id";
 
 /// 이 덱과 하위 덱에 붙은 자료
-#[tauri::command]
+#[tauri::command(async)]
 pub fn source_list(state: State<AppState>, deck_id: i64) -> Res<Vec<Material>> {
     let con = state.db.lock().map_err(err)?;
     materials_in(&con, deck_id)
@@ -731,7 +731,7 @@ pub fn source_segment(state: State<AppState>, segment_id: i64) -> Res<CardSource
 }
 
 /// I2 학습 중 원자료. 직접 연결을 먼저, 그다음 유사도가 높은 것. 없으면 null (버튼을 숨긴다)
-#[tauri::command]
+#[tauri::command(async)]
 pub fn source_for_card(state: State<AppState>, card_id: i64) -> Res<Option<CardSource>> {
     let con = state.db.lock().map_err(err)?;
     for_card(&con, card_id)

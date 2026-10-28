@@ -250,7 +250,7 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
 
       <section className="prefs__section">
         <p className="prefs__label t-label-s c-tertiary">데이터</p>
-        <ModelRow /> {/* I3 분석 모델 (받았을 때만, screens/Sources.tsx) */}
+        <ModelRow /> {/* I3 분석 모델 (받기 전에도 [내려받기], screens/Sources.tsx) */}
         <div className="prefs__row">
           <span className="prefs__text">
             <span className="t-body-m-strong">모든 데이터 삭제</span>

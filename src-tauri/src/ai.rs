@@ -798,7 +798,7 @@ pub struct AiStatus {
     sent_at: Option<i64>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_status(app: AppHandle) -> Res<AiStatus> {
     with_db(&app, |c| {
         let email = get_meta(c, META_EMAIL);
