@@ -1248,12 +1248,16 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [list, setList] = useState<DriveBackup[] | null>(null);
+  // 기기 목록 · 사용 공간은 마지막 동기화 때 것이라 그 뒤 합류한 기기가 빠질 수 있다: Drive 에서 다시 읽는다 (QA V1-06).
+  // 읽기 전 · 못 읽으면(오프라인) 마지막 동기화 때 것. null 이면 Drive 에 데이터가 없다
+  const [remote, setRemote] = useState<SyncProbe["remote"] | undefined>();
   useEffect(() => {
     syncApi.backups().then(setList, () => {});
+    syncApi.probe().then((p) => setRemote(p.remote), () => {});
   }, []);
   // 지울 양: 동기화 데이터(숨김 공간) + 백업 zip (R-08)
-  const total = (s?.usage ?? 0) + (list ?? []).reduce((a, b) => a + b.size, 0);
-  const who = others(s ?? null);
+  const total = (remote === undefined ? (s?.usage ?? 0) : (remote?.bytes ?? 0)) + (list ?? []).reduce((a, b) => a + b.size, 0);
+  const who = remote === undefined ? others(s ?? null) : (remote?.names ?? []);
   const whoText = who.length ? who.join(", ") : "";
   const run = async () => {
     setBusy(true);

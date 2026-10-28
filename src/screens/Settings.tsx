@@ -411,8 +411,12 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
           <Button variant="secondary" size="M" label="이 업데이트 되돌리기" onClick={() => setUndo(update.batch)} />
         </div>
       )}
+      {/* Drive 에 연결하기 전 백업(처음 연결할 때의 동기화 전 자동 백업 등)에는 연결이 없다: 되돌리면 연결이 풀린다 (K47, QA V1-04) */}
       {drive?.connected && (
-        <p className="t-body-s c-secondary">Google Drive 동기화를 켜 두었으면 다음 동기화 때 Drive와 다시 맞춰요. 이미 다른 기기로 올라간 변경은 다시 들어와요.</p>
+        <p className="t-body-s c-secondary">
+          Drive에 연결한 뒤 만든 백업이면 다음 동기화 때 Drive와 다시 맞추고, 이미 다른 기기로 올라간 변경은 다시 들어와요. 연결하기 전에 만든 백업이면 Drive 연결이 풀려요. 다시 연결하면
+          Drive 데이터와 합칠 수 있어요.
+        </p>
       )}
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="modal__actions">
