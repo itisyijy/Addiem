@@ -60,8 +60,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   const [weak, setWeak] = useState(weakOnly); // C1-w [약한 챕터 카드 보기]
   const [susp, setSusp] = useState(false); // [학습 중지 n장 보기]
   const [query, setQuery] = useState(start ?? "");
-  const [limit, setLimit] = useState(PAGE);
   const [list, setList] = useState<CardList | null>(null);
+  // Ctrl A · 머리 체크박스로 받은, 아직 불러오지 않은 뒤쪽 카드 (질문 · 답 없이, P0-7)
+  const [extra, setExtra] = useState<CardRow[]>([]);
+  const shown = useRef(PAGE); // 다시 불러올 때 받을 장수: 지금까지 이어 붙인 만큼
+  const gen = useRef(0); // 거르기가 바뀐 뒤 늦게 온 응답을 버린다
+  const loadingMore = useRef(false);
   const [scopeMenu, setScopeMenu] = useState(false);
   const [impMenu, setImpMenu] = useState<number | null>(null);
   const [rowMenu, setRowMenu] = useState<number | null>(null);
@@ -69,7 +73,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   const [barMenu, setBarMenu] = useState<"imp" | "move" | "more" | null>(null);
   const [changing, setChanging] = useState<number[] | null>(null); // NT9 다른 유형으로 옮길 노트
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
-  const anchor = useRef<number | null>(null); // Shift 클릭 범위의 시작 (목록 순서)
+  const anchor = useRef<number | null>(null); // Shift 클릭 범위의 시작 카드 id (목록이 바뀌면 그 카드가 있는 자리, T1-11)
   const [editing, setEditing] = useState<CardRow | null>(null);
   useEffect(() => {
     if (edit !== undefined) api.listCards(null, "", 1, false, [edit]).then((l) => l.rows[0] && setEditing(l.rows[0]), () => {});
@@ -101,29 +105,61 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   }, [deckId, buriedOnly]);
   useEffect(loadFixable, [loadFixable]);
 
-  const load = useCallback(
-    () => api.listCards(scope, query, limit, buriedOnly, only, weak, susp).then(setList, (e) => setError(errorText(e))),
-    [scope, query, limit, buriedOnly, only, weak, susp],
+  const page = useCallback(
+    (limit: number, after: number | null = null, bare = false) => api.listCards(scope, query, limit, buriedOnly, only, weak, susp, after, bare),
+    [scope, query, buriedOnly, only, weak, susp],
   );
+  const load = useCallback(() => {
+    const g = ++gen.current;
+    return page(shown.current).then((l) => void (g === gen.current && setList(l)), (e) => setError(errorText(e)));
+  }, [page]);
   useEffect(() => {
     const t = setTimeout(load, 150); // 입력 중에는 기다렸다가 찾는다
     return () => clearTimeout(t);
   }, [load]);
 
-  // 끝에 닿으면 더 불러온다
-  const more = !!list && list.rows.length < list.total;
+  const rows = list?.rows ?? [];
+  // 끝에 닿으면 마지막 카드 다음 100장을 이어 붙인다 (처음부터 다시 받지 않는다, T9-04)
+  const more = !!list && rows.length < list.total;
   useEffect(() => {
     const el = foot.current;
-    if (!el || !more) return;
-    const io = new IntersectionObserver((e) => e[0].isIntersecting && setLimit((l) => l + PAGE));
+    const last = rows[rows.length - 1]?.id;
+    if (!el || !more || last === undefined) return;
+    const io = new IntersectionObserver((e) => {
+      if (!e[0].isIntersecting || loadingMore.current) return;
+      loadingMore.current = true;
+      const g = gen.current;
+      page(PAGE, last)
+        .then((l) => {
+          if (g !== gen.current) return;
+          shown.current = rows.length + l.rows.length;
+          setList((p) => p && { ...l, rows: [...p.rows, ...l.rows] });
+        }, (e) => setError(errorText(e)))
+        .finally(() => (loadingMore.current = false));
+    });
     io.observe(el);
     return () => io.disconnect();
-  }, [more, list]);
+  }, [more, list, page]);
 
-  const rows = list?.rows ?? [];
-  const picked = rows.filter((c) => selected.has(c.id));
+  const loaded = new Set(rows.map((r) => r.id));
+  const picked = [...rows.filter((c) => selected.has(c.id)), ...extra.filter((c) => selected.has(c.id) && !loaded.has(c.id))];
   const selecting = picked.length > 0;
-  const clearSelection = () => setSelected(new Set());
+  const clearSelection = () => {
+    setSelected(new Set());
+    setExtra([]);
+  };
+  /** 지금 검색 · 거르기에 걸린 카드 전부. 아직 불러오지 않은 카드는 그리지 않은 행으로 받는다 (P0-7) */
+  const selectAll = () => {
+    if (!list) return;
+    const ids = rows.map((r) => r.id);
+    if (rows.length >= list.total) return setSelected(new Set(ids));
+    const g = gen.current;
+    page(list.total, ids[ids.length - 1] ?? null, true).then((l) => {
+      if (g !== gen.current) return;
+      setExtra(l.rows);
+      setSelected(new Set([...ids, ...l.rows.map((r) => r.id)]));
+    }, (e) => setError(errorText(e)));
+  };
   const headCheck = useRef<HTMLButtonElement>(null);
   /** 선택 바의 일을 마치면 바가 사라지므로 초점을 머리 체크박스로 옮긴다 (모달이 초점을 돌려준 다음에) */
   const endSelection = () => {
@@ -141,18 +177,18 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
     };
   }, [selecting]);
 
-  // Ctrl A: 지금 검색·필터 결과에 보이는 카드만 (전체 장수가 아니라). 검색 칸에서는 글자 전체 선택 그대로
+  // Ctrl A: 지금 검색 · 거르기 결과의 카드 전부 (스크롤해 불러오지 않은 카드도, P0-7). 검색 칸에서는 글자 전체 선택 그대로
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "a" || dialog) return;
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
       e.preventDefault();
-      setSelected(new Set(rows.map((r) => r.id)));
+      selectAll();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, dialog]);
+  });
 
   const back = useCallback(() => nav(deckId === null ? { name: "home" } : { name: "deck", deckId }), [nav, deckId]);
   const menuOpen = impMenu !== null || scopeMenu || rowMenu !== null || barMenu !== null;
@@ -295,10 +331,11 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   const levelOf = (p: string[]) => choices.find((c) => key(c.path) === key(rel(p)))?.importance;
   const canMove = deckId !== null && choices.length > 1;
 
-  /** Shift 클릭이면 앞서 누른 행부터 여기까지 고른다 */
+  /** Shift 클릭이면 앞서 누른 카드부터 여기까지 고른다. 그 카드가 지금 목록에 없으면 이 행만 */
   const toggle = (i: number, e: MouseEvent) => {
-    const from = e.shiftKey ? anchor.current : null;
-    anchor.current = i;
+    const at = e.shiftKey && anchor.current !== null ? rows.findIndex((r) => r.id === anchor.current) : -1;
+    const from = at < 0 ? null : at;
+    anchor.current = rows[i].id;
     setSelected((prev) => {
       const next = new Set(prev);
       if (from !== null) {
@@ -308,12 +345,15 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
       return next;
     });
   };
-  const all = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  const all = !!list && list.total > 0 && picked.length >= list.total;
   const resetFilter = () => {
-    setLimit(PAGE);
+    shown.current = PAGE;
+    anchor.current = null;
     clearSelection(); // 보이지 않게 된 카드를 고른 채로 두지 않는다
   };
   const sameLevel = picked.every((c) => c.importance === picked[0]?.importance) ? picked[0]?.importance : undefined;
+  // NT9 다른 유형으로 옮기기는 한 유형의 노트만. 섞였으면 메뉴에서 미리 막고 몇 종인지 알린다 (T1-35)
+  const pickedTypes = new Set(picked.map((c) => c.note_type_id)).size;
   const ownCount = picked.filter((c) => c.own_importance).length;
 
   return (
@@ -470,7 +510,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
             고칠 만한 카드 {n(fixable)}
           </button>
         )}
-        {selecting && <span className="cards__hint t-caption c-tertiary">Shift 클릭으로 범위 선택 · Ctrl A 보이는 카드 모두</span>}
+        {selecting && <span className="cards__hint t-caption c-tertiary">Shift 클릭으로 범위 선택 · Ctrl A 모두 선택</span>}
       </div>
 
       {/* 고른 장수를 읽어 준다. 바가 생기기 전부터 있어야 첫 선택도 읽힌다 */}
@@ -570,6 +610,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                   role="menuitem"
                   className="menu__item t-body-m"
                   autoFocus
+                  disabled={pickedTypes > 1}
                   onClick={() => {
                     closeMenus();
                     setChanging([...new Set(picked.map((c) => c.note_id))]);
@@ -578,7 +619,11 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                   <Icon name="layers" size={16} />
                   <span className="menu__text">
                     <span className="t-body-m">다른 유형으로 옮기기</span>
-                    <span className="t-caption c-tertiary">고른 카드의 노트 {n(new Set(picked.map((c) => c.note_id)).size)}개</span>
+                    <span className="t-caption c-tertiary">
+                      {pickedTypes > 1
+                        ? `노트 유형 ${n(pickedTypes)}종이 섞여 있어요 · 한 유형만 골라 주세요`
+                        : `고른 카드의 노트 ${n(new Set(picked.map((c) => c.note_id)).size)}개`}
+                    </span>
                   </span>
                 </button>
                 {picked.some((c) => c.state === "suspended") && (
@@ -607,11 +652,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
               ref={headCheck}
               role="checkbox"
               aria-checked={all ? true : selecting ? "mixed" : false}
-              aria-label="보이는 카드 모두 선택"
+              aria-label="카드 모두 선택"
               className={`cards__cb ${selecting ? "is-on" : ""}`}
               onClick={(e) => {
                 e.stopPropagation();
-                setSelected(all ? new Set() : new Set(rows.map((r) => r.id)));
+                if (all) clearSelection();
+                else selectAll();
               }}
             >
               {all ? <Icon name="check" size={14} /> : selecting && <span className="cards__cb-mixed" />}
@@ -840,7 +886,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
         <EditNote
           noteId={editing.note_id}
           card={editing}
-          back={{ name: "cards", deckId, buriedOnly, cardIds, weakOnly, edit: editing.id }}
+          back={{ name: "cards", deckId, buriedOnly, cardIds: only ?? undefined, weakOnly: weak, edit: editing.id, query }}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);

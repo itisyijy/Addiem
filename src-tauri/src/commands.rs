@@ -1094,6 +1094,8 @@ pub struct CardRow {
     sounds: [bool; 2],
     /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). C2 상태 배지 "앞면 빔"
     front_empty: bool,
+    /// 노트 유형 (NT9 [다른 유형으로 옮기기]는 한 유형만, T1-35)
+    note_type_id: i64,
 }
 
 /// 그림 가리기 카드의 자리 (M3 배지 "그림 가리기 · n/N", M4 행)
@@ -1187,7 +1189,8 @@ fn tag_filter(tag: &str) -> String {
     format!("AND ((' ' || lower(n.tags) || ' ') LIKE '% {t} %' ESCAPE '\\' OR (' ' || lower(n.tags)) LIKE '% {t}::%' ESCAPE '\\')")
 }
 
-/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기"
+/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기".
+/// after: 이 카드 id 다음부터 (목록을 이어 붙인다, T9-04). bare: 질문 · 답을 그리지 않는다 (Ctrl A 로 전부 고를 때, P0-7)
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn list_cards(
@@ -1199,9 +1202,11 @@ pub fn list_cards(
     card_ids: Option<Vec<i64>>,
     weak_only: Option<bool>,
     suspended_only: Option<bool>,
+    after: Option<i64>,
+    bare: Option<bool>,
 ) -> Res<CardList> {
     let con = state.db.lock().map_err(err)?;
-    card_list(&con, deck_id, &query, limit, buried_only, card_ids, weak_only, suspended_only)
+    card_list(&con, deck_id, &query, limit, buried_only, card_ids, weak_only, suspended_only, after, bare.unwrap_or(false))
 }
 
 /// list_cards 의 본체 (테스트가 DB 로 부른다)
@@ -1215,6 +1220,8 @@ pub(crate) fn card_list(
     card_ids: Option<Vec<i64>>,
     weak_only: Option<bool>,
     suspended_only: Option<bool>,
+    after: Option<i64>,
+    bare: bool,
 ) -> Res<CardList> {
     let decks = load_decks(con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
@@ -1258,16 +1265,41 @@ pub(crate) fn card_list(
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
-             WHERE {filter}
+             WHERE {filter} AND c.id > ?3
              ORDER BY c.id LIMIT ?2"
         ))
         .map_err(err)?;
     let field_names = note_field_names(con)?;
     let fronts = crate::notetype::Fronts::load(con)?;
     let rows = st
-        .query_map(params![q, limit.unwrap_or(100)], |r| {
+        .query_map(params![q, limit.unwrap_or(100), after.unwrap_or(i64::MIN)], |r| {
             let fields: String = r.get(3)?;
             let nt: i64 = r.get(11)?;
+            let buried_until: Option<i64> = r.get(9)?;
+            let row = |question, answer, occlusion, sounds, front_empty| -> rusqlite::Result<CardRow> {
+                Ok(CardRow {
+                    id: r.get(0)?,
+                    note_id: r.get(1)?,
+                    deck_path: path_of(r.get(2)?, &by_id),
+                    question,
+                    answer,
+                    state: r.get(4)?,
+                    importance: r.get(5)?,
+                    own_importance: r.get(6)?,
+                    due_at: r.get(7)?,
+                    lapses: r.get(8)?,
+                    buried: buried_until.is_some(),
+                    buried_until: buried_until.map(|ms| db::date_from_day(study_day(ms))),
+                    exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
+                    occlusion,
+                    sounds,
+                    front_empty,
+                    note_type_id: nt,
+                })
+            };
+            if bare {
+                return row(String::new(), String::new(), None, [false; 2], false);
+            }
             let qfmt: Option<String> = r.get(12)?;
             let afmt: Option<String> = r.get(13)?;
             // 목록 칸은 글자 한 줄: 특수 필드({{Tags}} …)는 학습 화면과 같은 값으로, 힌트 상자({{hint:}})는 뺀다 (펼치기 이름 · 내용이 질문에 섞인다, NT10)
@@ -1286,25 +1318,8 @@ pub(crate) fn card_list(
                 Some(s) => (render::strip_tags(s.question()), s.answer_line()),
                 None => table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer)),
             };
-            let buried_until: Option<i64> = r.get(9)?;
-            Ok(CardRow {
-                id: r.get(0)?,
-                note_id: r.get(1)?,
-                deck_path: path_of(r.get(2)?, &by_id),
-                question,
-                answer,
-                state: r.get(4)?,
-                importance: r.get(5)?,
-                own_importance: r.get(6)?,
-                due_at: r.get(7)?,
-                lapses: r.get(8)?,
-                buried: buried_until.is_some(),
-                buried_until: buried_until.map(|ms| db::date_from_day(study_day(ms))),
-                exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
-                occlusion,
-                sounds: [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK)),
-                front_empty: fronts.empty(nt, r.get(10)?, &fields),
-            })
+            let sounds = [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK));
+            row(question, answer, occlusion, sounds, fronts.empty(nt, r.get(10)?, &fields))
         })
         .map_err(err)?
         .collect::<Result<_, _>>()
@@ -3248,7 +3263,7 @@ mod tests {
         for c in [cards[0], cards[2], other[0]] {
             con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [c]).unwrap();
         }
-        let list = |d: Option<i64>, q: &str, only: bool| super::card_list(&con, d, q, None, None, None, None, Some(only)).unwrap();
+        let list = |d: Option<i64>, q: &str, only: bool| super::card_list(&con, d, q, None, None, None, None, Some(only), None, false).unwrap();
         let ids = |l: &super::CardList| l.rows.iter().map(|r| r.id).collect::<Vec<_>>();
         let all = list(Some(deck), "", false);
         assert_eq!((all.total, all.suspended), (3, 2), "덱 범위 안의 학습 중지 2장 (다른 덱 것은 세지 않는다)");
@@ -3259,6 +3274,24 @@ mod tests {
         let everywhere = list(None, "", true);
         assert_eq!((everywhere.total, everywhere.suspended), (3, 3), "모든 덱");
         assert_eq!(list(Some(other_deck), "", false).suspended, 1);
+    }
+
+    #[test]
+    fn card_list_pages_after_an_id_and_bare_skips_rendering() {
+        // T9-04 · P0-7: 목록은 마지막 id 다음부터 이어 받고, Ctrl A 는 그리지 않은 행으로 전부 받는다
+        let con = crate::db::open_in_memory().unwrap();
+        let cards = deck_with_cards(&con, 5, None);
+        let deck: i64 = con.query_row("SELECT deck_id FROM card WHERE id = ?1", [cards[0]], |r| r.get(0)).unwrap();
+        let list = |limit: i64, after: Option<i64>, bare: bool| super::card_list(&con, Some(deck), "", Some(limit), None, None, None, None, after, bare).unwrap();
+        let ids = |l: &super::CardList| l.rows.iter().map(|r| r.id).collect::<Vec<_>>();
+        let first = list(2, None, false);
+        assert_eq!((ids(&first), first.total), (cards[..2].to_vec(), 5));
+        let next = list(2, Some(cards[1]), false);
+        assert_eq!((ids(&next), next.total), (cards[2..4].to_vec(), 5), "다음 쪽. 전체 수는 그대로");
+        assert_eq!(next.rows[0].question, "q2");
+        let all = list(5, None, true);
+        assert_eq!(ids(&all), cards);
+        assert!(all.rows.iter().all(|r| r.question.is_empty() && r.deck_path == ["t"] && r.note_type_id == first.rows[0].note_type_id), "그리지 않아도 덱 · 상태 · 노트 유형(T1-35)은 있다");
     }
 
     /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)

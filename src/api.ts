@@ -132,6 +132,7 @@ export type CardRow = {
   sounds: [boolean, boolean];
   /** 앞면이 빈 카드 (학습에 나오지 않는다, NT49) */
   front_empty: boolean;
+  note_type_id: number;
 };
 /** 그림 가리기 카드의 자리. ordinal: 칸 번호(편집기 focus), n/count: "그림 가리기 · n/N" */
 export type IoPos = { ordinal: number; n: number; count: number };
@@ -359,7 +360,10 @@ export type ImportResult = {
   issues: ImportIssue[];
 };
 export type JsonPreview = {
+  /** 들어갈 항목 (이미 있는 노트는 뺐다) */
   ok: number;
+  /** 대상 덱에 같은 노트가 이미 있어 건너뛸 항목 */
+  existing: number;
   skipped: number;
   warnings: number;
   issues: ImportIssue[];
@@ -431,6 +435,8 @@ export type UpdateHint = {
   known_decks: string[];
   /** 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15) */
   suggested: boolean;
+  /** 이미 있는 노트가 모두 가져온 그대로: 같은 파일에서 남은 덱을 마저 가져온다 ([새 노트만 더하기]로 바로) */
+  same_file: boolean;
 };
 /** B2-k · B2-kt 고른 것. take_new: 충돌 필드를 새 버전으로 할 노트 id, new_looks: [노트 유형 id, ord | null(CSS)] */
 /** take_new: 충돌 필드를 모두 새 버전으로 할 노트, take_new_fields: 필드마다 [노트 id, 자리] (DU54). 둘 중 어디 있어도 새 버전 */
@@ -569,7 +575,8 @@ export type ExportResult = {
 };
 /** C1-xe 덱 상자 */
 /** recall_cards: 목록 회상 · 선택형 카드 수 (Anki 에서는 보기만 해요) */
-export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number; recall_cards: number };
+/** archived: 빠지는 보관한 하위 덱 수 */
+export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number; recall_cards: number; archived: number };
 /** export_apkg 가 보내는 "export-progress" 이벤트 (C1-xp) */
 export type ExportProgress = { step: "notes" | "reviews" | "media" | "zip"; done: number; total: number };
 export type BoardDeck ={ id: number; label: string; path: string[]; cards: number; importance: Level; source: string; reason: string | null };
@@ -634,8 +641,9 @@ export const api = {
   addCard: (card: NewCard) => invoke<number>("add_card", { card }),
   /** deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
   /** cardIds: 이 카드들만 (C1-xr "찾지 못한 미디어" [카드 보기]) */
-  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false) =>
-    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly }),
+  /** after: 이 카드 id 다음부터 (이어 받기). bare: 질문 · 답을 비운 가벼운 행 (전부 고르기) */
+  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false, after: number | null = null, bare = false) =>
+    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly, after, bare }),
   /** C1-w [약함으로] / [해제] */
   setDeckWeak: (deckId: number, weak: boolean) => invoke<void>("set_deck_weak", { deckId, weak }),
   /** C1-w [아니에요] (14일 제안 쉼) / recovered: "요즘 괜찮아요" 안내를 닫음 */

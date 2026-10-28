@@ -5,6 +5,7 @@ import { api, type DeckDetail, type Level } from "../api";
 import { Icon } from "../ui";
 import { NewDeckModal } from "./NewDeck";
 import { useOverlayScope } from "../nav";
+import { composing } from "../keys";
 import "../styles/deckpicker.css";
 
 /** label: 뿌리 아래 상대 경로 ("2과목 · 네트워크"), 뿌리 자신은 덱 이름. depth: 뿌리 0 */
@@ -115,7 +116,8 @@ export function DeckMenu({ rootDeckId, value, onPick, onClose, choices, classNam
         (listBox.current?.children[next] as HTMLElement | undefined)?.scrollIntoView({ block: "nearest" });
         return next;
       });
-    } else if (e.key === "Enter") {
+    } else if (e.key === "Enter" && !composing(e.nativeEvent)) {
+      // 한글 조합을 끝내는 Enter 는 고르지 않는다 (남은 Enter 가 알약 버튼을 다시 눌러 메뉴가 열린다, T8-09)
       e.preventDefault();
       choose(Math.min(active, count - 1));
     }

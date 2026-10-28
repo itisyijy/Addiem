@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ExamState } from "../api";
 import { Button, Icon } from "../ui";
 import { n, useNav } from "../nav";
+import { plainEnter } from "../keys";
 import { exam } from "../written";
 import { Modal } from "./NewDeck";
 import "../styles/study.css";
@@ -26,12 +27,20 @@ export function ExamDialog({ deckId, notes, cards, title, sub, unit = "노트", 
   const [list, setList] = useState<{ name: string; cards: number }[]>([]);
   const [pick, setPick] = useState<string | null>(null);
   const [fresh, setFresh] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+  const chose = useRef(false); // 목록이 오기 전에 새 시험 칸을 눌렀거나 적었다
+  // 목록이 오면 첫 시험을 고른다. 시험이 없으면 그때 새 이름 칸에 초점 (창이 열릴 때 autoFocus 하면 목록이 온 뒤 다른 시험이 골라진 채 칸에 적게 된다, T3-01)
   useEffect(() => {
     exam.list(deckId).then((l) => {
       setList(l);
-      setPick((p) => p ?? l[0]?.name ?? null);
-    }, () => {});
+      if (l.length && !chose.current) setPick((p) => p ?? l[0].name);
+      else if (!l.length) input.current?.focus();
+    }, () => input.current?.focus());
   }, [deckId]);
+  const typeNew = () => {
+    chose.current = true;
+    setPick(null);
+  };
   const name = (pick ?? fresh).trim();
   const todo = notes.filter((s) => !s.names.includes(name));
   const skipped = notes.length - todo.length;
@@ -62,11 +71,14 @@ export function ExamDialog({ deckId, notes, cards, title, sub, unit = "노트", 
           <input
             className="t-body-m"
             placeholder="새 시험 이름 (예: 2024년 필기 2회)"
+            ref={input}
             value={fresh}
-            autoFocus={list.length === 0}
-            onFocus={() => setPick(null)}
-            onChange={(e) => setFresh(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && ok && onConfirm(name, todo)}
+            onFocus={typeNew}
+            onChange={(e) => {
+              typeNew(); // 적으면 늘 새 시험 (P0-6)
+              setFresh(e.target.value);
+            }}
+            onKeyDown={(e) => plainEnter(e) && ok && onConfirm(name, todo)}
           />
         </label>
       </div>
@@ -174,11 +186,14 @@ function ExamPop({ deckId, names, onChange, onClose }: { deckId: number | null; 
     return () => document.removeEventListener("mousedown", close);
   }, [onClose]);
   const shown = [...new Set([...list, ...names])];
-  const add = () => {
-    const name = fresh.trim();
+  const add = (text = fresh) => {
+    const name = text.trim();
     if (name && !names.includes(name)) onChange([...names, name]);
     setFresh("");
   };
+  // 조합 중에 칸을 떠나면 확정된 글자로 더한다 (조합 중 글자로 먼저 더하고 확정 글자가 칸에 다시 남지 않게)
+  const typing = useRef(false);
+  const blurred = useRef(false);
   return (
     <div ref={box} className="exam-pop" role="dialog" aria-label="어느 시험에 나왔나요?">
       <p className="t-label-m">어느 시험에 나왔나요?</p>
@@ -198,13 +213,19 @@ function ExamPop({ deckId, names, onChange, onClose }: { deckId: number | null; 
           autoFocus={shown.length === 0}
           onChange={(e) => setFresh(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
+            if (plainEnter(e)) {
               e.preventDefault();
               e.stopPropagation();
               add();
             }
           }}
-          onBlur={add}
+          onCompositionStart={() => (typing.current = true)}
+          onCompositionEnd={(e) => {
+            typing.current = false;
+            if (blurred.current) add(e.currentTarget.value);
+            blurred.current = false;
+          }}
+          onBlur={() => (typing.current ? (blurred.current = true) : add())}
         />
       </span>
       <p className="t-caption c-tertiary">횟수는 표시한 시험 수로 세요. 같은 시험을 두 번 세지 않아요.</p>
