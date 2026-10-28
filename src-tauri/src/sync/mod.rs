@@ -562,7 +562,7 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
 
 // ---------------------------------------------------------------- 명령
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_status(state: State<SyncState>) -> Status {
     refresh(&state.0);
     state.0.status.lock().map(|s| s.clone()).unwrap_or_default()
@@ -1228,6 +1228,15 @@ fn download_backup(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Resu
     Ok(tmp)
 }
 
+/// 받은 백업 DB 가 이 앱의 학습 데이터인지, 지금 카드를 비우지 않는지 (이 기기 복구와 같은 확인, P0-8). 아니면 받은 파일을 지운다
+fn check_backup(sh: &Arc<Shared>, tmp: &std::path::Path) -> Result<(), SyncError> {
+    let cards = sh.with_db(|c| engine::counts(c).map(|k| k.cards))?;
+    crate::commands::validate_backup_db(tmp, cards).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        SyncError::Other(e)
+    })
+}
+
 #[derive(Serialize)]
 pub struct RestorePreview {
     pub name: String,
@@ -1248,6 +1257,7 @@ pub async fn sync_restore_preview(state: State<'_, SyncState>, name: String, pas
     let sh = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<RestorePreview, SyncError> {
         let tmp = download_backup(&sh, &name, password.as_deref())?;
+        check_backup(&sh, &tmp)?;
         let result = sh.with_db(|c| {
             c.execute("ATTACH DATABASE ?1 AS b", [tmp.to_string_lossy()]).map_err(store::other)?;
             let n = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(store::other);
@@ -1297,6 +1307,7 @@ fn restore_blocking(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Res
         s.phase = Some("restore".into());
     });
     let tmp = download_backup(sh, name, password)?;
+    check_backup(sh, &tmp)?;
     let kept = local_backup(sh, "before-restore")?.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     // 이 기기의 정체 (기기 id · 이름 · HLC) 와 연결 설정은 백업이 아니라 지금 것을 쓴다
     {
@@ -1525,7 +1536,7 @@ fn render_note(c: &Connection, note_uid: &str, fields: &str, ty: Option<&str>) -
 }
 
 /// 지난 30일 K7 기록. 지금 적용된 쪽이 앞이다
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_conflicts(state: State<SyncState>) -> Res<Vec<ConflictView>> {
     let names: std::collections::HashMap<String, String> =
         state.0.status.lock().map(|s| s.devices.iter().map(|d| (d.uid.clone(), d.name.clone())).collect()).unwrap_or_default();
@@ -1628,7 +1639,7 @@ pub struct TypeConflictView {
     seen: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn note_type_conflicts(state: State<SyncState>, id: i64) -> Res<Vec<TypeConflictView>> {
     let names: std::collections::HashMap<String, String> =
         state.0.status.lock().map(|s| s.devices.iter().map(|d| (d.uid.clone(), if d.me { "이 기기".into() } else { d.name.clone() })).collect()).unwrap_or_default();
