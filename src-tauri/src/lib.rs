@@ -49,7 +49,8 @@ pub fn run() {
                 let mut win = tauri::WebviewWindowBuilder::from_config(app.handle(), &conf)?;
                 let area = app.primary_monitor().ok().flatten().map(|m| m.work_area().size.to_logical::<f64>(m.scale_factor()));
                 if let Some((w, h)) = area.and_then(|a| fit_window(a.width, a.height)) {
-                    win = win.inner_size(w, h);
+                    // 작업 영역이 설정 최소 크기(1180×640)보다 작은 화면에서도 최대화 · 크기 조절이 화면 안에 들어오게 (QA T8-04)
+                    win = win.inner_size(w, h).min_inner_size(w.min(1180.0), h.min(640.0));
                 }
                 win.center().build()?;
             }
@@ -205,11 +206,14 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+/// 창 안쪽 크기에 더해지는 테두리 · 제목 표시줄 (논리 px, Windows 11 에서 잰 값 약 1.6 × 32.8, QA T8-04)
+const FRAME: (f64, f64) = (2.0, 33.0);
+
 /// 첫 창 크기 (논리 px). 설정 크기 1280×800 을 작업 영역의 90% 와 각각 비교해 작은 쪽, 최소 1180×640.
-/// 그대로면 None (위치도 건드리지 않는다)
+/// 작업 영역이 그보다 작으면(1366×768 125% 등) 테두리까지 작업 영역 안에 들어오는 크기. 그대로면 None (위치도 건드리지 않는다)
 fn fit_window(area_w: f64, area_h: f64) -> Option<(f64, f64)> {
-    let w = (area_w * 0.9).clamp(1180.0, 1280.0);
-    let h = (area_h * 0.9).clamp(640.0, 800.0);
+    let w = (area_w * 0.9).clamp(1180.0, 1280.0).min(area_w - FRAME.0);
+    let h = (area_h * 0.9).clamp(640.0, 800.0).min(area_h - FRAME.1);
     (w < 1280.0 || h < 800.0).then_some((w, h))
 }
 
@@ -217,8 +221,11 @@ fn fit_window(area_w: f64, area_h: f64) -> Option<(f64, f64)> {
 mod tests {
     #[test]
     fn fit_window() {
-        // 1080p 150%: 작업 영역 약 1280×672 → 90% 는 1152×604.8 이라 최소 크기로
-        assert_eq!(super::fit_window(1280.0, 672.0), Some((1180.0, 640.0)));
+        // 1080p 150%: 작업 영역 약 1280×672 → 90% 는 1152×604.8 이라 최소 크기로. 제목 표시줄까지 672 안에 (639)
+        assert_eq!(super::fit_window(1280.0, 672.0), Some((1180.0, 639.0)));
+        // 1366×768 125% (작업 영역 1092.8×566.4): 최소 크기보다 작아도 테두리까지 화면 안에 (QA T8-04)
+        let (w, h) = super::fit_window(1092.8, 566.4).unwrap();
+        assert!(w + super::FRAME.0 <= 1092.8 + 1e-9 && h + super::FRAME.1 <= 566.4 + 1e-9, "{w}×{h}");
         // 1366×768 100% (작업 영역 1366×728): 1229.4×655.2
         let (w, h) = super::fit_window(1366.0, 728.0).unwrap();
         assert!((w - 1229.4).abs() < 1e-9 && (h - 655.2).abs() < 1e-9);
