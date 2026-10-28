@@ -186,12 +186,18 @@ pub struct ExportPreview {
     reviews: i64,
     /// 목록 회상 · 선택형 카드. Anki 에서는 하나씩 공개하거나 보기를 고를 수 없어 확인 창에 알린다 (Q3)
     recall_cards: i64,
+    /// 빠지는 보관한 하위 덱 (그 아래는 세지 않는다, T4-29)
+    archived: usize,
 }
 
 #[tauri::command]
 pub fn export_preview(state: State<AppState>, deck_id: i64) -> Res<ExportPreview> {
     let con = state.db.lock().map_err(err)?;
-    let ids = scope(&con, deck_id)?;
+    preview(&con, deck_id)
+}
+
+fn preview(con: &Connection, deck_id: i64) -> Res<ExportPreview> {
+    let ids = scope(con, deck_id)?;
     if ids.is_empty() {
         return Err("내보낼 덱을 찾지 못했어요.".into());
     }
@@ -202,8 +208,11 @@ pub fn export_preview(state: State<AppState>, deck_id: i64) -> Res<ExportPreview
         let mut st = con
             .prepare(&format!("SELECT fields FROM note WHERE id IN (SELECT note_id FROM card WHERE deck_id IN ({in_decks}))"))
             .map_err(err)?;
+        // note.fields 는 JSON 배열이다. 그대로 찾으면 src=\"…\" 의 역슬래시 때문에 그림 이름이 빠진다 (T4-08)
         for f in st.query_map([], |r| r.get::<_, String>(0)).map_err(err)? {
-            media_refs(&f.map_err(err)?, &mut media);
+            for v in serde_json::from_str::<Vec<String>>(&f.map_err(err)?).unwrap_or_default() {
+                media_refs(&v, &mut media);
+            }
         }
     }
     // 경로는 맨 위 덱부터
@@ -222,6 +231,7 @@ pub fn export_preview(state: State<AppState>, deck_id: i64) -> Res<ExportPreview
         cards: count("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?,
         media: media.len(),
         reviews: count("SELECT count(*) FROM review_log WHERE card_id IN (SELECT id FROM card WHERE deck_id IN ($IDS)) AND kind IS NULL")?,
+        archived: count("SELECT count(*) FROM deck WHERE parent_id IN ($IDS) AND archived_at IS NOT NULL")? as usize,
         recall_cards: count(
             "SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id
              WHERE c.deck_id IN ($IDS) AND nt.native_kind IN ('list', 'choice')",
@@ -520,11 +530,21 @@ pub(crate) fn without_source_tags(tags: &str) -> String {
     tags.split_whitespace().filter(|t| !ours(t)).collect::<Vec<_>>().join(" ")
 }
 
-fn unique(used: &mut HashSet<i64>, mut id: i64) -> i64 {
-    while !used.insert(id) {
-        id += 1;
+/// 패키지 안에서 겹치지 않는 id. 겹치면 지금까지 쓴 가장 큰 id 다음으로 간다:
+/// 1씩 올려 빈 자리를 찾으면 created_at 이 같은 노트 수만 개에서 제곱 시간이 걸린다 (T9-01)
+#[derive(Default)]
+struct Ids {
+    used: HashSet<i64>,
+    max: i64,
+}
+
+impl Ids {
+    fn take(&mut self, id: i64) -> i64 {
+        let id = if self.used.contains(&id) { self.max + 1 } else { id };
+        self.used.insert(id);
+        self.max = self.max.max(id);
+        id
     }
-    id
 }
 
 /// 스키마 11 컬렉션을 col 에 쓴다. 돌려준다: (개수, 노트가 쓰는 미디어 이름)
@@ -548,11 +568,12 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     if decks.is_empty() {
         return Err("내보낼 덱을 찾지 못했어요.".into());
     }
-    let mut used = HashSet::from([1]); // 1 은 Anki 의 Default 덱
+    let mut used = Ids::default();
+    used.take(1); // 1 은 Anki 의 Default 덱
     let mut deck_json = serde_json::Map::from_iter([("1".to_string(), deck(1, "Default", now / 1000))]);
     let mut deck_map: HashMap<i64, i64> = HashMap::new();
     for (id, path, created, updated, anki) in &decks {
-        let aid = unique(&mut used, anki.unwrap_or(*created));
+        let aid = used.take(anki.unwrap_or(*created));
         deck_map.insert(*id, aid);
         deck_json.insert(aid.to_string(), deck(aid, path, updated / 1000));
     }
@@ -622,7 +643,9 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
 
     let sources = source_tags(con)?;
     let root_did = deck_map[&deck_id];
-    let mut used = HashSet::new();
+    // 아래에서 본 DB 에 쓰는 왕복 기준 · guid 를 한 트랜잭션으로 (노트마다 따로 커밋하면 처음 내보내기가 30초, T9-01). 실패 · 취소면 되돌린다
+    let origins = con.unchecked_transaction().map_err(err)?;
+    let mut used = Ids::default();
     let mut models: HashMap<i64, Model> = HashMap::new();
     for ntid in notes.iter().map(|n| n.note_type_id).collect::<BTreeSet<_>>() {
         models.insert(ntid, model(con, ntid, root_did, &mut used, &deck_map)?);
@@ -657,7 +680,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let mut media = BTreeSet::new();
     let mut labels = 0;
     let mut note_ids: HashMap<i64, i64> = HashMap::new();
-    let mut used = HashSet::new();
+    let mut used = Ids::default();
     let total = notes.len() + cards.len();
     let mut guids: HashSet<String> = HashSet::new();
     let mut duplicate_guids = 0;
@@ -676,7 +699,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         for f in &flds {
             media_refs(f, &mut media);
         }
-        let id = unique(&mut used, n.anki_note_id.unwrap_or(n.created_at));
+        let id = used.take(n.anki_note_id.unwrap_or(n.created_at));
         note_ids.insert(n.id, id);
         // 기출 표시를 태그로 (N20). Anki 에서 보이고, 다시 가져오면 같은 표시가 된다
         let tags = crate::exam::to_tags(&n.tags, n.exam_hits, n.exam_names.clone());
@@ -716,7 +739,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     // 카드. 같은 노트의 카드는 신규 순서가 같다 (Anki 와 같다)
     let mut card_ids: HashMap<i64, i64> = HashMap::new();
     let mut positions: HashMap<i64, i64> = HashMap::new();
-    let mut used = HashSet::new();
+    let mut used = Ids::default();
     for (i, c) in cards.iter().enumerate() {
         if i % 200 == 0 {
             job.tick("notes", notes.len() + i, total)?;
@@ -729,7 +752,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
             _ => String::new(),
         };
         let (reps, lapses) = if with_history { (c.reps, c.lapses) } else { (0, 0) };
-        let id = unique(&mut used, c.anki_card_id.unwrap_or(c.created_at));
+        let id = used.take(c.anki_card_id.unwrap_or(c.created_at));
         card_ids.insert(c.id, id);
         tx.execute(
             "INSERT INTO cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps, lapses, left, odue, odid, flags, data)
@@ -774,6 +797,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     )
     .map_err(err)?;
     tx.commit().map_err(err)?;
+    origins.commit().map_err(err)?;
     let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, occlusion_labels: labels, skipped_cards, duplicate_guids, ..Default::default() };
     Ok((result, media))
 }
@@ -800,7 +824,7 @@ fn write_revlog(con: &Connection, tx: &Connection, in_decks: &str, card_ids: &Ha
         })
         .map_err(err)?;
     let days = |d: Option<f64>| d.map_or(0, |d| d.round() as i64);
-    let mut used = HashSet::new();
+    let mut used = Ids::default();
     let mut n = 0;
     for row in rows {
         let (card_id, at, ease, elapsed, prev, next, prev_state) = row.map_err(err)?;
@@ -813,7 +837,7 @@ fn write_revlog(con: &Connection, tx: &Connection, in_decks: &str, card_ids: &Ha
         };
         tx.execute(
             "INSERT INTO revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type) VALUES (?1, ?2, -1, ?3, ?4, ?5, 2500, ?6, ?7)",
-            params![unique(&mut used, at), cid, ease, days(next.or(prev)), days(prev), elapsed.unwrap_or(0).clamp(0, 60_000), rtype],
+            params![used.take(at), cid, ease, days(next.or(prev)), days(prev), elapsed.unwrap_or(0).clamp(0, 60_000), rtype],
         )
         .map_err(err)?;
         n += 1;
@@ -920,7 +944,7 @@ impl Model {
 /// 노트 유형 -> Anki 모델. 원본 JSON(anki_raw)이 있으면 그대로 쓰고, 없으면 스키마 11 기본값으로 만든다.
 /// id 는 Anki 에서 온 유형이면 그 id, 아니면 만든 시각(ms) + 행 번호 (기본 유형 셋은 만든 시각이 같다)
 /// deck_map: 내보내는 우리 덱 → Anki 덱 id. 카드 종류의 덱(NT76)이 그 안에 있으면 템플릿 did 로 쓴다 (없으면 null)
-fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>, deck_map: &HashMap<i64, i64>) -> Res<Model> {
+fn model(con: &Connection, ntid: i64, did: i64, used: &mut Ids, deck_map: &HashMap<i64, i64>) -> Res<Model> {
     let (name, css, created, updated, anki_id, raw, kind): (String, String, i64, i64, Option<i64>, Option<String>, Option<String>) = con
         .query_row(
             "SELECT name, css, created_at, updated_at, anki_model_id, anki_raw, native_kind FROM note_type WHERE id = ?1",
@@ -934,7 +958,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>, deck_ma
         .filter(|v| v["flds"].as_array().is_some_and(|a| !a.is_empty()));
     if let Some(mut v) = raw {
         let id = v["id"].as_i64().or_else(|| v["id"].as_str()?.parse().ok()).or(anki_id).unwrap_or(created + ntid);
-        let id = unique(used, id);
+        let id = used.take(id);
         v["id"] = json!(id);
         let nfields = v["flds"].as_array().map_or(1, Vec::len);
         let sortf = v["sortf"].as_u64().unwrap_or(0) as usize;
@@ -952,7 +976,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut HashSet<i64>, deck_ma
     let cloze = nt.cloze();
     let ords: HashMap<i64, i64> = if cloze { HashMap::new() } else { nt.templates.iter().enumerate().map(|(i, t)| (t.ord as i64, i as i64)).collect() };
     let io = tmpls.iter().any(|t| crate::occlusion::is_template(&t.2));
-    let id = unique(used, anki_id.unwrap_or(created + ntid));
+    let id = used.take(anki_id.unwrap_or(created + ntid));
     // 쉬운 편집 줄 상자 CSS 만 있는 유형(앱 유형 복제본)도 빈 CSS 처럼 Anki 기본 CSS 를 쓰고 그 뒤에 붙인다
     let css = match (crate::notetype::without_layout_css(&css).trim().is_empty(), io) {
         (false, _) => css,
@@ -1164,6 +1188,29 @@ mod tests {
         assert_eq!(hex(&sha1(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
         assert_eq!(hex(&sha1("The quick brown fox jumps over the lazy dog".as_bytes())), "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
         assert_eq!(checksum("<b>abc</b>"), 0xa999_3e36, "csum 은 태그를 뗀 글자의 앞 8자리");
+    }
+
+    #[test]
+    fn ids_jump_past_the_largest_on_a_clash() {
+        // T9-01: JSON 으로 넣은 노트 2만 개의 created_at 이 1,901가지뿐이다. 겹칠 때 1씩 올리면 제곱 시간
+        let mut ids = Ids::default();
+        assert_eq!([5, 100, 5, 5, 6].map(|i| ids.take(i)), [5, 100, 101, 102, 6]);
+        let mut ids = Ids::default();
+        let taken: HashSet<i64> = (0..50_000).map(|_| ids.take(7)).collect();
+        assert_eq!(taken.len(), 50_000, "모두 다르다");
+    }
+
+    #[test]
+    fn preview_counts_images_in_stored_fields() {
+        // T4-08: note.fields 는 JSON 이라 src=\"a.png\" 처럼 역슬래시가 있다. 그림도 센다
+        let con = db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let card = NewCard { deck_id: deck, kind: "basic".into(), front: r#"<img src="a.png"> [sound:b.mp3]"#.into(), back: "x".into(), importance: None };
+        insert_note(&con, &card, "", None).unwrap();
+        con.execute("INSERT INTO deck (parent_id, name, created_at, updated_at, archived_at) VALUES (?1, 'old', 0, 0, 1)", [deck]).unwrap();
+        let p = preview(&con, deck).unwrap();
+        assert_eq!((p.media, p.archived), (2, 1));
     }
 
     #[test]

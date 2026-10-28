@@ -197,8 +197,8 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     );
   }
 
-  // 내보내는 동안 바깥을 눌러도 닫히지 않는다 (C1-xp). Modal 은 Esc·닫기 버튼에서만 이벤트를 넘기므로 그때만 멈춘다
-  const close = file ? (e?: unknown) => e && !cancelling && cancel() : onClose;
+  // 내보내는 동안 바깥을 눌러도(mousedown) 닫히지 않는다 (C1-xp). Esc · 닫기 버튼은 멈춘다 (T4-06: Modal 은 어느 길이든 인자 없이 부른다)
+  const close = file ? () => window.event?.type !== "mousedown" && !cancelling && cancel() : onClose;
 
   if (slow && file && !csv) {
     return (
@@ -217,6 +217,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     `노트 ${n(info.notes)}개`,
     `카드 ${n(info.cards)}장`,
     info.media > 0 && `미디어 ${n(info.media)}개`,
+    info.archived > 0 && `보관한 하위 덱 ${n(info.archived)}개는 빼요`,
   ];
   return (
     <Modal title="덱 내보내기" sub="형식을 고르고 저장할 곳을 정해요" className="modal--export" onClose={close}>
