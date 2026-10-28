@@ -28,6 +28,8 @@ import { NoteTypeEdit } from "./screens/NoteTypeEdit";
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
+  // 화면에 들어온 횟수. 가져오기는 다시 들어오면 처음부터 (같은 경로여도, QA T4-10 · T4-17)
+  const [visit, setVisit] = useState(0);
   const [ready, setReady] = useState(false);
   // 학습 데이터를 열지 못했으면 (S1-6) 화면 대신 복구 안내를 띄운다
   const [broken, setBroken] = useState<AppInfo | null>(null);
@@ -44,6 +46,7 @@ export default function App() {
   const nav = useCallback((r: Route, force = false) => {
     if (isNavLocked() || (!force && leaveBlocked(r))) return;
     setRoute(r);
+    setVisit((v) => v + 1);
     window.scrollTo(0, 0);
   }, []);
   // 개발 빌드에서만: 화면 확인(CDP)이 파일 대화상자 없이 가져오기 화면을 연다 (B2-u [방식 바꾸기]와 같은 { name: "import", path })
@@ -78,7 +81,7 @@ export default function App() {
               />
             </div>
           )}
-          {ready && (broken ? <Recover info={broken} onRecovered={() => (load(), nav({ name: "home" }))} /> : <Screen route={route} />)}
+          {ready && (broken ? <Recover info={broken} onRecovered={() => (load(), nav({ name: "home" }))} /> : <Screen route={route} visit={visit} />)}
           {/* K Drive 동기화 창들. 학습 화면에서는 동기화를 멈추고, 나오면(학습을 마치면) 올린다 */}
           <SyncHost studying={focused} />
         </div>
@@ -87,7 +90,7 @@ export default function App() {
   );
 }
 
-function Screen({ route }: { route: Route }) {
+function Screen({ route, visit }: { route: Route; visit: number }) {
   switch (route.name) {
     case "home":
       return <Home />;
@@ -115,7 +118,7 @@ function Screen({ route }: { route: Route }) {
         />
       );
     case "import":
-      return <Import key={`anki-${route.path ?? ""}`} tab="anki" pick={route.pick} path={route.path} />;
+      return <Import key={`anki-${route.path ?? ""}-${visit}`} tab="anki" pick={route.pick} path={route.path} />;
     case "deckUpdate":
       return <DeckUpdate {...route} />;
     case "updateResult":
