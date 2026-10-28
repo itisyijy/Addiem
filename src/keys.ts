@@ -74,10 +74,17 @@ const STORE = "addiem.keys";
 /** 바꾼 동작만 저장한다. 빈 문자열은 "미지정" (같은 범위에서 다른 동작에 내준 키) */
 type Overrides = Partial<Record<ActionId, string[]>>;
 
+/** 입력 칸 안에서 쓰는 동작. Ctrl · Alt 없는 키면 그 글자(예: ㄴ)를 칠 때 저장 · 수식이 돼 버린다 (QA T2-05) */
+const IN_FIELD: ActionId[] = ["save", "math"];
+export const needsModifier = (id: ActionId, chord: string) => IN_FIELD.includes(id) && !!chord && !/(^|\+)(Ctrl|Alt)\+/.test(chord);
+
 function load(): Overrides {
   try {
     const v = JSON.parse(localStorage.getItem(STORE) ?? "{}");
-    return v && typeof v === "object" ? v : {};
+    if (!v || typeof v !== "object") return {};
+    // 예전에 저장한 그런 키는 버리고 기본 키로 되돌린다 (녹화기도 이제 받지 않는다)
+    for (const id of IN_FIELD) if (Array.isArray(v[id]) && v[id].some((c: string) => needsModifier(id, c))) delete v[id];
+    return v;
   } catch {
     return {};
   }

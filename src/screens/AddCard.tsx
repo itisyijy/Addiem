@@ -3,12 +3,13 @@
 import { forwardRef, Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, type CardKindHint, type DeckDetail, type Level, type NoteTypeDetail, type NoteTypeRow } from "../api";
 import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge, Toggle } from "../ui";
-import { eun, n, ro, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
+import { eul, eun, n, ro, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, chordOf, getKeys, matchAction, useKeymap } from "../keys";
-import { imageTag, plainText, renderCardHtml, sanitize, toStoredHtml } from "../cardHtml";
+import { baseName, imageTag, plainText, renderCardHtml, savedImage, sanitize, toStoredHtml } from "../cardHtml";
 import { deckFace, scopeCss } from "../cardCss";
 import { checkMath, findMath, withMath } from "../math";
-import { useToast } from "../toast";
+import { useToast, type ToastInput } from "../toast";
+import { useFileDrop } from "../fileDrop";
 import { when } from "../sync";
 import { DiscardModal } from "./NewDeck";
 import { menuKeys } from "./Deck";
@@ -16,7 +17,7 @@ import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { KeywordEditor } from "./StudyParts";
 import { written, type Keyword } from "../written";
 import { OcclusionEditor, OcclusionPicture } from "./Occlusion";
-import { boxCount, labelOf, naturalSize, occlusionApi, ordinalsOf, storeImage, type Picture, type Shape } from "../occlusion";
+import { boxCount, labelOf, naturalSize, occlusionApi, ordinalsOf, shownName, storeImage, storeImagePath, type Picture, type Shape } from "../occlusion";
 import { ChoiceEditor, ChoicePreview, ListEditor, ListPreview } from "./Recall";
 import { EMPTY_CHOICE, EMPTY_LIST, recall } from "../recall";
 import "../styles/study.css";
@@ -242,17 +243,20 @@ export function AddCard({ deckId }: { deckId: number }) {
   const [hint, setHint] = useState<CardKindHint | null>(null);
   const [hintOff, setHintOff] = useState(false);
   const toast = useToast();
-  const takeImage = async (files: FileList | null | undefined) => {
-    const f = Array.from(files ?? []).find((x) => x.type.startsWith("image/"));
-    if (!f) return;
+  /** 가릴 그림을 넣고 편집기(M2)를 연다. 고르기 · 붙여넣기 · HTML 드롭은 File, 탐색기 드롭은 경로 */
+  const takePicture = async (load: () => Promise<Picture>) => {
     try {
-      setPic(await storeImage(f));
+      setPic(await load());
       setShapes([]);
       setEditing(true);
       setError(undefined);
     } catch (e) {
       setError(errorText(e));
     }
+  };
+  const takeImage = (files: FileList | null | undefined) => {
+    const f = Array.from(files ?? []).find((x) => x.type.startsWith("image/"));
+    if (f) takePicture(() => storeImage(f));
   };
 
   useEffect(() => {
@@ -281,8 +285,10 @@ export function AddCard({ deckId }: { deckId: number }) {
       .catch(() => {}) // 못 읽으면 질문과 답변으로 연다
       .finally(() => setReady(true));
   }, [deckId]);
+  // 유형을 바꾸면 첫 칸에 초점. 그림 가리기는 그림 칸이라 Ctrl V 가 질문 칸이 아니라 가릴 그림으로 간다 (QA T1-29)
+  const ioDrop = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    (kind === "typed" ? tf.current[0] : q.current)?.focus();
+    (kind === "typed" ? tf.current[0] : kind === "occlusion" && ioDrop.current ? ioDrop.current : q.current)?.focus();
   }, [kind, gen, ready]);
 
   const refresh = () => setTick((t) => t + 1);
@@ -347,7 +353,7 @@ export function AddCard({ deckId }: { deckId: number }) {
         if (from[field]) from[field].html = stripImages(from[field].html);
       },
       then: async () => {
-        setPic({ name: img.name, url: img.url, fileName: img.name, ...(await naturalSize(img.url)) });
+        setPic({ name: img.name, url: img.url, fileName: shownName(img.name), ...(await naturalSize(img.url)) });
         setShapes([]);
         setEditing(true);
         setError(undefined);
@@ -436,7 +442,21 @@ export function AddCard({ deckId }: { deckId: number }) {
   const inherited = targetDeck?.importance ?? deck?.own_importance ?? 1;
   const shownLevel = importance ?? inherited;
 
+  // 저장 중에는 다시 저장하지 않는다. Ctrl Enter 두 번 · [저장] 두 번 누르기에 같은 카드가 2장 생겼다 (QA T1-01). state 는 다음 그리기 전이라 ref 로 막는다
+  const saving = useRef(false);
+  const [busy, setBusy] = useState(false);
   const save = async () => {
+    if (saving.current) return;
+    saving.current = true;
+    setBusy(true);
+    try {
+      await saveNow();
+    } finally {
+      saving.current = false;
+      setBusy(false);
+    }
+  };
+  const saveNow = async () => {
     const qHtml = q.current?.html() ?? "";
     const aHtml = a.current?.html() ?? "";
     const front = kind === "cloze" ? toCloze(qHtml) : toStoredHtml(qHtml);
@@ -447,6 +467,8 @@ export function AddCard({ deckId }: { deckId: number }) {
       if (kind === "typed") {
         // NT6 사용자 · 가져온 유형: 필드 순서대로. 빈칸 유형은 칸마다 번호를 이어 매긴다 (두 칸이 같은 c1 이 되지 않게)
         if (!typed) return;
+        // 첫 칸 (정렬 필드) 은 비울 수 없다. 칸 이름으로 알린다 (QA T1-24)
+        if (!filled(tf.current[0]?.html() ?? "")) throw new Error(`${typed.fields[0].name}${eul(typed.fields[0].name)} 입력해 주세요.`);
         let next = 1;
         const values = typed.fields.map((_, i) => {
           const html = tf.current[i]?.html() ?? "";
@@ -476,7 +498,7 @@ export function AddCard({ deckId }: { deckId: number }) {
         dropped = unplaced.current; // 토스트는 [저장]을 가려 "방금 추가한 카드" 줄에 붙인다 (Q43)
       } else made = await api.addCard({ deck_id: target, kind, front, back: toStoredHtml(aHtml), importance });
       if (kind !== "typed")
-        text = kind === "occlusion" ? plainText(qHtml) || "그림 가리기 · " + (pic?.fileName ?? "") : plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml);
+        text = kind === "occlusion" ? plainText(qHtml) || ["그림 가리기", pic?.fileName].filter(Boolean).join(" · ") : plainText(kind === "cloze" ? clozePlain(qHtml) : qHtml);
       setAdded((list) => [...list, { text, dropped }].slice(-5));
       setAddedCount((c) => c + made);
       setError(undefined);
@@ -508,6 +530,27 @@ export function AddCard({ deckId }: { deckId: number }) {
     setLeaving(r);
     return true;
   });
+
+  // 탐색기에서 끌어 놓은 그림 (QA T1-05). 웹뷰는 경로와 놓은 곳만 준다. 놓은 곳이 그림 가리기 그림 칸이면 가릴 그림,
+  // 편집 칸이면 그 칸, 답변 아래 끌어놓기 칸이면 답변 칸에 넣는다. 그 밖은 무시한다
+  const blocked = !!(leaving || editing || moving || menuOpen);
+  const [dropping] = useFileDrop(!blocked, ({ paths, x, y }) => {
+    const at = document.elementFromPoint(x, y);
+    if (!at) return;
+    if (kind === "occlusion" && !pic && at.closest(".addcard__io-drop")) return void takePicture(() => storeImagePath(paths[0]));
+    const rich = at.closest(".rich");
+    const field = at.closest(".dropzone") ? a.current : [q.current, a.current, memo.current, ...tf.current].find((f) => f?.el() && rich?.contains(f.el()));
+    if (!field) return;
+    putImages(paths, baseName, async (p) => {
+      const m = await savedImage(p);
+      field.insert(`<img src="${m.url}" data-media="${m.name}" alt="">`);
+    }, toast);
+  });
+  // 초점이 칸 밖(body)에 있어도 저장 · 나가기 키를 받는다 (QA T1-09). 칸 안에서 누른 키는 아래 onKeyDown 이 먼저 받고 막는다
+  useKey({ action: "save" }, () => void save(), !blocked);
+  useKey("Escape", () => nav({ name: "deck", deckId }), !blocked);
+  // 떠나기 확인에서 [계속 쓰기]면 쓰던 칸으로 돌아간다 (QA T1-22)
+  const lastField = useRef<HTMLElement | null>(null);
 
   const onKeyDown = (e: KeyboardEvent) => {
     // 확인 창의 Esc 는 창이 처리한다 (넣을 곳 드롭다운은 제 키를 스스로 멈춘다). 편집기 · [⋯] 메뉴는 제 키를 먼저 받는다
@@ -551,7 +594,13 @@ export function AddCard({ deckId }: { deckId: number }) {
   const typedCards = typed ? (typed.cloze ? clozeNumbers(typedValues).length : typed.templates.length) : 0;
 
   return (
-    <main className="addcard" onKeyDown={onKeyDown}>
+    <main
+      className={`addcard ${dropping === "over" ? "is-dropping" : ""}`}
+      onKeyDown={onKeyDown}
+      onFocus={(e) => {
+        if (e.target.isContentEditable || e.target.matches("input, textarea")) lastField.current = e.target;
+      }}
+    >
       <button className="backlink t-label-m c-secondary" onClick={() => nav({ name: "deck", deckId })}>
         <Icon name="chevron-left" size={18} />
         {deck?.name ?? ""}
@@ -672,6 +721,7 @@ export function AddCard({ deckId }: { deckId: number }) {
               <input ref={picker} type="file" accept="image/png,image/jpeg,image/webp,image/bmp" hidden onChange={(e) => takeImage(e.target.files)} />
               {!pic ? (
                 <div
+                  ref={ioDrop}
                   className={`addcard__io-drop ${over ? "is-over" : ""}`}
                   tabIndex={0}
                   onPaste={(e) => takeImage(e.clipboardData.files)}
@@ -689,14 +739,14 @@ export function AddCard({ deckId }: { deckId: number }) {
                   <Icon name="image" size={32} className="c-tertiary" />
                   <span className="t-body-m c-secondary">그림을 끌어놓거나 붙여넣어요 (Ctrl V)</span>
                   <Button variant="secondary" size="M" label="그림 고르기" onClick={() => picker.current?.click()} />
-                  <span className="t-caption c-tertiary">PNG · JPG · WEBP. 그림은 원본 그대로 이 기기에 복사해요.</span>
+                  <span className="t-caption c-tertiary">PNG · JPG · WEBP · BMP. 그림은 원본 그대로 이 기기에 복사해요.</span>
                 </div>
               ) : (
                 <>
                   <span className="addcard__io-head">
                     <span className="t-label-m">그림</span>
                     <span className="t-caption c-tertiary">
-                      {pic.fileName} · {pic.width}×{pic.height}
+                      {[pic.fileName, `${pic.width}×${pic.height}`].filter(Boolean).join(" · ")}
                     </span>
                   </span>
                   <div className="addcard__io-pic">
@@ -859,7 +909,7 @@ export function AddCard({ deckId }: { deckId: number }) {
             <Checkbox checked={keepGoing} label="저장 후 바로 다음 카드" onChange={setKeepGoing} />
             <span className="addcard__submit-right">
               {error && <span className="t-body-s c-danger">{error}</span>}
-              <Button icon="check" label="저장" shortcut={actionKey("save")} onClick={save} />
+              <Button icon="check" label="저장" shortcut={actionKey("save")} onClick={save} busy={busy} />
             </span>
           </div>
         </div>
@@ -964,7 +1014,10 @@ export function AddCard({ deckId }: { deckId: number }) {
           text="저장하지 않고 나갈까요?"
           keep="계속 쓰기"
           discard="버리고 나가기"
-          onKeep={() => setLeaving(null)}
+          onKeep={() => {
+            lastField.current?.focus();
+            setLeaving(null);
+          }}
           onDiscard={() => nav(leaving, true)}
         />
       )}
@@ -1341,30 +1394,31 @@ export const RichField = forwardRef<
       changed();
     };
 
-    const addFiles = async (files: FileList | File[]) => {
-      for (const f of Array.from(files).filter((f) => f.type.startsWith("image/"))) insert(await imageTag(f));
-    };
+    const toast = useToast();
+    const addFiles = (files: FileList | File[]) =>
+      putImages(Array.from(files).filter((f) => f.type.startsWith("image/")), (f) => f.name || "붙여넣은 그림", async (f) => insert(await imageTag(f)), toast);
 
     return (
       <div className="rich">
         {toolbar && (
           <div className="rich__tools" onMouseDown={(e) => e.target !== file.current && e.preventDefault()}>
-            <button className="rich__tool t-label-m" aria-label="굵게" onClick={() => cmd("bold")}>
+            {/* 서식 버튼은 Tab 순서에서 뺀다 (질문 → 답변이 Tab 7번이었다, QA T1-16 · T8-12). 키로는 Ctrl B · I · U · 수식 키. 그림은 키보드로 고를 길이라 Tab 에 남긴다 */}
+            <button className="rich__tool t-label-m" aria-label="굵게" title="굵게 Ctrl B" tabIndex={-1} onClick={() => cmd("bold")}>
               B
             </button>
-            <button className="rich__tool t-label-m" aria-label="기울임" onClick={() => cmd("italic")}>
+            <button className="rich__tool t-label-m" aria-label="기울임" title="기울임 Ctrl I" tabIndex={-1} onClick={() => cmd("italic")}>
               I
             </button>
-            <button className="rich__tool t-label-m" aria-label="밑줄" onClick={() => cmd("underline")}>
+            <button className="rich__tool t-label-m" aria-label="밑줄" title="밑줄 Ctrl U" tabIndex={-1} onClick={() => cmd("underline")}>
               U
             </button>
-            <button className="rich__tool" aria-label="목록" onClick={() => cmd("insertUnorderedList")}>
+            <button className="rich__tool" aria-label="목록" tabIndex={-1} onClick={() => cmd("insertUnorderedList")}>
               <Icon name="list" size={16} scaled />
             </button>
             <button className="rich__tool" aria-label="이미지" onClick={() => file.current?.click()}>
               <Icon name="image" size={16} scaled />
             </button>
-            <button className="rich__tool rich__math" aria-label={mathTip} title={mathTip} onClick={() => wrapMath(false)}>
+            <button className="rich__tool rich__math" aria-label={mathTip} title={mathTip} tabIndex={-1} onClick={() => wrapMath(false)}>
               <span className="rich__sum">∑</span>
               <span className="t-label-s">수식</span>
             </button>
@@ -1403,12 +1457,27 @@ export const RichField = forwardRef<
   },
 );
 
+/** 그림을 차례로 넣는다. 넣지 못한 것(20MB 넘음 · 그림 아님)은 건너뛰고 끝에 이름과 이유를 한 번에 알린다 (QA T1-06 · T1-31) */
+async function putImages<T>(items: T[], nameOf: (x: T) => string, put: (x: T) => Promise<void>, toast: (t: ToastInput) => void) {
+  const failed: string[] = [];
+  let why = "";
+  for (const x of items) {
+    try {
+      await put(x);
+    } catch (e) {
+      failed.push(nameOf(x));
+      why = errorText(e);
+    }
+  }
+  if (failed.length) toast({ tone: "error", title: `그림 ${n(failed.length)}장을 넣지 못했어요`, text: `${failed.join(" · ")} · ${why}` });
+}
+
 function DropZone({ onImage }: { onImage: (tag: string) => void }) {
   const [over, setOver] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const take = async (files: FileList) => {
-    for (const f of Array.from(files).filter((f) => f.type.startsWith("image/"))) onImage(await imageTag(f));
-  };
+  const toast = useToast();
+  const take = (files: FileList) =>
+    putImages(Array.from(files).filter((f) => f.type.startsWith("image/")), (f) => f.name, async (f) => onImage(await imageTag(f)), toast);
   return (
     <button
       className={`dropzone ${over ? "is-over" : ""}`}

@@ -368,6 +368,9 @@
   text-align: left;
 }
 .dropzone.is-over, .dropzone:hover { border-color: var(--accent-default); background: var(--accent-subtle); }
+/* 탐색기에서 파일을 끌고 들어오면 놓을 수 있는 칸을 모두 표시한다 (웹뷰 드롭은 칸별 hover 를 주지 않는다, QA T1-05) */
+.addcard.is-dropping .rich, .addcard.is-dropping .dropzone, .addcard.is-dropping .addcard__io-drop { border-color: var(--accent-default); }
+.addcard.is-dropping .dropzone, .addcard.is-dropping .addcard__io-drop { background: var(--accent-subtle); }
 
 .preview {
   display: flex;

@@ -110,3 +110,4 @@ input.ioe__name { padding: 2px 6px; border: 1px solid var(--border-strong); bord
 .addcard__io-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 /* 패널이 넘치면 패널이 스크롤한다 (칸 목록 · 글자 칸이 눌려 줄지 않게) */
 .ioe__panel > * { flex-shrink: 0; }
+.ioe:focus { outline: none; } /* 열 때 편집기 자체에 초점을 둔다 (단축키를 받게) */

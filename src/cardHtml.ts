@@ -318,3 +318,12 @@ export async function imageTag(file: File): Promise<string> {
   const name = await invoke<string>("save_media", { name: file.name || "image.png", dataBase64: dataUrl.split(",")[1] ?? "" });
   return `<img src="${dataUrl}" data-media="${name}" alt="">`;
 }
+
+/** 탐색기에서 끌어 놓은 그림 파일(경로)을 저장한다. name: 미디어 파일 이름, url: 화면에 그릴 data URL */
+export async function savedImage(path: string): Promise<{ name: string; url: string }> {
+  const name = await invoke<string>("save_media_path", { path });
+  return { name, url: await invoke<string>("read_media", { name }) };
+}
+
+/** 경로의 파일 이름 (끌어 놓은 파일을 안내할 때) */
+export const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;

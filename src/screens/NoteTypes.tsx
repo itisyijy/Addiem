@@ -1,5 +1,5 @@
 // NT1 설정 › 노트 유형 목록 · [새 노트 유형](복제로 시작, NT3) · 이름 바꾸기 · 삭제. 설정 칸(NoteTypesEntry)도 여기
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, type NoteTypeRow as TypeRow } from "../api";
 import { Button, Icon, Input, type IconName } from "../ui";
 import { n, eul, useKey, useNav, useOverlayScope, type Route } from "../nav";
@@ -80,6 +80,9 @@ export function NoteTypes({ back }: { back?: Route }) {
   const [cloning, setCloning] = useState<TypeRow | "new" | null>(null);
   const [renaming, setRenaming] = useState<TypeRow | null>(null);
   const [deleting, setDeleting] = useState<TypeRow | null>(null);
+  // 지우는 중. [삭제] 두 번 누르기에 두 번째 호출이 남긴 오류가 다음 창에 떴다 (QA T1-13). 다시 그리기 전의 두 번째 클릭도 막게 ref 로
+  const removing = useRef(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const load = useCallback(() => api.noteTypes().then(setRows, (e) => setError(errorText(e))), []);
   useEffect(() => {
     load();
@@ -106,7 +109,10 @@ export function NoteTypes({ back }: { back?: Route }) {
             label: "삭제",
             sep: true,
             danger: true,
-            onClick: () => setDeleting(r),
+            onClick: () => {
+              setError(undefined);
+              setDeleting(r);
+            },
             why: r.notes > 0 ? `이 유형을 쓰는 노트 ${n(r.notes)}개가 있어 지울 수 없어요. 노트를 모두 지우면 지울 수 있어요.` : undefined,
           },
         ]
@@ -241,16 +247,26 @@ export function NoteTypes({ back }: { back?: Route }) {
               icon="trash"
               label="삭제"
               autoFocus
-              onClick={() =>
-                api.deleteNoteType(deleting.id).then(
-                  () => {
-                    setDeleting(null);
-                    toast({ title: "노트 유형을 지웠어요" });
-                    load();
-                  },
-                  (e) => setError(errorText(e)),
-                )
-              }
+              busy={deleteBusy}
+              onClick={() => {
+                if (removing.current) return;
+                removing.current = true;
+                setDeleteBusy(true);
+                api
+                  .deleteNoteType(deleting.id)
+                  .then(
+                    () => {
+                      setDeleting(null);
+                      toast({ title: "노트 유형을 지웠어요" });
+                      load();
+                    },
+                    (e) => setError(errorText(e)),
+                  )
+                  .finally(() => {
+                    removing.current = false;
+                    setDeleteBusy(false);
+                  });
+              }}
             />
           </div>
         </Modal>

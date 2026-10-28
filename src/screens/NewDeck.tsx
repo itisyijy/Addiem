@@ -8,6 +8,10 @@ import { composing } from "../keys";
 /** 창 안의 [취소] 버튼이 X · Esc · 바깥 클릭과 같은 닫기(고친 것이 있으면 묻기)를 쓰게 */
 const CloseContext = createContext<() => void>(() => {});
 export const useModalClose = () => useContext(CloseContext);
+/** 창 안의 [취소]. 고친 것이 있으면 X · Esc 처럼 먼저 묻는다 */
+export function ModalCancel({ label = "취소" }: { label?: string }) {
+  return <Button variant="ghost" size="M" label={label} shortcut="Esc" onClick={useModalClose()} />;
+}
 
 export function Modal({ title, sub, onClose, children, wide, variant, icon = "alert", className = "", dirty = false }: {
   title: string;
@@ -190,6 +194,7 @@ export function NewDeckModal({ parentId = null, onClose, onCreated }: {
       sub={isSub ? "과목이나 챕터처럼 덱을 폴더로 나눠요" : undefined}
       className={isSub ? "modal--subdeck" : ""}
       onClose={close}
+      dirty={!!name.trim()} // 쓴 이름을 묻지 않고 버리지 않는다 (QA T1-14 · T8-17)
     >
       <form
         className="modal__body"
@@ -252,7 +257,7 @@ export function NewDeckModal({ parentId = null, onClose, onCreated }: {
           </div>
         )}
         <div className="modal__actions">
-          <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={close} />
+          <ModalCancel />
           <Button type="submit" size="M" label="만들기" shortcut="Enter" disabled={!name.trim() || busy} />
         </div>
       </form>

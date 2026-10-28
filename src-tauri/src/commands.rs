@@ -2380,10 +2380,37 @@ pub(crate) fn mime_of(name: &str) -> &'static str {
 #[tauri::command]
 pub fn save_media(state: State<AppState>, name: String, data_base64: String) -> Res<String> {
     use base64::Engine;
-    use std::hash::{Hash, Hasher};
     let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64.trim()).map_err(err)?;
-    if bytes.len() > 20 * 1024 * 1024 {
-        return Err("이미지가 너무 커요. 20MB 이하만 넣을 수 있어요.".into());
+    store_media(&state.db, &state.data_dir, &name, &bytes)
+}
+
+/// 탐색기에서 끌어 놓은 그림. 웹뷰 드롭은 내용 없이 경로만 준다 (QA T1-05). 그림 확장자만 받고, 크기는 읽기 전에 본다
+#[tauri::command]
+pub fn save_media_path(state: State<AppState>, path: String) -> Res<String> {
+    media_from_path(&state.db, &state.data_dir, std::path::Path::new(&path))
+}
+
+const MAX_MEDIA: usize = 20 << 20;
+const TOO_BIG: &str = "이미지가 너무 커요. 20MB 이하만 넣을 수 있어요.";
+
+fn media_from_path(db: &Mutex<Connection>, data_dir: &std::path::Path, path: &std::path::Path) -> Res<String> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") {
+        return Err("그림 파일만 넣을 수 있어요 (PNG · JPG · GIF · WEBP · BMP · SVG).".into());
+    }
+    if std::fs::metadata(path).map_err(err)?.len() > MAX_MEDIA as u64 {
+        return Err(TOO_BIG.into());
+    }
+    let bytes = std::fs::read(path).map_err(err)?;
+    store_media(db, data_dir, name, &bytes)
+}
+
+/// 미디어 폴더에 넣고 media 표에 적는다. 같은 내용이면 같은 이름이다
+fn store_media(db: &Mutex<Connection>, data_dir: &std::path::Path, name: &str, bytes: &[u8]) -> Res<String> {
+    use std::hash::{Hash, Hasher};
+    if bytes.len() > MAX_MEDIA {
+        return Err(TOO_BIG.into());
     }
     let ext = name
         .rsplit('.')
@@ -2395,19 +2422,49 @@ pub fn save_media(state: State<AppState>, name: String, data_base64: String) -> 
     bytes.hash(&mut h);
     let hash = format!("{:016x}", h.finish());
     let file = format!("neo-{hash}.{ext}");
-    let dir = media_dir(&state.data_dir);
+    let dir = media_dir(data_dir);
     std::fs::create_dir_all(&dir).map_err(err)?;
     let path = dir.join(&file);
     if !path.exists() {
-        std::fs::write(&path, &bytes).map_err(err)?;
+        std::fs::write(&path, bytes).map_err(err)?;
     }
-    let con = state.db.lock().map_err(err)?;
+    let con = db.lock().map_err(err)?;
     con.execute(
         "INSERT OR IGNORE INTO media (filename, rel_path, sha256, byte_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![file, format!("media/{file}"), hash, bytes.len() as i64, mime_of(&file), now_ms()],
     )
     .map_err(err)?;
     Ok(file)
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+
+    #[test]
+    fn dropped_image_path_is_stored_and_checked() {
+        let dir = std::env::temp_dir().join(format!("na-media-path-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Mutex::new(crate::db::open(&dir.join("addiem.sqlite")).unwrap());
+        let png = dir.join("사진.PNG");
+        std::fs::write(&png, b"\x89PNG fake").unwrap();
+        let name = media_from_path(&db, &dir, &png).unwrap();
+        assert!(name.starts_with("neo-") && name.ends_with(".png"), "{name}");
+        assert_eq!(std::fs::read(media_dir(&dir).join(&name)).unwrap(), b"\x89PNG fake");
+        let rows: i64 = db.lock().unwrap().query_row("SELECT COUNT(*) FROM media WHERE filename = ?1", [&name], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+        // 같은 그림을 다시 놓으면 같은 이름
+        assert_eq!(media_from_path(&db, &dir, &png).unwrap(), name);
+
+        let txt = dir.join("notes.txt");
+        std::fs::write(&txt, b"hello").unwrap();
+        assert!(media_from_path(&db, &dir, &txt).unwrap_err().contains("그림 파일만"));
+
+        let big = dir.join("big.jpg");
+        std::fs::File::create(&big).unwrap().set_len(MAX_MEDIA as u64 + 1).unwrap();
+        assert_eq!(media_from_path(&db, &dir, &big).unwrap_err(), TOO_BIG);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// data URL 로 화면에 넣는 미디어의 상한 (T7-01). 100MB 그림이면 렌더러가 11분 넘게 멈췄다. 넘으면 화면이 "너무 커서" 자리 표시를 그린다

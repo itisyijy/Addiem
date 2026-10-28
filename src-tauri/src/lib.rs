@@ -123,6 +123,7 @@ pub fn run() {
             commands::finish_session,
             commands::resolve_buried,
             commands::save_media,
+            commands::save_media_path,
             commands::read_media,
             commands::app_info,
             commands::mvp_metrics,

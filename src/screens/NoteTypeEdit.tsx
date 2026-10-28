@@ -10,7 +10,7 @@ import type { ChangeImpact, ChangePlan, NoteTypeRow } from "../api";
 import { useSyncStatus, when } from "../sync";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
 import { eul, eun, iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
-import { actionKey, matchAction } from "../keys";
+import { actionKey, matchAction, plainEnter } from "../keys";
 import { useToast } from "../toast";
 import { plainText, renderCardHtml } from "../cardHtml";
 import { withMath } from "../math";
@@ -65,6 +65,16 @@ function refsOf(tpl: string): string[] {
   return out;
 }
 const isCloze = (s: string) => /\{\{[^}]*cloze:/i.test(s);
+/** {{#필드}} · {{^필드}} 와 {{/필드}} 의 짝 (notetype.rs sections_ok 와 같은 읽기). 저장 전에 그 자리에서 잡는다 (QA T1-32) */
+export function sectionsOk(tpl: string) {
+  const open: string[] = [];
+  for (const m of tpl.matchAll(/\{\{(.*?)\}\}/gs)) {
+    const t = m[1].trim();
+    if (/^[#^]/.test(t)) open.push(t.slice(1).trim());
+    else if (t.startsWith("/") && open.pop() !== t.slice(1).trim()) return false;
+  }
+  return !open.length;
+}
 const usesBox = (t: DTpl) => (t.qfmt + t.afmt).includes('<div class="nt-');
 
 /** 필드 이름 검사 (notetype.rs field_name 과 같은 규칙) */
@@ -317,6 +327,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
   const [ask, setAsk] = useState<SaveImpact | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
+  // 고치면 지난 저장 실패 배너를 지운다 (고친 뒤에도 남아 있었다, QA T1-32)
+  useEffect(() => setSaveError(undefined), [draft]);
   const [cloning, setCloning] = useState(false);
   const seq = useRef(-1); // 새 필드 · 카드 종류의 key (음수)
   const area = useRef<{ el: HTMLTextAreaElement; which: "qfmt" | "afmt" } | null>(null); // HTML 탭에서 마지막으로 고친 칸
@@ -573,6 +585,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
       if (!d.cloze && isCloze(t.qfmt + t.afmt)) out.push({ key: t.key, side: null, text: "일반 유형에는 {{cloze:…}}를 쓸 수 없어요. 빈칸 유형을 복제해서 만들어 주세요." });
       if (!refsOf(t.qfmt).length) out.push({ key: t.key, side: "front", text: "앞면에 필드를 하나 이상 넣어 주세요." });
       for (const side of ["front", "back"] as Side[]) {
+        if (!sectionsOk(side === "front" ? t.qfmt : t.afmt)) out.push({ key: t.key, side, text: `${SIDE_LABEL[side]}의 {{#…}} 와 {{/…}} 짝이 맞지 않아요.` });
         const miss = refsOf(side === "front" ? t.qfmt : t.afmt).find((r) => !names.includes(r));
         if (miss) out.push({ key: t.key, side, text: `${SIDE_LABEL[side]}에 쓴 '${miss}' 필드가 없어요.` });
       }
@@ -814,7 +827,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                 onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
                 onBlur={() => renameTpl(t.key, renaming.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") renameTpl(t.key, renaming.value);
+                  if (plainEnter(e)) renameTpl(t.key, renaming.value);
                   if (e.key === "Escape") (e.preventDefault(), setRenaming(null));
                 }}
               />
@@ -978,8 +991,8 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
                     onKeyDown={(e) => {
                       e.stopPropagation();
                       // 빈 이름으로 Enter: 지우지 않고 오류를 보인다 (칸을 떠나면 그 필드를 넣지 않는다)
-                      if (e.key === "Enter" && !renaming.value.trim()) setRenaming({ ...renaming, tried: true });
-                      else if (e.key === "Enter") renameField(f.key, renaming.value);
+                      if (plainEnter(e) && !renaming.value.trim()) setRenaming({ ...renaming, tried: true });
+                      else if (plainEnter(e)) renameField(f.key, renaming.value);
                       if (e.key === "Escape") {
                         e.preventDefault();
                         if (!f.name) removeField(f.key);
