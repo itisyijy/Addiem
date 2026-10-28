@@ -638,6 +638,8 @@ pub struct DeckDetail {
     /// 하루 신규 분량과 그 분량으로 끝내는 데 걸리는 날
     per_day: i64,
     finish_days: Option<i64>,
+    /// 예산 덱(이 덱 또는 목표를 따르는 상위 덱)이 나눌 남은 신규. 자기 설정을 가진 하위 덱 것은 빠진다 (QA T3-08)
+    budget_unseen: i64,
     /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). 큰 카드의 이유 줄 · [카드 목록에서 보기]. 그중 신규 수 (unseen 에 들지 않는다)
     front_empty: Vec<i64>,
     unseen_empty: i64,
@@ -849,6 +851,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         core_learned_pct: if core_total > 0 { core_seen * 100 / core_total } else { 0 },
         per_day,
         finish_days,
+        budget_unseen: owner_unseen,
         learnable_days: learnable,
         on_track,
         subdeck_count: ids.len() - 1,

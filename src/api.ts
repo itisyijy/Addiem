@@ -81,6 +81,8 @@ export type DeckDetail = {
   core_learned_pct: number;
   per_day: number;
   finish_days: number | null;
+  /** 예산 덱이 나눌 남은 신규 (자기 설정을 가진 하위 덱 것은 빠진다) */
+  budget_unseen: number;
   /** 앞면이 빈 카드 (학습에 나오지 않는다). 그중 신규 수 (unseen 에 들지 않는다) */
   front_empty: number[];
   unseen_empty: number;
