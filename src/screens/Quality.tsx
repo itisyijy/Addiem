@@ -965,6 +965,7 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
   const [parts, setParts] = useState<SplitPart[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
   const [discard, setDiscard] = useState<(() => void) | null>(null); // 고친 카드를 버리고 할 일 (묻는 중)
+  const [closing, setClosing] = useState(false); // 받은 ChatGPT 제안을 버리고 닫을지 묻는 중
   const [archive, setArchive] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -1148,7 +1149,8 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
     <Modal
       title="카드 나누기 제안"
       sub={fromAi ? "ChatGPT가 비슷한 내용끼리 나눈 제안이에요. 그대로 쓰기 전에 확인하고 고쳐 주세요." : "규칙으로 나눈 제안이에요. 고쳐서 써도 되고, 나누지 않아도 돼요."}
-      onClose={onClose}
+      // 받은 ChatGPT 제안은 사용량을 쓴 결과라 고치지 않았어도 닫기 전에 묻는다 (다시 열면 다시 보내야 한다, QA V5-08)
+      onClose={() => (aiP ? setClosing(true) : onClose())}
       dirty={edited}
       className={`split ${panelSeg !== null ? "has-panel" : ""}`}
     >
@@ -1407,6 +1409,16 @@ function SplitModal({ cardId, onClose, onKeep, onDone }: {
           setDiscard(null);
           discard();
         }}
+      />
+    )}
+    {closing && (
+      <DiscardModal
+        title="ChatGPT 제안을 닫을까요?"
+        text="닫으면 받은 제안은 사라져요. 다시 보려면 다시 보내야 하고, 보낸 만큼 사용량에 들어가요."
+        keep="계속 보기"
+        discard="버리고 닫기"
+        onKeep={() => setClosing(false)}
+        onDiscard={onClose}
       />
     )}
     </>
