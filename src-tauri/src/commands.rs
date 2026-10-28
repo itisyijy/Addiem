@@ -667,6 +667,11 @@ pub struct DeckDetail {
     write_from: Option<String>,
 }
 
+/// 이 분량으로 목표일 안에 신규를 끝내는가. 목표일이 오늘이면(당일 학습 끔) 오늘 하루에 끝나면 된다 (QA T3-03)
+fn on_track(learnable_days: i64, finish_days: Option<i64>, unseen: i64) -> bool {
+    unseen == 0 || finish_days.unwrap_or(0) <= if learnable_days == 0 { 1 } else { learnable_days.max(0) }
+}
+
 /// C1-w 제안 기준
 const WEAK_MIN_REVIEWS: i64 = 20;
 const WEAK_RATIO_OF_AVG: f64 = 1.5;
@@ -724,7 +729,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
     let (per_day, _) = queue::new_target_for_deck(owner, today, owner_unseen);
     let finish_days = (per_day > 0 && owner_unseen > 0).then(|| (owner_unseen + per_day - 1) / per_day);
     let learnable = queue::learnable_days(today, owner.target_day, owner.include_target_day);
-    let on_track = learnable.map(|d| finish_days.unwrap_or(0) <= d.max(0) || owner_unseen == 0);
+    let on_track = learnable.map(|d| on_track(d, finish_days, owner_unseen));
     let studied = q("SELECT count(*) FROM review_log r JOIN card c ON c.id = r.card_id WHERE c.deck_id IN ($IDS)")? > 0;
     let reason = plan.notes.iter().find(|n| n.starts_with(&me.name)).map(|n| n[me.name.len() + 2..].to_string())
         .or_else(|| plan.notes.first().cloned());
@@ -1663,10 +1668,7 @@ pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> R
     );
     let needed = days.filter(|d| *d > 0).map(|d| (remaining_new + d - 1) / d);
     let finish_days = if per_day > 0 { Some((remaining_new + per_day - 1) / per_day) } else { None };
-    let overflow = match (finish_days, days) {
-        (Some(f), Some(d)) if f > d => Some(f - d),
-        _ => None,
-    };
+    let overflow = overflow_days(finish_days, days);
     Ok(ConfigPreview {
         remaining_new,
         days,
@@ -1681,6 +1683,14 @@ pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> R
         today_total: if paused { 0 } else { plan.ordered().len() },
         today_new: plan.new.len(),
     })
+}
+
+/// 목표일을 넘기는 날 수. 목표일이 오늘 · 지난 날이면 남은 신규를 오늘 모두 넣으니 넘기지 않는다 (QA T3-02)
+fn overflow_days(finish_days: Option<i64>, days: Option<i64>) -> Option<i64> {
+    match (finish_days, days) {
+        (Some(f), Some(d)) if d > 0 && f > d => Some(f - d),
+        _ => None,
+    }
 }
 
 // ------------------------------------------------------------------ B4. 중요도
@@ -2260,7 +2270,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
              FROM session_card_state s JOIN card_effective c ON c.id = s.card_id JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
-             WHERE s.session_id = ?1 AND s.is_buried = 1 ORDER BY s.buried_at"
+             WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL ORDER BY s.buried_at"
         ))
         .map_err(err)?;
     let buried = st
@@ -2284,8 +2294,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         .map_err(err)?;
 
     // D5-c "내일 예정". 모든 덱, 최상위 덱별. 목표일이 가까운 덱부터
-    let cards = load_cards(&con)?;
-    let next = queue::build_queue(today + 1, &decks, &cards, None, 1.0);
+    let next = tomorrow_plan(&con, &decks, today)?;
     let tomorrow = next.ordered().len();
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let mut per_root: HashMap<i64, (usize, usize)> = HashMap::new();
@@ -2317,12 +2326,30 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
     })
 }
 
+/// D5-c 내일 큐. 오늘만 정한 신규 분량 · 오늘 당겨 맞추기는 내일에 싣지 않고 내일 것을 싣는다 (QA T3-07)
+fn tomorrow_plan(con: &Connection, decks: &[queue::Deck], today: i64) -> Res<queue::QueuePlan> {
+    let mut decks = decks.to_vec();
+    for d in &mut decks {
+        d.today_new = None;
+    }
+    crate::plan::adjust_decks(con, &mut decks, today + 1)?;
+    Ok(queue::build_queue(today + 1, &decks, &load_cards(con)?, None, 1.0))
+}
+
 /// D5. 접어둔 카드를 오늘 다시 볼지(true) 다음 학습으로 넘길지(false). 오늘이면 다시 볼 카드 id 를 돌려준다
 #[tauri::command]
 pub fn resolve_buried(state: State<AppState>, session_id: i64, today: bool) -> Res<Vec<i64>> {
     let con = state.db.lock().map_err(err)?;
+    resolve_buried_in(&con, session_id, today)
+}
+
+/// 세션에서 접은 카드 중 아직 접혀 있는 것만 (카드 목록에서 이미 푼 카드는 뺀다, QA T2-03)
+fn resolve_buried_in(con: &Connection, session_id: i64, today: bool) -> Res<Vec<i64>> {
     let mut st = con
-        .prepare("SELECT card_id FROM session_card_state WHERE session_id = ?1 AND is_buried = 1")
+        .prepare(
+            "SELECT s.card_id FROM session_card_state s JOIN card c ON c.id = s.card_id
+             WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL",
+        )
         .map_err(err)?;
     let ids: Vec<i64> = st.query_map([session_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     if today {
@@ -3265,6 +3292,45 @@ mod tests {
         assert_eq!((reason.as_str(), logs), ("day_rollover", 0));
         let s2 = session(&con, today);
         assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s2, ids[0], 3, 1000, None, now).unwrap().0.action, "again_later");
+    }
+
+    #[test]
+    fn done_screen_skips_cards_unburied_elsewhere() {
+        // QA T2-03: 두 번째 Again 으로 접힌 카드를 카드 목록에서 풀면 끝 화면 · [오늘 다시 보기] 에 남지 않는다
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 2, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        for id in [ids[0], ids[0], ids[1], ids[1]] {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, id, 1, 1000, None, now).unwrap();
+        }
+        con.execute("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id = ?1", [ids[0]]).unwrap();
+        assert_eq!(super::resolve_buried_in(&con, s, true).unwrap(), [ids[1]]);
+    }
+
+    #[test]
+    fn today_only_new_count_is_not_tomorrows() {
+        // QA T3-07: "오늘만 신규 5장"은 끝 화면의 내일 예정에 들어가지 않는다 (30장 ÷ 10일 = 3장)
+        let con = crate::db::open_in_memory().unwrap();
+        deck_with_cards(&con, 30, None);
+        let (today, _) = mid_today();
+        let date = crate::db::date_from_day;
+        con.execute("UPDATE deck_config SET target_date = ?1, today_new = 5, today_new_day = ?2", [date(today + 11), date(today)]).unwrap();
+        let decks = super::load_decks(&con).unwrap();
+        assert_eq!(decks[0].today_new, Some(5));
+        assert_eq!(super::tomorrow_plan(&con, &decks, today).unwrap().new.len(), 3);
+    }
+
+    #[test]
+    fn target_today_or_past_does_not_overflow() {
+        // QA T3-02: 목표일이 오늘(0일) · 지난 날(-9일)이면 남은 신규를 오늘 모두 넣는다. "N일 미뤄야" 경고가 없다
+        assert_eq!([super::overflow_days(Some(1), Some(0)), super::overflow_days(Some(1), Some(-9))], [None, None]);
+        assert_eq!(super::overflow_days(Some(27), Some(24)), Some(3));
+        // QA T3-03: 목표일이 오늘이고 오늘 다 넣으면 제때 끝난다. 상한에 걸려 하루를 넘기거나 이미 지났으면 아니다
+        assert!(super::on_track(0, Some(1), 4));
+        assert!(!super::on_track(0, Some(2), 4));
+        assert!(!super::on_track(-3, Some(1), 4));
+        assert!(super::on_track(24, Some(24), 32) && !super::on_track(24, Some(25), 32));
     }
 
     #[test]
