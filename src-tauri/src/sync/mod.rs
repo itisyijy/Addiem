@@ -873,22 +873,16 @@ fn set_lock(sh: &Arc<Shared>, store: &dyn Store, plan: LockPlan, remote_locked: 
     }
 }
 
-/// 바꾸거나 합치기 전의 이 기기 백업 (K6-m "어느 쪽이든 바꾸기 전에 이 기기 백업을 먼저 만들어요")
-fn local_backup(sh: &Shared, suffix: &str) -> Result<Option<PathBuf>, SyncError> {
+/// 바꾸거나 합치기 전의 이 기기 백업 (K6-m "어느 쪽이든 바꾸기 전에 이 기기 백업을 먼저 만들어요"). kind: before-sync · before-restore.
+/// 같은 초에 두 번 만들어도 앞의 것을 덮지 않고(QA V1-10), 자동 백업 보관 규칙도 거기서 (commands::write_backup_as)
+fn local_backup(sh: &Shared, kind: &str) -> Result<Option<PathBuf>, SyncError> {
     let data_dir = sh.state().data_dir.clone();
     sh.with_db(|c| {
         let k = engine::counts(c)?;
         if k.cards == 0 && k.reviews == 0 {
             return Ok(None);
         }
-        let path = crate::commands::write_backup(c, &data_dir).map_err(store::other)?;
-        let to = path.with_file_name(format!("{}{suffix}-{}.zip", crate::legacy::BACKUP_PREFIX, chrono::Local::now().format("%Y%m%d-%H%M%S")));
-        std::fs::rename(&path, &to).map_err(store::other)?;
-        // 자동 백업 보관 (사용자 결정 2026-10-20, commands::prune_auto_backups)
-        if let Some(dir) = to.parent() {
-            crate::commands::prune_auto_backups(c, dir, crate::db::now_ms());
-        }
-        Ok(Some(to))
+        crate::commands::write_backup_as(c, &data_dir, kind).map(Some).map_err(store::other)
     })
 }
 
@@ -1302,10 +1296,36 @@ pub async fn sync_restore(state: State<'_, SyncState>, name: String, password: O
 /// 복구 전 데이터를 남긴 이 기기 백업 파일 이름을 돌려준다 (화면이 그 이름을 보인다, T5-17)
 fn restore_blocking(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Result<Option<String>, SyncError> {
     let _g = sh.run.lock().map_err(store::other)?;
-    sh.set(|s| {
-        s.state = "syncing".into();
-        s.phase = Some("restore".into());
-    });
+    restoring(&sh.status, || sh.emit(), || restore_locked(sh, name, password))
+}
+
+/// K9 복구 동안 상태를 "백업으로 복구하는 중"(syncing · restore)으로 두고 f 를 부른다. 성공하면 idle, 실패하면 복구 전 상태로 되돌린다
+/// (QA V1-03: 실패하면 "복구하는 중"에 멈춘 채 다음 자동 동기화까지 남았다). emit: 바뀐 상태를 화면에 알린다
+fn restoring<T>(status: &Mutex<Status>, emit: impl Fn(), f: impl FnOnce() -> Result<T, SyncError>) -> Result<T, SyncError> {
+    let before = status
+        .lock()
+        .map(|mut s| {
+            s.phase = Some("restore".into());
+            std::mem::replace(&mut s.state, "syncing".into())
+        })
+        .unwrap_or_default();
+    emit();
+    let r = f();
+    if let Ok(mut s) = status.lock() {
+        s.phase = None;
+        if r.is_ok() {
+            s.state = "idle".into();
+            s.changed_seq += 1;
+        } else {
+            s.state = before;
+        }
+    }
+    emit();
+    r
+}
+
+/// run 잠금을 쥔 채로 부른다 (restore_blocking)
+fn restore_locked(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Result<Option<String>, SyncError> {
     let tmp = download_backup(sh, name, password)?;
     check_backup(sh, &tmp)?;
     let kept = local_backup(sh, "before-restore")?.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -1366,11 +1386,6 @@ fn restore_blocking(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Res
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(old(suffix));
     }
-    sh.set(|s| {
-        s.state = "idle".into();
-        s.phase = None;
-        s.changed_seq += 1;
-    });
     Ok(kept)
 }
 
@@ -1730,6 +1745,28 @@ mod revoke_tests {
         assert!(others_in(&s, "me", now), "다른 기기가 쓰고 있으면 폐기하지 않는다 (그 기기도 로그아웃된다)");
         assert!(others_in(&Down, "me", now), "모르면 있다고 본다");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_restore_returns_to_the_state_before() {
+        // QA V1-03: 실패한 K9 복구가 "백업으로 복구하는 중"(syncing · restore)에 멈춰 남지 않는다
+        let status = Mutex::new(Status { state: "error".into(), ..Default::default() });
+        let emitted = std::cell::Cell::new(0);
+        let r: Result<(), SyncError> = restoring(
+            &status,
+            || emitted.set(emitted.get() + 1),
+            || {
+                let s = status.lock().unwrap();
+                assert_eq!((s.state.as_str(), s.phase.as_deref()), ("syncing", Some("restore")), "복구하는 동안");
+                Err(store::other("백업 파일을 읽을 수 없어요"))
+            },
+        );
+        assert!(r.is_err());
+        let s = status.lock().unwrap().clone();
+        assert_eq!((s.state.as_str(), s.phase, s.changed_seq, emitted.get()), ("error", None, 0, 2), "복구 전 상태로");
+        restoring(&status, || {}, || Ok(())).unwrap();
+        let s = status.lock().unwrap().clone();
+        assert_eq!((s.state.as_str(), s.phase, s.changed_seq), ("idle", None, 1), "성공하면 idle, 화면이 다시 읽는다");
     }
 
     #[test]

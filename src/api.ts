@@ -768,8 +768,8 @@ export const api = {
   /** S1-6 백업이 없을 때: 열지 못한 파일은 데이터 폴더에 남기고 빈 데이터로 연다 */
   startFresh: () => invoke<void>("start_fresh"),
   /** name 이 없으면 최근 백업부터 차례로 보고 처음으로 쓸 수 있는 것. 쓴 백업 파일 이름을 돌려준다.
-   *  backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */
-  restoreBackup: (name: string | null = null, backupFirst = false) => invoke<string>("restore_backup", { name, backupFirst }),
+   *  backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업). allowEmpty: S1-6 에서 카드 0장 백업밖에 없다고 확인한 뒤 */
+  restoreBackup: (name: string | null = null, backupFirst = false, allowEmpty = false) => invoke<string>("restore_backup", { name, backupFirst, allowEmpty }),
   localBackups: () => invoke<LocalBackup[]>("local_backups"),
   openBackupDir: () => invoke<void>("open_backup_dir"),
   openDataDir: () => invoke<void>("open_backup_dir", { data: true }),
