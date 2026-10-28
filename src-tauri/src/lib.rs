@@ -63,6 +63,7 @@ pub fn run() {
             legacy::rename_files(&data_dir);
             // 지난 실행이 가져오는 중에 끊겨 남긴 임시 컬렉션 (T7-05)
             import::clean_stale(&data_dir);
+            commands::clean_stale_restore(&data_dir);
             // 열지 못해도 앱은 뜬다. 빈 메모리 DB 로 시작하고 화면이 S1-6 안내(다시 시도 / 백업에서 복구)를 띄운다.
             // 자동 복구는 하지 않는다. 원본 파일을 건드리기 전에 사용자가 고른다
             let (con, startup_error) = match db::open(&db::file(&data_dir)) {
@@ -128,6 +129,7 @@ pub fn run() {
             commands::mvp_metrics,
             commands::create_backup,
             commands::retry_open,
+            commands::start_fresh,
             commands::restore_backup,
             commands::local_backups,
             commands::open_backup_dir,

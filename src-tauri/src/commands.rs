@@ -2456,14 +2456,19 @@ fn backup_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn last_backup(dir: &std::path::Path) -> Option<i64> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|x| x == "zip"))
-        .filter_map(|e| e.metadata().ok()?.modified().ok())
-        .max()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
+    backup_list(dir).first().map(|b| b.at)
+}
+
+/// 지금 시각(초까지)의 이름 조각. 그 이름이 이미 있으면 1초씩 뒤로 (같은 초에 두 번 만들어도 덮지 않게, QA T5-11)
+fn free_stamp(taken: impl Fn(&str) -> bool) -> String {
+    let mut t = chrono::Local::now();
+    loop {
+        let s = t.format("%Y%m%d-%H%M%S").to_string();
+        if !taken(&s) {
+            return s;
+        }
+        t += chrono::Duration::seconds(1);
+    }
 }
 
 /// 파일 하나로 백업한다: DB 사본(VACUUM INTO) + 미디어 폴더. 복원은 zip 을 풀어 데이터 폴더에 두면 된다
@@ -2476,13 +2481,14 @@ pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag:
     use std::io::Write;
     let dir = backup_dir(data_dir);
     std::fs::create_dir_all(&dir).map_err(err)?;
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let suffix = if tag.is_empty() { String::new() } else { format!("-{tag}") };
+    let zip_name = |stamp: &str| format!("{}{stamp}{suffix}.zip", crate::legacy::BACKUP_PREFIX);
+    let stamp = free_stamp(|s| dir.join(zip_name(s)).exists());
     let db_copy = dir.join(format!(".addiem-{stamp}.sqlite"));
     let _ = std::fs::remove_file(&db_copy);
     con.execute("VACUUM INTO ?1", [db_copy.to_string_lossy()]).map_err(err)?;
 
-    let suffix = if tag.is_empty() { String::new() } else { format!("-{tag}") };
-    let out = dir.join(format!("{}{stamp}{suffix}.zip", crate::legacy::BACKUP_PREFIX));
+    let out = dir.join(zip_name(&stamp));
     let result = (|| -> Res<()> {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&out).map_err(err)?);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -2524,7 +2530,8 @@ pub(crate) fn prune_auto_backups(con: &Connection, dir: &std::path::Path, now: i
         .filter(|e| e.path().is_file())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            auto_backup(&name).map(|(_, at)| (at, e.path(), name))
+            // 모든 데이터 삭제 전 백업은 지운 데이터의 하나뿐인 사본일 수 있다: 정리하지 않는다 (QA T5-18)
+            auto_backup(&name).filter(|(kind, _)| *kind != "wipe").map(|(_, at)| (at, e.path(), name))
         })
         .collect();
     autos.sort_by_key(|a| std::cmp::Reverse(a.0));
@@ -2770,7 +2777,7 @@ pub struct LocalBackup {
     /// 만든 시각 (파일 시각, ms)
     at: i64,
     bytes: u64,
-    /// manual | update (덱 업데이트 적용 전) | restore (복구 전)
+    /// manual | update (덱 업데이트 적용 전) | restore (복구 전) … | other (앱이 만든 이름이 아닌 zip)
     kind: &'static str,
 }
 
@@ -2798,28 +2805,45 @@ fn auto_backup(name: &str) -> Option<(&'static str, i64)> {
     Some((kind, chrono::Local.from_local_datetime(&at).earliest()?.timestamp_millis()))
 }
 
-/// 백업 zip 이름 → 종류. 자동 백업이 아니면 직접 만든 백업
-fn backup_kind(name: &str) -> &'static str {
-    auto_backup(name).map_or("manual", |x| x.0)
+/// 백업 zip 이름 → (종류, 이름 속 시각). 자동 백업 · [백업 만들기]로 만든 이름(addiem-<YYYYmmdd-HHMMSS>.zip)이 아니면
+/// other (사용자가 넣은 파일 등. 목록에 파일 이름을 보인다, QA T5-15)
+fn backup_kind(name: &str) -> (&'static str, Option<i64>) {
+    use chrono::TimeZone;
+    if let Some((kind, at)) = auto_backup(name) {
+        return (kind, Some(at));
+    }
+    let manual = crate::legacy::backup_rest(name)
+        .and_then(|s| s.strip_suffix(".zip"))
+        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d-%H%M%S").ok())
+        .and_then(|at| chrono::Local.from_local_datetime(&at).earliest());
+    manual.map_or(("other", None), |at| ("manual", Some(at.timestamp_millis())))
 }
 
-/// 이 기기 백업 zip 들, 최근 것부터
-#[tauri::command]
-pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
-    let Ok(entries) = std::fs::read_dir(backup_dir(&state.data_dir)) else { return Ok(vec![]) };
+/// 백업 폴더의 zip 들, 최근 것부터. 시각은 앱이 만든 이름이면 이름 속 시각(자동 백업 정리와 같은 기준), 아니면 파일 수정 시각
+fn backup_list(dir: &std::path::Path) -> Vec<LocalBackup> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
     let mut out: Vec<LocalBackup> = entries
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "zip"))
         .filter_map(|e| {
             let m = e.metadata().ok()?;
-            let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
             let name = e.file_name().to_string_lossy().into_owned();
-            let kind = backup_kind(&name);
+            let (kind, named) = backup_kind(&name);
+            let at = match named {
+                Some(at) => at,
+                None => m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64,
+            };
             Some(LocalBackup { name, at, bytes: m.len(), kind })
         })
         .collect();
     out.sort_by_key(|b| std::cmp::Reverse(b.at));
-    Ok(out)
+    out
+}
+
+/// 이 기기 백업 zip 들, 최근 것부터
+#[tauri::command]
+pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
+    Ok(backup_list(&backup_dir(&state.data_dir)))
 }
 
 /// 백업 하나를 풀어 쓰는 최대 바이트 (DB + 미디어 + 원자료 합계). 압축 폭탄이 디스크를 채우지 않게
@@ -2845,37 +2869,117 @@ fn remove_db_files(path: &std::path::Path) {
     }
 }
 
-/// 복구할 백업을 지금 데이터 옆에 푼다: DB 는 임시 파일로 풀어 열리는지 확인하고, 미디어 · 원자료는 없는 것만 채운다
-/// (덮어쓰지 않으니 중간에 멈춰도 지금 데이터는 그대로다). 확인한 임시 DB 경로를 돌려준다
-fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<std::path::PathBuf> {
+/// 바꿔 넣기 전에 백업의 DB 가 이 앱의 학습 데이터인지 원본 연결로 확인한다 (db::open 은 스키마를 더하고 전역 설정을 바꾼다).
+/// 손상된 파일 · 빈 파일 · 다른 앱의 SQLite 는 막는다 (schema_meta 의 version · srs 행, QA T5-05).
+/// 지금 카드가 있는데 백업에 카드가 한 장도 없으면 지금 데이터를 덮지 않게 막는다. Drive 복구(sync)도 바꾸기 전에 부른다 (P0-8)
+pub(crate) fn validate_backup_db(path: &std::path::Path, current_cards: i64) -> Res<()> {
+    let not_ours = "이 앱에서 만든 백업이 아니에요. 다른 백업을 골라 주세요.";
+    let con = Connection::open(path).map_err(|_| not_ours.to_string())?;
+    let check: rusqlite::Result<String> = con.query_row("PRAGMA quick_check", [], |r| r.get(0));
+    if !matches!(check.as_deref(), Ok("ok")) {
+        return Err("백업의 데이터 파일이 손상됐어요.".into());
+    }
+    let meta: i64 = con.query_row("SELECT count(*) FROM schema_meta WHERE key IN ('version', 'srs')", [], |r| r.get(0)).unwrap_or(0);
+    let Some(cards) = con.query_row("SELECT count(*) FROM card", [], |r| r.get::<_, i64>(0)).ok().filter(|_| meta == 2) else {
+        return Err(not_ours.into());
+    };
+    if cards == 0 && current_cards > 0 {
+        return Err(format!("이 백업에는 카드가 한 장도 없어요. 지금 카드 {current_cards}장이 사라지지 않게 복구하지 않았어요."));
+    }
+    Ok(())
+}
+
+/// 풀어 둔 복구. db: 확인한 임시 DB. replace: 이미 있지만 크기가 백업과 달라 바꿀 파일 (.<이름>.part, 제 이름).
+/// 다른 것은 DB 를 바꾼 뒤에야 제자리로 옮긴다 (복구를 그만두면 지금 파일이 그대로 남게)
+struct Staged {
+    db: std::path::PathBuf,
+    replace: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+}
+
+impl Staged {
+    /// 복구를 그만둘 때: 풀어 둔 것만 지운다
+    fn discard(&self) {
+        remove_db_files(&self.db);
+        for (part, _) in &self.replace {
+            let _ = std::fs::remove_file(part);
+        }
+    }
+
+    /// DB 를 바꾼 뒤: 크기가 다르던 파일을 백업의 것으로. 못 옮기면 예전 파일이 남는다 (다시 복구하면 다시 고친다)
+    fn place(&self) {
+        for (part, to) in &self.replace {
+            if std::fs::rename(part, to).is_err() {
+                let _ = std::fs::remove_file(part);
+            }
+        }
+    }
+}
+
+/// 복구할 백업을 지금 데이터 옆에 푼다: DB 는 임시 파일로 풀어 확인하고(validate_backup_db), 미디어 · 원자료는
+/// 없는 것을 채우고 크기가 다른 것은 바꿀 준비를 한다. 파일마다 .<이름>.part 에 쓴 뒤 이름을 바꾸니 중간에 꺼져도 잘린 파일이
+/// 제 이름으로 남지 않는다 (QA T5-04). current_cards: 지금 DB 의 카드 수
+fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path, current_cards: i64) -> Res<Staged> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path).map_err(err)?).map_err(|_| "백업 파일을 읽을 수 없어요.".to_string())?;
-    let staged = data_dir.join(format!(".restore-{}.sqlite", now_ms()));
+    let mut staged = Staged { db: data_dir.join(format!(".restore-{}.sqlite", now_ms())), replace: vec![] };
     let result = (|| -> Res<()> {
         let f = crate::legacy::zip_db(&mut zip).ok_or_else(|| "백업 안에 데이터 파일이 없어요. 이 앱에서 만든 백업 파일이 맞는지 확인해 주세요.".to_string())?;
-        let mut used = copy_capped(f, &staged, MAX_RESTORE)?;
-        // db::open 은 전역 설정(하루 시작 시각)을 바꾸므로 여기서는 SQLite 파일인지만 본다. 스키마 문제는 swap_in_db 가 되돌린다
-        let check: rusqlite::Result<String> = Connection::open(&staged).and_then(|c| c.query_row("PRAGMA quick_check", [], |r| r.get(0)));
-        if !matches!(check.as_deref(), Ok("ok")) {
-            return Err("백업의 데이터 파일이 손상됐어요.".into());
-        }
+        let mut used = copy_capped(f, &staged.db, MAX_RESTORE)?;
+        validate_backup_db(&staged.db, current_cards)?;
         for i in 0..zip.len() {
             let f = zip.by_index(i).map_err(err)?;
             let name = f.name().map_err(err)?.into_owned();
             let Some((sub, file)) = name.split_once('/').filter(|(sub, _)| ["media", "sources"].contains(sub)) else { continue };
-            let dir = data_dir.join(sub);
-            if safe_media_name(file).is_err() || dir.join(file).exists() {
+            if safe_media_name(file).is_err() {
+                continue;
+            }
+            let (dir, to) = (data_dir.join(sub), data_dir.join(sub).join(file));
+            let have = std::fs::metadata(&to).ok().map(|m| m.len());
+            if have == Some(f.size()) {
                 continue;
             }
             std::fs::create_dir_all(&dir).map_err(err)?;
-            used += copy_capped(f, &dir.join(file), MAX_RESTORE - used)?;
+            let part = dir.join(format!(".{file}.part"));
+            let _ = std::fs::remove_file(&part);
+            used += copy_capped(f, &part, MAX_RESTORE - used)?;
+            if have.is_some() {
+                staged.replace.push((part, to));
+            } else {
+                std::fs::rename(&part, &to).map_err(err)?;
+            }
         }
         Ok(())
     })();
     match result {
         Ok(()) => Ok(staged),
         Err(e) => {
-            remove_db_files(&staged);
+            staged.discard();
             Err(e)
+        }
+    }
+}
+
+/// 지금 데이터에 손대기 전에 차례로 풀고 확인해 처음으로 쓸 수 있는 백업. 깨졌거나 이 앱의 것이 아니면 다음 것으로
+fn stage_first(candidates: &[std::path::PathBuf], data_dir: &std::path::Path, current_cards: i64) -> Res<(std::path::PathBuf, Staged)> {
+    let mut last = "백업 파일이 없어요.".to_string();
+    for p in candidates {
+        match stage_restore(p, data_dir, current_cards) {
+            Ok(s) => return Ok((p.clone(), s)),
+            Err(e) => last = e,
+        }
+    }
+    Err(if candidates.len() > 1 { format!("쓸 수 있는 백업을 찾지 못했어요. 백업 {}개를 모두 확인했어요.", candidates.len()) } else { last })
+}
+
+/// 지난 실행이 복구 중에 꺼져 남긴 임시 파일: 데이터 폴더의 .restore-*.sqlite, media · sources 의 .<이름>.part (QA T5-10)
+pub(crate) fn clean_stale_restore(data_dir: &std::path::Path) {
+    for dir in [data_dir.to_path_buf(), data_dir.join("media"), data_dir.join("sources")] {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            // 미디어 · 원자료 이름은 점으로 시작하지 않는다 (safe_media_name)
+            let stale = if dir == data_dir { n.starts_with(".restore-") } else { n.starts_with('.') && n.ends_with(".part") };
+            if stale && e.path().is_file() {
+                let _ = std::fs::remove_file(e.path());
+            }
         }
     }
 }
@@ -2884,7 +2988,7 @@ fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<
 /// 중간에 실패하면 옮긴 파일을 되돌리고 원래 DB 를 다시 연다 (빈 데이터로 남지 않게)
 fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::path::Path) -> Res<()> {
     let db_path = db::file(data_dir);
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let stamp = free_stamp(|s| data_dir.join(format!("{}before-restore-{s}.sqlite", crate::legacy::BACKUP_PREFIX)).exists());
     // 파일을 옮기려면 연결부터 닫는다 (Windows 는 열린 파일을 옮기지 못한다)
     *con = db::open_in_memory().map_err(err)?;
     let mut moved = vec![];
@@ -2920,44 +3024,57 @@ fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::pa
     }
 }
 
-/// S1-6 "백업에서 복구" · 설정 › 이 기기 백업 [백업으로 복구]. name 이 없으면 가장 최근 백업 zip 으로 되돌린다.
+/// S1-6 "백업에서 복구" · 설정 › 이 기기 백업 [백업으로 복구]. name 이 없으면 최근 백업부터 차례로 보고 처음으로 쓸 수 있는 것으로
+/// 되돌린다 (가장 최근 zip 이 다른 앱의 것이어도 그 전 백업으로, QA T5-06).
 /// backup_first 면 바꾸기 전에 지금 상태를 백업한다 (-restore). 지금 파일은 지우지 않고 addiem-before-restore-<시각>.sqlite 로 옆에도 남긴다.
-/// 미디어는 없는 것만 채운다
+/// 미디어는 없는 것을 채우고 크기가 다른 것은 백업의 것으로 바꾼다
 #[tauri::command]
 pub async fn restore_backup(state: State<'_, AppState>, name: Option<String>, backup_first: Option<bool>) -> Res<String> {
     let dir = backup_dir(&state.data_dir);
-    let latest = match name {
+    let candidates = match name {
         // 목록에서 고른 이름만 (경로 · 다른 폴더는 받지 않는다)
-        Some(n) if safe_media_name(&n).is_ok() && n.ends_with(".zip") && dir.join(&n).is_file() => dir.join(n),
+        Some(n) if safe_media_name(&n).is_ok() && n.ends_with(".zip") && dir.join(&n).is_file() => vec![dir.join(n)],
         Some(_) => return Err("그 백업 파일을 찾을 수 없어요.".into()),
-        None => std::fs::read_dir(&dir)
-            .map_err(|_| "백업 파일이 없어요.".to_string())?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "zip"))
-            .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-            .ok_or("백업 파일이 없어요.")?,
+        None => backup_list(&dir).into_iter().map(|b| dir.join(b.name)).collect(),
     };
-    // 지금 데이터에 손대기 전에 풀고 확인한다. 깨졌거나 안전하지 않은 백업이면 여기서 멈춘다
-    let staged = stage_restore(&latest, &state.data_dir)?;
+    let cards: i64 = state.db.lock().map_err(err)?.query_row("SELECT count(*) FROM card", [], |r| r.get(0)).map_err(err)?;
+    let (latest, staged) = stage_first(&candidates, &state.data_dir, cards)?;
     let mut guard = state.db.lock().map_err(err)?;
     if backup_first.unwrap_or(false)
         && let Err(e) = write_backup_as(&guard, &state.data_dir, "restore")
     {
-        remove_db_files(&staged);
+        staged.discard();
         return Err(format!("지금 상태를 백업하지 못해 복구하지 않았어요. {e}"));
     }
-    swap_in_db(&mut guard, &state.data_dir, &staged)?;
+    if let Err(e) = swap_in_db(&mut guard, &state.data_dir, &staged.db) {
+        staged.discard();
+        return Err(e);
+    }
+    staged.place();
     // 동기화하던 백업이면 다음 동기화가 Drive 와 다시 맞춘다 (백업 뒤의 이 기기 · 다른 기기 변경을 받는다, Q2-09)
     crate::sync::engine::mark_restored(&guard).map_err(err)?;
     *state.startup_error.lock().map_err(err)? = None;
     Ok(latest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
-/// E1 "폴더 열기"
+/// S1-6 [빈 데이터로 시작] (백업이 없을 때, QA T8-11): 열지 못한 파일은 지우지 않고 addiem-before-restore-<시각>.sqlite 로
+/// 데이터 폴더에 남기고 새 데이터로 연다. 데이터를 열지 못한 상태에서만
 #[tauri::command]
-pub fn open_backup_dir(state: State<AppState>) -> Res<()> {
-    let dir = backup_dir(&state.data_dir);
+pub fn start_fresh(state: State<AppState>) -> Res<()> {
+    if state.startup_error.lock().map_err(err)?.is_none() {
+        return Err("학습 데이터가 이미 열려 있어요.".into());
+    }
+    let staged = state.data_dir.join(format!(".restore-{}.sqlite", now_ms()));
+    drop(db::open(&staged).map_err(err)?);
+    swap_in_db(&mut *state.db.lock().map_err(err)?, &state.data_dir, &staged)?;
+    *state.startup_error.lock().map_err(err)? = None;
+    Ok(())
+}
+
+/// E1 "폴더 열기" · S1-6 [데이터 폴더 열기] (data)
+#[tauri::command]
+pub fn open_backup_dir(state: State<AppState>, data: Option<bool>) -> Res<()> {
+    let dir = if data == Some(true) { state.data_dir.clone() } else { backup_dir(&state.data_dir) };
     std::fs::create_dir_all(&dir).map_err(err)?;
     #[cfg(target_os = "windows")]
     let program = "explorer";
@@ -3039,10 +3156,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let no_db = dir.join("no-db.zip");
         zip_with(&no_db, &[("media/a.png", b"png")]);
-        assert!(super::stage_restore(&no_db, &dir).unwrap_err().contains("데이터 파일이 없어요"));
+        assert!(super::stage_restore(&no_db, &dir, 0).err().unwrap().contains("데이터 파일이 없어요"));
         let garbage = dir.join("garbage.zip");
         zip_with(&garbage, &[("addiem.sqlite", b"not a database at all")]);
-        assert!(super::stage_restore(&garbage, &dir).is_err());
+        assert!(super::stage_restore(&garbage, &dir, 0).is_err());
         assert!(leftovers(&dir).is_empty(), "임시 DB 를 남기지 않는다");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3061,8 +3178,8 @@ mod tests {
         assert!(super::swap_in_db(&mut con, &dir, &missing).unwrap_err().contains("되돌렸어요"));
         assert_eq!(marker(&con), "live");
 
-        let staged = super::stage_restore(&zip, &dir).unwrap();
-        super::swap_in_db(&mut con, &dir, &staged).unwrap();
+        let staged = super::stage_restore(&zip, &dir, 0).unwrap();
+        super::swap_in_db(&mut con, &dir, &staged.db).unwrap();
         assert_eq!(marker(&con), "backup");
         assert!(leftovers(&dir).is_empty());
         let before = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with("addiem-before-restore-"));
@@ -3080,7 +3197,7 @@ mod tests {
         let con = crate::db::open_in_memory().unwrap();
         let at = |ago: i64| chrono::DateTime::from_timestamp_millis(now - ago).unwrap().with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S").to_string();
         let day = crate::db::DAY_MS;
-        let kinds = ["update", "move", "undo", "notetype", "deck", "wipe", "restore"];
+        let kinds = ["update", "move", "undo", "notetype", "deck", "cleanup", "restore"];
         let mut autos = vec![];
         for (i, days) in [1, 2].into_iter().chain(10..22).enumerate() {
             autos.push(format!("addiem-{}-{}.zip", at(days * day), kinds[i % kinds.len()]));
@@ -3093,6 +3210,8 @@ mod tests {
             "my-update.zip".into(),
             format!("addiem-{}-mine.zip", at(40 * day)),
             format!("addiem-{}-update.zip.part", at(40 * day)),
+            // 모든 데이터 삭제 전 백업은 오래돼도 남긴다 (QA T5-18)
+            format!("addiem-{}-wipe.zip", at(40 * day)),
         ];
         for n in autos.iter().chain(&keep) {
             std::fs::write(dir.join(n), b"x").unwrap();
@@ -3113,7 +3232,7 @@ mod tests {
         assert_eq!(journal, ["2meta", "2note"], "백업이 정리된 업데이트의 되돌리기 기록도 지운다 (가져온 기록 import_batch 는 남긴다)");
         assert_eq!(con.query_row("SELECT count(*) FROM import_batch", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
         let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일은 남는다: {left:?}");
+        assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일 · 삭제 전 백업은 남는다: {left:?}");
         assert!(super::prune_auto_backups(&con, &dir, now).is_empty(), "다시 불러도 지울 것이 없다");
         // 7일 안의 자동 백업은 10개가 넘어도 남긴다: 오늘 12개를 더하면 7일 넘은 10..17일 것만 지운다
         for i in 0..12 {
@@ -3134,13 +3253,146 @@ mod tests {
             ("addiem-20261020-101010-notetype.zip", "notetype"),
             ("addiem-before-sync-20261020-101010.zip", "sync"),
             ("addiem-before-restore-20261020-101010.zip", "restore"),
-            ("addiem-20261020-101010-mine.zip", "manual"),
-            ("my-update.zip", "manual"),
-            ("addiem-old-update.zip", "manual"),
+            // 앱이 만든 이름이 아닌 zip 은 직접 만든 백업과 구분한다 (QA T5-15)
+            ("addiem-20261020-101010-mine.zip", "other"),
+            ("my-update.zip", "other"),
+            ("addiem-old-update.zip", "other"),
             ("neoanki-20261020-101010-deck.zip", "deck"), // 예전 이름(Neo-Anki) 시절 자동 백업
+            ("neoanki-20261020-101010.zip", "manual"),
         ] {
-            assert_eq!(super::backup_kind(name), kind, "{name}");
+            assert_eq!(super::backup_kind(name).0, kind, "{name}");
         }
+    }
+
+    #[test]
+    fn backup_list_uses_the_time_in_the_name() {
+        // 목록 시각은 자동 백업 정리와 같은 이름 속 시각. 이름이 앱 것이 아니면 파일 시각 (QA T5-15)
+        let dir = std::env::temp_dir().join(format!("na-list-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in ["addiem-20261005-101010.zip", "addiem-20261006-101010-deck.zip", "mine.zip"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let list = super::backup_list(&dir);
+        let names: Vec<(&str, &str)> = list.iter().map(|b| (b.name.as_str(), b.kind)).collect();
+        assert_eq!(names, [("mine.zip", "other"), ("addiem-20261006-101010-deck.zip", "deck"), ("addiem-20261005-101010.zip", "manual")]);
+        assert_eq!(Some(list[2].at), super::backup_kind("addiem-20261005-101010.zip").1);
+        assert_eq!(super::last_backup(&dir), Some(list[0].at));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_backups_in_the_same_second_both_stay() {
+        // 같은 초에 두 번 만들어도 앞의 것을 덮지 않는다 (QA T5-11)
+        let dir = std::env::temp_dir().join(format!("na-same-sec-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
+        let a = super::write_backup(&con, &dir).unwrap();
+        let b = super::write_backup(&con, &dir).unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_file() && b.is_file());
+        assert_eq!(super::backup_kind(&b.file_name().unwrap().to_string_lossy()).0, "manual", "이름 꼴은 그대로");
+        drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 카드 cards 장이 든 DB 파일의 바이트 (백업 zip 에 넣는다)
+    fn db_bytes(dir: &std::path::Path, cards: usize) -> Vec<u8> {
+        let path = dir.join(format!("src-{cards}-{}.sqlite", now_ms()));
+        let con = crate::db::open(&path).unwrap();
+        deck_with_cards(&con, cards, None);
+        con.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;").unwrap();
+        drop(con);
+        let bytes = std::fs::read(&path).unwrap();
+        super::remove_db_files(&path);
+        bytes
+    }
+
+    #[test]
+    fn restore_refuses_files_that_are_not_this_apps_data() {
+        // 빈 파일 · 다른 앱의 SQLite 는 quick_check 를 지나도 막는다. 카드가 있는데 카드 0장 백업도 막는다 (QA T5-05, P0-8)
+        let dir = std::env::temp_dir().join(format!("na-validate-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("other.sqlite");
+        Connection::open(&other).unwrap().execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);").unwrap();
+        let other_bytes = std::fs::read(&other).unwrap();
+        for (name, bytes) in [("empty.zip", Vec::new()), ("other.zip", other_bytes)] {
+            zip_with(&dir.join(name), &[("addiem.sqlite", &bytes)]);
+            let e = super::stage_restore(&dir.join(name), &dir, 0).err().unwrap();
+            assert!(e.contains("이 앱에서 만든 백업이 아니에요"), "{name}: {e}");
+        }
+        zip_with(&dir.join("no-cards.zip"), &[("addiem.sqlite", &db_bytes(&dir, 0)), ("media/a.png", b"png")]);
+        let e = super::stage_restore(&dir.join("no-cards.zip"), &dir, 5).err().unwrap();
+        assert!(e.contains("카드 5장이 사라지지 않게"), "{e}");
+        assert!(!dir.join("media").exists(), "막으면 미디어도 풀지 않는다");
+        // 지금도 비어 있으면 (S1-6 · 새 기기) 카드 없는 백업도 된다
+        super::stage_restore(&dir.join("no-cards.zip"), &dir, 0).unwrap().discard();
+        assert!(leftovers(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interrupted_media_is_fixed_by_restoring_again() {
+        // 복구 중 꺼져 잘린 채 남은 미디어: 다시 복구하면 백업의 것으로 바꾼다. 파일은 .part 에 쓰고 이름을 바꾼다 (QA T5-04, P0-4)
+        let dir = std::env::temp_dir().join(format!("na-part-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        let mut con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
+        deck_with_cards(&con, 1, None);
+        let full = vec![7u8; 1000];
+        let zip = dir.join("b.zip");
+        zip_with(&zip, &[("addiem.sqlite", &db_bytes(&dir, 2)), ("media/a.png", &full), ("media/b.png", b"bb"), ("sources/s.pdf", b"pdf")]);
+        std::fs::write(dir.join("media/a.png"), &full[..400]).unwrap(); // 지난번 복구가 잘라 놓은 파일
+        std::fs::write(dir.join("media/.b.png.part"), b"stale").unwrap(); // 지난번 임시 파일
+        let staged = super::stage_restore(&zip, &dir, 1).unwrap();
+        assert_eq!(std::fs::read(dir.join("media/b.png")).unwrap(), b"bb", "없던 파일은 바로 채운다");
+        assert_eq!(std::fs::metadata(dir.join("media/a.png")).unwrap().len(), 400, "있던 파일은 DB 를 바꾸기 전에는 그대로");
+        super::swap_in_db(&mut con, &dir, &staged.db).unwrap();
+        staged.place();
+        assert_eq!(std::fs::read(dir.join("media/a.png")).unwrap(), full);
+        assert_eq!(std::fs::read(dir.join("sources/s.pdf")).unwrap(), b"pdf");
+        let parts = std::fs::read_dir(dir.join("media")).unwrap().filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().ends_with(".part")).count();
+        assert_eq!(parts, 0, "임시 파일을 남기지 않는다");
+        // 같은 크기면 건드리지 않는다
+        let again = super::stage_restore(&zip, &dir, 2).unwrap();
+        assert!(again.replace.is_empty());
+        again.discard();
+        drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_falls_back_to_an_older_backup() {
+        // S1-6: 가장 최근 zip 이 이 앱의 백업이 아니면 그 전 백업으로 (QA T5-06)
+        let dir = std::env::temp_dir().join(format!("na-older-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("addiem-20261001-101010.zip");
+        zip_with(&good, &[("addiem.sqlite", &db_bytes(&dir, 1))]);
+        let bad = dir.join("from-someone.zip"); // 수정 시각이 지금이라 목록 맨 위
+        zip_with(&bad, &[("readme.txt", b"hi")]);
+        let list: Vec<_> = super::backup_list(&dir).into_iter().map(|b| dir.join(b.name)).collect();
+        assert_eq!(list, [bad.clone(), good.clone()]);
+        let (picked, staged) = super::stage_first(&list, &dir, 0).unwrap();
+        assert_eq!(picked, good);
+        staged.discard();
+        let e = super::stage_first(&[bad], &dir, 0).err().unwrap();
+        assert!(e.contains("데이터 파일이 없어요"), "하나만 볼 때는 그 백업의 까닭: {e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_restore_files_are_cleaned_at_startup() {
+        // 복구 중 꺼져 남은 임시 DB · .part 는 다음 실행에 지운다 (QA T5-10). 데이터 · 미디어 · 복구 전 사본은 그대로
+        let dir = std::env::temp_dir().join(format!("na-stale-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        std::fs::create_dir_all(dir.join("sources")).unwrap();
+        let stale = [".restore-1.sqlite", ".restore-1.sqlite-wal", "media/.a.png.part", "sources/.s.pdf.part"];
+        let keep = ["addiem.sqlite", "addiem-before-restore-20261001-101010.sqlite", "media/a.png", "media/x.part", "sources/s.pdf"];
+        for n in stale.iter().chain(&keep) {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        super::clean_stale_restore(&dir);
+        assert!(stale.iter().all(|n| !dir.join(n).exists()));
+        assert!(keep.iter().all(|n| dir.join(n).exists()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 덱 하나에 기본 카드 n장 (하루 신규 상한 limit). 카드 id
