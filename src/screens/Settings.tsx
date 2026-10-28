@@ -6,7 +6,7 @@ import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
 import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useOverlayScope } from "../nav";
 import {
-  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, plainEnter, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
+  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, needsModifier, plainEnter, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
   type ActionId,
 } from "../keys";
 import { Modal } from "./NewDeck";
@@ -872,9 +872,6 @@ function Archived({ focus }: { focus: boolean }) {
 const eun = (w: string) => (eul(w) === "을" ? "은" : "는");
 const wa = (w: string) => (eul(w) === "을" ? "과" : "와");
 const RATE_NAMES = ["Again", "Hard", "Good", "Easy"];
-/** 글을 쓰는 칸에서도 받는 동작. Ctrl · Alt 없는 키는 주지 않는다 (keys.ts load() 의 needsModifier 와 같은 규칙, 통합 때 그것으로 바꾼다) */
-const TYPING: ActionId[] = ["save", "math"];
-const typingSafe = (chord: string) => /(^|\+)(Ctrl|Alt)\+/.test(chord);
 
 /** 행을 눌러 새 키를 누르면 바뀐다. 한 번에 한 행만 녹음. 겹침은 같은 범위 안에서만 막는다 */
 function KeysTable() {
@@ -912,7 +909,8 @@ function KeysTable() {
       if (fixed) return setNote(`${keyLabel(chord)}${eun(keyLabel(chord))} '${fixed}'에 고정된 키예요`);
       const me = actionOf(rec.id);
       // 저장 · 수식 넣기는 글을 쓰는 칸에서 받는다. 글자 키로 정하면 그 글자를 칠 때 저장된다 (QA T2-05)
-      if (TYPING.includes(rec.id) && !typingSafe(chord)) return setNote(`'${me.label}'${eun(me.label)} 글을 쓰는 중에도 받는 키라 Ctrl이나 Alt와 함께 눌러 주세요`);
+      // 글을 쓰는 칸에서도 받는 동작(저장 · 수식)은 Ctrl · Alt 없는 키를 주지 않는다 (keys.ts load() 와 같은 규칙)
+      if (needsModifier(rec.id, chord)) return setNote(`'${me.label}'${eun(me.label)} 글을 쓰는 중에도 받는 키라 Ctrl이나 Alt와 함께 눌러 주세요`);
       const other = ACTIONS.find((a) => a.id !== rec.id && map[a.id].includes(chord));
       if (rec.id === "rate") {
         // 평가 4개는 한 행에서 차례로. 같은 범위의 다른 동작 키나 이미 고른 키는 받지 않는다

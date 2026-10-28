@@ -522,7 +522,7 @@ pub struct JsonPreview {
     error: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_json(state: State<AppState>, text: String, deck_id: Option<i64>) -> Res<JsonPreview> {
     let con = state.db.lock().map_err(err)?;
     json_preview(&con, &text, deck_id)
@@ -581,7 +581,7 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_json(state: State<AppState>, text: String, source: String, deck_id: Option<i64>) -> Res<ImportResult> {
     let mut con = state.db.lock().map_err(err)?;
     run_import_json(&mut con, &text, source, deck_id)

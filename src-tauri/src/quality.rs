@@ -738,7 +738,7 @@ pub struct QualityCard {
 
 /// 덱(하위 덱 포함)에서 카드 모양에 문제가 있는 카드. Again 은 모양 문제와 겹칠 때만 붙는다 (보기는 화면이 거른다).
 /// 질문 · 답 대응(mismatch) · 서식(format)은 그 뒤에 붙는다 (Again 과 상관없이)
-#[tauri::command]
+#[tauri::command(async)]
 pub fn quality_check(state: State<AppState>, deck_id: i64) -> Res<Vec<QualityCard>> {
     let con = state.db.lock().map_err(err)?;
     let decks = commands::load_decks(&con)?;

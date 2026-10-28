@@ -378,7 +378,7 @@ pub struct StudyPlan {
     has_conflict: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());

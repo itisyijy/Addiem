@@ -190,7 +190,7 @@ pub struct ExportPreview {
     archived: usize,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_preview(state: State<AppState>, deck_id: i64) -> Res<ExportPreview> {
     let con = state.db.lock().map_err(err)?;
     preview(&con, deck_id)

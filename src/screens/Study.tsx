@@ -12,7 +12,7 @@ import { findMath, withMath } from "../math";
 import {
   cram as cramApi, exam as examApi, splitLater, takeSignal, written as writtenApi, type Compare, type Keyword, type MixRun, type MixStats, type WrittenCard, type WrittenNote,
 } from "../written";
-import { Modal, useModalClose } from "./NewDeck";
+import { Modal, ModalCancel } from "./NewDeck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
 import { RichField, makeCloze, toCloze, fromCloze, tagRefs, TYPE_LABEL, type FieldHandle } from "./AddCard";
 import { CramHint, KeywordEditor } from "./StudyParts";
@@ -1434,12 +1434,6 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
 
 // ---------------------------------------------------------------- C3-e 카드 편집 (학습 중 E · 카드 목록)
 
-/** 창의 [취소]. 바깥 클릭 · Esc 와 같이 고친 것이 있으면 묻는다 */
-function CancelButton() {
-  const close = useModalClose();
-  return <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={close} />;
-}
-
 type FieldRole = "front" | "rich" | "line";
 /** 앞뒤 둘 다 (Basic and reversed): 필드 두 개가 모두 앞면 템플릿에 쓰인다 */
 const isReversed = (note: NoteEdit) => note.kind === "basic" && note.front[0] && note.front[1];
@@ -1808,7 +1802,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
             {card && <Button variant="ghost" size="M" icon="trash" label="카드 삭제" className="edit__delete" onClick={() => setConfirming(true)} />}
             {/* 떠날 때 묻는 창이 떠 있으면 오류는 그 창 안에만 */}
             <span className="edit__msg t-body-s c-danger">{leaving ? null : error}</span>
-            <CancelButton />
+            <ModalCancel />
             <Button size="M" icon="check" label="저장" shortcut={actionKey("save")} onClick={() => save()} disabled={!note} busy={saving} busyLabel="저장 중…" />
           </div>
         </div>

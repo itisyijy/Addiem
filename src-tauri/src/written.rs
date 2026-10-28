@@ -395,7 +395,7 @@ pub struct WrittenCard {
     last_at: Option<i64>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn written_card(state: State<AppState>, card_id: i64) -> Res<WrittenCard> {
     let con = state.db.lock().map_err(err)?;
     let info = card_info(&con, card_id)?;

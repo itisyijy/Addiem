@@ -172,7 +172,7 @@ pub struct ExamName {
 }
 
 /// N1 · N2 이 덱에서 쓴 시험 (연도 최근 순)
-#[tauri::command]
+#[tauri::command(async)]
 pub fn exam_list(state: State<AppState>, deck_id: Option<i64>) -> Res<Vec<ExamName>> {
     let con = state.db.lock().map_err(err)?;
     let mut by: std::collections::HashMap<String, usize> = Default::default();
@@ -200,7 +200,7 @@ pub struct ExamSummary {
 }
 
 /// N4 덱 상세 한 줄. 표시가 없으면 cards = 0 (화면이 줄을 숨긴다)
-#[tauri::command]
+#[tauri::command(async)]
 pub fn exam_summary(state: State<AppState>, deck_id: i64) -> Res<ExamSummary> {
     let con = state.db.lock().map_err(err)?;
     let rows = deck_exam(&con, Some(deck_id))?;

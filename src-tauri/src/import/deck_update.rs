@@ -1847,7 +1847,7 @@ pub struct Undoable {
     blocked: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn undoable_updates(state: State<'_, AppState>) -> Res<Vec<Undoable>> {
     let mut con = state.db.lock().map_err(err)?;
     let rows: Vec<(i64, Option<String>)> = con
