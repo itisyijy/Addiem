@@ -718,12 +718,9 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
     let today_new = plan.new.len();
     // 상위 덱 목표를 따르는 하위 덱은 그 목표(예산 덱) 기준으로 센다. 사유 줄과 숫자가 같게
     let owner = by_id.get(&queue::budget_owner(deck_id, &by_id)).copied().unwrap_or(me);
-    let owner_unseen = if owner.id == deck_id {
-        unseen
-    } else {
-        let ids = descendants(owner.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        crate::notetype::new_left(&con, &ids)?
-    };
+    // 예산 덱 아래에서 자기 설정을 가진 하위 덱은 따로 센다 (큐와 같다, QA T3-08)
+    let owned = descendants(owner.id, &decks).into_iter().filter(|d| queue::budget_owner(*d, &by_id) == owner.id);
+    let owner_unseen = crate::notetype::new_left(&con, &owned.map(|i| i.to_string()).collect::<Vec<_>>().join(","))?;
     let (per_day, _) = queue::new_target_for_deck(owner, today, owner_unseen);
     let finish_days = (per_day > 0 && owner_unseen > 0).then(|| (owner_unseen + per_day - 1) / per_day);
     let learnable = queue::learnable_days(today, owner.target_day, owner.include_target_day);
