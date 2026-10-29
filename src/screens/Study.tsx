@@ -1634,8 +1634,24 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
     }
   };
   useKey("Enter", remove, confirming, { modal: true });
-  // 초점이 칸 밖(기출 팝오버를 닫은 뒤 body 등)이어도 저장 키를 받는다. 칸 안의 키는 아래 .edit 가 먼저 받아 막으므로 두 번 저장하지 않는다 (QA V6-05)
+  // 초점이 칸 밖(팝오버를 닫은 뒤 창 상자 · body)이어도 저장 키를 받는다. 칸 안의 키는 아래 .edit 가 먼저 받아 막으므로 두 번 저장하지 않는다 (QA V6-05)
   useKey({ action: "save" }, () => void save(), !!note && !confirming && !leaving, { modal: true });
+  // 닫은 뒤 초점이 body 로 빠지면 연 곳 가까이로 돌려준다. 카드 목록의 연필은 행에 마우스를 올릴 때만 보여 초점을 못 받으니
+  // 그 행에서 보이는 조작 요소(선택 칸)로 (QA V4-08 ④). 세 단계 위까지만 찾아 엉뚱한 버튼으로 가지 않는다
+  const opener = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  useEffect(() => {
+    const at = opener.current;
+    return () =>
+      void setTimeout(() => {
+        if (document.activeElement !== document.body || !at?.isConnected || at.offsetParent !== null) return; // 연 곳이 보이면 공용 창이 돌려준다
+        const sel = "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
+        const ok = (x: HTMLElement) => x.matches(sel) && !x.hasAttribute("disabled") && x.offsetParent !== null;
+        for (let el: HTMLElement | null = at, up = 0; el && el !== document.body && up < 4; el = el.parentElement, up++) {
+          const hit = [el, ...el.querySelectorAll<HTMLElement>(sel)].find(ok);
+          if (hit) return hit.focus();
+        }
+      });
+  }, []);
 
   const front = note ? Math.max(0, note.roles.indexOf("front")) : 0;
   // M 그림 가리기: 카드 편집(E)은 가리기 편집기로 연다
