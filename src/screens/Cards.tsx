@@ -103,7 +103,9 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
   const loadFixable = useCallback(() => {
     if (deckId !== null && !buriedOnly) qualityApi.check(deckId).then((c) => setFixable(c.filter((x) => !x.hidden).length), () => {});
   }, [deckId, buriedOnly]);
-  useEffect(loadFixable, [loadFixable]);
+  // 목록이 뜬 뒤에 센다. 먼저 부르면 DB 잠금을 먼저 잡아 첫 쪽이 늦게 뜬다 (V7-02)
+  const listed = !!list;
+  useEffect(() => void (listed && loadFixable()), [loadFixable, listed]);
 
   const page = useCallback(
     (limit: number, after: number | null = null, bare = false) => api.listCards(scope, query, limit, buriedOnly, only, weak, susp, after, bare),
