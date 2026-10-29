@@ -285,11 +285,12 @@ export function AddCard({ deckId }: { deckId: number }) {
       .catch(() => {}) // 못 읽으면 질문과 답변으로 연다
       .finally(() => setReady(true));
   }, [deckId]);
-  // 유형을 바꾸면 첫 칸에 초점. 그림 가리기는 그림 칸이라 Ctrl V 가 질문 칸이 아니라 가릴 그림으로 간다 (QA T1-29)
+  // 유형을 바꾸거나 저장하고 이어 쓰면 첫 칸에 초점. 그림 가리기는 그림 칸이라 Ctrl V 가 질문 칸이 아니라 가릴 그림으로 간다 (QA T1-29 · V4-02).
+  // 저장 뒤에는 그림 칸이 다시 그려진 다음이라야 하므로 저장 목록(added)이 바뀐 뒤 여기서 옮긴다
   const ioDrop = useRef<HTMLDivElement>(null);
   useEffect(() => {
     (kind === "typed" ? tf.current[0] : kind === "occlusion" && ioDrop.current ? ioDrop.current : q.current)?.focus();
-  }, [kind, gen, ready]);
+  }, [kind, gen, ready, added]);
 
   const refresh = () => setTick((t) => t + 1);
   const isCloze = (k: Kind, t: NoteTypeDetail | null) => k === "cloze" || (k === "typed" && !!t?.cloze);
@@ -512,8 +513,7 @@ export function AddCard({ deckId }: { deckId: number }) {
         a.current?.clear();
         memo.current?.clear();
         tf.current.forEach((f) => f?.clear());
-        (kind === "typed" ? tf.current[0] : q.current)?.focus();
-        refresh();
+        refresh(); // 초점은 위 effect 가 옮긴다 (added 가 바뀌었다)
       } else {
         nav({ name: "deck", deckId }, true); // 방금 저장했다 (칸은 비우지 않았지만 버릴 것은 없다)
       }
