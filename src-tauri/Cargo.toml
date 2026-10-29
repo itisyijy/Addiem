@@ -1,6 +1,6 @@
 [package]
 name = "addiem"
-version = "0.1.0"
+version = "0.1.1"
 description = "시험일까지의 완주 전략을 관리하는 학습 앱 (.apkg · .colpkg 호환)"
 authors = ["itisyijy"]
 edition = "2024"
