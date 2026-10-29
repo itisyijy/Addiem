@@ -347,6 +347,7 @@ pub fn mix_start(state: State<AppState>, deck_id: i64, every: usize, size: usize
     let t = decks.iter().find(|d| d.id == deck_id).ok_or("덱을 찾을 수 없어요.")?;
     let (cards, due_today) = build_mix(&con, t, &decks, every.clamp(1, 4), size.clamp(1, 500), now)?;
     let session_id = commands::open_session(&con, &db::date_from_day(study_day(now)), Some("mix"), now)?;
+    commands::forget_undo(&state)?;
     Ok(MixStart { session_id, cards, due_today })
 }
 

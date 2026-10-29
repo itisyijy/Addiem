@@ -329,7 +329,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const mixRoles = useRef(new Map<number, (string | null)[]>());
   const mixStats = useRef<MixStats>({ full: [0, 0], weak: [0, 0], again: [0, 0], due: 0 });
   const mixReplayed = useRef(false); // 접어둔 카드는 회독(혼합 · 압축) 끝에 한 번 더
-  const mixDue = useRef(new Set<number>()); // P3 "오늘 예정이던 N장": 자리(전체 · 취약)와 상관없이 한 번씩 (QA T3-04)
+  const mixDue = useRef(new Set<number>()); // P3 "오늘 예정이던 N장": 자리(전체 · 취약)와 상관없이 한 번씩, 오늘의 학습에서 빠진 카드만 (QA T3-04 · V6-03)
   const openedAt = useRef(Date.now()); // P3 "N장 회독 · M분": 이 화면에서 쓴 시간 (같은 날 이어 쓴 세션의 쉬던 시간은 빼고)
   const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
@@ -676,9 +676,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
           st[k][0] += 1;
           if (r === 1) st.again[role === null ? 0 : 1] += 1;
         }
-        if (mix.dueToday.includes(c.view.id) && !mixDue.current.has(c.view.id)) {
-          mixDue.current.add(c.view.id);
-          st.due += 1;
+        // Again 으로 오늘 다시 볼 카드는 오늘의 학습에 남는다. 거기서 빠진 카드만 센다 (QA V6-03)
+        if (mix.dueToday.includes(c.view.id)) {
+          if (res.action === "again_later") mixDue.current.delete(c.view.id);
+          else mixDue.current.add(c.view.id);
+          st.due = mixDue.current.size;
         }
       }
       const counted = see(c.view.id);
@@ -1026,7 +1028,10 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             혼합 회독 · 전체 {n(mixStats.current.full[0])}/{n(mixStats.current.full[1])} · 취약 {n(mixStats.current.weak[0])}/{n(mixStats.current.weak[1])}
           </Badge>
         )}
-        <span className="t-body-s c-tertiary">남은 {n(remaining)}장</span>
+        {/* 학습 단계로 다시 나올 카드는 "N / 전체"에 없다. 끝 화면처럼 따로 적어 "남은 0장" 뒤에도 카드가 나오는 까닭을 밝힌다 (QA V6-01) */}
+        <span className="t-body-s c-tertiary">
+          남은 {n(remaining)}장{later.current.length > 0 && ` · 다시 볼 ${n(later.current.length)}장`}
+        </span>
       </div>
 
       {card && (
@@ -1629,6 +1634,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
     }
   };
   useKey("Enter", remove, confirming, { modal: true });
+  // 초점이 칸 밖(기출 팝오버를 닫은 뒤 body 등)이어도 저장 키를 받는다. 칸 안의 키는 아래 .edit 가 먼저 받아 막으므로 두 번 저장하지 않는다 (QA V6-05)
+  useKey({ action: "save" }, () => void save(), !!note && !confirming && !leaving, { modal: true });
 
   const front = note ? Math.max(0, note.roles.indexOf("front")) : 0;
   // M 그림 가리기: 카드 편집(E)은 가리기 편집기로 연다

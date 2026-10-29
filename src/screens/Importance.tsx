@@ -44,13 +44,14 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
     () => api.importanceBoard(deckId).then((b) => setBoard(b.sort((x, y) => x.label.localeCompare(y.label, "ko", { numeric: true })))),
     [deckId],
   );
-  // 불러오지 못하면 빈 화면 대신 이유를 보인다 (QA T3-14)
+  // 불러오지 못하면 빈 화면 대신 이유를 보인다 (QA T3-14). 돌아갈 길과 [다시 시도]도 (QA V3-07)
   const [loadError, setLoadError] = useState<string>();
+  const [tries, setTries] = useState(0);
   useEffect(() => {
     const fail = (e: unknown) => setLoadError(errorText(e));
     api.deckDetail(deckId).then(setDeck, fail);
     load().catch(fail);
-  }, [deckId, load]);
+  }, [deckId, load, tries]);
 
   const leave = useCallback(() => nav(next.length ? { name: "importance", deckId: next[0], next: next.slice(1) } : { name: "deck", deckId }), [nav, next, deckId]);
   // 칩 메뉴가 열려 있으면 Esc 는 메뉴만 닫고 초점을 칩으로 돌려준다
@@ -97,7 +98,31 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
     }
   };
 
-  if (!deck || !board) return loadError ? <p className="load-error t-body-m c-danger">{loadError}</p> : null;
+  // 뒤로 링크는 Esc 와 같다: 가져온 뒤 여러 덱을 차례로 정하는 중이면 다음 덱으로 (QA T3-13)
+  const backLink = (
+    <button className="backlink t-label-m c-secondary" onClick={leave}>
+      <Icon name="chevron-left" size={18} />
+      {next.length ? `다음 덱 · ${n(next.length)}개 남음` : (deck?.name ?? "덱")}
+    </button>
+  );
+  if (!deck || !board)
+    return loadError ? (
+      <main className="board">
+        {backLink}
+        <p className="t-body-m c-danger" role="alert">{loadError}</p>
+        <div>
+          <Button
+            variant="secondary"
+            icon="rotate"
+            label="다시 시도"
+            onClick={() => {
+              setLoadError(undefined);
+              setTries((t) => t + 1);
+            }}
+          />
+        </div>
+      </main>
+    ) : null;
 
   // 과목 = 경로 첫 단계. 덱 자신(빈 경로)은 "" 로 모여 칩 하나로 남는다
   const groups = new Map<string, BoardDeck[]>();
@@ -209,10 +234,7 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
 
   return (
     <main className="board" onClick={() => setMenu(null)}>
-      <button className="backlink t-label-m c-secondary" onClick={() => nav({ name: "deck", deckId })}>
-        <Icon name="chevron-left" size={18} />
-        {deck.name}
-      </button>
+      {backLink}
       <div className="board__head">
         <div className="deck__title">
           <h1 className="t-title-l">중요도 정하기</h1>

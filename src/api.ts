@@ -6,11 +6,14 @@ import { voiceLangs } from "./cardHtml";
 
 export type Level = 0 | 1 | 2;
 
-export type HomeDeck = { id: number; name: string; review: number; new: number; tomorrow: number; dday: number | null };
+/** again: review 중 오늘 이미 평가해 학습 단계로 다시 볼 카드 */
+export type HomeDeck = { id: number; name: string; review: number; new: number; again: number; tomorrow: number; dday: number | null };
 export type Home = {
   has_decks: boolean;
   review: number;
   new: number;
+  /** review 중 다시 볼 카드 (오늘 이미 평가한 학습 단계 카드) */
+  again: number;
   done_today: number;
   decks: HomeDeck[];
   /** 오늘 볼 카드가 없는 덱. 쉬는 덱이 맨 위 (A2-p) */
@@ -67,6 +70,8 @@ export type DeckDetail = {
   hard_next: string | null;
   backlog: number;
   today_review: number;
+  /** today_review 중 오늘 이미 평가해 다시 볼 카드 (오늘 완료에도 들어 있다) */
+  today_again: number;
   today_new: number;
   today_returning: number;
   reason: string | null;
@@ -342,6 +347,8 @@ export type SessionSummary = {
   tomorrow_review: number;
   tomorrow_new: number;
   tomorrow_decks: { name: string; review: number; new: number; dday: number | null }[];
+  /** 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다 (평가 없던 학습 · 지난 학습일이면 false) */
+  undoable: boolean;
 };
 
 export type ImportIssue = { severity: "skipped" | "warning" | "info"; kind: string; detail: string; index: number | null };
