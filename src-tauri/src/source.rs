@@ -8,7 +8,7 @@ use crate::{embed, exam, render};
 use quick_xml::events::Event;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,10 +171,11 @@ pub fn source_add(state: State<AppState>, deck_id: i64, path: String) -> Res<Mat
     material(&con, id)
 }
 
-/// 이 덱(하위 덱 포함)에 바이트까지 같은 자료가 이미 있으면 그 이름. 같은 파일이 두 줄로 들어가 구간 · 미연결 수가 두 배가 됐다 (QA T6-07).
+/// 이 덱이 든 최상위 덱 트리에 바이트까지 같은 자료가 이미 있으면 그 이름. 같은 파일이 두 줄로 들어가 구간 · 미연결 수가 두 배가 됐다 (QA T6-07).
+/// 위 덱에 있는 파일을 하위 덱에 다시 넣어도 위 덱 목록에 두 줄이 된다 (QA V5-02).
 /// 이 기기에 복사본이 없는 자료(동기화로 목록만 받음)는 견주지 않는다
 fn same_file(con: &Connection, data_dir: &Path, deck_id: i64, kind: &str, bytes: &[u8]) -> Res<Option<String>> {
-    let ids = subtree(con, deck_id)?;
+    let ids = subtree(con, crate::rag::root_of(con, deck_id)?)?;
     let mut st = con.prepare(&format!("SELECT m.file_name, m.rel_path FROM source_material m WHERE m.deck_id IN ({ids}) AND m.kind = ?1 ORDER BY {MATERIAL_ORDER}")).map_err(err)?;
     let rows: Vec<(String, String)> = st.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     let same = |rel: &str| {
@@ -1478,6 +1479,25 @@ pub struct Analysis {
     queued: bool,
 }
 
+/// 덱마다 마지막으로 끝난 분석: 제안한 하위 덱 수 또는 오류.
+/// 분석을 시작하지 않은 화면(다시 들어온 중요도 배너)도 결과를 보인다. 전에는 [분석하기]로 돌아가 끝났는지 알 수 없었다 (QA T6-03)
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Analyzed {
+    suggested: Option<usize>,
+    error: Option<String>,
+}
+static ANALYZED: Mutex<BTreeMap<i64, Analyzed>> = Mutex::new(BTreeMap::new());
+
+fn keep_analysis(deck_id: i64, res: &Res<Analysis>) {
+    if let Ok(mut m) = ANALYZED.lock() {
+        m.insert(deck_id, Analyzed { suggested: res.as_ref().ok().map(|a| a.suggested), error: res.as_ref().err().cloned() });
+    }
+}
+
+pub fn analyzed() -> BTreeMap<i64, Analyzed> {
+    ANALYZED.lock().map(|m| m.clone()).unwrap_or_default()
+}
+
 /// 분석하는 동안 들어온 분석 요청 (덱 id). 지금 분석이 끝나면 이어서 한다 (QA T6-05: 분석 중에 넣은 자료가 오류를 띄우고 분석되지 않았다)
 static QUEUED: Mutex<Vec<i64>> = Mutex::new(vec![]);
 
@@ -1516,6 +1536,7 @@ pub async fn source_analyze(app: AppHandle, deck_id: i64) -> Res<Analysis> {
     loop {
         let a = app.clone();
         let res = tauri::async_runtime::spawn_blocking(move || analyze(&a, deck)).await.map_err(err).and_then(|r| r);
+        keep_analysis(deck, &res); // 줄에 섰던 덱도 (null 이벤트 전에)
         first.get_or_insert(res);
         match next_queued() {
             Some(d) => deck = d,
@@ -2528,6 +2549,16 @@ mod tests {
         assert_eq!(next_queued(), None);
     }
 
+    /// QA T6-03 나머지: 덱마다 마지막 분석 결과(제안 수 · 오류)를 상태에 남긴다. 다른 덱 결과가 덮지 않는다
+    #[test]
+    fn last_analysis_is_kept_per_deck() {
+        keep_analysis(-71, &Ok(Analysis { linked: 3, suggested: 0, queued: false }));
+        keep_analysis(-72, &Err("분석하지 못했어요.".into()));
+        let m = analyzed();
+        assert_eq!(m[&-71], Analyzed { suggested: Some(0), error: None });
+        assert_eq!(m[&-72], Analyzed { suggested: None, error: Some("분석하지 못했어요.".into()) });
+    }
+
     /// QA T6-06: 슬라이드 제목의 굵은 글씨(제목과 글이 같은 볼드뿐인 구간)는 자동 연결 후보가 아니다. 다른 쪽 · 다른 신호는 남는다
     #[test]
     fn title_bold_is_not_a_link_candidate() {
@@ -2561,6 +2592,25 @@ mod tests {
         assert_eq!(same_file(&con, &dir, 1, "pdf", b"PDF-B").unwrap(), None);
         assert_eq!(same_file(&con, &dir, 1, "pptx", b"PDF-A").unwrap(), None);
         assert_eq!(same_file(&con, &dir, 3, "pdf", b"PDF-A").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// QA V5-02: 위 덱(또는 같은 트리의 다른 하위 덱)에 있는 파일을 하위 덱에 넣어도 찾는다
+    #[test]
+    fn same_file_is_found_from_a_subdeck() {
+        let dir = std::env::temp_dir().join(format!("na-source-same-up-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sources")).unwrap();
+        std::fs::write(dir.join("sources/1.pdf"), b"PDF-A").unwrap();
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute_batch(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'D', 0, 0), (2, '1장', 0, 0), (3, '2장', 0, 0);
+             UPDATE deck SET parent_id = 1 WHERE id IN (2, 3);
+             INSERT INTO source_material (id, deck_id, file_name, rel_path, kind, created_at, updated_at) VALUES (1, 1, 'lecture.pdf', 'sources/1.pdf', 'pdf', 0, 0);",
+        )
+        .unwrap();
+        assert_eq!(same_file(&con, &dir, 2, "pdf", b"PDF-A").unwrap().as_deref(), Some("lecture.pdf"));
+        con.execute("UPDATE source_material SET deck_id = 3", []).unwrap();
+        assert_eq!(same_file(&con, &dir, 2, "pdf", b"PDF-A").unwrap().as_deref(), Some("lecture.pdf"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -435,9 +435,13 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
   useEffect(() => {
     report.current?.(phase === "done" ? offered.length : 0);
   }, [phase, offered]);
+  // 창을 닫거나 저장해 사라질 때도 [취소]처럼 알린다: 이미 보낸 요청은 사용량에 들어간다 (QA V5-03)
   useEffect(
     () => () => {
-      if (inFlight.current) aiApi.cancel().catch(() => {});
+      if (inFlight.current) {
+        aiApi.cancel().catch(() => {});
+        toast(STOPPED);
+      }
       report.current?.(0);
     },
     [],
@@ -550,7 +554,8 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
   else if (phase === "error" && fail) {
     const [icon, tone, text] = dqError(fail);
     const action: [string, () => void] | undefined =
-      fail.kind === "expired" || fail.kind === "scope" ? ["다시 연결", () => setReconnect(fail.kind === "scope")]
+      // 다른 곳(ai.tsx AiErrorBox)과 같은 이름: 만료는 [다시 로그인], 권한은 [다시 연결] (QA V5-06)
+      fail.kind === "expired" || fail.kind === "scope" ? [fail.kind === "scope" ? "다시 연결" : "다시 로그인", () => setReconnect(fail.kind === "scope")]
       : fail.kind === "limit" ? ["사용량 관리", openUsage]
       : fail.kind === "not_eligible" ? undefined
       : ["다시 시도", send];

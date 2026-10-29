@@ -17,15 +17,17 @@ let later = false;
  * onChanged: 분석으로 제안이 바뀌면 화면이 다시 불러온다. onShow: [보기] (자료 제안이 보이게)
  */
 export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: number; board: BoardDeck[]; onChanged: () => void; onShow: () => void }) {
-  const model = useModel();
+  const model = useModel(true); // 다시 들어와도 받는 중이면 [멈추기] (QA V5-01)
   const [hasMaterial, setHasMaterial] = useState(false);
   const [hasOutline, setHasOutline] = useState(false);
   const [dl, setDl] = useState<{ done: number; total: number } | null>(null);
-  // 분석이 끝나면(다른 화면에서 시작했어도) 보드를 다시 읽는다 (QA T6-03)
-  const [progress] = useAnalyzeProgress(model?.analyzing, onChanged);
+  // 분석이 끝나면(다른 화면에서 시작했어도) 보드와 마지막 결과를 다시 읽는다 (QA T6-03)
+  const [progress] = useAnalyzeProgress(model?.analyzing, () => {
+    onChanged();
+    refreshModel().catch(() => {});
+  });
   const [hidden, setHidden] = useState(later);
   const [error, setError] = useState<string>();
-  const [result, setResult] = useState<number | null>(null);
 
   useEffect(() => {
     sourceApi
@@ -38,31 +40,35 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
   }, [deckId]);
   useEffect(() => {
     // null: 받기가 끝났다 (다 받음 · 실패 · 멈춤). 받기를 시작하지 않은 배너(다시 들어온 화면)도 막대를 지우고 상태를 다시 읽는다 (QA T6-03)
+    // 끝난 까닭은 상태(model.failed)가 보인다. 이 화면의 낡은 오류("이미 내려받고 있어요")를 남기지 않는다 (QA V5-01)
     const off = listen<{ done: number; total: number } | null>("model-progress", (e) => {
       setDl(e.payload);
-      if (!e.payload) refreshModel().catch(() => {});
+      if (e.payload) return;
+      setError(undefined);
+      refreshModel().catch(() => {});
     });
     return () => {
       off.then((f) => f());
     };
   }, []);
 
-  // 막대는 "source-analyze" 이벤트가 지운다. 다른 분석이 도는 중이면 줄에 서고 결과는 그 뒤 이벤트로 (QA T6-05)
+  // 막대는 "source-analyze" 이벤트가 지운다. 다른 분석이 도는 중이면 줄에 서고 결과는 그 뒤 이벤트로 (QA T6-05).
+  // 결과(제안 수 · 오류)는 상태의 analyzed 가 보인다: 다시 들어온 배너도 같은 결과를 보인다 (QA T6-03)
   const analyze = async () => {
     setError(undefined);
     try {
-      const r = await sourceApi.analyze(deckId);
-      if (!r.queued) setResult(r.suggested);
+      await sourceApi.analyze(deckId);
       onChanged();
     } catch (e) {
       setError(errorText(e));
     }
+    refreshModel().catch(() => {});
   };
 
+  // 받기 전에 상태를 다시 읽지 않는다: 받기가 깃발을 세우기 전에 읽어 downloading false 를 담았다 (QA V5-01)
   const download = async () => {
     setError(undefined);
     setDl({ done: 0, total: model?.bytes ?? 0 });
-    refreshModel();
     try {
       await sourceApi.downloadModel();
       await refreshModel();
@@ -79,6 +85,9 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
   const material = board.filter((d) => d.source === "material").length;
   // 8.4 목차 근거가 붙은 제안 (OT2)
   const outline = board.filter((d) => sourcesOf(d.source, d.reason).includes("outline")).length;
+  const result = model.analyzed[deckId]?.suggested ?? null;
+  // 이 화면에서 난 오류가 먼저. 아니면 지난 받기의 실패 · 멈춤(받는 중이 아닐 때) · 지난 분석의 오류(분석 중이 아닐 때)
+  const why = error ?? (model.ready ? (progress ? null : model.analyzed[deckId]?.error) : dl || model.downloading ? null : model.failed);
 
   let body: ReactNode;
   // 결과(자료로 제안이 생김)는 반짝이, 나머지(받기 · 분석 전)는 내려받기 (Figma OT2)
@@ -158,7 +167,7 @@ export function SourceBanner({ deckId, board, onChanged, onShow }: { deckId: num
         <Icon name={icon} size={18} className="c-accent" />
       </span>
       {body}
-      {error && <span className={`t-caption src-banner__error ${stoppedDownload(error) ? "c-secondary" : "c-danger"}`}>{error}</span>}
+      {why && <span className={`t-caption src-banner__error ${stoppedDownload(why) ? "c-secondary" : "c-danger"}`}>{why}</span>}
     </div>
   );
 }

@@ -40,6 +40,8 @@ export type LlmStatus = {
   engine: boolean;
   off: boolean;
   last_ms: number | null;
+  /** 마지막 받기가 실패하거나 멈춘 까닭 (다 받으면 null) */
+  failed: string | null;
 };
 
 export type WrittenNote = {

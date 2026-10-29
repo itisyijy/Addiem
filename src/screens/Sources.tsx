@@ -946,15 +946,18 @@ function OutlinePanel({
 /** E1 데이터 칸의 [분석 모델] 행 (Settings.tsx). 모델은 앱 전체에서 하나라 설정에서 지운다.
  * 받기 전에도 보여 [내려받기]를 둔다: 중요도 배너에서 [나중에]를 누르면 앱을 다시 켤 때까지 받을 곳이 없었다 (QA T6-11) */
 export function ModelRow() {
-  const model = useModel();
+  const model = useModel(true); // 다시 들어와도 받는 중이면 [멈추기], 끝났으면 그 까닭 (QA V5-01 · T7-04)
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [dl, setDl] = useState<{ done: number; total: number } | null>(null);
   useEffect(() => {
+    // 끝난 까닭은 상태(model.failed)가 보인다. 낡은 오류("이미 내려받고 있어요")를 남기지 않는다
     const off = listen<{ done: number; total: number } | null>("model-progress", (e) => {
       setDl(e.payload);
-      if (!e.payload) refreshModel().catch(() => {});
+      if (e.payload) return;
+      setError(undefined);
+      refreshModel().catch(() => {});
     });
     return () => {
       off.then((f) => f());
@@ -963,6 +966,7 @@ export function ModelRow() {
   if (!model) return null;
   if (!model.ready) {
     const d = dl ?? (model.downloading ? { done: 0, total: model.bytes } : null);
+    const why = error ?? (d ? null : model.failed);
     const download = async () => {
       setError(undefined);
       setDl({ done: 0, total: model.bytes });
@@ -981,12 +985,12 @@ export function ModelRow() {
               ? `내려받고 있어요 · ${mb(d.done)} / ${mb(d.total)} · 다 받으면 이 기기 안에서만 분석해요`
               : `약 ${mb(model.bytes)} · 자료로 중요도를 제안할 때 써요. 받으면 인터넷 없이 동작해요`}
           </span>
-          {error && <span className={`t-body-s ${stoppedDownload(error) ? "c-secondary" : "c-danger"}`}>{error}</span>}
+          {why && <span className={`t-body-s ${stoppedDownload(why) ? "c-secondary" : "c-danger"}`}>{why}</span>}
         </span>
         {d ? (
           <Button variant="ghost" size="M" label="멈추기" onClick={() => sourceApi.cancelDownload()} />
         ) : (
-          <Button variant="secondary" size="M" icon="download" label="내려받기" onClick={download} />
+          <Button variant="secondary" size="M" icon="download" label={why ? "다시 받기" : "내려받기"} onClick={download} />
         )}
       </div>
     );
