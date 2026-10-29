@@ -196,3 +196,8 @@
 .b2s__name > span { overflow: hidden; text-overflow: ellipsis; }
 /* 고르지 않은 덱은 흐리게 */
 .b2s__row.is-off .b2s__name > span:first-child, .b2s__row.is-off .b2s__pick > span:last-child { color: var(--text-tertiary); }
+
+/* 1180 보다 좁은 창 (QA V4-01, screens.css 끝) */
+@media (max-width: 1179px) {
+  .import:has(.b2s) { width: auto; margin-inline: 24px; }
+}

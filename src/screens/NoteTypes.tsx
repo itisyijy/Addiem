@@ -4,7 +4,7 @@ import { api, errorText, type NoteTypeRow as TypeRow } from "../api";
 import { Button, Icon, Input, type IconName } from "../ui";
 import { n, eul, useKey, useNav, useOverlayScope, type Route } from "../nav";
 import { useToast } from "../toast";
-import { Modal } from "./NewDeck";
+import { Modal, ModalCancel } from "./NewDeck";
 import { menuKeys } from "./Deck";
 import { TYPE_LABEL, rememberType, twin } from "./AddCard";
 import "../styles/notetypes.css";
@@ -331,6 +331,7 @@ export function CloneDialog({ rows: given, from, back, onClose }: {
       sub={from ? `${typeLabel(from)}${eul(typeLabel(from))} 복제해 내 유형으로 만들어요. 이 유형을 쓰던 카드는 그대로예요.` : "어떤 유형에서 시작할까요?"}
       className="ntl__clone"
       onClose={onClose}
+      dirty={edited} // 고쳐 쓴 이름을 묻지 않고 버리지 않는다 (QA V4-05)
     >
       <form
         className="modal__body"
@@ -372,7 +373,7 @@ export function CloneDialog({ rows: given, from, back, onClose }: {
           }}
         />
         <div className="modal__actions">
-          <Button type="button" variant="ghost" size="M" label="취소" onClick={onClose} />
+          <ModalCancel />
           <Button type="submit" size="M" icon="layers" label="복제해서 만들기" disabled={!pick || !name.trim()} busy={busy} />
         </div>
       </form>
@@ -385,7 +386,7 @@ function RenameDialog({ row, onClose, onDone }: { row: TypeRow; onClose: () => v
   const [error, setError] = useState<string>();
   const same = name.trim() === row.name || !name.trim();
   return (
-    <Modal title="노트 유형 이름 바꾸기" onClose={onClose}>
+    <Modal title="노트 유형 이름 바꾸기" onClose={onClose} dirty={name !== row.name}>
       <form
         className="modal__body"
         onSubmit={(e) => {
@@ -404,7 +405,7 @@ function RenameDialog({ row, onClose, onDone }: { row: TypeRow; onClose: () => v
           }}
         />
         <div className="modal__actions">
-          <Button type="button" variant="ghost" size="M" label="취소" onClick={onClose} />
+          <ModalCancel />
           <Button type="submit" size="M" label="바꾸기" disabled={same || !!error} />
         </div>
       </form>

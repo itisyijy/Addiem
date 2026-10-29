@@ -913,3 +913,18 @@
 .recover__detail { max-width: 560px; padding-top: 12px; }
 .prefs__row .segment--boxed { align-self: center; }
 
+
+/* ---------------------------------------------------------------- 1180 보다 좁은 창
+   1366×768 125% 노트북은 창 안쪽이 1090 이다 (lib.rs fit_window). 1180 기준 고정 폭을 창 폭 - 좌우 24 로 맞추고,
+   두 단은 원래 폭 비율대로 같이 준다. 1180 이상은 위 값 그대로다 (QA V4-01) */
+@media (max-width: 1179px) {
+  .home { grid-template-columns: minmax(0, 540px) minmax(0, 560px); column-gap: 24px; padding-inline: 24px; }
+  .deck, .cards, .addcard, .prefs { width: auto; margin-inline: 24px; }
+  .deck__today { flex: 0 1 540px; width: auto; min-width: 0; }
+  .deck__side { flex: 1 1 560px; }
+  .addcard__form { flex: 0 1 680px; width: auto; min-width: 0; }
+  .addcard__side { flex: 1 1 416px; }
+  .cards__row { grid-template-columns: minmax(0, 378fr) minmax(0, 290fr) 170px 110px 92px 60px; }
+  .settings__form { flex: 0 1 620px; width: auto; min-width: 0; }
+  .recalc { flex: 1 1 476px; }
+}

@@ -52,3 +52,8 @@ button.draft__faces { cursor: text; }
 }
 .drafts__bar-left, .drafts__bar-right { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .drafts__bar-right { gap: 8px; }
+
+/* 1180 보다 좁은 창 (QA V4-01, screens.css 끝) */
+@media (max-width: 1179px) {
+  .drafts { width: auto; margin-inline: 24px; }
+}

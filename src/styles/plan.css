@@ -105,3 +105,9 @@
 .plan__actions > span { margin-right: auto; } /* 버튼을 누르면 무엇이 바뀌는지 한 줄 (H2) */
 /* P0 입구: 목표일 14일 전부터 차트 아래 한 줄 */
 .plan__cram { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 4px 0 14px; }
+
+/* 1180 보다 좁은 창: 그래프와 시간 칸이 원래 비율대로 준다 (QA V4-01, screens.css 끝) */
+@media (max-width: 1179px) {
+  .plan__row > .plan__chart-card { flex: 0 1 720px; width: auto; min-width: 0; }
+  .plan__side { flex: 1 1 380px; }
+}
