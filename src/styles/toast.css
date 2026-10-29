@@ -11,6 +11,8 @@
   gap: 8px;
   pointer-events: none;
 }
+/* 겹침 창이 떠 있으면 창 위쪽으로. 작은 창에서 바닥에 닿은 창 버튼을 덮지 않게 (QA V4-03) */
+body:has(.scrim) .toasts { top: 16px; bottom: auto; }
 .toast {
   pointer-events: auto;
   display: flex;

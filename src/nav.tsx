@@ -74,9 +74,10 @@ export function useOverlayScope(active = true) {
     openOverlays++;
     return () => {
       openOverlays--;
-      // 창 안에 있던 초점이 창과 함께 사라졌으면 연 곳으로 돌려준다 (QA T6-15. 닫으면서 다른 곳에 초점을 둔 경우는 그대로)
+      // 창 안에 있던 초점이 창과 함께 사라졌으면 연 곳으로 돌려준다 (QA T6-15. 닫으면서 다른 곳에 초점을 둔 경우는 그대로).
+      // 바깥 창(useFocusTrap)이 먼저 초점을 받아 갔어도 연 곳이 그 안이면 연 곳으로
       const at = document.activeElement;
-      if ((!at || at === document.body) && back?.isConnected) back.focus();
+      if (back?.isConnected && (!at || at.contains(back))) back.focus();
     };
   }, [active]);
 }

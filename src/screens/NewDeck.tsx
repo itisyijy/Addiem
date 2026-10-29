@@ -36,8 +36,16 @@ export function Modal({ title, sub, onClose, children, wide, variant, icon = "al
   useFocusTrap(box, close);
   return (
     <>
-      {/* 작은 창에서 scrim 이 스크롤되면 그 스크롤 막대를 누른 것은 바깥 클릭이 아니다 */}
-      <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && e.clientX < e.currentTarget.clientWidth && close()}>
+      {/* 작은 창에서 scrim 이 스크롤되면 그 스크롤 막대를 누른 것은 바깥 클릭이 아니다.
+          기본 동작을 막아 방금 뜬 확인 창의 초점을 body 로 빼앗지 않는다 (QA V3-11) */}
+      <div
+        className="scrim"
+        onMouseDown={(e) => {
+          if (e.target !== e.currentTarget || e.clientX >= e.currentTarget.clientWidth) return;
+          e.preventDefault();
+          close();
+        }}
+      >
         <div
           ref={box}
           tabIndex={-1}
@@ -120,9 +128,15 @@ export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>, onEsca
         (e.shiftKey ? last : first).focus();
       }
     };
+    // 창 안에서 초점이 있던 것이 사라지면(팝오버 · 이름 칸이 닫힘) 초점이 body 로 빠져 창 단축키 · Tab 자리를 잃는다. 창으로 돌려준다 (QA V6-05 · V4-08)
+    const onLost = (e: FocusEvent) =>
+      !e.relatedTarget &&
+      queueMicrotask(() => document.activeElement === document.body && box.isConnected && openBoxes[openBoxes.length - 1] === box && box.focus());
     document.addEventListener("keydown", onKey);
+    box.addEventListener("focusout", onLost);
     return () => {
       document.removeEventListener("keydown", onKey);
+      box.removeEventListener("focusout", onLost);
       openBoxes.splice(openBoxes.indexOf(box), 1);
     };
   }, [ref]);
