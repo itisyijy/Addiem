@@ -105,7 +105,8 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
   useKey("Escape", back);
   if (!q || !plans) return error ? <p className="load-error t-body-m c-danger">{error}</p> : null;
 
-  const reviewCount = q.learning + q.review + q.backlog;
+  // 오늘 이미 평가해 다시 볼 카드는 복습이라 부르지 않는다 (홈 · 덱 상세 · 끝 화면과 같은 말, QA V9-04)
+  const reviewCount = q.learning + q.review + q.backlog - q.again;
   const t = q.target;
   // 머리 문장은 순서 원칙만. 핵심 우선은 늘 적용되는 규칙이다. 목표일은 그 덱의 신규 수를 나눴을 때만 덧붙인다
   // (큐 사유가 "남은 N장 ÷ M일" 계산식이면 목표일이 수를 정한 것)
@@ -129,7 +130,7 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
       ? `덱 ${n(q.new_decks)}개에서 오늘 몫만큼 · 목표가 가장 가까운 ${t.name}${eul(t.name) === "을" ? "은" : "는"} 하루 ${n(perDay)}장`
       : `${t.name} · 남은 ${n(t.remaining_new)}장 ÷ ${n(t.days)}일 = 하루 ${n(perDay)}장`;
   const reviewDesc = [
-    `예정 ${n(q.learning + q.review)}`,
+    `예정 ${n(Math.max(0, q.learning + q.review - q.again))}`,
     q.backlog > 0 && `밀린 ${n(q.backlog)}${q.backlog_deferred > 0 ? ` (나머지 ${n(q.backlog_deferred)}장은 차차)` : ""}`,
     "오늘 보지 않으면 일정이 밀려요",
     // C1-w: 복습 묶음 안에서 약한 챕터의 예정 복습을 먼저 (큐가 이미 그 순서로 준다)
@@ -138,6 +139,7 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
     .filter(Boolean)
     .join(" · ");
   const rows = [
+    { key: "again", dot: "ink", title: "다시 볼 카드", desc: "오늘 평가한 카드를 짧은 간격을 두고 한 번 더", count: q.again },
     { key: "buried", dot: "warm", title: "접어둔 카드 다시 보기", desc: "접어둔 뒤 3일이 지나 돌아온 카드 · 집중력이 좋을 때 먼저", count: q.returning },
     { key: "review", dot: "ink", title: "복습", desc: reviewDesc, count: reviewCount },
     {
@@ -195,7 +197,8 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
             <div className="summary__captions">
               {/* 프리셋에 따라 신규와 합계만 바뀐다 */}
               <p className="t-caption c-secondary">
-                오늘 총 {n(q.total)}장 · 복습 {n(q.total - newOf(q))} + 신규 {n(newOf(q))}
+                오늘 총 {n(q.total)}장 · 복습 {n(q.total - newOf(q) - q.again)}
+                {q.again > 0 && ` + 다시 볼 ${n(q.again)}`} + 신규 {n(newOf(q))}
               </p>
               <p className="t-caption c-tertiary">복습은 줄이지 않아요. 예정된 복습을 미루면 기억 일정이 무너져요.</p>
             </div>
@@ -1636,22 +1639,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
   useKey("Enter", remove, confirming, { modal: true });
   // 초점이 칸 밖(팝오버를 닫은 뒤 창 상자 · body)이어도 저장 키를 받는다. 칸 안의 키는 아래 .edit 가 먼저 받아 막으므로 두 번 저장하지 않는다 (QA V6-05)
   useKey({ action: "save" }, () => void save(), !!note && !confirming && !leaving, { modal: true });
-  // 닫은 뒤 초점이 body 로 빠지면 연 곳 가까이로 돌려준다. 카드 목록의 연필은 행에 마우스를 올릴 때만 보여 초점을 못 받으니
-  // 그 행에서 보이는 조작 요소(선택 칸)로 (QA V4-08 ④). 세 단계 위까지만 찾아 엉뚱한 버튼으로 가지 않는다
-  const opener = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null);
-  useEffect(() => {
-    const at = opener.current;
-    return () =>
-      void setTimeout(() => {
-        if (document.activeElement !== document.body || !at?.isConnected || at.offsetParent !== null) return; // 연 곳이 보이면 공용 창이 돌려준다
-        const sel = "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
-        const ok = (x: HTMLElement) => x.matches(sel) && !x.hasAttribute("disabled") && x.offsetParent !== null;
-        for (let el: HTMLElement | null = at, up = 0; el && el !== document.body && up < 4; el = el.parentElement, up++) {
-          const hit = [el, ...el.querySelectorAll<HTMLElement>(sel)].find(ok);
-          if (hit) return hit.focus();
-        }
-      });
-  }, []);
+  // 닫은 뒤 연 곳(숨은 연필이면 그 가까이)으로 초점을 돌려주는 것은 공용 창(useOverlayScope)이다 (QA V4-08 ④)
 
   const front = note ? Math.max(0, note.roles.indexOf("front")) : 0;
   // M 그림 가리기: 카드 편집(E)은 가리기 편집기로 연다
@@ -1711,7 +1699,6 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
       >
         <div
           className="edit"
-          onInput={() => setTouched(true)}
           onKeyDown={(e) => {
             if (confirming || leaving) return;
             if (matchAction("save", e.nativeEvent) >= 0) {
@@ -1724,7 +1711,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
             }
           }}
         >
-          <div className="edit__fields">
+          {/* 칸에 친 글자만 고친 것으로 본다. 기출 팝오버에 치다 버린 이름 등 칸 밖 입력은 값으로 비교한다 (QA V4-09) */}
+          <div className="edit__fields" onInput={() => setTouched(true)}>
             {note && (list || choice) ? (
               <>
                 {recallField(0, "질문")}

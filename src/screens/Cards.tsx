@@ -519,8 +519,9 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
       </span>
       {/* C2-b 선택 바. 토스트 자리에 뜨고, 메뉴는 위로 펼친다.
           DOM 은 표 앞에 둔다: 키보드로 카드 수백 장을 지나지 않고 바에 닿게 */}
-      {selecting && !dialog && (
-        <div className="cards__bar" role="toolbar" aria-label="고른 카드" onClick={(e) => e.stopPropagation()}>
+      {/* 창이 떠 있으면 숨기기만 한다. 빼면 창을 연 바 버튼이 사라져 닫은 뒤 초점이 body 로 빠진다 (QA V9-07) */}
+      {selecting && (
+        <div className="cards__bar" role="toolbar" aria-label="고른 카드" style={dialog ? { display: "none" } : undefined} onClick={(e) => e.stopPropagation()}>
           <span className="t-label-m">{n(picked.length)}장 선택됨</span>
           <span className="cards__bar-sep" />
           <span className="menu">
@@ -679,7 +680,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
             <div
               key={c.id}
               className={`cards__row ${on ? "is-selected" : ""} ${rowMenu === c.id ? "is-menu" : ""}`}
-              onDoubleClick={() => !selecting && setEditing(c)}
+              onDoubleClick={(e) => {
+                if (selecting) return;
+                // 행은 초점을 받지 않는다. 늘 보이는 ⋯ 를 연 곳으로 삼아 닫은 뒤 초점이 body 로 빠지지 않게 (QA V4-08 ④ · V9-07)
+                e.currentTarget.querySelector<HTMLElement>(".cards__more")?.focus();
+                setEditing(c);
+              }}
             >
               <span className="cards__check">
                 <button

@@ -876,10 +876,7 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
         hard_next: hard_next.map(|ms| db::date_from_day(study_day(ms))),
         backlog: plan.backlog.len() + plan.backlog_deferred,
         today_review: plan.ordered().len() - today_new - plan.returning.len(),
-        today_again: {
-            let seen = seen_today(con, today)?;
-            plan.learning.iter().chain(&plan.review).chain(&plan.backlog).filter(|c| seen.contains(&c.id)).count()
-        },
+        today_again: again_count(con, &plan, today)?,
         today_new,
         today_returning: plan.returning.len(),
         reason,
@@ -1855,6 +1852,8 @@ pub struct QueueSummary {
     target: Option<TargetInfo>,
     /// 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수. D1 "시험 전 회독에서 N장을 이미 봤어요" (P9)
     mixed_today: i64,
+    /// 복습 묶음(learning · review · backlog) 중 오늘 이미 평가해 다시 볼 카드. 홈 · 덱 상세와 같은 수 (QA V9-04)
+    again: usize,
 }
 
 /// 목표일이 가장 가까운 덱. D1 "시험이 12일 남아 핵심 신규를 먼저" 문구에 쓴다
@@ -1922,7 +1921,14 @@ pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
         notes: plan.notes.clone(),
         target,
         mixed_today,
+        again: again_count(&con, &plan, today)?,
     })
+}
+
+/// 복습 묶음 중 오늘 이미 평가한 카드 (덱 상세 today_again · D1 과 같은 셈)
+fn again_count(con: &Connection, plan: &queue::QueuePlan, today: i64) -> Res<usize> {
+    let seen = seen_today(con, today)?;
+    Ok(plan.learning.iter().chain(&plan.review).chain(&plan.backlog).filter(|c| seen.contains(&c.id)).count())
 }
 
 // ------------------------------------------------------------------ D2~D5. 학습 세션
@@ -2214,16 +2220,20 @@ pub fn undo_last(state: State<AppState>, session_id: i64) -> Res<Option<i64>> {
 
 /// 되돌릴 것은 이 세션의 마지막 평가 · 접기 하나다. 꺼내면 비므로 다시 불러도 더 이전 것을 되돌리지 않는다 (QA V3-01)
 fn undo_last_at(state: &AppState, session_id: i64, now: i64) -> Res<Option<i64>> {
+    let mut con = state.db.lock().map_err(err)?;
     let u = {
         let mut slot = state.undo.lock().map_err(err)?;
-        if slot.last().is_some_and(|u| u.session_id == session_id) { slot.pop() } else { None }
+        if !slot.last().is_some_and(|u| u.session_id == session_id) {
+            return Ok(None);
+        }
+        // 학습일 경계 뒤에는 어제 평가를 되돌리지 않는다. 되돌린 뒤 다시 한 평가는 새 날이라 남지 않아 둘 다 사라진다 (QA V3-16).
+        // 칸은 꺼내지 않는다: 다시 눌러도 같은 이유를 말한다 (QA V9-06)
+        if past_day(&con, session_id, now)? {
+            return Err("어제 학습일의 평가는 되돌릴 수 없어요.".into());
+        }
+        slot.pop()
     };
     let Some(u) = u else { return Ok(None) };
-    let mut con = state.db.lock().map_err(err)?;
-    // 학습일 경계 뒤에는 어제 평가를 되돌리지 않는다. 되돌린 뒤 다시 한 평가는 새 날이라 남지 않아 둘 다 사라진다 (QA V3-16)
-    if past_day(&con, session_id, now)? {
-        return Err("어제 학습일의 평가는 되돌릴 수 없어요.".into());
-    }
     let tx = con.transaction().map_err(err)?;
     let (s, buried_until, buried_reason) = &u.card;
     tx.execute(
@@ -2252,6 +2262,10 @@ fn undo_last_at(state: &AppState, session_id: i64, now: i64) -> Res<Option<i64>>
 /// 접어두기 취소 ("지금 다시 보기")
 #[tauri::command]
 pub fn unbury_card(state: State<AppState>, session_id: i64, card_id: i64) -> Res<()> {
+    unbury_at(&state, session_id, card_id)
+}
+
+fn unbury_at(state: &AppState, session_id: i64, card_id: i64) -> Res<()> {
     let con = state.db.lock().map_err(err)?;
     // Again 횟수도 되돌린다. 안 그러면 다시 꺼낸 카드가 Again 한 번에 또 접힌다
     con.execute(
@@ -2260,6 +2274,8 @@ pub fn unbury_card(state: State<AppState>, session_id: i64, card_id: i64) -> Res
     )
     .map_err(err)?;
     con.execute("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id = ?1", [card_id]).map_err(err)?;
+    // 꺼낸 카드의 접기 · 평가는 되돌릴 것이 아니다 (화면도 그 칸을 비운다). 남기면 끝 화면이 없는 되돌리기를 보인다 (QA V9-01)
+    state.undo.lock().map_err(err)?.retain(|u| !(u.session_id == session_id && u.card_id == card_id));
     Ok(())
 }
 
@@ -3873,7 +3889,26 @@ mod tests {
         let st = undo_state(con);
         rate(&st, s, ids[0], now);
         assert!(super::undo_last_at(&st, s, now + crate::db::DAY_MS).unwrap_err().contains("어제 학습일"));
+        // QA V9-06: 두 번째도 같은 이유를 말한다 (첫 번째가 칸을 꺼내 말없이 지나갔다)
+        assert!(super::undo_last_at(&st, s, now + crate::db::DAY_MS).unwrap_err().contains("어제 학습일"));
         assert_eq!(log_count(&st), 1, "어제 평가는 남는다");
+    }
+
+    #[test]
+    fn unfolding_clears_that_cards_undo() {
+        // QA V9-01: X 평가 → Y 접기 → [지금 다시 보기]. 화면은 되돌릴 것이 없다고 하는데 칸에 Y 접기가 남아
+        // 끝 화면이 [마지막 평가 되돌리기]를 보이고, 누르면 이미 푼 Y 로 들어갔다
+        let con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 2, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        let st = undo_state(con);
+        rate(&st, s, ids[0], now);
+        let fold = super::snapshot(&st.db.lock().unwrap(), s, ids[1]).unwrap();
+        super::push_undo(&st, fold).unwrap(); // bury_card 가 남기는 칸
+        super::unbury_at(&st, s, ids[1]).unwrap();
+        assert_eq!(super::undo_last_at(&st, s, now + 2).unwrap(), None);
+        assert_eq!(log_count(&st), 1);
     }
 
     #[test]

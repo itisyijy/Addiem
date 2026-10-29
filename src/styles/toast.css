@@ -11,8 +11,11 @@
   gap: 8px;
   pointer-events: none;
 }
-/* 겹침 창이 떠 있으면 창 위쪽으로. 작은 창에서 바닥에 닿은 창 버튼을 덮지 않게 (QA V4-03) */
-body:has(.scrim) .toasts { top: 16px; bottom: auto; }
+/* 겹침 창이 떠 있으면 왼쪽 아래 구석에 좁게, 가장 최근 1개만. 창 제목(위)과 오른쪽에 모인 창 버튼을 덮지 않는다.
+   260 + 16 은 1091 폭에서 520 폭 창(내보내기)의 왼쪽 끝 285 안쪽이다 (QA V4-03 · V9-03). 창을 닫으면 쌓인 것이 다시 보인다 */
+body:has(.scrim) .toasts { left: 16px; bottom: 16px; align-items: flex-start; transform: none; }
+body:has(.scrim) .toast { max-width: 260px; }
+body:has(.scrim) .toast:not(:last-child) { display: none; }
 .toast {
   pointer-events: auto;
   display: flex;

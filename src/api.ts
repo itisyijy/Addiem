@@ -196,6 +196,8 @@ export type QueueSummary = {
   target: { name: string; dday: number; remaining_new: number; days: number } | null;
   /** 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수 (D1 머리 문장, P9) */
   mixed_today: number;
+  /** learning · review · backlog 중 오늘 이미 평가해 다시 볼 카드 (홈 · 덱 상세의 "다시 볼", QA V9-04) */
+  again: number;
 };
 
 export type CardView = {
@@ -1090,7 +1092,9 @@ const RAW_ERRORS: [RegExp, string][] = [
   [/\(os error 5\)/, "이 위치에 접근할 권한이 없어요."],
   [/\(os error 32\)/, "다른 프로그램이 이 파일을 쓰고 있어요. 그 프로그램을 닫고 다시 시도해 주세요."],
   [/\(os error 112\)/, "디스크 공간이 모자라요. 공간을 비우고 다시 시도해 주세요."],
-  [/\(os error 123\)/, "파일 이름에 쓸 수 없는 글자가 있어요."],
+  // 123 은 쓸 수 없는 글자와 255자가 넘는 이름(긴 경로로 열 때) 둘 다다. 글자 탓으로만 말하지 않는다 (QA V9-08)
+  [/\(os error 123\)/, "파일 이름이 너무 길거나 쓸 수 없는 글자가 있어요."],
+  [/\(os error 206\)/, "파일 이름이나 경로가 너무 길어요."],
   // 표에 없는 OS 오류(쓰기 금지 19 · 장치 준비 안 됨 21 …). 원문은 Windows 언어에 따라 합니다체 우리말이라 그대로 두지 않는다 (QA V4-04)
   [/\(os error \d+\)/, "파일을 읽거나 쓰지 못했어요."],
   [/database is locked/i, "다른 작업이 데이터를 쓰고 있어요. 잠시 뒤 다시 시도해 주세요."],

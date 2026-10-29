@@ -77,9 +77,22 @@ export function useOverlayScope(active = true) {
       // 창 안에 있던 초점이 창과 함께 사라졌으면 연 곳으로 돌려준다 (QA T6-15. 닫으면서 다른 곳에 초점을 둔 경우는 그대로).
       // 바깥 창(useFocusTrap)이 먼저 초점을 받아 갔어도 연 곳이 그 안이면 연 곳으로
       const at = document.activeElement;
-      if (back?.isConnected && (!at || at.contains(back))) back.focus();
+      if (!back?.isConnected || (at && !at.contains(back))) return;
+      back.focus();
+      // 연 곳이 지금 숨어 초점을 못 받으면(카드 목록 연필은 행에 마우스를 올릴 때만 보인다) 세 단계 위까지에서 보이는 조작 요소로 (QA V4-08 ④ · V9-07)
+      if (document.activeElement !== back) nearFocusable(back)?.focus();
     };
   }, [active]);
+}
+
+const FOCUSABLE = "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
+function nearFocusable(from: HTMLElement) {
+  const ok = (x: HTMLElement) => x.matches(FOCUSABLE) && !x.hasAttribute("disabled") && x.offsetParent !== null;
+  for (let el: HTMLElement | null = from, up = 0; el && el !== document.body && up < 4; el = el.parentElement, up++) {
+    const hit = [el, ...el.querySelectorAll<HTMLElement>(FOCUSABLE)].find(ok);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** 메뉴 항목에서 열었으면 항목은 메뉴와 함께 사라진다. 그 메뉴를 연 버튼(메뉴와 나란한 [aria-haspopup])으로, 겹친 메뉴면 바깥까지 */

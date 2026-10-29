@@ -405,7 +405,7 @@
 .summary__bar { display: flex; gap: 3px; width: 460px; height: 12px; border-radius: 999px; overflow: hidden; }
 .summary__seg { flex-basis: 0; min-width: 4px; }
 .summary__seg--buried { background: var(--accent-warm); }
-.summary__seg--review { background: var(--text-primary); }
+.summary__seg--review, .summary__seg--again { background: var(--text-primary); }
 .summary__seg--core { background: var(--importance-core-fg); }
 .summary__seg--normal { background: var(--accent-default); }
 .summary__seg--supp { background: var(--importance-supp-fg); } /* 데이터 표시는 border/strong 이 아니라 중요도 색 */

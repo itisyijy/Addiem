@@ -237,7 +237,8 @@ export function Importance({ deckId, next = [] }: { deckId: number; next?: numbe
       {backLink}
       <div className="board__head">
         <div className="deck__title">
-          <h1 className="t-title-l">중요도 정하기</h1>
+          {/* 여러 덱을 차례로 정하는 중이면 뒤로 링크가 다음 덱을 말하니, 지금 덱 이름은 제목에 (QA V9-02) */}
+          <h1 className="t-title-l">{next.length ? `「${deck.name}」 중요도 정하기` : "중요도 정하기"}</h1>
           <p className="t-body-l c-secondary">
             태그와 하위 덱 이름으로 정한 중요도가 지금 학습에 적용돼요.
             <br />
