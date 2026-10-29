@@ -8,7 +8,7 @@
 <p align="center"><b>다음 복습 날짜만이 아니라, 시험일까지의 완주 전략을 관리해요.</b></p>
 
 <p align="center">
-  <a href="https://github.com/itisyijy/Addiem/releases/latest"><img src="https://img.shields.io/badge/버전-0.1.0-4433ff" alt="버전 0.1.0"></a>
+  <a href="https://github.com/itisyijy/Addiem/releases/latest"><img src="https://img.shields.io/badge/버전-0.1.1-4433ff" alt="버전 0.1.1"></a>
   <img src="https://img.shields.io/badge/Windows-10%20·%2011-16151f" alt="Windows 10 · 11">
   <img src="https://img.shields.io/badge/덱%20파일-.apkg%20·%20.colpkg-16151f" alt=".apkg · .colpkg 호환">
   <a href="LICENSE"><img src="https://img.shields.io/badge/라이선스-MIT-16151f" alt="MIT 라이선스"></a>
@@ -130,10 +130,10 @@ ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술�
 - Windows 10 · 11 (64비트)
 - Microsoft Edge WebView2 런타임. Windows 11에는 들어 있어요. 없으면 설치 중에 내려받아요(인터넷 필요).
 
-**설치 파일:** [Releases](https://github.com/itisyijy/Addiem/releases/latest)에서 `Addiem_0.1.0_x64-setup.exe`를 내려받아요. 같은 곳에 있는 `SHA256SUMS.txt`로 파일이 온전한지 확인할 수 있어요.
+**설치 파일:** [Releases](https://github.com/itisyijy/Addiem/releases/latest)에서 `Addiem_0.1.1_x64-setup.exe`를 내려받아요. 같은 곳에 있는 `SHA256SUMS.txt`로 파일이 온전한지 확인할 수 있어요.
 
 ```powershell
-Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\Addiem_0.1.1_x64-setup.exe -Algorithm SHA256
 ```
 
 1. 설치 파일을 실행해요. 관리자 권한 없이 지금 사용자 계정에 설치돼요(`%LOCALAPPDATA%\Addiem`). 설치 화면은 Windows 표시 언어에 따라 한국어 또는 영어로 보여요.

@@ -4,8 +4,9 @@ import { api, errorText } from "../api";
 import { Badge, Button, Icon } from "../ui";
 import { plainText } from "../cardHtml";
 import { n, useOverlayScope } from "../nav";
-import { Modal } from "./NewDeck";
-import { boxCount, labelOf, naturalSize, occlusionApi, ordinalsOf, storeImage, type OcclusionNote, type Picture, type Shape } from "../occlusion";
+import { plainEnter } from "../keys";
+import { Modal, useFocusTrap } from "./NewDeck";
+import { boxCount, labelOf, naturalSize, occlusionApi, ordinalsOf, shownName, storeImage, type OcclusionNote, type Picture, type Shape } from "../occlusion";
 import "../styles/occlusion.css";
 
 const pct = (v: number) => `${v * 100}%`;
@@ -142,6 +143,7 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   const maxSeen = useRef(Math.max(knownMax, 0, ...initial.map((s) => s.ordinal)));
   const box = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
   const space = useRef(false);
   const latest = useRef({ shapes, sel });
@@ -350,17 +352,35 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
     onDone(strip(shapes), hideAll, texts && { header: keep(header, texts.header), backExtra: keep(extra, texts.backExtra) });
   };
   const zoomBy = (f: number) => setZoom((z) => Math.min(4, Math.max(0.1, z * f)));
+  // 연 뒤 바꾼 것이 없으면 묻지 않고 닫는다 (QA V6-06)
+  const leave = () => {
+    const same =
+      JSON.stringify(strip(shapes)) === JSON.stringify(initial) &&
+      hideAll === initialHideAll &&
+      header === plainText(texts?.header ?? "") &&
+      extra === plainText(texts?.backExtra ?? "");
+    if (same) onCancel();
+    else setAsk("leave");
+  };
+
+  // 열면 초점을 편집기로 옮기고 Tab 을 편집기 안에 둔다. 뒤에 숨은 질문 칸에 초점이 남아 모든 단축키가 죽었다 (QA T1-30)
+  useFocusTrap(root);
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      const typing = e.target instanceof Element && e.target.closest("input, textarea, [contenteditable]");
+      const t = e.target instanceof Element ? e.target : null;
+      // 입력 중은 편집기 안의 칸만 (편집기 밖 숨은 칸은 아니다, QA T1-30)
+      const typing = t?.closest(".ioe") && t.closest("input, textarea, [contenteditable]");
       if (typing || ask) return;
+      // 키보드로 초점을 옮긴 버튼은 Space · Enter · Tab 을 제 것으로 받는다 (QA T1-07). 마우스로 누른 도구 버튼은 그대로 편집기 키
+      const onControl = !!t?.closest(".ioe button") && t.matches(":focus-visible");
       const ctrl = e.ctrlKey || e.metaKey;
       const run = (f: () => void) => {
         e.preventDefault();
         e.stopPropagation();
         f();
       };
+      if (onControl && (e.code === "Space" || e.key === "Enter" || e.key === "Tab")) return;
       if (e.code === "Space") return run(() => (space.current = true));
       if (ctrl && e.key === "Enter") return run(() => finish());
       if (ctrl && e.code === "KeyZ") return run(e.shiftKey ? redo : undo);
@@ -374,9 +394,10 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
       const arrows: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
       if (arrows[e.key] && sel.length) return run(() => nudge(...arrows[e.key]));
       if (e.key === "Delete" || e.key === "Backspace") return run(removeSelected);
-      if (e.key === "Tab") return run(() => cycle(e.shiftKey ? -1 : 1));
+      // 고른 칸이 있을 때만 다음 칸. 없으면 Tab 이 버튼으로 초점을 옮긴다 (Esc 로 고른 것을 풀면 된다)
+      if (e.key === "Tab" && sel.length) return run(() => cycle(e.shiftKey ? -1 : 1));
       if (e.key === "Enter" && selectedOrdinals.length) return run(() => startNaming(selectedOrdinals[0]));
-      if (e.key === "Escape") return run(() => (sel.length ? setSel([]) : setAsk("leave")));
+      if (e.key === "Escape") return run(() => (sel.length ? setSel([]) : leave()));
       const tools: Record<string, Tool> = { KeyV: "select", KeyR: "rect", KeyO: "ellipse" };
       if (tools[e.code]) return run(() => setTool(tools[e.code]));
     };
@@ -397,9 +418,9 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
   const small = picture.width > 0 && Math.min(picture.width, picture.height) < 240;
 
   return (
-    <div className="ioe" role="dialog" aria-label="가릴 곳 그리기">
+    <div ref={root} tabIndex={-1} className="ioe" role="dialog" aria-label="가릴 곳 그리기">
       <header className="ioe__bar">
-        <button className="ioe__back" aria-label="닫기" onClick={() => setAsk("leave")}>
+        <button className="ioe__back" aria-label="닫기" onClick={leave}>
           <Icon name="chevron-left" size={20} />
         </button>
         <span className="t-title-s">가릴 곳 그리기</span>
@@ -532,12 +553,17 @@ export function OcclusionEditor({ picture, shapes: initial, hideAll: initialHide
                       onBlur={() => rename(o, draft)}
                       onKeyDown={(e) => {
                         e.stopPropagation();
-                        if (e.key === "Enter") rename(o, draft);
+                        if (plainEnter(e)) rename(o, draft);
                         if (e.key === "Escape") setNaming(null);
                       }}
                     />
                   ) : (
-                    <button className={`ioe__name t-body-s ${labelOf(shapes, o) ? "" : "c-tertiary"}`} onDoubleClick={() => startNaming(o)} onClick={() => on && startNaming(o)}>
+                    // 키보드 Enter · Space(detail 0)는 한 번에 이름 칸을 연다. 마우스는 첫 클릭이 칸 고르기 (QA V4-08)
+                    <button
+                      className={`ioe__name t-body-s ${labelOf(shapes, o) ? "" : "c-tertiary"}`}
+                      onDoubleClick={() => startNaming(o)}
+                      onClick={(e) => (on || e.detail === 0) && startNaming(o)}
+                    >
                       {labelOf(shapes, o) || "이름 없음"}
                     </button>
                   )}
@@ -653,7 +679,7 @@ export function OcclusionEdit({ noteId, focus, onClose, onSaved }: { noteId: num
     occlusionApi.note(noteId).then(async (o) => {
       setNote(o);
       const url = o.image ? await api.readMedia(o.image).catch(() => "") : "";
-      setPicture({ name: o.image, url, fileName: o.image, ...(await naturalSize(url)) });
+      setPicture({ name: o.image, url, fileName: shownName(o.image), ...(await naturalSize(url)) });
     }, (e) => setError(errorText(e)));
   }, [noteId]);
 

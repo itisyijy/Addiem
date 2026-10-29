@@ -255,7 +255,7 @@ fn default_deck(con: &Connection, sent: &[Sent]) -> Res<i64> {
     con.query_row("SELECT deck_id FROM source_material WHERE id = ?1", [first.material_id], |r| r.get(0)).map_err(err)
 }
 
-fn root_of(con: &Connection, deck_id: i64) -> Res<i64> {
+pub(crate) fn root_of(con: &Connection, deck_id: i64) -> Res<i64> {
     let decks = commands::load_decks(con)?;
     let parent: HashMap<i64, Option<i64>> = decks.iter().map(|d| (d.id, d.parent_id)).collect();
     let mut id = deck_id;

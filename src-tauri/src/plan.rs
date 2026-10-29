@@ -78,6 +78,8 @@ pub(crate) struct DayLoad {
     pub by_root: HashMap<i64, i64>,
     /// 예산 덱별 신규
     pub new_by_owner: HashMap<i64, i64>,
+    /// 그날의 하루 신규 몫 (오늘은 이미 넣은 신규를 빼기 전). new 는 남은 장수다 (QA T3-06)
+    pub share: i64,
 }
 
 impl DayLoad {
@@ -171,6 +173,7 @@ pub(crate) fn project(
             };
             target += shifts.get(&(owner, d)).copied().unwrap_or(0);
             let k = (target - done).clamp(0, left);
+            day.share += target.clamp(0, left + done);
             if k == 0 {
                 continue;
             }
@@ -222,6 +225,13 @@ pub(crate) fn find_over(today: i64, days: &[DayLoad], cap: impl Fn(i64) -> Optio
         }
     }
     Some((d, None, 0, owner))
+}
+
+/// 오늘의 하루 신규 몫 (계획 그래프 · 큐와 같은 산식). 계획 화면의 시험 전 회독 줄이 쓴다 (QA T3-05)
+pub(crate) fn share_today(con: &Connection, today: i64, decks: &[Deck], scope: &HashSet<i64>) -> Res<i64> {
+    let cards = commands::load_cards(con)?;
+    let days = project(today, 1, decks, &cards, scope, &read_shifts(con, today)?, &done_new_by_owner(con, today, decks)?, backlog_done(con, today)?);
+    Ok(days[0].share)
 }
 
 // ------------------------------------------------------------------ DB 에서 읽기
@@ -368,7 +378,7 @@ pub struct StudyPlan {
     has_conflict: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -459,7 +469,9 @@ pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan
     let recompute = owner_deck.filter(|d| d.target_day.is_some()).map(|d| d.fixed_new.is_none());
     let pace = match (deck_id, recompute) {
         // daily_plan 은 최상위 덱 단위로만 남는다. H2 조정이 걸린 덱은 바뀐 이유가 충돌 조정이라 속도 탓으로 말하지 않는다
-        (Some(id), Some(true)) if by_id.get(&id).is_some_and(|d| d.parent_id.is_none() && d.new_from.is_none() && d.new_until.is_none()) => pace_line(&con, id, today, &decks, days.first().map_or(0, |x| x.new), target.map(|t| t - today))?,
+        (Some(id), Some(true)) if by_id.get(&id).is_some_and(|d| d.parent_id.is_none() && d.new_from.is_none() && d.new_until.is_none()) => {
+            pace_line(&con, id, today, &decks, auto_share(today, &decks, &cards, &scope, &shifts, &done_new, backlog_seen), target.map(|t| t - today))?
+        }
         _ => None,
     };
     Ok(StudyPlan {
@@ -479,6 +491,12 @@ pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan
         recompute,
         has_conflict: find_conflicts(&con, today, &decks, &cards, &time, true)?.into_iter().next().is_some(),
     })
+}
+
+/// 다시 나눈 오늘 몫. "오늘만 신규 분량"은 사용자가 손으로 정한 수라 다시 나눈 결과로 말하지 않는다 (QA V3-03)
+fn auto_share(today: i64, decks: &[Deck], cards: &[Card], scope: &HashSet<i64>, shifts: &HashMap<(i64, i64), i64>, done_new: &HashMap<i64, i64>, backlog_seen: i64) -> i64 {
+    let auto: Vec<Deck> = decks.iter().map(|d| Deck { today_new: None, ..d.clone() }).collect();
+    project(today, 1, &auto, cards, scope, shifts, done_new, backlog_seen)[0].share
 }
 
 /// 지난 7일 계획 대비 한 비율과, 밀린 신규를 남은 날에 다시 나눠 하루 몫이 바뀐 이유.
@@ -845,9 +863,24 @@ mod tests {
         // 오늘 이미 4장 넣었으면 오늘은 6장만 (큐와 같다)
         let days = project(T, 3, std::slice::from_ref(&d), &news(96, 1, 1), &scope, &HashMap::new(), &[(1, 4)].into(), 0);
         assert_eq!(days[0].new, 6);
+        // QA T3-06: "하루 신규 A장 → B장"의 B 는 오늘 몫 전체 (남은 6장이 아니라 10장). 몫보다 많이 했어도 몫 그대로
+        assert_eq!(days[0].share, 10);
+        let days = project(T, 3, std::slice::from_ref(&d), &news(85, 1, 1), &scope, &HashMap::new(), &[(1, 15)].into(), 0);
+        assert_eq!((days[0].new, days[0].share), (0, 10));
         // 당겨 맞추기: 오늘 +5
         let days = project(T, 3, &[d], &news(100, 1, 1), &scope, &[((1, T), 5)].into(), &HashMap::new(), 0);
         assert_eq!(days[0].new, 15);
+    }
+
+    #[test]
+    fn pace_uses_the_recomputed_share_not_today_only() {
+        // QA V3-03: 오늘만 신규를 5장으로 바꿔도 "하루 신규 1장 → N장"의 N 은 다시 나눈 몫 (32장 ÷ 24일 = 2장)
+        let d = Deck { target_day: Some(T + 24), today_new: Some(5), ..deck(1) };
+        let scope: HashSet<i64> = [1].into();
+        let cards = news(32, 1, 1);
+        let none = HashMap::new();
+        assert_eq!(project(T, 1, std::slice::from_ref(&d), &cards, &scope, &none, &HashMap::new(), 0)[0].share, 5, "오늘 막대는 오늘만 분량 그대로");
+        assert_eq!(auto_share(T, &[d], &cards, &scope, &none, &HashMap::new(), 0), 2);
     }
 
     #[test]
@@ -894,6 +927,23 @@ mod tests {
         apply_mode(&mut b, "first", T + 5);
         assert_eq!(queue::new_target_for_deck(&b, T, 100).0, 0);
         assert_eq!(b.target_day, Some(T + 10), "목표일은 그대로");
+    }
+
+    #[test]
+    fn share_today_is_the_decks_own_daily_new() {
+        // QA T3-05: 시험 덱(28장, 4일 뒤) 의 하루 신규는 28 ÷ 4 = 7장. 다른 덱의 신규(46장)를 섞지 않는다
+        let con = db::open_in_memory().unwrap();
+        let today = study_day(now_ms());
+        for (id, n, target) in [(1, 28, Some(db::date_from_day(today + 4))), (2, 46, None)] {
+            con.execute("INSERT INTO deck (id, name, created_at, updated_at) VALUES (?1, ?2, 0, 0)", params![id, format!("d{id}")]).unwrap();
+            con.execute("INSERT INTO deck_config (deck_id, target_date, updated_at) VALUES (?1, ?2, 0)", params![id, target]).unwrap();
+            for i in 0..n {
+                let card = commands::NewCard { deck_id: id, kind: "basic".into(), front: format!("q{i}"), back: "a".into(), importance: None };
+                commands::insert_note(&con, &card, "", None).unwrap();
+            }
+        }
+        let decks = commands::load_decks(&con).unwrap();
+        assert_eq!(share_today(&con, today, &decks, &[1].into()).unwrap(), 7);
     }
 
     #[test]

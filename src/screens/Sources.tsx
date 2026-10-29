@@ -4,11 +4,12 @@ import "../styles/sources.css";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { api, errorText, type CardRow } from "../api";
+import { api, errorText, stoppedDownload, type CardRow } from "../api";
 import { Badge, Button, Checkbox, Icon, Segment as SegmentControl, type BadgeTone } from "../ui";
 import { AiConnect, useAiStatus } from "../ai";
 import { DraftSend } from "./Drafts";
-import { eul, iga, n, useKey, useNav } from "../nav";
+import { eul, iga, n, useKey, useNav, useOverlayScope } from "../nav";
+import { useFileDrop } from "../fileDrop";
 import { useToast } from "../toast";
 import { readOutline, readPdf, renderPage } from "../pdf";
 import { Modal } from "./NewDeck";
@@ -63,6 +64,8 @@ const GAP_RANK: Record<Signal, number> = { star: 0, red: 0, highlight: 1, underl
 const gapRank = (s: Segment) => (s.exam.hits ? 0 : Math.min(...s.signals.map((g) => GAP_RANK[g] ?? 3)));
 /** 보내는 글자 수 어림 (1구간 600자에서 자른다, rag.rs) */
 const sentChars = (s: Segment) => Math.min(s.text.trim().length, 600);
+/** 학습 자료로 넣을 수 있는 파일 (끌어 놓기) */
+const SOURCE_FILE = /\.(pdf|pptx)$/i;
 
 export function SignalBadge({ signal }: { signal: Signal }) {
   return (
@@ -84,12 +87,18 @@ const metaOf = (m: Material, gaps: boolean) =>
         ? `미연결 ${n(m.gaps)}곳 · 강조 ${n(m.segments)}곳`
         : `${pagesOf(m.kind, n(m.pages))} · 강조 ${n(m.segments)}곳${m.headings ? ` · 목차 ${n(m.headings)}` : ""}`;
 
-/** 분석 진행 (I3 노트 "분석 중 2/3 · 기출_2023_필기.pdf"). 이벤트를 듣고, 이미 돌고 있으면 그 상태로 시작한다 */
-export function useAnalyzeProgress(initial: AnalyzeProgress | null | undefined) {
+/** 분석 진행 (I3 노트 "분석 중 2/3 · 기출_2023_필기.pdf"). 이벤트를 듣고, 이미 돌고 있으면 그 상태로 시작한다.
+ * 이벤트 null 은 분석이 끝났다는 뜻이다 (성공 · 실패, 줄에 선 분석까지). 막대를 지우고 onEnd 로 화면이 다시 읽는다 (QA T6-04) */
+export function useAnalyzeProgress(initial: AnalyzeProgress | null | undefined, onEnd?: () => void) {
   const [p, setP] = useState<AnalyzeProgress | null>(initial ?? null);
+  const end = useRef(onEnd);
+  end.current = onEnd;
   useEffect(() => setP(initial ?? null), [initial]);
   useEffect(() => {
-    const off = listen<AnalyzeProgress>("source-analyze", (e) => setP(e.payload));
+    const off = listen<AnalyzeProgress | null>("source-analyze", (e) => {
+      setP(e.payload);
+      if (!e.payload) end.current?.();
+    });
     return () => {
       off.then((f) => f());
     };
@@ -123,7 +132,8 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   const [linking, setLinking] = useState<number | undefined>(link ? segmentId : undefined);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string>();
-  const [progress, setProgress] = useAnalyzeProgress(null);
+  // 분석이 끝나면(여기서 시작하지 않았어도) 구간의 연결 · 목록을 다시 읽는다 (QA T6-04)
+  const [progress, setProgress] = useAnalyzeProgress(null, () => changed());
   const [stale, setStale] = useState(0);
   const model = useModel();
   const reading = useRef(new Set<number>());
@@ -150,15 +160,20 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
   // 다시 읽었는데 제목이 그대로인 자료 id (출처 줄에 잠깐 알린다)
   const [unchanged, setUnchanged] = useState<number | null>(null);
 
+  // 불러오지 못하면 빈 화면 대신 오류 줄을 보인다 (QA T6-02)
   const reload = useCallback(async () => {
-    const list = await sourceApi.list(deckId);
-    setMaterials(list);
-    sourceApi.unanalyzed(deckId).then(setStale, () => {});
-    setSel((s) => (s && list.some((m) => m.id === s) ? s : list[0]?.id));
-    return list;
+    try {
+      const list = await sourceApi.list(deckId);
+      setMaterials(list);
+      sourceApi.unanalyzed(deckId).then(setStale, () => {});
+      setSel((s) => (s && list.some((m) => m.id === s) ? s : list[0]?.id));
+    } catch (e) {
+      setError(errorText(e));
+    }
   }, [deckId]);
 
-  // 모델이 있으면 자료와 카드를 잇고 중요도 제안을 다시 만든다 (I3). 모델이 없으면 아무것도 하지 않는다
+  // 모델이 있으면 자료와 카드를 잇고 중요도 제안을 다시 만든다 (I3). 모델이 없으면 아무것도 하지 않는다.
+  // 다른 분석이 도는 중이면 줄에 서서 그 뒤에 돈다 (QA T6-05). 막대와 다시 읽기는 "source-analyze" 끝 이벤트가 한다
   const analyze = useCallback(async () => {
     const st = await refreshModel().catch(() => null);
     if (!st?.ready) return;
@@ -167,12 +182,13 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     } catch (e) {
       setError(errorText(e));
     }
-    setProgress(null);
-    await reload();
-  }, [deckId, reload, setProgress]);
+  }, [deckId]);
 
   useEffect(() => {
-    api.deckDetail(deckId).then((d) => setDeckName(d.name));
+    api.deckDetail(deckId).then(
+      (d) => setDeckName(d.name),
+      (e) => setError(errorText(e)),
+    );
     reload();
     refreshModel()
       .then((s) => s.analyzing && setProgress(s.analyzing))
@@ -265,24 +281,42 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     setPage(s ? s.page : 1);
   }, [sel, segs, active]);
 
+  // 구간 ⋯ 메뉴 · 파일 알약 메뉴가 열려 있으면 Esc 는 메뉴만 닫는다 (QA T6-01). 겹침으로 올려 화면 Esc(덱으로)가 받지 않게
+  const menuOpen = segMenu !== null || filesOpen;
+  useOverlayScope(menuOpen);
+  useKey("Escape", () => (setSegMenu(null), setFilesOpen(false)), menuOpen, { modal: true });
   useKey("Escape", () => nav({ name: "deck", deckId }), linking === undefined && !drafting && !connecting);
   // 검색 칸에 글을 쓰는 중에도 Esc 로 카드 잇기 칸만 닫는다
-  useKey("Escape", () => setLinking(undefined), linking !== undefined, { modal: true });
+  useKey("Escape", () => setLinking(undefined), linking !== undefined && !menuOpen, { modal: true });
   useKey("ArrowLeft", () => setPage((p) => Math.max(1, p - 1)), !!current && linking === undefined);
   useKey("ArrowRight", () => setPage((p) => Math.min(current?.pages ?? 1, p + 1)), !!current && linking === undefined);
 
   const add = async () => {
-    setError(undefined);
     const picked = await open({ multiple: true, directory: false, filters: [{ name: "강의 자료", extensions: ["pdf", "pptx"] }] });
-    const paths = (Array.isArray(picked) ? picked : picked ? [picked] : []) as string[];
+    addPaths((Array.isArray(picked) ? picked : picked ? [picked] : []) as string[]);
+  };
+  // 끌어 놓은 PDF · PPTX 도 [학습 자료 추가]와 같이 넣는다 (QA T6-16). 다른 형식만 놓으면 알린다
+  const [drop, setDrop] = useFileDrop(!drafting && !connecting && !examSeg, ({ paths }) => addPaths(paths), SOURCE_FILE);
+  useEffect(() => {
+    if (drop !== "wrong") return;
+    setError("PDF나 PPTX 파일만 넣을 수 있어요.");
+    setDrop(null);
+  }, [drop, setDrop]);
+
+  const addPaths = async (paths: string[]) => {
+    if (!paths.length) return;
+    setError(undefined);
     let last: Material | undefined;
+    // 못 넣은 파일마다 이름과 까닭 (QA T6-08: 마지막 오류만 이름 없이 남았다)
+    const failed: string[] = [];
     for (const p of paths) {
       try {
         last = await sourceApi.add(deckId, p);
       } catch (e) {
-        setError(errorText(e));
+        failed.push(`${p.split(/[\\/]/).pop()} · ${errorText(e)}`);
       }
     }
+    if (failed.length) setError(failed.join("\n"));
     if (!last) return;
     await reload();
     setSel(last.id);
@@ -358,7 +392,16 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
     loadSegs();
   };
 
-  if (!materials) return null;
+  if (!materials)
+    return error ? (
+      <main className="sources">
+        <button className="backlink t-label-m c-secondary" onClick={() => nav({ name: "deck", deckId })}>
+          <Icon name="chevron-left" size={18} />
+          {deckName || "덱으로"}
+        </button>
+        <p className="load-error t-body-m c-danger">{error}</p>
+      </main>
+    ) : null;
   // 강조 구간 · 빠진 범위는 글자 강조만. 그림 · 표 영역은 [그림·표 N] 탭에서 (IT13), 목차 제목은 [목차 N] 탭에서
   const textSegs = segs.filter((s) => !isRegion(s) && !isHeading(s));
   // 가장 안쪽 핵심 범위 (안쪽 구간이 뒤에 온다)
@@ -403,6 +446,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
               className={`menu__item ${m.id === sel ? "is-active" : ""}`}
               onClick={() => {
                 setFilesOpen(false);
+                setError(undefined);
                 setSel(m.id);
                 setActive(undefined);
                 setLinking(undefined);
@@ -426,6 +470,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
         label="구간 보기"
         value={objView ? "objects" : outlineView ? "outline" : gapView ? "gaps" : "all"}
         onChange={(v) => {
+          setError(undefined);
           setGapView(v === "gaps");
           setObjView(v === "objects");
           setOutlineView(v === "outline");
@@ -483,7 +528,12 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
         <Button variant="secondary" size="M" icon="plus" label="학습 자료 추가" onClick={add} />
       </div>
       {progress && <AnalyzeBar p={progress} />}
-      {error && <p className="t-body-s c-danger">{error}</p>}
+      {drop === "over" && <p className="t-body-s c-accent">놓으면 학습 자료로 넣어요 · PDF · PPTX</p>}
+      {error?.split("\n").map((line, i) => (
+        <p key={i} className="t-body-s c-danger">
+          {line}
+        </p>
+      ))}
 
       {materials.length === 0 ? (
         <div className="panel src-empty">
@@ -504,6 +554,7 @@ export function Sources({ deckId, materialId, segmentId, link, gaps: gapsFirst }
                     className="src-file__main"
                     aria-current={on || undefined}
                     onClick={() => {
+                      setError(undefined);
                       setSel(m.id);
                       setActive(undefined);
                       setLinking(undefined);
@@ -892,13 +943,58 @@ function OutlinePanel({
   );
 }
 
-/** E1 데이터 칸의 [분석 모델] 행 (Settings.tsx). 모델은 앱 전체에서 하나라 설정에서 지운다. 받았을 때만 보인다 */
+/** E1 데이터 칸의 [분석 모델] 행 (Settings.tsx). 모델은 앱 전체에서 하나라 설정에서 지운다.
+ * 받기 전에도 보여 [내려받기]를 둔다: 중요도 배너에서 [나중에]를 누르면 앱을 다시 켤 때까지 받을 곳이 없었다 (QA T6-11) */
 export function ModelRow() {
-  const model = useModel();
+  const model = useModel(true); // 다시 들어와도 받는 중이면 [멈추기], 끝났으면 그 까닭 (QA V5-01 · T7-04)
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  if (!model?.ready) return null;
+  const [dl, setDl] = useState<{ done: number; total: number } | null>(null);
+  useEffect(() => {
+    // 끝난 까닭은 상태(model.failed)가 보인다. 낡은 오류("이미 내려받고 있어요")를 남기지 않는다
+    const off = listen<{ done: number; total: number } | null>("model-progress", (e) => {
+      setDl(e.payload);
+      if (e.payload) return;
+      setError(undefined);
+      refreshModel().catch(() => {});
+    });
+    return () => {
+      off.then((f) => f());
+    };
+  }, []);
+  if (!model) return null;
+  if (!model.ready) {
+    const d = dl ?? (model.downloading ? { done: 0, total: model.bytes } : null);
+    const why = error ?? (d ? null : model.failed);
+    const download = async () => {
+      setError(undefined);
+      setDl({ done: 0, total: model.bytes });
+      try {
+        await sourceApi.downloadModel();
+      } catch (e) {
+        setError(errorText(e));
+      }
+    };
+    return (
+      <div className="prefs__row">
+        <span className="prefs__text">
+          <span className="t-body-m-strong">분석 모델</span>
+          <span className="t-body-s c-secondary">
+            {d
+              ? `내려받고 있어요 · ${mb(d.done)} / ${mb(d.total)} · 다 받으면 이 기기 안에서만 분석해요`
+              : `약 ${mb(model.bytes)} · 자료로 중요도를 제안할 때 써요. 받으면 인터넷 없이 동작해요`}
+          </span>
+          {why && <span className={`t-body-s ${stoppedDownload(why) ? "c-secondary" : "c-danger"}`}>{why}</span>}
+        </span>
+        {d ? (
+          <Button variant="ghost" size="M" label="멈추기" onClick={() => sourceApi.cancelDownload()} />
+        ) : (
+          <Button variant="secondary" size="M" icon="download" label={why ? "다시 받기" : "내려받기"} onClick={download} />
+        )}
+      </div>
+    );
+  }
   const remove = async () => {
     setBusy(true);
     try {

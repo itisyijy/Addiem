@@ -246,8 +246,8 @@ pub fn build_queue_with_progress(
     let weak = with_descendants(&decks.iter().filter(|d| d.weak).map(|d| d.id).collect::<Vec<_>>(), decks);
     let active = cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && !skipped.contains(&c.deck_id) && c.plays());
 
-    // 1단계. 후보 수집. 밀린 복습만은 범위 밖 덱까지 모은다: 하루 상한은 전체 계획에서 고르고
-    // 범위로 거른다. 그래야 덱 하나만 학습해도 홈의 그 덱 분량과 같다
+    // 1단계. 후보 수집. 밀린 복습과 신규는 범위 밖 덱까지 모은다: 하루 상한 · 예산 덱 몫은 전체 계획에서 고르고
+    // 범위로 거른다. 그래야 덱 하나(하위 덱)만 학습해도 홈 · 상위 덱 표의 그 덱 분량과 같다 (QA T3-08)
     let mut new_by_owner: HashMap<i64, Vec<Card>> = HashMap::new();
     let mut all_backlog = vec![];
     for c in active {
@@ -266,7 +266,7 @@ pub fn build_queue_with_progress(
                 Some(d) if d == today && mine => plan.review.push(c.clone()),
                 _ => {}
             },
-            "new" if mine && !paused.contains(&c.deck_id) => new_by_owner.entry(budget_owner(c.deck_id, &by_id)).or_default().push(c.clone()),
+            "new" if !paused.contains(&c.deck_id) => new_by_owner.entry(budget_owner(c.deck_id, &by_id)).or_default().push(c.clone()),
             _ => {}
         }
     }
@@ -291,11 +291,9 @@ pub fn build_queue_with_progress(
     // 2단계. 신규 목표량. 예산 덱마다
     let mut done_by_owner: HashMap<i64, i64> = HashMap::new();
     for (deck_id, n) in &done.introduced {
-        if wanted.contains(deck_id) {
-            *done_by_owner.entry(budget_owner(*deck_id, &by_id)).or_default() += n;
-        }
+        *done_by_owner.entry(budget_owner(*deck_id, &by_id)).or_default() += n;
     }
-    let mut owners: Vec<_> = new_by_owner.into_iter().collect();
+    let mut owners: Vec<_> = new_by_owner.into_iter().filter(|(_, g)| g.iter().any(|c| wanted.contains(&c.deck_id))).collect();
     owners.sort_by_key(|(id, _)| *id);
     for (owner, mut group) in owners {
         let deck = by_id[&owner];
@@ -317,7 +315,7 @@ pub fn build_queue_with_progress(
         plan.notes.push(format!("{}: {why}", deck.name));
         // 3단계. 중요도 높은 순, 같으면 기출 먼저, 그다음 원래 순서
         group.sort_by_key(|c| (-c.importance, !c.exam, c.position, c.id));
-        plan.new.extend(group.into_iter().filter(&mut first).take(target as usize));
+        plan.new.extend(group.into_iter().filter(&mut first).take(target as usize).filter(|c| wanted.contains(&c.deck_id)));
     }
     // 덱을 가로질러 핵심 -> 일반 -> 보충 (D1 "이 순서로 보여드려요"), 같은 중요도면 기출 먼저. 그 안에서는 덱 순서를 지킨다
     plan.new.sort_by_key(|c| (-c.importance, !c.exam));
@@ -726,6 +724,17 @@ mod tests {
         // 상위 덱을 골라 학습하면 하위 덱 카드가 들어온다
         decks[1].daily_new_limit = None;
         assert_eq!(build_queue(T, &decks, &c, Some(&[1]), 1.0).new.len(), 10);
+        // QA T3-08: 하위 덱만 골라도 예산 덱 몫은 그 아래 전체에서 고르고, 고른 덱 것만 남긴다 (상위 덱 표와 같은 수)
+        let decks = [Deck { target_day: Some(T + 24), ..deck(1) }, Deck { parent_id: Some(1), ..deck(2) }, Deck { parent_id: Some(1), ..deck(3) }];
+        let mut c = news(20, 2, 1);
+        c.extend(news(12, 3, 100));
+        assert_eq!(build_queue(T, &decks, &c, None, 1.0).new.iter().map(|c| c.deck_id).collect::<Vec<_>>(), [2, 2], "32장 ÷ 24일 = 2장");
+        let sub = build_queue(T, &decks, &c, Some(&[2]), 1.0);
+        assert_eq!((sub.new.len(), sub.notes[0].as_str()), (2, "d1: 남은 32장 ÷ 24일 = 하루 2장"));
+        assert_eq!(build_queue(T, &decks, &c, Some(&[3]), 1.0).new.len(), 0);
+        // 오늘 다른 하위 덱에서 본 신규도 같은 예산에서 뺀다
+        let done = Today { introduced: [(3, 2)].into(), ..Default::default() };
+        assert_eq!(build_queue_with_progress(T, &decks, &c[..30], Some(&[2]), 1.0, &done).new.len(), 0);
         // 부모가 유실돼도 멈추지 않는다
         let orphan = Deck { parent_id: Some(999), ..deck(9) };
         assert_eq!(build_queue(T, &[orphan], &news(5, 9, 1), None, 1.0).new.len(), 5);

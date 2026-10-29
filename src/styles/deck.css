@@ -282,3 +282,8 @@
 .cards__fix:hover { filter: brightness(0.97); }
 /* H2 조정이 C4 계산에 반영됐다는 한 줄 */
 .recalc__adjust-link { margin-left: 8px; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+
+/* 1180 보다 좁은 창: 질문 · 답변 열이 원래 비율대로 준다 (QA V4-01, screens.css 끝) */
+@media (max-width: 1179px) {
+  .cards__table .cards__row { grid-template-columns: 36px minmax(0, 336fr) minmax(0, 290fr) 170px 110px 92px 60px; }
+}

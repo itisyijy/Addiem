@@ -2,7 +2,7 @@
 // 보여주는 건 남은 양 · 날짜 · 시간뿐이다. 예상 성적 · 합격 가능성 · 준비도 점수는 만들지 않는다 (MVP 9장 Out).
 // 목표일은 절대 바꾸지 않는다. 바뀌는 건 신규를 나누는 방식뿐이다 (plan.rs)
 import "../styles/plan.css";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, planApi, type PlanBar, type PlanConflict, type PlanMode, type StudyPlan } from "../api";
 import { n, ro, useKey, useNav, type Route } from "../nav";
 import { useToast } from "../toast";
@@ -50,11 +50,25 @@ export function Plan({ deckId }: { deckId: number | null }) {
     cram.plan(scope === null ? null : [scope]).then(setCramPlan, () => setCramPlan(null));
   }, [scope]);
   // 시간은 누를 때마다 저장하지 않고 손을 뗀 뒤 한 번 (−/+ 를 여러 번 누르는 동안 그래프가 깜빡이지 않게)
+  const pending = useRef<typeof time>(null);
   useEffect(() => {
+    pending.current = null;
     if (!time || !p || (time.weekday === p.weekday_min && time.weekend === p.weekend_min)) return;
-    const t = setTimeout(() => planApi.setTime(time.weekday, time.weekend).then(load, (e) => setError(errorText(e))), 350);
+    pending.current = time;
+    const t = setTimeout(() => {
+      pending.current = null;
+      planApi.setTime(time.weekday, time.weekend).then(load, (e) => setError(errorText(e)));
+    }, 350);
     return () => clearTimeout(t);
   }, [time, p, load]);
+  // 기다리는 중에 화면을 떠나면 바로 저장한다 (QA T3-11)
+  useEffect(
+    () => () => {
+      const t = pending.current;
+      if (t) planApi.setTime(t.weekday, t.weekend).catch((e) => toast({ title: "시간을 저장하지 못했어요", text: errorText(e), tone: "error" }));
+    },
+    [toast],
+  );
 
   const back = useCallback(() => nav(deckId === null ? { name: "home" } : { name: "deck", deckId }), [nav, deckId]);
   useKey("Escape", back);
@@ -138,7 +152,7 @@ export function Plan({ deckId }: { deckId: number | null }) {
             <div className="plan__cram">
               <span className="t-body-s c-secondary">
                 {cramPlan.name} · 남은 {n(cramPlan.dday)}일
-                {p.remaining_new > 0 && ` · 하루 신규 ${n(Math.ceil(p.remaining_new / Math.max(1, cramPlan.dday)))}장`}
+                {cramPlan.new_per_day > 0 && ` · 하루 신규 ${n(cramPlan.new_per_day)}장`}
               </span>
               <Button variant="ghost" size="M" icon="calendar" label="시험 전 회독" onClick={() => nav({ name: "summary", deckIds: [cramPlan.deck_id], cram: true })} />
             </div>

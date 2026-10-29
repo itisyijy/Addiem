@@ -10,6 +10,7 @@ import {
 import { Badge, Button, Checkbox, Icon, Input, Segment, Spinner, Toggle, type IconName } from "./ui";
 import { useToast } from "./toast";
 import { n, useKey, useModalScope, useNav, useOverlayScope } from "./nav";
+import { plainEnter } from "./keys";
 import { useFocusTrap } from "./screens/NewDeck";
 import "./styles/sync.css";
 
@@ -73,6 +74,21 @@ export function when(ms: number, secs = false) {
 /** 맞추지 못했을 때: 변경은 이 기기에 남아 있다는 것을 먼저 (T3-14) */
 const failText = (s: SyncStatus) =>
   s.pending > 0 ? `아직 올리지 못한 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요. 다음 동기화 때 올려요.` : "이 기기 데이터는 그대로예요. 다음 동기화 때 다시 맞춰요.";
+/** 저절로 풀리지 않는 오류(복사한 데이터 폴더)는 할 일을 그대로 보인다. 나머지는 failText + [자세히] (T5-02) */
+function FailLine({ s }: { s: SyncStatus }) {
+  if (s.error?.includes("복사했거나")) return <>{s.error}</>;
+  return (
+    <>
+      {failText(s)}
+      {s.error && <Detail text={s.error} />}
+    </>
+  );
+}
+/** Drive 데이터가 없어졌을 때 이 기기 데이터로 다시 시작. 잠근 기기에 남긴 잠금이 없으면 암호를 물어 잠근 채 다시 시작한다 (잠금을 말없이 풀지 않는다) */
+const restartHere = (s: SyncStatus, fail: (e: unknown) => void) =>
+  syncApi.join({ mode: "fresh" }).catch((e) => (s.lock ? syncFlow({ kind: "unlock", restart: true }) : fail(e)));
+/** 이 기기 키로 열리지 않는 Drive 백업 (잠금을 바꾸거나 풀기 전에 만들었다) */
+const lockedError = (e: unknown) => errorText(e).includes("암호로 잠겨");
 
 /** 오류 원문(OS 오류 등)은 접어 두고 [자세히]를 눌렀을 때만 보인다 */
 function Detail({ text }: { text: string }) {
@@ -293,12 +309,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
         <Button
           size="M"
           label="이 기기 데이터로 다시 시작"
-          onClick={act(() =>
-            syncApi.join({ mode: "fresh" }).catch((e) =>
-              // 잠근 기기: 이 기기에 남긴 잠금이 없으면 암호를 물어 잠근 채 다시 시작한다 (잠금을 말없이 풀지 않는다)
-              s.lock ? syncFlow({ kind: "unlock", restart: true }) : toast({ title: errorText(e), tone: "error" }),
-            ),
-          )}
+          onClick={act(() => restartHere(s, (e) => toast({ title: errorText(e), tone: "error" })))}
         />
       </>
     );
@@ -306,12 +317,7 @@ function SyncPopover({ s, close }: { s: SyncStatus; close: () => void }) {
     text = "이 기기에서 Drive 데이터를 열려면 암호가 필요해요.";
     actions = <Button size="M" icon="lock" label="암호 입력" onClick={act(() => syncFlow({ kind: "unlock" }))} />;
   } else if (s.state === "error") {
-    text = (
-      <>
-        {failText(s)}
-        {s.error && <Detail text={s.error} />}
-      </>
-    );
+    text = <FailLine s={s} />;
   } else if (s.state === "update") {
     text = s.error ?? "";
   }
@@ -683,7 +689,7 @@ function DeviceName({ value, onChange, onSave, onRevert }: { value: string; onCh
           onKeyDown={(e) => {
             if (!onSave) return;
             // 한글 조합 중 Enter 는 조합만 끝낸다 (마지막 글자가 아직 value 에 없다)
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) e.currentTarget.blur();
+            if (plainEnter(e)) e.currentTarget.blur();
             else if (e.key === "Escape") {
               e.preventDefault();
               onRevert?.();
@@ -714,7 +720,11 @@ export function DriveLoadLink() {
   );
 }
 
+/** 합류 버튼의 진행: 변경 파일마다 받는 데 시간이 걸린다 (R-03) */
+const joinLabel = (s: SyncStatus | null, label: string) => (s?.phase === "pull" && s.total > 1 ? `${label} ${n(s.done)} / ${n(s.total)}` : label);
+
 function FoundModal({ probe, note, onClose }: { probe: SyncProbe; note?: string; onClose: () => void }) {
+  const s = useSyncStatus();
   const nav = useNav();
   const toast = useToast();
   const [name, setName] = useState(probe.device_name);
@@ -790,7 +800,7 @@ function FoundModal({ probe, note, onClose }: { probe: SyncProbe; note?: string;
         <span className="t-caption c-tertiary">카드와 기록을 먼저 받아 바로 공부할 수 있어요</span>
         <span className="sync-foot__actions">
           <Button variant="ghost" size="M" label="취소" onClick={onClose} />
-          <Button size="M" icon="download" label="이 데이터로 시작" busy={busy} busyLabel="받는 중…" disabled={r.locked && !password} onClick={() => join("take")} />
+          <Button size="M" icon="download" label="이 데이터로 시작" busy={busy} busyLabel={joinLabel(s, "받는 중…")} disabled={r.locked && !password} onClick={() => join("take")} />
         </span>
       </div>
     </Sheet>
@@ -812,8 +822,12 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // 이 기기 숫자는 Drive 를 기다리지 않고 바로 (R-09). 덱 수는 Drive 쪽과 같은 셈(최상위 덱)이라 probe 가 오면 채운다
+  const [here, setHere] = useState<{ cards: number; reviews: number } | null>(null);
   useEffect(() => {
-    if (!given) syncApi.probe().then(setProbe, (e) => setError(errorText(e)));
+    if (given) return;
+    api.appInfo().then(setHere, () => {});
+    syncApi.probe().then(setProbe, (e) => setError(errorText(e)));
   }, [given]);
   const remote = probe?.remote;
   const header = choice?.header;
@@ -836,6 +850,8 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
       : `이 기기에는 ${kind === "restore" ? "복구" : kind === "lock" ? "잠그기" : "바뀌기"} 전 데이터가 있어요. 어떻게 할까요?`;
   // 이 기기 잠금으로 새로 시작하면 암호가 필요 없다. 다른 기기가 잠근 Drive 를 새로 시작하면 그 암호로 잠근 채 (T3-11)
   const locked = (choice?.locked || remote?.locked) && !(mode === "fresh" && s?.lock);
+  // 이 기기에 저장한 암호(키)가 있으면 먼저 그것으로 연다. 다른 기기가 암호를 바꿨으면 그때 오류와 함께 묻는다 (T5-07)
+  const hasKey = !!s?.lock && s.state !== "locked";
   // 다시 연결하면 기기 목록 기억이 없다: Drive 의 기기 파일 이름 (T3-18)
   const others_ = (remote?.names?.length ? remote.names : others(s ?? null)).filter((n) => n !== probe?.device_name);
   const who = others_.length ? others_.join(", ") : dev;
@@ -844,7 +860,7 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
     setBusy(true);
     setError(undefined);
     try {
-      await syncApi.join({ mode, password: locked ? password : undefined, device_name: choice ? undefined : name });
+      await syncApi.join({ mode, password: locked && password ? password : undefined, device_name: choice ? undefined : name });
       await refreshSync();
       onClose();
       nav({ name: "home" });
@@ -864,7 +880,9 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
           <Icon name="laptop" size={18} className="c-secondary" />
           <span className="sync-row__text">
             <span className="t-label-m">이 기기 · {probe?.device_name ?? s?.device_name}</span>
-            <span className="t-caption c-tertiary">{counts(probe?.local)}</span>
+            <span className="t-caption c-tertiary">
+              {probe?.local || !here ? counts(probe?.local) : `카드 ${n(here.cards)}장 · 복습 기록 ${n(here.reviews)}건`}
+            </span>
           </span>
         </span>
         <span className="sync-side">
@@ -909,7 +927,7 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             // 이 기기가 잠근 채라면 [Drive 새로 시작]은 이 기기 키로 잠금을 이어 가 암호가 필요 없다
-            helper={s?.lock ? "잠근 기기에서 정한 암호예요" : "잠근 기기에서 정한 암호예요 · 세 방법 모두 필요해요"}
+            helper={hasKey ? "비워 두면 이 기기에 저장한 암호로 열어요" : s?.lock ? "잠근 기기에서 정한 암호예요" : "잠근 기기에서 정한 암호예요 · 세 방법 모두 필요해요"}
           />
           <p className="t-caption c-tertiary">암호를 모르면 [취소] 뒤 설정에서 연결을 끊고 이 기기만 쓸 수 있어요</p>
         </>
@@ -919,7 +937,7 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
         <span className="t-caption c-tertiary">어느 쪽이든 바꾸기 전에 이 기기 백업을 먼저 만들어요</span>
         <span className="sync-foot__actions">
           <Button variant="ghost" size="M" label="취소" onClick={onClose} />
-          <Button size="M" icon={labels[mode][1]} label={labels[mode][0]} busy={busy} busyLabel="맞추는 중…" disabled={!probe || (locked && !password)} onClick={go} />
+          <Button size="M" icon={labels[mode][1]} label={labels[mode][0]} busy={busy} busyLabel={joinLabel(s, "맞추는 중…")} disabled={!probe || (locked && !password && !hasKey)} onClick={go} />
         </span>
       </div>
     </Sheet>
@@ -1094,29 +1112,41 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
   const [p, setP] = useState<RestorePreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // 지금 키로 열리지 않으면 그때 암호를 묻는다 (T5-03). 연 암호는 복구할 때 다시 보낸다
+  const [locked, setLocked] = useState(false);
+  const [password, setPassword] = useState<string>();
   useEffect(() => {
-    syncApi.restorePreview(backup.name).then(setP, (e) => setError(errorText(e)));
+    syncApi.restorePreview(backup.name).then(setP, (e) => (lockedError(e) ? setLocked(true) : setError(errorText(e))));
   }, [backup.name]);
-  const stamp = (() => {
-    const d = new Date();
-    const z = (v: number) => String(v).padStart(2, "0");
-    return `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}`;
-  })();
   const run = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      await syncApi.restore(backup.name);
+      const kept = await syncApi.restore(backup.name, password);
       await refreshSync();
       onClose();
       nav({ name: "home" });
-      toast({ title: `${backupDate(backup.at)} 백업으로 복구했어요`, text: "복구 전 데이터는 이 기기 백업에 있어요", icon: "rotate" });
+      // 남긴 파일 이름은 복구한 순간에 정해진다 (창을 연 시각이 아니다, T5-17)
+      toast({ title: `${backupDate(backup.at)} 백업으로 복구했어요`, text: kept ? `복구 전 데이터는 이 기기 백업 ${kept}에 있어요` : "복구 전 데이터는 이 기기 백업에 있어요", icon: "rotate" });
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
     }
   };
   const who = p?.others.length ? p.others.join(", ") : "다른 기기";
+  if (locked && !p) {
+    return (
+      <BackupPasswordModal
+        onOpen={(pw) =>
+          syncApi.restorePreview(backup.name, pw).then((r) => {
+            setPassword(pw);
+            setP(r);
+          })
+        }
+        onClose={onClose}
+      />
+    );
+  }
   return (
     <Sheet label="Drive 백업으로 복구" onClose={onClose} className="sync-k9">
       <h2 className="t-title-m">{backupDate(backup.at)} 백업으로 복구할까요?</h2>
@@ -1136,7 +1166,7 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
               <Icon name="archive" size={18} className="c-secondary" />
               <span className="sync-perm__text">
                 <span className="t-body-m">지금 데이터는 이 기기에 백업 파일로 남겨요</span>
-                <span className="t-caption c-tertiary">addiem-before-restore-{stamp}.zip · 설정 › 이 기기 백업</span>
+                <span className="t-caption c-tertiary">설정 › 이 기기 백업에서 볼 수 있어요</span>
               </span>
             </span>
             {p.lost_reviews + p.lost_changes > 0 ? (
@@ -1180,6 +1210,35 @@ function RestoreModal({ backup, onClose }: { backup: DriveBackup; onClose: () =>
   );
 }
 
+/** 이 기기 키로 열리지 않는 Drive 백업(잠금을 바꾸거나 풀기 전에 만들었다)의 그때 암호 (T5-03). onOpen 이 실패하면 칸 아래에 보인다 */
+function BackupPasswordModal({ onOpen, onClose }: { onOpen: (password: string) => Promise<unknown>; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const run = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onOpen(password);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Sheet label="이 백업의 암호" onClose={onClose} className="sync-k10">
+      <h2 className="t-title-m">이 백업을 만들 때의 암호를 넣어 주세요</h2>
+      <p className="t-body-s c-secondary">지금과 다른 암호로 잠근 백업이에요. 암호를 바꾸거나 잠금을 푼 뒤에도 그때 암호로 열 수 있어요.</p>
+      <Input type="password" label="암호" value={password} autoFocus error={error} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => plainEnter(e) && password && !busy && run()} />
+      <div className="sync-foot sync-foot--end">
+        <Button variant="ghost" size="M" label="취소" onClick={onClose} />
+        <Button size="M" icon="lock" label="열기" busy={busy} disabled={!password} onClick={run} />
+      </div>
+    </Sheet>
+  );
+}
+
 // ---------------------------------------------------------------- K10 연결 끊기
 
 function DisconnectModal({ onClose }: { onClose: () => void }) {
@@ -1188,11 +1247,17 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
   const [remove, setRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [count, setCount] = useState<number | null>(null);
+  const [list, setList] = useState<DriveBackup[] | null>(null);
+  // 기기 목록 · 사용 공간은 마지막 동기화 때 것이라 그 뒤 합류한 기기가 빠질 수 있다: Drive 에서 다시 읽는다 (QA V1-06).
+  // 읽기 전 · 못 읽으면(오프라인) 마지막 동기화 때 것. null 이면 Drive 에 데이터가 없다
+  const [remote, setRemote] = useState<SyncProbe["remote"] | undefined>();
   useEffect(() => {
-    syncApi.backups().then((b) => setCount(b.length), () => {});
+    syncApi.backups().then(setList, () => {});
+    syncApi.probe().then((p) => setRemote(p.remote), () => {});
   }, []);
-  const who = others(s ?? null);
+  // 지울 양: 동기화 데이터(숨김 공간) + 백업 zip (R-08)
+  const total = (remote === undefined ? (s?.usage ?? 0) : (remote?.bytes ?? 0)) + (list ?? []).reduce((a, b) => a + b.size, 0);
+  const who = remote === undefined ? others(s ?? null) : (remote?.names ?? []);
   const whoText = who.length ? who.join(", ") : "";
   const run = async () => {
     setBusy(true);
@@ -1218,7 +1283,7 @@ function DisconnectModal({ onClose }: { onClose: () => void }) {
           on={remove}
           onPick={() => setRemove(true)}
           title="Drive에서도 지우기"
-          text={`백업${count !== null ? ` ${n(count)}개와` : "과"} 동기화 데이터${s?.usage ? ` ${size(s.usage)}` : ""}를 지워요.${whoText ? ` ${whoText}의 동기화도 멈춰요.` : ""}`}
+          text={`${list ? `백업 ${n(list.length)}개와 동기화 데이터, 모두 ${size(total)}를 지워요.` : "Drive의 백업과 동기화 데이터를 지워요."}${whoText ? ` ${whoText}의 동기화도 멈춰요.` : ""}`}
         />
       </div>
       {/* K22: Drive 에서도 지우거나 90일 안에 맞춘 다른 기기가 없으면 Google 권한도 폐기한다 */}
@@ -1294,7 +1359,7 @@ function UnlockModal({ restart, onClose }: { restart?: boolean; onClose: () => v
       </p>
       {/* 다시 시작 모드는 위 문장이 같은 말을 한다 */}
       {!restart && <p className="t-caption c-tertiary">암호를 모르면 설정에서 연결을 끊고 이 기기만 쓸 수 있어요</p>}
-      <Input type="password" label="암호" value={password} autoFocus error={error} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && password && run()} />
+      <Input type="password" label="암호" value={password} autoFocus error={error} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => plainEnter(e) && password && !busy && run()} />
       <div className="sync-foot sync-foot--end">
         <Button variant="ghost" size="M" label="취소" onClick={onClose} />
         <Button size="M" icon="lock" label={restart ? "다시 시작" : "열기"} busy={busy} disabled={!password} onClick={run} />
@@ -1372,6 +1437,9 @@ function Connected({ s }: { s: SyncStatus }) {
   const [menu, setMenu] = useState<string | null>(null);
   const [busy, setBusy] = useState<string>();
   const [conflicts, setConflicts] = useState(0);
+  /** 지우기 확인 (T5-09) · 그때 암호를 물을 [그림까지 묶어 내려받기] (T5-03) */
+  const [dropping, setDropping] = useState<DriveBackup | null>(null);
+  const [locked, setLocked] = useState<{ b: DriveBackup; path: string } | null>(null);
   const joined = s.enabled;
   useEffect(() => setName(s.device_name), [s.device_name]);
   useEffect(() => {
@@ -1417,22 +1485,26 @@ function Connected({ s }: { s: SyncStatus }) {
       setRelock(null);
     }
   };
+  const download = async (b: DriveBackup, path: string, password?: string) => {
+    const saved = await syncApi.backupFull(b.name, path, password);
+    toast({ title: "그림까지 묶어 저장했어요", tone: "undo", icon: "check-circle", action: { label: "폴더 열기", onClick: () => api.revealFile(saved) } });
+  };
   const full = async (b: DriveBackup) => {
     setMenu(null);
     const path = await save({ defaultPath: b.name.replace(/\.zip$/, "-with-media.zip"), filters: [{ name: "Addiem 백업", extensions: ["zip"] }] });
     if (!path) return;
     setBusy(b.name);
     try {
-      const saved = await syncApi.backupFull(b.name, path);
-      toast({ title: "그림까지 묶어 저장했어요", tone: "undo", icon: "check-circle", action: { label: "폴더 열기", onClick: () => api.revealFile(saved) } });
+      await download(b, path);
     } catch (e) {
-      toast({ title: "내려받지 못했어요", text: errorText(e), tone: "error" });
+      if (lockedError(e)) setLocked({ b, path });
+      else toast({ title: "내려받지 못했어요", text: errorText(e), tone: "error" });
     } finally {
       setBusy(undefined);
     }
   };
   const remove = async (b: DriveBackup) => {
-    setMenu(null);
+    setDropping(null);
     try {
       await syncApi.deleteBackup(b.name);
       toast({ title: "백업을 지웠어요" });
@@ -1453,7 +1525,8 @@ function Connected({ s }: { s: SyncStatus }) {
           <span className="t-body-m-strong">{l.title}</span>
           <span className="t-caption c-tertiary">
             {s.account}
-            {s.usage !== null && ` · Drive에서 Addiem이 쓰는 공간 ${size(s.usage)}`}
+            {/* 없어진 Drive 의 예전 사용량은 보이지 않는다 (T5-16) */}
+            {s.usage !== null && s.state !== "gone" && ` · Drive에서 Addiem이 쓰는 공간 ${size(s.usage)}`}
           </span>
           {busyNow && s.total > 1 && (
             <span className="sync-bar">
@@ -1469,6 +1542,9 @@ function Connected({ s }: { s: SyncStatus }) {
           <Button size="M" label="고르기" onClick={() => syncFlow({ kind: "choice", probe: null })} />
         ) : s.state === "locked" ? (
           <Button size="M" icon="lock" label="암호 입력" onClick={() => syncFlow({ kind: "unlock" })} />
+        ) : s.state === "gone" ? (
+          // 상단 팝오버와 같은 다음 행동 (T5-16). [연결 끊기]는 아래에 늘 있다
+          <Button size="M" icon="upload" label="이 기기 데이터로 다시 시작" onClick={() => restartHere(s, (e) => toast({ title: "다시 시작하지 못했어요", text: errorText(e), tone: "error" }))} />
         ) : (
           <Button variant="secondary" size="M" icon="rotate" label="지금 동기화" busy={busyNow} busyLabel="맞추는 중…" disabled={s.studying} onClick={() => syncApi.now().catch((e) => toast({ title: errorText(e) }))} />
         )}
@@ -1476,8 +1552,7 @@ function Connected({ s }: { s: SyncStatus }) {
       {/* 오프라인은 위 줄이 이미 말한다 (OS 원문 오류는 보이지 않는다) */}
       {s.state === "error" ? (
         <p className="sync-error t-caption c-tertiary">
-          {failText(s)}
-          {s.error && <Detail text={s.error} />}
+          <FailLine s={s} />
         </p>
       ) : (
         s.error && s.state !== "idle" && s.state !== "offline" && <p className="sync-error t-caption c-tertiary">{s.error}</p>
@@ -1556,7 +1631,14 @@ function Connected({ s }: { s: SyncStatus }) {
                         <Icon name="download" size={16} />
                         그림까지 묶어 내려받기
                       </button>
-                      <button role="menuitem" className="menu__item menu__item--danger t-body-m" onClick={() => remove(b)}>
+                      <button
+                        role="menuitem"
+                        className="menu__item menu__item--danger t-body-m"
+                        onClick={() => {
+                          setMenu(null);
+                          setDropping(b);
+                        }}
+                      >
                         <Icon name="trash" size={16} />
                         이 백업 지우기
                       </button>
@@ -1574,6 +1656,20 @@ function Connected({ s }: { s: SyncStatus }) {
           </div>
         </div>
       )}
+
+      {dropping && (
+        <Sheet label="이 백업을 지울까요?" onClose={() => setDropping(null)} className="sync-k10">
+          <h2 className="t-title-m">{backupDate(dropping.at)} 백업을 지울까요?</h2>
+          <p className="t-body-s c-secondary">
+            {!dropping.mine && dropping.device && `${dropping.device}에서 만든 백업이에요. `}Drive에서 지우면 되돌릴 수 없어요. 이 기기 데이터는 그대로예요.
+          </p>
+          <div className="sync-foot sync-foot--end">
+            <Button variant="ghost" size="M" label="취소" onClick={() => setDropping(null)} />
+            <Button variant="danger" size="M" icon="trash" label="지우기" onClick={() => remove(dropping)} />
+          </div>
+        </Sheet>
+      )}
+      {locked && <BackupPasswordModal onOpen={(pw) => download(locked.b, locked.path, pw).then(() => setLocked(null))} onClose={() => setLocked(null)} />}
 
       <div className="sync-bottom">
         <span className="t-caption c-tertiary">끊어도 이 기기 데이터는 그대로예요</span>

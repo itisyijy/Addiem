@@ -152,6 +152,8 @@ pub struct CramPlan {
     round_seen: usize,
     /// 오늘 이미 일정에 반영해서 이번 분량에서 빼는 배운 카드 (P1 "오늘 이미 본 N장은 빼요")
     today_seen: usize,
+    /// 이 덱의 오늘 하루 신규 몫 (계획 화면 "하루 신규 N장", QA T3-05)
+    new_per_day: i64,
 }
 
 /// H3 압축 회독을 열 수 있으면 그 계획. 목표일이 3일보다 멀거나 지났으면 없다
@@ -183,6 +185,7 @@ pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Opti
         learned: all.len(),
         round_seen: count(&|i| seen.contains(&i.id)),
         today_seen: count(&|i| !seen.contains(&i.id) && fed.contains(&i.id)),
+        new_per_day: crate::plan::share_today(&con, today, &decks, &commands::descendants(t.id, &decks).into_iter().collect())?,
     }))
 }
 
@@ -344,6 +347,7 @@ pub fn mix_start(state: State<AppState>, deck_id: i64, every: usize, size: usize
     let t = decks.iter().find(|d| d.id == deck_id).ok_or("덱을 찾을 수 없어요.")?;
     let (cards, due_today) = build_mix(&con, t, &decks, every.clamp(1, 4), size.clamp(1, 500), now)?;
     let session_id = commands::open_session(&con, &db::date_from_day(study_day(now)), Some("mix"), now)?;
+    commands::forget_undo(&state)?;
     Ok(MixStart { session_id, cards, due_today })
 }
 

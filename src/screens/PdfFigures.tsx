@@ -195,8 +195,10 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
   }, [m.id, page]);
 
   const on = sel?.page === page ? sel : null;
-  useOverlayScope(on !== null);
-  useKey("Escape", () => (on?.menu ? setSel({ ...on, menu: false }) : (setSel(null), setDrag(null), setEdit(null))), on !== null, { modal: true });
+  // 끌어 잡은 영역만 남아 있어도(표 창을 닫은 뒤) Esc 는 그것부터 지운다 (QA T6-10)
+  const held = on !== null || drag !== null;
+  useOverlayScope(held);
+  useKey("Escape", () => (on?.menu ? setSel({ ...on, menu: false }) : (setSel(null), setDrag(null), setEdit(null))), held, { modal: true });
 
   const here = items.filter((x) => x.page === page);
   const dragHere = drag?.page === page ? drag.rect : null;
@@ -219,6 +221,9 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
   });
   // 차례로 만들기는 카드를 만들었을 때만 다음 것으로 (닫거나 못 열면 막대의 [다음]으로 넘긴다)
   const flows = useFlows(deckId, changed, () => bulk.run && bulk.next(), bulk.run ? `차례로 만들기 ${n(bulk.run.at + 1)} / ${n(bulk.run.keys.length)}` : undefined);
+  // 차례로 만들기 막대만 떠 있으면 Esc 는 차례로 만들기를 멈춘다 (QA T6-10)
+  useOverlayScope(!!bulk.run);
+  useKey("Escape", bulk.stop, !!bulk.run && !held, { modal: true });
 
   const src = async (p: number, r: Rect, name: string, title: string): Promise<FigSource> => {
     let crop: Promise<string> | undefined;
@@ -313,13 +318,17 @@ export function PdfFigures({ m, items, scanning, scanned, deckId, head, pill, pa
       <span key={c} className="pf-handle" data-corner={c} style={{ left: `${(r[0] + (c % 2 ? r[2] : 0)) * 100}%`, top: `${(r[1] + (c < 2 ? 0 : r[3])) * 100}%` }} aria-hidden />
     ));
   // 메뉴(약 270×230px)는 영역 아래, 모자라면 위에 둔다. 영역 위에 띄우면 오른쪽 아래 손잡이를 덮었다 (QA T4-01).
+  // 쪽 안 공간과 창 안 공간을 함께 본다: 쪽 아래에 공간이 있어도 창 아래로 잘렸다 (QA T6-14).
   // 위아래 모두 모자라는 긴 영역만 안쪽 위 (그때는 아래 손잡이와 떨어져 있다)
   const menuAt = (r: Rect): React.CSSProperties => {
     const pageH = PAGE_W * (lay ? lay.h / lay.w : Math.SQRT2);
     const room = 250; // 메뉴 높이 + 틈 (px)
     const left = `min(${r[0] * 100}%, calc(100% - 276px))`;
-    if ((1 - r[1] - r[3]) * pageH >= room) return { left, top: `calc(${(r[1] + r[3]) * 100}% + 10px)` };
-    if (r[1] * pageH >= room) return { left, top: "auto", bottom: `calc(${(1 - r[1]) * 100}% + 10px)` };
+    const box = over.current?.getBoundingClientRect();
+    const below = Math.min((1 - r[1] - r[3]) * pageH, box ? window.innerHeight - box.top - (r[1] + r[3]) * box.height : Infinity);
+    const above = Math.min(r[1] * pageH, box ? box.top + r[1] * box.height : Infinity);
+    if (below >= room) return { left, top: `calc(${(r[1] + r[3]) * 100}% + 10px)` };
+    if (above >= room) return { left, top: "auto", bottom: `calc(${(1 - r[1]) * 100}% + 10px)` };
     return { left: `min(${(r[0] + r[2] * 0.45) * 100}%, calc(100% - 276px))`, top: `calc(${r[1] * 100}% + 16px)` };
   };
   const barAt = (r: Rect) => ({ left: `min(${r[0] * 100}%, calc(100% - 360px))`, top: r[1] + r[3] > 0.86 ? `calc(${r[1] * 100}% - 58px)` : `calc(${(r[1] + r[3]) * 100}% + 10px)` });

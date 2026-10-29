@@ -8,7 +8,7 @@
 <p align="center"><b>Not just your next review date: Addiem plans how you finish the material before your exam.</b></p>
 
 <p align="center">
-  <a href="https://github.com/itisyijy/Addiem/releases/latest"><img src="https://img.shields.io/badge/version-0.1.0-4433ff" alt="Version 0.1.0"></a>
+  <a href="https://github.com/itisyijy/Addiem/releases/latest"><img src="https://img.shields.io/badge/version-0.1.1-4433ff" alt="Version 0.1.1"></a>
   <img src="https://img.shields.io/badge/Windows-10%20·%2011-16151f" alt="Windows 10 · 11">
   <img src="https://img.shields.io/badge/deck%20files-.apkg%20·%20.colpkg-16151f" alt="Works with .apkg · .colpkg">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-16151f" alt="MIT license"></a>
@@ -132,10 +132,10 @@ Connect your ChatGPT account to draft cards from your sources, get help grading 
 - Windows 10 or 11 (64-bit)
 - Microsoft Edge WebView2 Runtime. Windows 11 includes it; otherwise the installer downloads it (internet needed).
 
-**Installer:** download `Addiem_0.1.0_x64-setup.exe` from [Releases](https://github.com/itisyijy/Addiem/releases/latest). Use `SHA256SUMS.txt` from the same page to check the file is intact:
+**Installer:** download `Addiem_0.1.1_x64-setup.exe` from [Releases](https://github.com/itisyijy/Addiem/releases/latest). Use `SHA256SUMS.txt` from the same page to check the file is intact:
 
 ```powershell
-Get-FileHash .\Addiem_0.1.0_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\Addiem_0.1.1_x64-setup.exe -Algorithm SHA256
 ```
 
 1. Run the installer. It installs for the current user without admin rights (`%LOCALAPPDATA%\Addiem`). The installer is shown in Korean or English, following the Windows display language.

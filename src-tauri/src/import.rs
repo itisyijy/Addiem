@@ -146,8 +146,14 @@ impl Decks {
                         .map_err(err)?;
                     let id = match found {
                         Some((id, archived)) => {
+                            // 보관한 덱이면 하위 덱까지 함께 꺼낸다 (unarchive_deck 과 같다. 위 덱만 풀면 하위 덱이 떨어진 덱처럼 남는다, T1-04)
                             if archived.is_some() {
-                                con.execute("UPDATE deck SET archived_at = NULL, updated_at = ?2 WHERE id = ?1", params![id, now]).map_err(err)?;
+                                con.execute(
+                                    "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM deck d JOIN sub ON d.parent_id = sub.id)
+                                     UPDATE deck SET archived_at = NULL, updated_at = ?2 WHERE id IN (SELECT id FROM sub)",
+                                    params![id, now],
+                                )
+                                .map_err(err)?;
                             }
                             id
                         }
@@ -329,6 +335,11 @@ fn json_recall(nt: &str, o: &serde_json::Map<String, Value>) -> Result<Vec<Strin
 
 /// 반환: (가져올 카드, 문제 목록, 전체 실패 이유)
 fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
+    // 끌어놓기(read_json_file)와 같은 규칙: 20MB 까지, 메모장이 붙이는 BOM 은 뗀다 (T4-11 · T4-12)
+    if text.len() > 20 * 1024 * 1024 {
+        return (vec![], vec![], Some("20MB가 넘는 글은 나눠서 가져와 주세요.".into()));
+    }
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let doc: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => return (vec![], vec![], Some(format!("JSON 형식이 올바르지 않아요 ({}번째 줄 {}번째 글자)", e.line(), e.column()))),
@@ -467,9 +478,45 @@ fn relative_path(path: &[String], target_name: Option<&str>) -> Vec<String> {
     }
 }
 
+/// JSON 항목이 될 노트의 (노트 유형, 필드 JSON). insert_note · recall::insert 가 쓰는 값과 같다
+fn json_note_key(con: &Connection, c: &JsonCard) -> Res<(i64, String)> {
+    let (kind, fields) = match c.kind {
+        recall::LIST => ("list", serde_json::to_string(&c.fields)),
+        recall::CHOICE => ("choice", serde_json::to_string(&c.fields)),
+        k => (if k == "cloze" || k == "reversed" { k } else { "basic" }, serde_json::to_string(&[&c.front, &c.back])),
+    };
+    Ok((db::native_type_id(con, kind).map_err(err)?, fields.map_err(err)?))
+}
+
+/// 덱에 이미 있는 노트의 (노트 유형, 필드 JSON). 같은 JSON · CSV 를 다시 가져오면 이것과 같은 항목은 건너뛴다 (T4-02).
+/// batch: 지금 가져오는 묶음. 같은 파일 안의 같은 항목은 지금처럼 둘 다 넣는다 (duplicate 경고)
+fn deck_notes(con: &Connection, deck: i64, batch: Option<i64>) -> Res<HashSet<(i64, String)>> {
+    let mut st = con
+        .prepare("SELECT DISTINCT n.note_type_id, n.fields FROM note n JOIN card c ON c.note_id = n.id WHERE c.deck_id = ?1 AND (?2 IS NULL OR n.import_batch_id IS NOT ?2)")
+        .map_err(err)?;
+    let rows = st.query_map(params![deck, batch], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
+/// 이미 있어 넣지 않는 항목(번호)의 경고 · 참고는 뺀다. 넣지 않은 항목에 "가져왔어요"가 붙었다 (QA V2-03)
+fn drop_existing(issues: Vec<Issue>, existing: &HashSet<usize>) -> Vec<Issue> {
+    issues.into_iter().filter(|i| i.severity == "skipped" || !i.index.is_some_and(|x| existing.contains(&x))).collect()
+}
+
+/// 덱마다 한 번만 읽는다
+fn known_in<'a>(known: &'a mut HashMap<i64, HashSet<(i64, String)>>, con: &Connection, deck: i64, batch: Option<i64>) -> Res<&'a HashSet<(i64, String)>> {
+    Ok(match known.entry(deck) {
+        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+        std::collections::hash_map::Entry::Vacant(e) => e.insert(deck_notes(con, deck, batch)?),
+    })
+}
+
 #[derive(Serialize)]
 pub struct JsonPreview {
+    /// 들어갈 항목 (이미 있는 노트는 뺐다)
     ok: usize,
+    /// 대상 덱에 같은 노트가 이미 있어 건너뛸 항목 (T4-02)
+    existing: usize,
     skipped: usize,
     warnings: usize,
     issues: Vec<Issue>,
@@ -480,10 +527,14 @@ pub struct JsonPreview {
     error: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_json(state: State<AppState>, text: String, deck_id: Option<i64>) -> Res<JsonPreview> {
-    let (cards, issues, error) = parse_json(&text);
     let con = state.db.lock().map_err(err)?;
+    json_preview(&con, &text, deck_id)
+}
+
+fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonPreview> {
+    let (cards, issues, error) = parse_json(text);
     let target: Option<(i64, String)> = match deck_id {
         Some(id) => Some(con.query_row("SELECT id, name FROM deck WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?),
         None => None,
@@ -491,12 +542,11 @@ pub fn preview_json(state: State<AppState>, text: String, deck_id: Option<i64>) 
     // 만들어질 덱을 센다. 읽기만 한다
     let mut new_paths: HashSet<Vec<String>> = HashSet::new();
     let mut roots: Vec<String> = vec![];
+    let mut known = HashMap::new();
+    let mut existing = HashSet::new();
     for c in &cards {
         let path = relative_path(&c.deck, target.as_ref().map(|t| t.1.as_str()));
         let root_name = target.as_ref().map(|t| t.1.clone()).or_else(|| path.first().cloned()).unwrap_or_default();
-        if !roots.contains(&root_name) {
-            roots.push(root_name);
-        }
         let mut parent = target.as_ref().map(|t| t.0);
         let mut missing = false;
         for d in 1..=path.len() {
@@ -515,12 +565,24 @@ pub fn preview_json(state: State<AppState>, text: String, deck_id: Option<i64>) 
                 new_paths.insert(path[..d].to_vec());
             }
         }
+        if let Some(deck) = parent.filter(|_| !missing)
+            && known_in(&mut known, con, deck, None)?.contains(&json_note_key(con, c)?)
+        {
+            existing.insert(c.index);
+            continue;
+        }
+        if !roots.contains(&root_name) {
+            roots.push(root_name);
+        }
     }
+    let issues = drop_existing(issues, &existing);
     let skipped = issues.iter().filter(|i| i.severity == "skipped").count();
     Ok(JsonPreview {
-        ok: cards.len(),
+        ok: cards.len() - existing.len(),
+        existing: existing.len(),
         skipped,
-        warnings: issues.len() - skipped,
+        // 참고(info)는 경고에 세지 않는다. 결과 화면과 같은 수 (T4-07)
+        warnings: issues.iter().filter(|i| i.severity == "warning").count(),
         issues,
         roots,
         new_decks: new_paths.len(),
@@ -528,16 +590,20 @@ pub fn preview_json(state: State<AppState>, text: String, deck_id: Option<i64>) 
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_json(state: State<AppState>, text: String, source: String, deck_id: Option<i64>) -> Res<ImportResult> {
-    let (cards, issues, error) = parse_json(&text);
+    let mut con = state.db.lock().map_err(err)?;
+    run_import_json(&mut con, &text, source, deck_id)
+}
+
+fn run_import_json(con: &mut Connection, text: &str, source: String, deck_id: Option<i64>) -> Res<ImportResult> {
+    let (cards, issues, error) = parse_json(text);
     if let Some(e) = error {
         return Err(e);
     }
     if cards.is_empty() {
         return Err("가져올 수 있는 카드가 없어요.".into());
     }
-    let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
     let now = now_ms();
     tx.execute("INSERT INTO import_batch (source_kind, source_name, started_at) VALUES ('json', ?1, ?2)", params![source, now])
@@ -552,13 +618,19 @@ pub fn import_json(state: State<AppState>, text: String, source: String, deck_id
     let mut used: HashSet<i64> = HashSet::new();
     let mut card_tags: HashMap<i64, Vec<Option<(i64, String)>>> = HashMap::new();
     let mut made = 0;
+    let mut known = HashMap::new();
+    let mut existing = HashSet::new();
     for c in &cards {
         let path = relative_path(&c.deck, target.as_ref().map(|t| t.1.as_str()));
         let did = match (&target, path.is_empty()) {
             (Some((id, _)), true) => *id,
             _ => decks.ensure(&tx, target.as_ref().map(|t| t.0), &path, now)?,
         };
-        used.insert(did);
+        if known_in(&mut known, &tx, did, Some(batch))?.contains(&json_note_key(&tx, c)?) {
+            existing.insert(c.index);
+            continue;
+        }
+        used.insert(did); // 넣은 덱만 "가져온 덱"으로 센다 (QA V2-03)
         let n = match c.kind {
             recall::LIST | recall::CHOICE => recall::insert(&tx, c.kind, did, &c.fields, c.importance, &c.tags, Some(batch)).map(|_| 1),
             kind => {
@@ -578,12 +650,16 @@ pub fn import_json(state: State<AppState>, text: String, source: String, deck_id
 
     let roots = roots_of(&tx, &used)?;
     let skipped = issues.iter().filter(|i| i.severity == "skipped").count();
+    let mut issues = drop_existing(issues, &existing);
+    if !existing.is_empty() {
+        issues.push(issue("info", "existing", format!("이미 있는 노트 {}개는 다시 넣지 않았어요", n(existing.len()))));
+    }
     let result = ImportResult {
         source,
         kind: "json".into(),
         decks: roots.len(),
         subdecks: decks.created.iter().filter(|id| !roots.contains(id)).count(),
-        notes: cards.len(),
+        notes: cards.len() - existing.len(),
         cards: made,
         skipped,
         root_deck_id: target.as_ref().map(|t| t.0).or_else(|| (roots.len() == 1).then(|| *roots.iter().next().unwrap())),
@@ -796,7 +872,9 @@ fn open_package(path: &Path, work: &Path, voices: &[String]) -> Res<Package> {
         .ok_or("패키지 안에 컬렉션이 없어요.")?;
     std::fs::create_dir_all(work).map_err(err)?;
     // 메모리에 올리지 않고 임시 파일로 바로 푼다. 이 뒤 어디서 실패해도 tmp 가 지운다
-    let tmp = TmpFile(work.join(format!("import-{}.sqlite", std::process::id())));
+    // 살펴보기 둘이 겹쳐도(살펴보는 중 다른 파일을 놓음) 서로의 파일을 지우지 않게 번호를 붙인다 (T4-03)
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let tmp = TmpFile(work.join(format!("import-{}-{}.sqlite", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed))));
     unpack(&mut zip, entry, "컬렉션", MAX_COLLECTION, &mut std::fs::File::create(&tmp.0).map_err(err)?)?;
     let mut magic = vec![];
     std::fs::File::open(&tmp.0).map_err(err)?.take(15).read_to_end(&mut magic).map_err(err)?;
@@ -1041,6 +1119,10 @@ fn rename_refs(html: &str, renamed: &HashMap<String, String>) -> String {
     out
 }
 
+/// 카드의 실제 기한 (SQL 식). 필터 덱에 올라간 카드는 due 가 필터 덱 안 순서(-100000 부근)이고 원래 기한은 odue 다.
+/// 분 단위 학습 카드(epoch 초)는 필터 덱에서도 due 를 그대로 둔다
+const REAL_DUE: &str = "CASE WHEN odid <> 0 AND odue <> 0 AND due < 1000000000 THEN odue ELSE due END";
+
 /// 카드의 실제 덱. 필터 덱에 올라간 카드는 odid 가 원래 덱이다
 fn real_deck(did: i64, odid: i64) -> i64 {
     if odid != 0 { odid } else { did }
@@ -1128,14 +1210,15 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>,
     };
     let mut st = pkg
         .col
-        .prepare(
-            "SELECT c.id, c.nid, c.did, c.odid, c.type, c.queue, c.due, n.mid, n.guid, n.flds LIKE '%[latex]%',
-                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{document}%' OR n.flds LIKE '%\\usepackage%'
+        .prepare(&format!(
+            "SELECT c.id, c.nid, c.did, c.odid, c.type, c.queue, {REAL_DUE}, n.mid, n.guid, n.flds LIKE '%[latex]%',
+                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{{document}}%' OR n.flds LIKE '%\\usepackage%'
              FROM cards c JOIN notes n ON n.id = c.nid",
-        )
+        ))
         .map_err(err)?;
     let mut rows = st.query([]).map_err(err)?;
     let mut by: std::collections::BTreeMap<i64, (DeckStat, HashSet<i64>)> = Default::default();
+    let mut first: HashMap<String, i64> = HashMap::new(); // guid 마다 처음 나온 노트. 같은 guid 의 다른 노트는 가져오기가 넣지 않는다 (T4-05)
     while let Some(r) = rows.next().map_err(err)? {
         let (cid, nid, did, odid): (i64, i64, i64, i64) = (r.get(0).map_err(err)?, r.get(1).map_err(err)?, r.get(2).map_err(err)?, r.get(3).map_err(err)?);
         let Some(d) = target_deck(pkg, did, odid) else { continue };
@@ -1144,7 +1227,8 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>,
             .or_insert_with(|| (DeckStat { id: real_deck(did, odid), path: deck_parts(d), ..Default::default() }, HashSet::new()));
         s.cards += 1;
         let guid: String = r.get(8).map_err(err)?;
-        let old = existing.contains(&guid);
+        let twin = *first.entry(guid.clone()).or_insert(nid) != nid;
+        let old = existing.contains(&guid) || twin;
         if notes.insert(nid) {
             s.notes += 1;
             s.existing_notes += old as usize;
@@ -1274,7 +1358,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
         )?,
         overdue: pkg
             .col
-            .query_row("SELECT count(*) FROM cards WHERE type = 2 AND queue <> -1 AND due < ?1", [overdue_before], |r| r.get::<_, i64>(0))
+            .query_row(&format!("SELECT count(*) FROM cards WHERE type = 2 AND queue <> -1 AND {REAL_DUE} < ?1"), [overdue_before], |r| r.get::<_, i64>(0))
             .map_err(err)? as usize,
         deck_tree,
         degraded_types: pkg.types.iter().filter(|(_, t)| !t.degraded.is_empty()).map(|(id, _)| *id).collect(),
@@ -1473,6 +1557,7 @@ fn run_import_selected(
     let mut note_map: HashMap<i64, (i64, String)> = HashMap::new();
     let mut note_mid: HashMap<i64, i64> = HashMap::new(); // 다시 맞출 유형의 노트만 (Anki 노트 id -> 모델 id)
     let mut dup = 0;
+    let mut twins = 0; // 파일 안에서 guid 가 같은 노트 (T4-05)
     // [새 노트만 더하기]: 업데이트로 알아본 파일이면 내가 지운 노트는 다시 넣지 않는다 (업데이트와 같다 DU3, 실제 Drive 확인 q8 문제 4)
     let gone = deck_update::gone_guids(&tx, &pkg)?;
     let mut skipped_gone = 0;
@@ -1493,9 +1578,14 @@ fn run_import_selected(
             }
             step(&mut done)?;
             let Some(ntid) = nt_map.get(&mid) else { continue };
-            let exists: bool = tx.query_row("SELECT count(*) FROM note WHERE anki_guid = ?1", [&guid], |r| r.get::<_, i64>(0)).map_err(err)? > 0;
-            if exists {
-                dup += 1;
+            let exists: Option<Option<i64>> =
+                tx.query_row("SELECT import_batch_id FROM note WHERE anki_guid = ?1 LIMIT 1", [&guid], |r| r.get(0)).optional().map_err(err)?;
+            match exists {
+                Some(Some(b)) if b == batch => twins += 1,
+                Some(_) => dup += 1,
+                None => {}
+            }
+            if exists.is_some() {
                 continue;
             }
             if gone.contains(&guid) {
@@ -1539,6 +1629,9 @@ fn run_import_selected(
     if skipped_gone > 0 {
         result.issues.push(issue("info", "gone", format!("내가 지운 노트 {}개는 다시 넣지 않았어요", n(skipped_gone))));
     }
+    if twins > 0 {
+        result.issues.push(issue("warning", "same_note_in_file", format!("파일 안에 같은 노트로 표시된 노트가 겹쳐 {}개는 먼저 나온 것만 넣었어요", n(twins))));
+    }
     if dup > 0 {
         result.issues.push(issue("info", "duplicate", format!("이미 가져온 노트 {}개는 다시 넣지 않았어요", n(dup))));
         // 같은 guid 가 이 기기에 두 벌 (두 기기가 받지 않은 채 같은 파일을 업데이트했다, DU-06)
@@ -1567,13 +1660,14 @@ fn run_import_selected(
         HashMap::new()
     };
     let mut used: HashSet<i64> = HashSet::new();
+    let mut inserted: HashSet<i64> = HashSet::new(); // 이번에 넣은 Anki 카드 (옮기지 않은 기록 수는 이 카드들 것만, T4-04)
     let mut card_tags: HashMap<i64, Vec<Option<(i64, String)>>> = HashMap::new();
     // 이 앱에서 지운 카드 종류의 Anki 카드: (유형 이름, 카드 종류 이름) -> Anki 카드 id (Q2-08)
     let mut gone: BTreeMap<(String, String), Vec<i64>> = BTreeMap::new();
     {
         let mut st = pkg
             .col
-            .prepare("SELECT id, nid, did, ord, queue, odid, type, due, ivl, factor, reps, lapses, coalesce(data, '') FROM cards ORDER BY due, id")
+            .prepare(&format!("SELECT id, nid, did, ord, queue, odid, type, {REAL_DUE} AS d, ivl, factor, reps, lapses, coalesce(data, '') FROM cards ORDER BY d, id"))
             .map_err(err)?;
         let rows = st
             .query_map([], |r| {
@@ -1656,6 +1750,7 @@ fn run_import_selected(
                 .map_err(err)?;
             }
             used.insert(our);
+            inserted.insert(acid);
             result.cards += 1;
             card_tags.entry(our).or_default().push(tags_level(tags));
         }
@@ -1782,13 +1877,24 @@ fn run_import_selected(
 
     let roots = roots_of(&tx, &used)?;
     result.decks = roots.len();
-    // AU5 소리는 재생한다 (I28 경고는 없앴다). 쓰는 소리 파일이 미디어 폴더에 없는 노트만 알린다
-    let missing_sound = {
-        let mut st = pkg.col.prepare("SELECT id, flds FROM notes WHERE flds LIKE '%[sound:%'").map_err(err)?;
+    // AU5 소리는 재생한다 (I28 경고는 없앴다). 쓰는 소리 · 그림 파일이 미디어 폴더에 없는 노트만 알린다 (그림은 T4-13)
+    let (missing_sound, missing_image) = {
+        let mut st = pkg.col.prepare("SELECT id, flds FROM notes WHERE flds LIKE '%[sound:%' OR flds LIKE '%src=%'").map_err(err)?;
         let notes = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
         let gone = |s: &str| safe_media_name(s).is_err() || !dir.join(renamed.get(s).map_or(s, String::as_str)).exists();
-        notes.iter().filter(|(id, flds)| picked_note(*id) && crate::render::sound_names(flds).any(gone)).count()
+        let (mut sound, mut image) = (0, 0);
+        for (_, flds) in notes.iter().filter(|(id, _)| picked_note(*id)) {
+            let sounds: HashSet<&str> = crate::render::sound_names(flds).collect();
+            sound += sounds.iter().any(|s| gone(s)) as usize;
+            let mut refs: Vec<String> = vec![];
+            crate::export::media_refs(flds, &mut refs);
+            image += refs.iter().any(|r| !sounds.contains(r.as_str()) && gone(r)) as usize;
+        }
+        (sound, image)
     };
+    if missing_image > 0 {
+        result.issues.push(issue("warning", "missing_image", format!("그림 파일이 빠진 노트 {}개 · 학습할 때 그 자리에 그림이 나오지 않아요", n(missing_image))));
+    }
     if missing_sound > 0 {
         result.issues.push(issue("warning", "missing_sound", format!("소리 파일이 빠진 노트 {}개 · 학습할 때 그 자리에 \"소리 파일을 찾을 수 없어요\"로 보여요", n(missing_sound))));
     }
@@ -1801,9 +1907,10 @@ fn run_import_selected(
     result.reviews = if with_history {
         import_revlog(&tx, &pkg.col, cards_of, &ords_of)?
     } else {
+        // 이미 있던 노트의 카드 기록은 세지 않는다: 그 노트를 처음 가져올 때 옮겼거나 옮기지 않기로 골랐다
         let mut st = pkg.col.prepare("SELECT cid FROM revlog").map_err(err)?;
         let cids = st.query_map([], |r| r.get::<_, i64>(0)).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
-        cids.into_iter().filter(|cid| cards_of.is_none_or(|c| c.contains(cid))).count()
+        cids.into_iter().filter(|cid| inserted.contains(cid)).count()
     };
     result.filtered_decks = pkg.decks.values().filter(|d| d.filtered).count();
     for d in &degraded {
@@ -1906,7 +2013,8 @@ struct Schedule {
 
 /// Anki 카드 한 장의 일정 -> 우리 일정.
 /// 기억 상태는 Anki 가 FSRS 로 남긴 값(cards.data 의 s, d)을 먼저 쓰고, 없으면 SM-2 간격과 ease 에서 바꾼다.
-/// 기한: 복습과 하루 단위 학습(queue 3)은 컬렉션 생성일(crt)부터의 일수, 분 단위 학습(queue 1)은 epoch 초
+/// 기한(c.due 는 REAL_DUE 값): 복습과 하루 단위 학습은 컬렉션 생성일(crt)부터의 일수, 분 단위 학습은 epoch 초.
+/// 필터 덱은 queue 를 바꿔 두기도 해서(학습 카드가 queue 2) 단위는 queue 가 아니라 값의 크기로 가린다
 fn schedule(c: &AnkiCard, crt_day: i64, fsrs: &fsrs::FSRS) -> Schedule {
     let day_start = |day: i64| db::study_day_end_ms(day - 1) + 1;
     let memory = serde_json::from_str::<Value>(&c.data)
@@ -1921,8 +2029,8 @@ fn schedule(c: &AnkiCard, crt_day: i64, fsrs: &fsrs::FSRS) -> Schedule {
         }
         2 => sched("review", Some(day_start(crt_day + c.due)), c.ivl.max(1) as f64, None),
         t => {
-            // 1 = 학습 중, 3 = 재학습. queue 3 이면 기한이 일수, 아니면 epoch 초
-            let due_at = if c.queue == 3 { day_start(crt_day + c.due) } else { c.due * 1000 };
+            // 1 = 학습 중, 3 = 재학습. 10억보다 작으면 일수, 아니면 epoch 초
+            let due_at = if c.due < 1_000_000_000 { day_start(crt_day + c.due) } else { c.due * 1000 };
             sched(if t == 3 { "relearning" } else { "learning" }, Some(due_at), 0.0, Some(0))
         }
     };
@@ -2192,6 +2300,10 @@ mod tests {
         let s = schedule(&learning, crt, &f);
         assert_eq!((s.state, s.due_at, s.step), ("learning", Some(1_800_000_000_000), Some(0)));
 
+        // 필터 덱(일정 바꾸지 않음)에 올라간 하루 단위 학습 카드: queue 2 인데 기한은 일수 (P0-5)
+        let filtered_learning = AnkiCard { ctype: 1, queue: 2, due: 100, ..learning };
+        assert_eq!(db::study_day(schedule(&filtered_learning, crt, &f).due_at.unwrap()), crt + 100);
+
         // 일시 정지는 상태만 바꾼다. 신규는 일정이 없다
         let suspended = AnkiCard { queue: -1, ctype: 2, due: 100, ivl: 10, factor: 2500, reps: 5, lapses: 1, data: String::new() };
         assert_eq!(schedule(&suspended, crt, &f).state, "suspended");
@@ -2292,13 +2404,14 @@ mod tests {
                         "20": {"name": "B", "dyn": 0}, "30": {"name": "F", "dyn": 1}}"#;
         col.execute("INSERT INTO col VALUES (1, 0, 0, 0, 11, 0, 0, 0, '{}', ?1, ?2, '{}', '{}')", params![models, decks]).unwrap();
         // (노트, 그림, 카드가 있는 덱, 원래 덱)
-        for (n, img, did, odid) in [(1, "a1.png", 11, 0), (2, "a2.png", 12, 0), (3, "b.png", 20, 0), (4, "f.png", 30, 11)] {
+        // 필터 덱 카드는 Anki 처럼 due 가 필터 덱 안 순서, 원래 기한(5일)은 odue
+        for (n, img, did, odid, due, odue) in [(1, "a1.png", 11, 0, 5, 0), (2, "a2.png", 12, 0, 5, 0), (3, "b.png", 20, 0, 5, 0), (4, "f.png", 30, 11, -100_000, 5)] {
             col.execute(
                 "INSERT INTO notes VALUES (?1, ?2, 7, 0, 0, ?4, ?3, '', 0, 0, '')",
                 params![n, format!("guid{n}"), format!("앞 {n}\x1f<img src=\"{img}\">"), if n == 1 { "기출::2023_중간" } else { "" }],
             )
             .unwrap();
-            col.execute("INSERT INTO cards VALUES (?1, ?2, ?3, 0, 0, 0, 2, 2, 5, 3, 2500, 2, 0, 0, 0, ?4, 0, '')", params![100 + n, n, did, odid])
+            col.execute("INSERT INTO cards VALUES (?1, ?2, ?3, 0, 0, 0, 2, 2, ?5, 3, 2500, 2, 0, 0, ?6, ?4, 0, '')", params![100 + n, n, did, odid, due, odue])
                 .unwrap();
             col.execute("INSERT INTO revlog VALUES (?1, ?2, 0, 3, 3, 1, 2500, 1000, 1)", params![1_000 + n, 100 + n]).unwrap();
         }
@@ -2383,6 +2496,8 @@ mod tests {
         let b = row(20);
         assert_eq!((b.cards, b.notes, b.existing_notes), (1, 1, 1), "이미 있는 노트도 트리의 장수에는 센다");
         assert_eq!((b.new_cards, b.reviews, b.overdue, b.types.len()), (0, 0, 0, 0), "들어가지 않을 카드는 사전 검사에서 뺀다");
+        let on_day5 = deck_stats(&pkg, &HashSet::new(), &HashSet::new(), 5).unwrap();
+        assert_eq!(on_day5.iter().find(|d| d.id == 11).unwrap().overdue, 0, "필터 덱 카드의 밀림은 원래 기한(odue)으로 센다 (P0-5)");
         assert_eq!(n(4342), "4,342");
         assert_eq!((n(0), n(999), n(1_000_000)), ("0".into(), "999".into(), "1,000,000".into()));
         drop(pkg);
@@ -2398,6 +2513,7 @@ mod tests {
         assert_eq!(strings("SELECT filename FROM media ORDER BY filename"), ["a1.png", "f.png"], "고른 노트가 쓰는 미디어만");
         assert!(!s.data_dir.join("media/a2.png").exists() && !s.data_dir.join("media/b.png").exists());
         assert_eq!(strings("SELECT anki_revlog_id || '' FROM review_log ORDER BY 1"), ["1001", "1004"], "고른 카드의 기록만");
+        assert_eq!(strings("SELECT DISTINCT due_at || '' FROM card").len(), 1, "필터 덱 카드도 원래 기한(odue = 5일)으로 들어온다 (P0-5)");
         assert_eq!(
             strings("SELECT anki_guid || ' ' || exam_hits || ' ' || exam_names FROM note WHERE exam_hits > 0"),
             [r#"guid1 1 ["2023 중간"]"#],
@@ -2408,7 +2524,102 @@ mod tests {
         // 나머지를 나중에 같은 파일로: 이미 있는 노트는 건너뛰고 B 만 들어온다
         let r = run_import_selected(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), false, Some(&HashSet::from([11, 20])), &[], &mut vec![]).unwrap();
         assert_eq!((r.notes, r.cards, r.media), (1, 1, 1));
+        assert_eq!(r.reviews, 1, "옮기지 않은 기록은 이번에 넣은 카드 것만. A::1 의 기록은 앞에서 이미 옮겼다 (T4-04)");
         assert!(r.issues.iter().any(|i| i.kind == "duplicate"));
+    }
+
+    #[test]
+    fn json_reimport_skips_notes_already_in_the_deck() {
+        // T4-02: 같은 JSON · CSV 를 다시 가져오면 그 덱에 같은 노트(유형 · 필드)가 있는 항목은 건너뛰고 알린다.
+        // 같은 파일 안의 같은 항목은 지금처럼 둘 다 넣는다 (duplicate 경고)
+        let mut con = db::open_in_memory().unwrap();
+        let text = r#"{"deck": "D", "cards": [{"front": "a", "back": "1"}, {"front": "a", "back": "1"}, {"front": "b", "back": "2"}]}"#;
+        assert_eq!(json_preview(&con, text, None).unwrap().ok, 3);
+        assert_eq!(run_import_json(&mut con, text, "f".into(), None).unwrap().notes, 3);
+        let p = json_preview(&con, text, None).unwrap();
+        assert_eq!((p.ok, p.existing), (0, 3));
+        let more = r#"{"deck": "D", "cards": [{"front": "a", "back": "1"}, {"front": "c", "back": "3"}, {"front": "b", "back": "2", "deck": "D::sub"}]}"#;
+        let r = run_import_json(&mut con, more, "f".into(), None).unwrap();
+        assert_eq!(r.notes, 2, "다른 하위 덱에는 들어간다");
+        assert_eq!(r.issues.iter().filter(|i| i.kind == "existing").map(|i| i.detail.as_str()).collect::<Vec<_>>(), ["이미 있는 노트 1개는 다시 넣지 않았어요"]);
+        let notes: i64 = con.query_row("SELECT count(*) FROM note", [], |r| r.get(0)).unwrap();
+        assert_eq!(notes, 5);
+    }
+
+    #[test]
+    fn json_reimport_drops_notes_and_decks_of_items_it_skips() {
+        // V2-03: 이미 있어 넣지 않는 항목에는 "가져왔어요" 참고가 붙지 않고, 카드가 하나도 안 들어간 덱은 들어갈 덱 · 가져온 덱에 없다
+        let mut con = db::open_in_memory().unwrap();
+        let first = r#"[{"front": "a", "back": "1", "deck": "A", "note_type": "서술형"}, {"front": "b", "back": "2", "deck": "B"}]"#;
+        run_import_json(&mut con, first, "f".into(), None).unwrap();
+        let again = r#"[{"front": "a", "back": "1", "deck": "A", "note_type": "서술형"}, {"front": "c", "back": "3", "deck": "B"}]"#;
+        let p = json_preview(&con, again, None).unwrap();
+        assert_eq!((p.ok, p.existing), (1, 1));
+        assert!(p.issues.is_empty(), "{:?}", p.issues.iter().map(|i| &i.detail).collect::<Vec<_>>());
+        assert_eq!(p.roots, ["B"]);
+        let r = run_import_json(&mut con, again, "f".into(), None).unwrap();
+        assert_eq!(r.issues.iter().map(|i| i.kind).collect::<Vec<_>>(), ["existing"]);
+        assert_eq!((r.notes, r.decks, r.roots.len()), (1, 1, 1));
+    }
+
+    #[test]
+    fn json_preview_counts_only_warnings_as_warnings() {
+        // T4-07: 참고(info)는 경고에 세지 않는다. 결과 화면과 같은 수
+        let con = db::open_in_memory().unwrap();
+        let p = json_preview(&con, r#"[{"front": "a", "back": "1", "note_type": "서술형"}, {"front": "a", "back": "2"}]"#, None).unwrap();
+        assert_eq!((p.warnings, p.issues.len()), (1, 2));
+    }
+
+    #[test]
+    fn json_text_follows_the_file_rules() {
+        // T4-11 · T4-12: 붙여넣기 · 파일 선택도 끌어놓기처럼 20MB 까지, BOM 은 뗀다
+        let big = format!("[{}]", " ".repeat(20 * 1024 * 1024));
+        assert_eq!(parse_json(&big).2.as_deref(), Some("20MB가 넘는 글은 나눠서 가져와 주세요."));
+        assert_eq!(parse_json("\u{feff}[{\"front\":\"a\",\"back\":\"b\"}]").0.len(), 1);
+    }
+
+    #[test]
+    fn importing_into_an_archived_deck_restores_its_subdecks() {
+        // T1-04: 가져오기가 보관한 덱을 꺼내면 그 하위 덱도 함께 (위 덱만 꺼내면 하위 덱이 떨어진 덱처럼 남는다)
+        let mut con = db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at, archived_at) VALUES ('A', 0, 0, 1)", []).unwrap();
+        let a = con.last_insert_rowid();
+        con.execute("INSERT INTO deck (parent_id, name, created_at, updated_at, archived_at) VALUES (?1, '1과목', 0, 0, 1)", [a]).unwrap();
+        run_import_json(&mut con, r#"{"deck": "A", "cards": [{"front": "q", "back": "a"}]}"#, "f".into(), None).unwrap();
+        let archived: i64 = con.query_row("SELECT count(*) FROM deck WHERE archived_at IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(archived, 0);
+    }
+
+    #[test]
+    fn two_inspections_use_their_own_temp_files() {
+        // T4-03: 살펴보는 중 다른 파일을 놓으면 두 살펴보기가 겹친다. 먼저 끝난 쪽이 다른 쪽 임시 파일을 지우면 안 된다
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-twotmp-{}-{}", std::process::id(), now_ms())));
+        std::fs::create_dir_all(&tmp.0).unwrap();
+        let p = tmp.0.join("a.apkg");
+        media_package(&p, 1, &[("g", "A")], &[]);
+        let a = open_package(&p, &tmp.0, &[]).unwrap();
+        let b = open_package(&p, &tmp.0, &[]).unwrap();
+        assert_ne!(a._tmp.0, b._tmp.0);
+        drop(a);
+        assert_eq!(count(&b.col, "SELECT count(*) FROM notes").unwrap(), 1);
+    }
+
+    #[test]
+    fn same_guid_twice_in_a_file_and_missing_images_are_reported() {
+        // T4-05: 파일 안에서 guid 가 같은 노트는 첫 노트만 들어간다. 미리보기 수도 그만큼, 이유는 "이미 가져온"이 아니다.
+        // T4-13: 없는 그림도 없는 소리처럼 알린다
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-twin-{}-{}", std::process::id(), now_ms())));
+        let s = state(&tmp.0.join("data"));
+        let p = tmp.0.join("twin.apkg");
+        media_package(&p, 1, &[("g", "A"), ("g", "B"), ("h", r#"<img src="ghost.png">"#)], &[]);
+        let pkg = open_package(&p, &s.data_dir, &[]).unwrap();
+        assert_eq!(deck_stats(&pkg, &HashSet::new(), &HashSet::new(), 0).unwrap()[0].new_cards, 2);
+        drop(pkg);
+        let r = run_import_anki(&|_, _, _| {}, &s, p.to_str().unwrap(), false, &mut vec![]).unwrap();
+        let kinds: Vec<&str> = r.issues.iter().map(|i| i.kind).collect();
+        assert_eq!((r.notes, r.cards), (2, 2));
+        assert!(kinds.contains(&"same_note_in_file") && !kinds.contains(&"duplicate"), "{kinds:?}");
+        assert!(kinds.contains(&"missing_image"), "{kinds:?}");
     }
 
     fn files(dir: &Path) -> BTreeSet<String> {

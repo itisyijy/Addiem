@@ -63,7 +63,14 @@ function LlmRow() {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    const off = listen<{ done: number; total: number }>("llm-progress", (e) => setDl(e.payload));
+    // null: 받기가 끝났다 (다 받음 · 실패 · 멈춤). 받기를 시작하지 않은 칸(설정에 다시 들어옴)도 막대를 지우고 상태를 다시 읽는다 (QA T7-04)
+    // 끝난 까닭은 상태(s.failed)가 보인다: 다시 들어온 칸에도 멈춤 · 실패 문구와 [다시 받기] (QA T7-04)
+    const off = listen<{ done: number; total: number } | null>("llm-progress", (e) => {
+      setDl(e.payload);
+      if (e.payload) return;
+      setError(undefined);
+      refreshLlm();
+    });
     return () => {
       off.then((f) => f());
     };
@@ -96,6 +103,7 @@ function LlmRow() {
   };
 
   const loading = dl ?? (s.downloading ? { done: 0, total: s.bytes } : null);
+  const why = error ?? (loading ? null : s.failed);
   const ok = usable(s);
   const sub = !ok
     ? `${s.cpu_ok ? "이 설치에는 개념 관계 확인 엔진이 없어 쓸 수 없어요." : "이 PC의 CPU가 빠른 계산(AVX2)을 지원하지 않아 쓸 수 없어요."} 서술형 핵심어 검사와 ChatGPT 채점 보조는 그대로 쓸 수 있어요.`
@@ -112,7 +120,7 @@ function LlmRow() {
             개념 관계 확인 모델 · 실험 기능 {!ok && <Badge>이 PC에서는 쓸 수 없어요</Badge>}
           </span>
           <span className="t-body-s c-secondary">{sub}</span>
-          {error && <span className={`t-body-s ${stoppedDownload(error) ? "c-secondary" : "c-danger"}`}>{error}</span>}
+          {why && <span className={`t-body-s ${stoppedDownload(why) ? "c-secondary" : "c-danger"}`}>{why}</span>}
         </span>
         {!ok ? (
           s.ready && <Button variant="ghost" size="M" icon="trash" label={`지우기 · ${gb(s.bytes)} 비우기`} onClick={() => setAsking("delete")} />
@@ -125,7 +133,7 @@ function LlmRow() {
             variant="secondary"
             size="M"
             icon="download"
-            label={`${error ? "다시 받기" : "받기"} · ${gb(s.bytes)}`}
+            label={`${why ? "다시 받기" : "받기"} · ${gb(s.bytes)}`}
             onClick={() => {
               refreshLlm(); // 남은 공간을 새로 잰다
               setAsking("get");

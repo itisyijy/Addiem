@@ -1,10 +1,19 @@
 // B1 새 덱 만들기 / C1-s 하위 덱 만들기. 이름 하나만 받고 바로 통과시킨다
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type DeckDetail, type Level } from "../api";
 import { Button, Icon, Input, LEVEL_LABEL, type IconName } from "../ui";
 import { useModalScope, useNav } from "../nav";
+import { composing } from "../keys";
 
-export function Modal({ title, sub, onClose, children, wide, variant, icon = "alert", className = "" }: {
+/** 창 안의 [취소] 버튼이 X · Esc · 바깥 클릭과 같은 닫기(고친 것이 있으면 묻기)를 쓰게 */
+const CloseContext = createContext<() => void>(() => {});
+export const useModalClose = () => useContext(CloseContext);
+/** 창 안의 [취소]. 고친 것이 있으면 X · Esc 처럼 먼저 묻는다 */
+export function ModalCancel({ label = "취소" }: { label?: string }) {
+  return <Button variant="ghost" size="M" label={label} shortcut="Esc" onClick={useModalClose()} />;
+}
+
+export function Modal({ title, sub, onClose, children, wide, variant, icon = "alert", className = "", dirty = false }: {
   title: string;
   /** 제목 아래 한 줄 설명 (C1-s). 카드 편집은 노트 유형 칩도 (NT13) */
   sub?: ReactNode;
@@ -17,45 +26,70 @@ export function Modal({ title, sub, onClose, children, wide, variant, icon = "al
   icon?: IconName;
   /** 화면마다 다른 폭·위치 */
   className?: string;
+  /** 고친 것이 있다. 바깥 클릭 · X · Esc · useModalClose 로 닫을 때 버릴지 먼저 묻는다 (QA T1-02 · T1-14 · T8-05) */
+  dirty?: boolean;
 }) {
   useModalScope();
   const box = useRef<HTMLDivElement>(null);
-  useFocusTrap(box, onClose);
+  const [asking, setAsking] = useState(false);
+  const close = () => (dirty ? setAsking(true) : onClose());
+  useFocusTrap(box, close);
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <>
+      {/* 작은 창에서 scrim 이 스크롤되면 그 스크롤 막대를 누른 것은 바깥 클릭이 아니다.
+          기본 동작을 막아 방금 뜬 확인 창의 초점을 body 로 빼앗지 않는다 (QA V3-11) */}
       <div
-        ref={box}
-        tabIndex={-1}
-        className={`modal ${wide ? "modal--wide" : ""} ${variant ? `modal--${variant}` : ""} ${className}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
+        className="scrim"
+        onMouseDown={(e) => {
+          if (e.target !== e.currentTarget || e.clientX >= e.currentTarget.clientWidth) return;
+          e.preventDefault();
+          close();
+        }}
       >
-        {variant === "confirm" ? (
-          <>
-            <span className="modal__alert">
-              <Icon name={icon} size={24} className="c-danger" />
-            </span>
-            <h2 className="t-title-m">{title}</h2>
-          </>
-        ) : (
-          <header className="modal__head">
-            {sub ? (
-              <div className="modal__titles">
-                <h2 className="t-title-m">{title}</h2>
-                <p className="t-caption c-tertiary">{sub}</p>
-              </div>
-            ) : (
+        <div
+          ref={box}
+          tabIndex={-1}
+          className={`modal ${wide ? "modal--wide" : ""} ${variant ? `modal--${variant}` : ""} ${className}`}
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
+        >
+          {variant === "confirm" ? (
+            <>
+              <span className="modal__alert">
+                <Icon name={icon} size={24} className="c-danger" />
+              </span>
               <h2 className="t-title-m">{title}</h2>
-            )}
-            <button className="modal__close c-tertiary" aria-label="닫기" onClick={onClose}>
-              <Icon name="x" size={20} />
-            </button>
-          </header>
-        )}
-        {children}
+            </>
+          ) : (
+            <header className="modal__head">
+              {sub ? (
+                <div className="modal__titles">
+                  <h2 className="t-title-m">{title}</h2>
+                  <p className="t-caption c-tertiary">{sub}</p>
+                </div>
+              ) : (
+                <h2 className="t-title-m">{title}</h2>
+              )}
+              <button className="modal__close c-tertiary" aria-label="닫기" onClick={close}>
+                <Icon name="x" size={20} />
+              </button>
+            </header>
+          )}
+          <CloseContext.Provider value={close}>{children}</CloseContext.Provider>
+        </div>
       </div>
-    </div>
+      {asking && (
+        <DiscardModal
+          title="고친 내용이 있어요"
+          text="저장하지 않고 닫을까요?"
+          keep="계속 고치기"
+          discard="버리고 닫기"
+          onKeep={() => setAsking(false)}
+          onDiscard={onClose}
+        />
+      )}
+    </>
   );
 }
 
@@ -78,6 +112,7 @@ export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>, onEsca
     if (!box.contains(document.activeElement)) box.focus();
     const onKey = (e: KeyboardEvent) => {
       if (openBoxes[openBoxes.length - 1] !== box) return;
+      if (composing(e)) return; // 한글 조합 중 Esc 는 조합만 끝낸다
       if (e.key === "Escape" && esc.current) {
         if (e.defaultPrevented) return; // 창 안의 팝오버 · 입력 칸이 먼저 받았다
         e.preventDefault();
@@ -93,9 +128,15 @@ export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>, onEsca
         (e.shiftKey ? last : first).focus();
       }
     };
+    // 창 안에서 초점이 있던 것이 사라지면(팝오버 · 이름 칸이 닫힘) 초점이 body 로 빠져 창 단축키 · Tab 자리를 잃는다. 창으로 돌려준다 (QA V6-05 · V4-08)
+    const onLost = (e: FocusEvent) =>
+      !e.relatedTarget &&
+      queueMicrotask(() => document.activeElement === document.body && box.isConnected && openBoxes[openBoxes.length - 1] === box && box.focus());
     document.addEventListener("keydown", onKey);
+    box.addEventListener("focusout", onLost);
     return () => {
       document.removeEventListener("keydown", onKey);
+      box.removeEventListener("focusout", onLost);
       openBoxes.splice(openBoxes.indexOf(box), 1);
     };
   }, [ref]);
@@ -167,6 +208,7 @@ export function NewDeckModal({ parentId = null, onClose, onCreated }: {
       sub={isSub ? "과목이나 챕터처럼 덱을 폴더로 나눠요" : undefined}
       className={isSub ? "modal--subdeck" : ""}
       onClose={close}
+      dirty={!!name.trim()} // 쓴 이름을 묻지 않고 버리지 않는다 (QA T1-14 · T8-17)
     >
       <form
         className="modal__body"
@@ -229,7 +271,7 @@ export function NewDeckModal({ parentId = null, onClose, onCreated }: {
           </div>
         )}
         <div className="modal__actions">
-          <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={close} />
+          <ModalCancel />
           <Button type="submit" size="M" label="만들기" shortcut="Enter" disabled={!name.trim() || busy} />
         </div>
       </form>

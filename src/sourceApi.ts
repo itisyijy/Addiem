@@ -146,7 +146,16 @@ export type Outline = { sections: Section[]; wide: string | null; source: "outli
 
 /** "source-analyze" 이벤트. step 0 은 카드, 그다음 자료 하나씩 */
 export type AnalyzeProgress = { step: number; steps: number; label: string; done: number; total: number };
-export type ModelStatus = { ready: boolean; downloading: boolean; bytes: number; name: string; analyzing: AnalyzeProgress | null };
+/** failed: 마지막 받기가 실패하거나 멈춘 까닭. analyzed: 덱 id 마다 마지막으로 끝난 분석 (제안한 하위 덱 수 또는 오류) */
+export type ModelStatus = {
+  ready: boolean;
+  downloading: boolean;
+  bytes: number;
+  name: string;
+  analyzing: AnalyzeProgress | null;
+  failed: string | null;
+  analyzed: Record<string, { suggested: number | null; error: string | null }>;
+};
 
 export const sourceApi = {
   list: (deckId: number) => invoke<Material[]>("source_list", { deckId }),
@@ -178,7 +187,8 @@ export const sourceApi = {
   regionDeck: (materialId: number, page: number) => invoke<number>("source_region_deck", { materialId, page }),
   /** IT3 미리보기 · 카드 수 (저장하지 않는다) */
   tableCards: (table: TableSpec) => invoke<RegionCard[]>("source_table_cards", { table }),
-  analyze: (deckId: number) => invoke<{ linked: number; suggested: number }>("source_analyze", { deckId }),
+  /** queued: 다른 분석이 도는 중이라 줄에 섰다 (그 뒤에 돌고, 끝나면 "source-analyze" null) */
+  analyze: (deckId: number) => invoke<{ linked: number; suggested: number; queued: boolean }>("source_analyze", { deckId }),
   /** 이 기기에서 분석한 뒤에 생긴 카드 수 (분석한 적이 없으면 0) */
   unanalyzed: (deckId: number) => invoke<number>("source_unanalyzed", { deckId }),
   modelStatus: () => invoke<ModelStatus>("model_status"),
@@ -203,14 +213,15 @@ export function refreshModel() {
     return s;
   });
 }
-export function useModel(): ModelStatus | null {
+/** fresh: 열 때마다 다시 읽는다 (받기 · 분석 상태를 보이는 칸). 다시 들어온 화면이 받는 중인데 받기 전 모양이었다 (QA V5-01) */
+export function useModel(fresh = false): ModelStatus | null {
   const s = useSyncExternalStore(
     (f) => (subs.add(f), () => subs.delete(f)),
     () => model,
   );
   useEffect(() => {
-    if (!model) refreshModel().catch(() => {});
-  }, []);
+    if (fresh || !model) refreshModel().catch(() => {});
+  }, [fresh]);
   return s;
 }
 

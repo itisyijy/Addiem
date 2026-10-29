@@ -28,6 +28,8 @@ import { NoteTypeEdit } from "./screens/NoteTypeEdit";
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ name: "home" });
+  // 화면에 들어온 횟수. 가져오기는 다시 들어오면 처음부터 (같은 경로여도, QA T4-10 · T4-17)
+  const [visit, setVisit] = useState(0);
   const [ready, setReady] = useState(false);
   // 학습 데이터를 열지 못했으면 (S1-6) 화면 대신 복구 안내를 띄운다
   const [broken, setBroken] = useState<AppInfo | null>(null);
@@ -44,6 +46,7 @@ export default function App() {
   const nav = useCallback((r: Route, force = false) => {
     if (isNavLocked() || (!force && leaveBlocked(r))) return;
     setRoute(r);
+    setVisit((v) => v + 1);
     window.scrollTo(0, 0);
   }, []);
   // 개발 빌드에서만: 화면 확인(CDP)이 파일 대화상자 없이 가져오기 화면을 연다 (B2-u [방식 바꾸기]와 같은 { name: "import", path })
@@ -57,7 +60,8 @@ export default function App() {
   const bare = focused || route.name === "noteTypeEdit";
 
   // 전역 단축키 N · I (E1 기본 단축키). 학습 흐름과 작성 중인 카드 추가 화면에서는 끈다
-  const globalKeys = !["study", "summary", "addCard", "noteTypeEdit"].includes(route.name);
+  // 데이터를 열지 못한 복구 안내(S1-6)에서는 화면을 바꾸지 못하니 상단 메뉴와 함께 끈다 (QA T5-13 · T8-11)
+  const globalKeys = !broken && !["study", "summary", "addCard", "noteTypeEdit"].includes(route.name);
   useKey({ action: "newDeck" }, useCallback(() => nav({ name: "newDeck" }), [nav]), globalKeys);
   useKey({ action: "import" }, useCallback(() => nav({ name: "import", pick: true }), [nav]), globalKeys);
 
@@ -66,7 +70,7 @@ export default function App() {
       <NavContext.Provider value={nav}>
         <div className="app">
           {!bare && <Backdrop />}
-          {!bare && (
+          {!bare && !broken && (
             <div className="app__nav">
               <TopNav
                 onHome={() => nav({ name: "home" })}
@@ -77,7 +81,7 @@ export default function App() {
               />
             </div>
           )}
-          {ready && (broken ? <Recover info={broken} onRecovered={() => (load(), nav({ name: "home" }))} /> : <Screen route={route} />)}
+          {ready && (broken ? <Recover info={broken} onRecovered={() => (load(), nav({ name: "home" }))} /> : <Screen route={route} visit={visit} />)}
           {/* K Drive 동기화 창들. 학습 화면에서는 동기화를 멈추고, 나오면(학습을 마치면) 올린다 */}
           <SyncHost studying={focused} />
         </div>
@@ -86,7 +90,7 @@ export default function App() {
   );
 }
 
-function Screen({ route }: { route: Route }) {
+function Screen({ route, visit }: { route: Route; visit: number }) {
   switch (route.name) {
     case "home":
       return <Home />;
@@ -114,7 +118,7 @@ function Screen({ route }: { route: Route }) {
         />
       );
     case "import":
-      return <Import key={`anki-${route.path ?? ""}`} tab="anki" pick={route.pick} path={route.path} />;
+      return <Import key={`anki-${route.path ?? ""}-${visit}`} tab="anki" pick={route.pick} path={route.path} />;
     case "deckUpdate":
       return <DeckUpdate {...route} />;
     case "updateResult":

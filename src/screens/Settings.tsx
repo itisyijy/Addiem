@@ -6,7 +6,7 @@ import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
 import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useOverlayScope } from "../nav";
 import {
-  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
+  ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, needsModifier, plainEnter, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
   type ActionId,
 } from "../keys";
 import { Modal } from "./NewDeck";
@@ -250,7 +250,7 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
 
       <section className="prefs__section">
         <p className="prefs__label t-label-s c-tertiary">데이터</p>
-        <ModelRow /> {/* I3 분석 모델 (받았을 때만, screens/Sources.tsx) */}
+        <ModelRow /> {/* I3 분석 모델 (받기 전에도 [내려받기], screens/Sources.tsx) */}
         <div className="prefs__row">
           <span className="prefs__text">
             <span className="t-body-m-strong">모든 데이터 삭제</span>
@@ -330,6 +330,7 @@ const BACKUP_KIND: Record<LocalBackup["kind"], string> = {
   wipe: "모든 데이터 삭제 전 자동 백업",
   sync: "동기화 전 자동 백업",
   cleanup: "노트 정리 전 자동 백업",
+  other: "백업 폴더에 넣은 파일",
 };
 const size = (b: number) => (b < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(1)}MB`);
 
@@ -353,7 +354,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
     api.localBackups().then(
       (l) => {
         setList(l);
-        setPick((p) => (p && l.some((b) => b.name === p) ? p : l[0]?.name));
+        // 처음 고른 것은 앱이 만든 백업 중 가장 최근 것 (넣은 파일은 직접 고를 때만)
+        setPick((p) => (p && l.some((b) => b.name === p) ? p : (l.find((b) => b.kind !== "other") ?? l[0])?.name));
       },
       (e) => setError(errorText(e)),
     );
@@ -378,7 +380,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
   const update = updates.find((x) => x.backup === pick && !x.blocked);
   if (undo !== null) return <UndoConfirm batch={undo} onClose={() => setUndo(null)} />;
   return (
-    <Modal title="백업으로 복구할까요?" onClose={onClose} variant="confirm" icon="rotate" className="restore">
+    // 복구하는 동안은 닫지 않는다: 다른 화면의 명령이 복구가 끝날 때까지 기다리다 갑자기 새로 고쳐진다 (QA T9-07)
+    <Modal title="백업으로 복구할까요?" onClose={busy ? () => {} : onClose} variant="confirm" icon="rotate" className="restore">
       <p className="t-body-m c-secondary">지금 데이터가 이 백업 때로 바뀌어요 · 이 백업 뒤에 한 학습은 빠져요. 복구하기 전에 지금 상태를 백업해 두니 다시 되돌릴 수 있어요.</p>
       {list && list.length === 0 && <p className="t-body-s c-tertiary">이 기기 백업이 아직 없어요</p>}
       {list && list.length > 0 && (
@@ -391,7 +394,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
                 {/* 같은 분에 만든 백업끼리만 초까지 (DU51) */}
                 <span className="t-body-m-strong">{when(b.at, list.some((o) => o !== b && when(o.at) === when(b.at)))}</span>
                 <span className="t-caption c-tertiary">
-                  {BACKUP_KIND[b.kind]} · {size(b.bytes)}
+                  {BACKUP_KIND[b.kind]}
+                  {b.kind === "other" && ` (${b.name})`} · {size(b.bytes)}
                 </span>
               </span>
             </label>
@@ -407,12 +411,16 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
           <Button variant="secondary" size="M" label="이 업데이트 되돌리기" onClick={() => setUndo(update.batch)} />
         </div>
       )}
+      {/* Drive 에 연결하기 전 백업(처음 연결할 때의 동기화 전 자동 백업 등)에는 연결이 없다: 되돌리면 연결이 풀린다 (K47, QA V1-04) */}
       {drive?.connected && (
-        <p className="t-body-s c-secondary">Google Drive 동기화를 켜 두었으면 다음 동기화 때 Drive와 다시 맞춰요. 이미 다른 기기로 올라간 변경은 다시 들어와요.</p>
+        <p className="t-body-s c-secondary">
+          Drive에 연결한 뒤 만든 백업이면 다음 동기화 때 Drive와 다시 맞추고, 이미 다른 기기로 올라간 변경은 다시 들어와요. 연결하기 전에 만든 백업이면 Drive 연결이 풀려요. 다시 연결하면
+          Drive 데이터와 합칠 수 있어요.
+        </p>
       )}
       {error && <p className="t-body-s c-danger">{error}</p>}
       <div className="modal__actions">
-        <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+        <Button variant="ghost" size="M" label="취소" shortcut="Esc" disabled={busy} onClick={onClose} />
         <Button variant="danger" size="M" icon="rotate" label={busy ? "복구하는 중…" : "이 백업으로 복구"} disabled={!pick || busy} onClick={run} />
       </div>
     </Modal>
@@ -464,7 +472,7 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
         value={typed}
         autoFocus
         onChange={(e) => setTyped(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && run()}
+        onKeyDown={(e) => plainEnter(e) && run()}
         error={error}
       />
       <div className="modal__actions">
@@ -904,6 +912,9 @@ function KeysTable() {
       const fixed = reservedLabel(rec.id, chord);
       if (fixed) return setNote(`${keyLabel(chord)}${eun(keyLabel(chord))} '${fixed}'에 고정된 키예요`);
       const me = actionOf(rec.id);
+      // 저장 · 수식 넣기는 글을 쓰는 칸에서 받는다. 글자 키로 정하면 그 글자를 칠 때 저장된다 (QA T2-05)
+      // 글을 쓰는 칸에서도 받는 동작(저장 · 수식)은 Ctrl · Alt 없는 키를 주지 않는다 (keys.ts load() 와 같은 규칙)
+      if (needsModifier(rec.id, chord)) return setNote(`'${me.label}'${eun(me.label)} 글을 쓰는 중에도 받는 키라 Ctrl이나 Alt와 함께 눌러 주세요`);
       const other = ACTIONS.find((a) => a.id !== rec.id && map[a.id].includes(chord));
       if (rec.id === "rate") {
         // 평가 4개는 한 행에서 차례로. 같은 범위의 다른 동작 키나 이미 고른 키는 받지 않는다

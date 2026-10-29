@@ -1,10 +1,23 @@
-/* 공통 토스트 (Figma S1 26:3850 의 3번, D4 접어두기 토스트와 같은 자리·모양) */
-.toast {
+/* 공통 토스트 (Figma S1 26:3850 의 3번, D4 접어두기 토스트와 같은 자리·모양). 여러 개면 위로 쌓는다 (새 것이 아래) */
+.toasts {
   position: fixed;
   bottom: calc(48px + var(--toast-lift, 0px)); /* C2-b 선택 바가 떠 있으면 그 위로 */
   left: 50%;
   z-index: 30;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+/* 겹침 창이 떠 있으면 왼쪽 아래 구석에 좁게, 가장 최근 1개만. 창 제목(위)과 오른쪽에 모인 창 버튼을 덮지 않는다.
+   260 + 16 은 1091 폭에서 520 폭 창(내보내기)의 왼쪽 끝 285 안쪽이다 (QA V4-03 · V9-03). 창을 닫으면 쌓인 것이 다시 보인다 */
+body:has(.scrim) .toasts { left: 16px; bottom: 16px; align-items: flex-start; transform: none; }
+body:has(.scrim) .toast { max-width: 260px; }
+body:has(.scrim) .toast:not(:last-child) { display: none; }
+.toast {
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 14px;

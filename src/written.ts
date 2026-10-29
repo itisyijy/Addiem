@@ -40,6 +40,8 @@ export type LlmStatus = {
   engine: boolean;
   off: boolean;
   last_ms: number | null;
+  /** 마지막 받기가 실패하거나 멈춘 까닭 (다 받으면 null) */
+  failed: string | null;
 };
 
 export type WrittenNote = {
@@ -71,6 +73,8 @@ export type CramPlan = {
   round_seen: number;
   /** 오늘 이미 일정에 반영해서 이번 분량에서 빼는 카드 */
   today_seen: number;
+  /** 이 덱의 오늘 하루 신규 몫 (큐 · 계획 그래프와 같은 산식) */
+  new_per_day: number;
 };
 
 /** 혼합 회독 한 자리. weak: 취약 카드로 끼운 자리면 이유 */

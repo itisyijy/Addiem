@@ -798,7 +798,7 @@ pub struct AiStatus {
     sent_at: Option<i64>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_status(app: AppHandle) -> Res<AiStatus> {
     with_db(&app, |c| {
         let email = get_meta(c, META_EMAIL);
@@ -1206,15 +1206,20 @@ fn fake_check(question: &str, answer: &str, rule: Option<&str>, segments: usize)
     .to_string()
 }
 
-/// 잠긴 칸은 보낸 그대로 두라는 지시 (그래도 바꾸면 parse_check 가 버린다)
-fn check_instructions(locked: [bool; 2]) -> String {
+/// 잠긴 칸은 보낸 그대로 두라는 지시 (그래도 바꾸면 parse_check 가 버린다). 자료 구간을 보내지 않았으면 근거에 "자료"를 말하지 않게 한다
+/// (QA R-06: 자료 없이 보낸 카드의 근거가 "자료에 … 설명이 없어요"라 자료를 본 것처럼 읽혔다)
+fn check_instructions(locked: [bool; 2], sources: bool) -> String {
+    let mut s = CHECK_INSTRUCTIONS.to_string();
+    if !sources {
+        s.push_str("\n- 이번에는 자료 구간을 보내지 않았어요. 카드 글자만 보고 판단하고, reason 과 checks 에 '자료'를 말하지 마세요 (예: \"답에 절편 설명이 없어요\").");
+    }
     let side = match locked {
         [true, true] => "질문과 답",
         [true, false] => "질문",
         [false, true] => "답",
-        _ => return CHECK_INSTRUCTIONS.to_string(),
+        _ => return s,
     };
-    format!("{CHECK_INSTRUCTIONS}\n- {side}에는 그림 · 소리 · 서식이 있어 여기서 바꿀 수 없어요. fix 의 그 칸은 보낸 글 그대로 두세요.")
+    format!("{s}\n- {side}에는 그림 · 소리 · 서식이 있어 여기서 바꿀 수 없어요. fix 의 그 칸은 보낸 글 그대로 두세요.")
 }
 
 /// 원래 질문과 답 · 함께 보낸 구간 · 보내는 글 · 지시 (DB 를 읽기만 한다)
@@ -1226,7 +1231,7 @@ fn check_prepare(con: &Connection, card_id: i64, segment_ids: &[i64]) -> Result<
     if input.chars().count() > MAX_INPUT_CHARS {
         return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 직접 고쳐 주세요.".into()));
     }
-    let instructions = check_instructions(r.locked);
+    let instructions = check_instructions(r.locked, !sent.is_empty());
     Ok((r, sent, input, instructions))
 }
 
@@ -1754,5 +1759,14 @@ mod tests {
         let c = parse_check(&fake_check(&r.question, &r.answer, Some("x"), sent.len()), &r.question, &r.answer, &sent, r.locked).unwrap();
         assert!(c.fix.is_none() && c.kept_locked, "잠긴 답을 바꾼 고친 안은 버린다");
         assert_eq!(snapshot(&con), before, "필드 · 수정 시각 · 변경 기록 그대로");
+    }
+
+    /// QA R-06: 자료 구간을 보내지 않으면 근거 · 물음에 '자료'를 말하지 말라고 한다. 보냈으면 그 줄이 없다. 잠긴 칸 줄은 그대로 붙는다
+    #[test]
+    fn check_without_sources_does_not_talk_about_sources() {
+        assert!(check_instructions([false, false], false).contains("자료 구간을 보내지 않았어요"));
+        assert_eq!(check_instructions([false, false], true), CHECK_INSTRUCTIONS);
+        let locked = check_instructions([true, false], false);
+        assert!(locked.contains("자료 구간을 보내지 않았어요") && locked.ends_with("fix 의 그 칸은 보낸 글 그대로 두세요."));
     }
 }

@@ -13,6 +13,7 @@
 
 /* ---------------------------------------------------------------- I1 */
 .sources { display: flex; flex-direction: column; gap: 16px; width: 1120px; margin: 0 auto; padding: 96px 0 48px; }
+@media (max-width: 1179px) { .sources { width: auto; margin-inline: 24px; } } /* 1180 보다 좁은 창 (QA V4-01, screens.css 끝) */
 .src-cols { display: flex; align-items: flex-start; gap: 20px; }
 
 .src-files { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; width: 260px; }

@@ -2152,7 +2152,7 @@ fn write<T>(state: &State<AppState>, f: impl FnOnce(&Connection) -> Res<T>) -> R
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn note_types(state: State<AppState>) -> Res<Vec<TypeRow>> {
     list(&*state.db.lock().map_err(err)?)
 }
@@ -2162,7 +2162,7 @@ pub fn note_type_detail(state: State<AppState>, id: i64) -> Res<Detail> {
     detail(&*state.db.lock().map_err(err)?, id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn deck_note_types(state: State<AppState>, deck_id: i64) -> Res<Vec<i64>> {
     deck_types(&*state.db.lock().map_err(err)?, deck_id)
 }

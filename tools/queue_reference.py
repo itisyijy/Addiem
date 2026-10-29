@@ -204,9 +204,11 @@ def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0
     paused = _with_descendants(paused_ids, decks)
     skipped = _with_descendants([i for i in paused_ids if i not in chosen], decks)
 
-    pool = [c for c in cards
-            if c.deck_id in wanted and c.deck_id not in skipped and c.state != "suspended"
-            and not c.front_empty]
+    # 신규 예산은 범위 밖 하위 덱까지 모아 센다 (아래 2단계, QA T3-08). 나머지는 범위 안만
+    everywhere = [c for c in cards
+                  if c.deck_id in by_id and c.deck_id not in skipped and c.state != "suspended"
+                  and not c.front_empty]
+    pool = [c for c in everywhere if c.deck_id in wanted]
 
     # --- 1단계. 후보 수집
     for c in pool:
@@ -250,13 +252,16 @@ def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0
     plan.backlog = [c for c in plan.backlog if first(c)]
 
     # --- 2단계. 신규 목표량.
-    # 하위 덱별로 세지 않고 예산을 가진 조상 덱 단위로 묶는다. 쉬는 덱의 신규는 넣지 않는다
+    # 하위 덱별로 세지 않고 예산을 가진 조상 덱 단위로 묶는다. 쉬는 덱의 신규는 넣지 않는다.
+    # 몫은 예산 덱 아래 전체에서 고르고, 고른 덱(범위) 것만 남긴다: 하위 덱만 학습해도 상위 덱 표의 그 덱 수와 같다
     new_by_owner = {}
-    for c in pool:
+    for c in everywhere:
         if c.state == "new" and c.buried_until is None and c.deck_id not in paused:
             new_by_owner.setdefault(budget_owner(c.deck_id, by_id), []).append(c)
 
     for owner, group in new_by_owner.items():
+        if not any(c.deck_id in wanted for c in group):
+            continue
         target, why = new_target_for_deck(by_id[owner], today, len(group))
         if new_scale != 1.0:
             target = max(0, min(len(group), round(target * new_scale)))
@@ -272,7 +277,7 @@ def build_queue(today: date, decks, cards, deck_ids=None, new_scale: float = 1.0
                 break
             if first(c):
                 picked.append(c)
-        plan.new.extend(picked)
+        plan.new.extend(c for c in picked if c.deck_id in wanted)
 
     # --- 4단계. 상한. 밀린 복습이 수백 장 쌓여도 오늘을 마비시키지 않는다
     if len(plan.backlog) > BACKLOG_DAILY_CAP:
@@ -564,6 +569,16 @@ def test():
         cards2 += _cards([("new", NORMAL, None)] * 25, deck_id=sd.id, start=i * 100 + 1)
     p = build_queue(T, [root2] + subs2, cards2)
     assert len(p.new) == 10, f"전체 100장 / 10일, got {len(p.new)}"
+    ok += 1
+
+    # QA T3-08: 하위 덱만 골라도 몫은 예산 덱 아래 전체에서 고르고 고른 덱 것만 남긴다 (Rust subdeck_budget_is_shared)
+    root3 = Deck(1, "d1", target_date=T + timedelta(days=24))
+    subs3 = [Deck(2, "d2", parent_id=1), Deck(3, "d3", parent_id=1)]
+    cards3 = _cards([("new", NORMAL, None)] * 20, deck_id=2, start=1) + _cards([("new", NORMAL, None)] * 12, deck_id=3, start=100)
+    assert [c.deck_id for c in build_queue(T, [root3] + subs3, cards3).new] == [2, 2], "32장 / 24일 = 2장"
+    p = build_queue(T, [root3] + subs3, cards3, deck_ids=[2])
+    assert len(p.new) == 2 and "남은 32장" in p.notes[0], (len(p.new), p.notes)
+    assert len(build_queue(T, [root3] + subs3, cards3, deck_ids=[3]).new) == 0
     ok += 1
 
     print(f"큐 참조 구현 테스트 통과: {ok}건")

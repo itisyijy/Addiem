@@ -4,8 +4,10 @@ import { createPortal } from "react-dom";
 import { Button, Checkbox, Icon, Kbd, Segment, type IconName, type Rating } from "../ui";
 import { eul, eun, gwa, iga, n, ro } from "../nav";
 import { plainText } from "../cardHtml";
+import { plainEnter } from "../keys";
 import { aiApi, aiError, type AiError } from "../api";
-import { AiConnect, ScopeLine, SendList, UsingPlan, openUsage, refreshAi, sendConfirmed, setSendConfirmed, useAiStatus, type SendRow } from "../ai";
+import { AiConnect, ScopeLine, SendList, SLOW, STOPPED, UsingPlan, openUsage, refreshAi, sendConfirmed, setSendConfirmed, useAiStatus, useSlow, type SendRow } from "../ai";
+import { useToast } from "../toast";
 import { CIRCLED, choiceLabel, listLabel, optionKey, recall, wantedDistractors, type ChoiceDraft, type ListDraft, type Special } from "../recall";
 import "../styles/recall.css";
 
@@ -239,9 +241,6 @@ function useFocusRow() {
   };
 }
 
-/** 한글 조합 중 Enter 는 글자를 마치는 키다 */
-const plainEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing;
-
 /** 목록: 항목(한 줄에 하나 · Enter 로 다음 줄) + [순서대로 | 순서 없이]. 2개 미만은 저장할 때 막고, 10개를 넘으면 경고만 (Q4) */
 export function ListEditor({ value, onChange }: { value: ListDraft; onChange: (v: ListDraft) => void }) {
   const { box, focus, next } = useFocusRow();
@@ -376,9 +375,10 @@ type DqPhase = "idle" | "confirm" | "busy" | "done" | "error";
 
 /** 한 줄 오류 (L4-e 와 같은 문구 결, 버튼은 글자 링크 하나) */
 function dqError(f: AiError): [IconName, string, string] {
-  if (f.kind === "expired") return ["link-off", "c-danger", "ChatGPT 연결이 끊겼어요"];
+  // 다른 AI 화면(ai.tsx AiErrorBox)과 같은 말 (QA T7-08: 만료를 "끊겼어요"라고 했다)
+  if (f.kind === "expired") return ["link-off", "c-danger", "ChatGPT 로그인이 만료됐어요"];
   if (f.kind === "scope") return ["link-off", "c-danger", "사용량 권한이 필요해요"];
-  if (f.kind === "limit") return ["gauge", "c-warn", "요금제 사용 한도에 닿았어요 · 잠시 뒤 다시 해 주세요"];
+  if (f.kind === "limit") return ["gauge", "c-warn", "사용량 한도에 도달했어요"];
   if (f.kind === "bad_output") return ["alert", "c-warn", "알맞은 오답을 만들지 못했어요 · 다시 시도해 주세요"];
   if (f.kind === "offline") return ["wifi-off", "c-secondary", "인터넷에 연결되어 있지 않아요"];
   if (f.kind === "unavailable") return ["alert", "c-warn", "지금은 ChatGPT 요금제를 쓸 수 없어요 · 잠시 뒤 다시 해 보세요"];
@@ -420,7 +420,8 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
   const [skip, setSkip] = useState<string[]>([]); // 보낼 목록에서 ✕ 로 뺀 이미 쓴 보기 (이 창 동안)
   const [prior, setPrior] = useState<string[]>([]); // 이 창에서 받은 제안 모두 (넣은 것 · 뺀 것 · 남은 것). 다시 받을 때 피할 보기로
   const [fail, setFail] = useState<AiError | null>(null);
-  const [slow, setSlow] = useState(false);
+  const slow = useSlow(phase === "busy");
+  const toast = useToast();
   const [reconnect, setReconnect] = useState<boolean | null>(null); // [다시 연결] (사용량 권한을 다시 묻는가)
   const seq = useRef(0);
   const inFlight = useRef(false);
@@ -434,18 +435,17 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
   useEffect(() => {
     report.current?.(phase === "done" ? offered.length : 0);
   }, [phase, offered]);
+  // 창을 닫거나 저장해 사라질 때도 [취소]처럼 알린다: 이미 보낸 요청은 사용량에 들어간다 (QA V5-03)
   useEffect(
     () => () => {
-      if (inFlight.current) aiApi.cancel().catch(() => {});
+      if (inFlight.current) {
+        aiApi.cancel().catch(() => {});
+        toast(STOPPED);
+      }
       report.current?.(0);
     },
     [],
   );
-  useEffect(() => {
-    if (phase !== "busy") return setSlow(false);
-    const t = setTimeout(() => setSlow(true), 30_000);
-    return () => clearTimeout(t);
-  }, [phase]);
   // 낮은 창의 카드 편집(E): 받은 제안이 보기 목록과 함께 보이게 창 안에서 맞춘다. 보기 머리를 위로, 그래도 제안이 넘치면 제안 끝까지
   // (700px 은 study.css 의 낮은 창과 같다. 800 이상은 그대로)
   const box = useRef<HTMLDivElement>(null);
@@ -505,7 +505,10 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
   /** 처음 보낼 때 한 번 묻는다 (L4 와 같은 이 기기 확인, Q39). ponytail: 편집 창마다 묻게 하려면 sendConfirmed() 대신 이 창의 ref */
   const start = () => (sendConfirmed() ? send() : setPhase("confirm"));
   const cancel = () => {
-    if (inFlight.current) aiApi.cancel().catch(() => {});
+    if (inFlight.current) {
+      aiApi.cancel().catch(() => {});
+      toast(STOPPED); // 이미 보낸 요청은 사용량에 들어간다 (QA R-05)
+    }
     inFlight.current = false;
     seq.current++;
     setPhase("idle");
@@ -541,7 +544,7 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
       <div className="dq__wait" role="status">
         <span className="dq__lead">
           <Icon name="rotate" size={16} />
-          <span className="t-label-m">{slow ? "오래 걸려요… 보기를 직접 써도 돼요" : "ChatGPT가 오답 보기를 만드는 중… 보기를 직접 써도 돼요"}</span>
+          <span className="t-label-m">{slow ? `${SLOW} · 보기를 직접 써도 돼요` : "ChatGPT가 오답 보기를 만드는 중… 보기를 직접 써도 돼요"}</span>
         </span>
         <button type="button" className="ai-link t-label-m" onClick={cancel}>
           취소
@@ -551,7 +554,8 @@ function DistractorLine({ question, value, onChange, onUnplaced }: {
   else if (phase === "error" && fail) {
     const [icon, tone, text] = dqError(fail);
     const action: [string, () => void] | undefined =
-      fail.kind === "expired" || fail.kind === "scope" ? ["다시 연결", () => setReconnect(fail.kind === "scope")]
+      // 다른 곳(ai.tsx AiErrorBox)과 같은 이름: 만료는 [다시 로그인], 권한은 [다시 연결] (QA V5-06)
+      fail.kind === "expired" || fail.kind === "scope" ? [fail.kind === "scope" ? "다시 연결" : "다시 로그인", () => setReconnect(fail.kind === "scope")]
       : fail.kind === "limit" ? ["사용량 관리", openUsage]
       : fail.kind === "not_eligible" ? undefined
       : ["다시 시도", send];

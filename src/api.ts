@@ -6,11 +6,14 @@ import { voiceLangs } from "./cardHtml";
 
 export type Level = 0 | 1 | 2;
 
-export type HomeDeck = { id: number; name: string; review: number; new: number; tomorrow: number; dday: number | null };
+/** again: review 중 오늘 이미 평가해 학습 단계로 다시 볼 카드 */
+export type HomeDeck = { id: number; name: string; review: number; new: number; again: number; tomorrow: number; dday: number | null };
 export type Home = {
   has_decks: boolean;
   review: number;
   new: number;
+  /** review 중 다시 볼 카드 (오늘 이미 평가한 학습 단계 카드) */
+  again: number;
   done_today: number;
   decks: HomeDeck[];
   /** 오늘 볼 카드가 없는 덱. 쉬는 덱이 맨 위 (A2-p) */
@@ -67,6 +70,8 @@ export type DeckDetail = {
   hard_next: string | null;
   backlog: number;
   today_review: number;
+  /** today_review 중 오늘 이미 평가해 다시 볼 카드 (오늘 완료에도 들어 있다) */
+  today_again: number;
   today_new: number;
   today_returning: number;
   reason: string | null;
@@ -81,6 +86,8 @@ export type DeckDetail = {
   core_learned_pct: number;
   per_day: number;
   finish_days: number | null;
+  /** 예산 덱이 나눌 남은 신규 (자기 설정을 가진 하위 덱 것은 빠진다) */
+  budget_unseen: number;
   /** 앞면이 빈 카드 (학습에 나오지 않는다). 그중 신규 수 (unseen 에 들지 않는다) */
   front_empty: number[];
   unseen_empty: number;
@@ -132,6 +139,7 @@ export type CardRow = {
   sounds: [boolean, boolean];
   /** 앞면이 빈 카드 (학습에 나오지 않는다, NT49) */
   front_empty: boolean;
+  note_type_id: number;
 };
 /** 그림 가리기 카드의 자리. ordinal: 칸 번호(편집기 focus), n/count: "그림 가리기 · n/N" */
 export type IoPos = { ordinal: number; n: number; count: number };
@@ -188,6 +196,8 @@ export type QueueSummary = {
   target: { name: string; dday: number; remaining_new: number; days: number } | null;
   /** 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수 (D1 머리 문장, P9) */
   mixed_today: number;
+  /** learning · review · backlog 중 오늘 이미 평가해 다시 볼 카드 (홈 · 덱 상세의 "다시 볼", QA V9-04) */
+  again: number;
 };
 
 export type CardView = {
@@ -333,10 +343,14 @@ export type SessionSummary = {
   buried: BuriedCard[];
   remaining_review: number;
   remaining_new: number;
+  /** 남은 카드 중 오늘 이미 본 카드 (학습 단계). 학습한 카드에도 들어 있다 */
+  remaining_seen: number;
   tomorrow: number;
   tomorrow_review: number;
   tomorrow_new: number;
   tomorrow_decks: { name: string; review: number; new: number; dday: number | null }[];
+  /** 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다 (평가 없던 학습 · 지난 학습일이면 false) */
+  undoable: boolean;
 };
 
 export type ImportIssue = { severity: "skipped" | "warning" | "info"; kind: string; detail: string; index: number | null };
@@ -359,7 +373,10 @@ export type ImportResult = {
   issues: ImportIssue[];
 };
 export type JsonPreview = {
+  /** 들어갈 항목 (이미 있는 노트는 뺐다) */
   ok: number;
+  /** 대상 덱에 같은 노트가 이미 있어 건너뛸 항목 */
+  existing: number;
   skipped: number;
   warnings: number;
   issues: ImportIssue[];
@@ -417,7 +434,7 @@ export type AnkiPreview = {
 // ---------------------------------------------------------------- 8.7 덱 업데이트 (import/deck_update.rs, docs/engineering/deck-update.md 9장)
 
 /** 이 기기 백업 zip. kind: manual 직접 · update 덱 업데이트 적용 전 · restore 복구 전 */
-export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "cleanup" };
+export type LocalBackup = { name: string; at: number; bytes: number; kind: "manual" | "update" | "restore" | "move" | "undo" | "notetype" | "deck" | "wipe" | "sync" | "cleanup" | "other" };
 /** DU59 새 버전에 없는 노트 정리의 수 (확인 창 · 결과). backup: 지우기 전에 만든 백업 이름 */
 /** 학습 중지면 notes · cards 는 이번에 바꾼 것만, changed 는 그 카드 (토스트 [되돌리기]) */
 export type TidySummary = { notes: number; cards: number; studied: number; suspended: number; backup: string | null; changed: number[] };
@@ -431,6 +448,8 @@ export type UpdateHint = {
   known_decks: string[];
   /** 절반 이상이 이미 있거나 같은 덱이 있으면 업데이트가 기본 (DU15) */
   suggested: boolean;
+  /** 이미 있는 노트가 모두 가져온 그대로: 같은 파일에서 남은 덱을 마저 가져온다 ([새 노트만 더하기]로 바로) */
+  same_file: boolean;
 };
 /** B2-k · B2-kt 고른 것. take_new: 충돌 필드를 새 버전으로 할 노트 id, new_looks: [노트 유형 id, ord | null(CSS)] */
 /** take_new: 충돌 필드를 모두 새 버전으로 할 노트, take_new_fields: 필드마다 [노트 id, 자리] (DU54). 둘 중 어디 있어도 새 버전 */
@@ -569,7 +588,8 @@ export type ExportResult = {
 };
 /** C1-xe 덱 상자 */
 /** recall_cards: 목록 회상 · 선택형 카드 수 (Anki 에서는 보기만 해요) */
-export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number; recall_cards: number };
+/** archived: 빠지는 보관한 하위 덱 수 */
+export type ExportPreview = { path: string[]; subdecks: number; notes: number; cards: number; media: number; reviews: number; recall_cards: number; archived: number };
 /** export_apkg 가 보내는 "export-progress" 이벤트 (C1-xp) */
 export type ExportProgress = { step: "notes" | "reviews" | "media" | "zip"; done: number; total: number };
 export type BoardDeck ={ id: number; label: string; path: string[]; cards: number; importance: Level; source: string; reason: string | null };
@@ -634,8 +654,9 @@ export const api = {
   addCard: (card: NewCard) => invoke<number>("add_card", { card }),
   /** deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
   /** cardIds: 이 카드들만 (C1-xr "찾지 못한 미디어" [카드 보기]) */
-  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false) =>
-    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly }),
+  /** after: 이 카드 id 다음부터 (이어 받기). bare: 질문 · 답을 비운 가벼운 행 (전부 고르기) */
+  listCards: (deckId: number | null, query = "", limit?: number, buriedOnly = false, cardIds: number[] | null = null, weakOnly = false, suspendedOnly = false, after: number | null = null, bare = false) =>
+    invoke<CardList>("list_cards", { deckId, query, limit, buriedOnly, cardIds, weakOnly, suspendedOnly, after, bare }),
   /** C1-w [약함으로] / [해제] */
   setDeckWeak: (deckId: number, weak: boolean) => invoke<void>("set_deck_weak", { deckId, weak }),
   /** C1-w [아니에요] (14일 제안 쉼) / recovered: "요즘 괜찮아요" 안내를 닫음 */
@@ -753,11 +774,14 @@ export const api = {
   /** kind "notetype": 노트 유형 저장 전 자동 백업 (목록에 그 이름으로). 없으면 직접 만든 백업 */
   createBackup: (kind?: "notetype" | "deck") => invoke<string>("create_backup", { kind: kind ?? null }),
   retryOpen: () => invoke<void>("retry_open"),
-  /** 가장 최근 백업으로 되돌린다. 쓴 백업 파일 이름을 돌려준다 */
-  /** name 이 없으면 가장 최근 백업. backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업) */
-  restoreBackup: (name: string | null = null, backupFirst = false) => invoke<string>("restore_backup", { name, backupFirst }),
+  /** S1-6 백업이 없을 때: 열지 못한 파일은 데이터 폴더에 남기고 빈 데이터로 연다 */
+  startFresh: () => invoke<void>("start_fresh"),
+  /** name 이 없으면 최근 백업부터 차례로 보고 처음으로 쓸 수 있는 것. 쓴 백업 파일 이름을 돌려준다.
+   *  backupFirst 면 바꾸기 전에 지금 상태를 백업한다 (설정 › 이 기기 백업). allowEmpty: S1-6 에서 카드 0장 백업밖에 없다고 확인한 뒤 */
+  restoreBackup: (name: string | null = null, backupFirst = false, allowEmpty = false) => invoke<string>("restore_backup", { name, backupFirst, allowEmpty }),
   localBackups: () => invoke<LocalBackup[]>("local_backups"),
   openBackupDir: () => invoke<void>("open_backup_dir"),
+  openDataDir: () => invoke<void>("open_backup_dir", { data: true }),
   setCutoffHour: (hour: number) => invoke<void>("set_cutoff_hour", { hour }),
   wipeAll: (backup: boolean) => invoke<string | null>("wipe_all", { backup }),
 };
@@ -1003,7 +1027,8 @@ export type SyncProbe = {
 export type SyncAuthEvent = { ok: boolean; reason: "timeout" | "cancelled" | "denied" | "scopes" | "error" | null; message: string | null; probe: SyncProbe | null };
 export type SyncJoinMode = "new" | "take" | "merge" | "fresh";
 export type SyncJoinOpts = { mode: SyncJoinMode; device_name?: string; backup?: "daily" | "weekly" | "off"; password?: string; later?: boolean };
-export type DriveBackup = { name: string; at: number; size: number; device: string | null; cards: number | null; reviews: number | null };
+/** mine: 이 기기가 만든 백업 */
+export type DriveBackup = { name: string; at: number; size: number; device: string | null; cards: number | null; reviews: number | null; mine: boolean };
 /** K9 머리: 무엇이 사라지는지 */
 export type RestorePreview = {
   name: string;
@@ -1041,10 +1066,12 @@ export const syncApi = {
   setLock: (password: string | null) => invoke<void>("sync_set_lock", { password }),
   unlock: (password: string) => invoke<void>("sync_unlock", { password }),
   backups: () => invoke<DriveBackup[]>("sync_backups"),
-  restorePreview: (name: string) => invoke<RestorePreview>("sync_restore_preview", { name }),
-  restore: (name: string) => invoke<void>("sync_restore", { name }),
+  /** password: 이 기기 키로 열리지 않는 백업(잠금을 바꾸기 전에 만들었다)을 그때 암호로 연다 */
+  restorePreview: (name: string, password?: string) => invoke<RestorePreview>("sync_restore_preview", { name, password }),
+  /** 복구 전 데이터를 남긴 이 기기 백업 파일 이름 */
+  restore: (name: string, password?: string) => invoke<string | null>("sync_restore", { name, password }),
   /** [그림까지 묶어 내려받기]. path 는 저장 대화상자에서 */
-  backupFull: (name: string, path: string) => invoke<string>("sync_backup_full", { name, path }),
+  backupFull: (name: string, path: string, password?: string) => invoke<string>("sync_backup_full", { name, path, password }),
   deleteBackup: (name: string) => invoke<void>("sync_delete_backup", { name }),
   pruneBackups: () => invoke<number>("sync_prune_backups"),
   openFolder: () => invoke<void>("sync_open_folder"),
@@ -1054,9 +1081,46 @@ export const syncApi = {
 };
 // ================================================================ K · Google Drive 보관·동기화 — 끝
 
-/** Rust 쪽 오류는 사용자에게 보여줄 문장으로 온다 */
+/**
+ * 라이브러리 · OS 원문 오류를 우리말 문장으로 (QA T8-10 · T8-13 · T5-12 · T4-25).
+ * OS 원문은 Windows 언어에 따라 우리말(합니다체)로도 오므로 코드로 찾는다
+ */
+const RAW_ERRORS: [RegExp, string][] = [
+  [/Query returned no rows/i, "찾는 항목이 없어요. 다른 기기에서 지웠을 수 있어요. 화면을 다시 열어 주세요."],
+  [/\(os error 2\)/, "파일을 찾을 수 없어요. 옮기거나 지웠는지 확인해 주세요."],
+  [/\(os error 3\)/, "폴더를 찾을 수 없어요."],
+  [/\(os error 5\)/, "이 위치에 접근할 권한이 없어요."],
+  [/\(os error 32\)/, "다른 프로그램이 이 파일을 쓰고 있어요. 그 프로그램을 닫고 다시 시도해 주세요."],
+  [/\(os error 112\)/, "디스크 공간이 모자라요. 공간을 비우고 다시 시도해 주세요."],
+  // 123 은 쓸 수 없는 글자와 255자가 넘는 이름(긴 경로로 열 때) 둘 다다. 글자 탓으로만 말하지 않는다 (QA V9-08)
+  [/\(os error 123\)/, "파일 이름이 너무 길거나 쓸 수 없는 글자가 있어요."],
+  [/\(os error 206\)/, "파일 이름이나 경로가 너무 길어요."],
+  // 표에 없는 OS 오류(쓰기 금지 19 · 장치 준비 안 됨 21 …). 원문은 Windows 언어에 따라 합니다체 우리말이라 그대로 두지 않는다 (QA V4-04)
+  [/\(os error \d+\)/, "파일을 읽거나 쓰지 못했어요."],
+  [/database is locked/i, "다른 작업이 데이터를 쓰고 있어요. 잠시 뒤 다시 시도해 주세요."],
+  [/UNIQUE constraint failed/i, "같은 항목이 이미 있어요."],
+  [/file is not a database/i, "데이터 파일이 손상됐거나 이 앱의 파일이 아니에요."],
+];
+const HANGUL = /[가-힣]/;
+
+/** Rust 쪽 오류는 대부분 사용자에게 보여줄 문장으로 온다. 원문이 섞여 오면 그 부분만 바꾸고, 앞뒤의 우리말 문장은 남긴다 */
 export function errorText(e: unknown): string {
-  return typeof e === "string" ? e : e instanceof Error ? e.message : "알 수 없는 오류가 났어요.";
+  const raw = typeof e === "string" ? e : e instanceof Error ? e.message : "";
+  if (!raw) return "알 수 없는 오류가 났어요.";
+  for (const [re, text] of RAW_ERRORS) {
+    const m = re.exec(raw);
+    if (!m) continue;
+    // 원문 앞의 우리말 문장 ("백업도 열지 못했어요: …"). OS 원문은 "…니다" 라 마지막 "…요" 까지가 앱 문장이다
+    const before = raw.slice(0, m.index);
+    const end = [...before.matchAll(/요(?=[\s.:·(]|$)/g)].pop();
+    const lead = end ? before.slice(0, end.index + 1) : "";
+    const after = raw.slice(m.index + m[0].length);
+    const tail = HANGUL.test(after) ? after.slice(after.search(HANGUL)).trim() : "";
+    return [lead && `${lead}.`, text, tail].filter(Boolean).join(" ");
+  }
+  if (HANGUL.test(raw)) return raw;
+  console.warn("오류 원문:", raw);
+  return "처리하지 못했어요. 잠시 뒤 다시 시도해 주세요.";
 }
 
 /** 사용자가 [멈추기]를 눌러 끝난 모델 받기 (dl.rs STOPPED). 오류가 아니라 회색으로 보인다 (J18) */

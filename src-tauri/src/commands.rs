@@ -35,8 +35,6 @@ pub struct Undo {
     log_id: Option<i64>,
 }
 
-const UNDO_LIMIT: usize = 20;
-
 fn snapshot(con: &Connection, session_id: i64, card_id: i64) -> Res<Undo> {
     let buried: (Option<i64>, Option<String>) = con
         .query_row("SELECT buried_until, buried_reason FROM card WHERE id = ?1", [card_id], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -52,13 +50,24 @@ fn snapshot(con: &Connection, session_id: i64, card_id: i64) -> Res<Undo> {
     Ok(Undo { session_id, card_id, card: (load_srs(con, card_id)?, buried.0, buried.1), session_card, log_id: None })
 }
 
+/// 되돌리기는 한 단계뿐이다 (D2-u). 새 평가 · 접기가 앞 것을 밀어내고, 꺼내면 비어 더 이전 평가로 거슬러 가지 못한다 (QA V3-01)
 fn push_undo(state: &AppState, u: Undo) -> Res<()> {
-    let mut stack = state.undo.lock().map_err(err)?;
-    stack.push(u);
-    if stack.len() > UNDO_LIMIT {
-        stack.remove(0);
-    }
+    *state.undo.lock().map_err(err)? = vec![u];
     Ok(())
+}
+
+/// 새 학습(학습 시작 · 혼합 회독 · 접은 카드 다시 보기)을 열면 앞 학습의 평가는 되돌리지 않는다.
+/// 같은 날 그만둔 세션을 다른 덱 범위로 이어 써도 그렇다 (QA V3-01)
+pub(crate) fn forget_undo(state: &AppState) -> Res<()> {
+    state.undo.lock().map_err(err)?.clear();
+    Ok(())
+}
+
+/// 세션이 지난 학습일의 것인가. 경계를 넘긴 평가 · 되돌리기는 받지 않는다 (큐 명세 8장, QA V3-16)
+fn past_day(con: &Connection, session_id: i64, now: i64) -> Res<bool> {
+    let day: Option<String> =
+        con.query_row("SELECT study_day FROM study_session WHERE id = ?1", [session_id], |r| r.get(0)).optional().map_err(err)?;
+    Ok(day.is_some_and(|d| d != db::date_from_day(study_day(now))))
 }
 
 type Res<T> = Result<T, String>;
@@ -211,6 +220,13 @@ fn plan_for(con: &Connection, deck_ids: Option<&[i64]>, scale: f64, day: i64) ->
     Ok((decks, plan))
 }
 
+/// 오늘(학습일) 평가한 카드. 남은 카드 중 이 카드는 학습 단계로 다시 나오는 것이라 "다시 볼 카드"로 따로 센다 (QA T2-01 · V6-02)
+fn seen_today(con: &Connection, today: i64) -> Res<std::collections::HashSet<i64>> {
+    let mut st = con.prepare("SELECT DISTINCT card_id FROM review_log WHERE reviewed_at >= ?1 AND kind IS NULL").map_err(err)?;
+    let rows = st.query_map([today_start_ms(today)], |r| r.get(0)).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
 // ------------------------------------------------------------------ A. 홈
 
 #[derive(Serialize)]
@@ -219,6 +235,8 @@ pub struct HomeDeck {
     name: String,
     review: usize,
     new: usize,
+    /// review 중 오늘 이미 평가해 학습 단계로 다시 볼 카드 (QA V6-02)
+    again: usize,
     tomorrow: usize,
     dday: Option<i64>,
 }
@@ -228,6 +246,8 @@ pub struct Home {
     has_decks: bool,
     review: usize,
     new: usize,
+    /// review 중 다시 볼 카드. 오늘 처음 본 신규가 학습 단계로 남은 것을 "복습"으로 부르지 않는다 (QA V6-02)
+    again: usize,
     done_today: i64,
     decks: Vec<HomeDeck>,
     idle_decks: Vec<IdleDeck>,
@@ -251,7 +271,7 @@ pub struct IdleDeck {
     next_due: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn home(state: State<AppState>) -> Res<Home> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -270,9 +290,19 @@ pub fn home(state: State<AppState>) -> Res<Home> {
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
 
     let mut per_root: HashMap<i64, (usize, usize)> = HashMap::new();
+    let seen = seen_today(&con, today)?;
+    let mut again_root: HashMap<i64, usize> = HashMap::new();
     for c in plan.ordered() {
-        let e = per_root.entry(root_of(c.deck_id, &by_id)).or_default();
-        if c.state == "new" && c.buried_until.is_none() { e.1 += 1 } else { e.0 += 1 }
+        let root = root_of(c.deck_id, &by_id);
+        let e = per_root.entry(root).or_default();
+        if c.state == "new" && c.buried_until.is_none() {
+            e.1 += 1
+        } else {
+            e.0 += 1;
+            if seen.contains(&c.id) {
+                *again_root.entry(root).or_default() += 1;
+            }
+        }
     }
     // A2-b: 오늘을 다 끝낸 덱은 "완료 · 내일 복습 N" 으로 보여준다
     let cards = load_cards(&con)?;
@@ -304,6 +334,7 @@ pub fn home(state: State<AppState>) -> Res<Home> {
     for d in &roots {
         let dday = d.target_day.map(|t| t - today);
         let tomorrow = tomorrow_per_root.get(&d.id).copied().unwrap_or(0);
+        let again = again_root.get(&d.id).copied().unwrap_or(0);
         match per_root.get(&d.id) {
             // 쉬는 덱은 오늘 학습했더라도 "오늘 볼 카드가 없는 덱" 쪽 맨 위에 둔다 (A2-p)
             _ if d.paused => idle.insert(
@@ -316,9 +347,9 @@ pub fn home(state: State<AppState>) -> Res<Home> {
                     next_due: None,
                 },
             ),
-            Some(&(review, new)) => active.push(HomeDeck { id: d.id, name: d.name.clone(), review, new, tomorrow, dday }),
+            Some(&(review, new)) => active.push(HomeDeck { id: d.id, name: d.name.clone(), review, new, again, tomorrow, dday }),
             None if studied_roots.contains(&d.id) => {
-                active.push(HomeDeck { id: d.id, name: d.name.clone(), review: 0, new: 0, tomorrow, dday })
+                active.push(HomeDeck { id: d.id, name: d.name.clone(), review: 0, new: 0, again: 0, tomorrow, dday })
             }
             None => idle.push(IdleDeck {
                 id: d.id,
@@ -353,6 +384,7 @@ pub fn home(state: State<AppState>) -> Res<Home> {
         has_decks: !roots.is_empty(),
         review: per_root.values().map(|v| v.0).sum(),
         new: per_root.values().map(|v| v.1).sum(),
+        again: again_root.values().sum(),
         done_today,
         decks: active,
         idle_decks: idle,
@@ -465,7 +497,7 @@ pub struct ArchivedDeck {
 }
 
 /// 보관한 최상위 덱 (부모가 보관되지 않은 덱 포함). 되살리거나 지울 때 쓴다
-#[tauri::command]
+#[tauri::command(async)]
 pub fn archived_decks(state: State<AppState>) -> Res<Vec<ArchivedDeck>> {
     let con = state.db.lock().map_err(err)?;
     let mut st = con
@@ -622,6 +654,8 @@ pub struct DeckDetail {
     hard_next: Option<String>,
     backlog: usize,
     today_review: usize,
+    /// today_review 중 오늘 이미 평가해 학습 단계로 다시 볼 카드. 오늘 완료에도 들어 있다 (QA V6-02 "계획" 합)
+    today_again: usize,
     today_new: usize,
     today_returning: usize,
     reason: Option<String>,
@@ -638,6 +672,8 @@ pub struct DeckDetail {
     /// 하루 신규 분량과 그 분량으로 끝내는 데 걸리는 날
     per_day: i64,
     finish_days: Option<i64>,
+    /// 예산 덱(이 덱 또는 목표를 따르는 상위 덱)이 나눌 남은 신규. 자기 설정을 가진 하위 덱 것은 빠진다 (QA T3-08)
+    budget_unseen: i64,
     /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). 큰 카드의 이유 줄 · [카드 목록에서 보기]. 그중 신규 수 (unseen 에 들지 않는다)
     front_empty: Vec<i64>,
     unseen_empty: i64,
@@ -667,6 +703,11 @@ pub struct DeckDetail {
     write_from: Option<String>,
 }
 
+/// 이 분량으로 목표일 안에 신규를 끝내는가. 목표일이 오늘이면(당일 학습 끔) 오늘 하루에 끝나면 된다 (QA T3-03)
+fn on_track(learnable_days: i64, finish_days: Option<i64>, unseen: i64) -> bool {
+    unseen == 0 || finish_days.unwrap_or(0) <= if learnable_days == 0 { 1 } else { learnable_days.max(0) }
+}
+
 /// C1-w 제안 기준
 const WEAK_MIN_REVIEWS: i64 = 20;
 const WEAK_RATIO_OF_AVG: f64 = 1.5;
@@ -686,11 +727,14 @@ fn again_counts(con: &Connection, ids: &str, today: i64) -> Res<(i64, i64)> {
     .map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
-    let con = state.db.lock().map_err(err)?;
+    deck_detail_in(&*state.db.lock().map_err(err)?, deck_id)
+}
+
+fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
     let today = study_day(now_ms());
-    let (decks, plan) = plan_for(&con, Some(&[deck_id]), 1.0, today)?;
+    let (decks, plan) = plan_for(con, Some(&[deck_id]), 1.0, today)?;
     let ids = descendants(deck_id, &decks);
     let id_list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let q = |sql: &str| -> Res<i64> {
@@ -703,7 +747,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
 
     let total = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?;
     // 앞면이 빈 카드(NT49)는 학습에 나오지 않는다: 남은 신규 · 하루 몫에서 빼고, 큰 카드가 "오늘 0장"인 이유로 보인다 (Q1-01)
-    let empties = crate::notetype::front_empty_cards(&con, &id_list)?;
+    let empties = crate::notetype::front_empty_cards(con, &id_list)?;
     let empty_new = empties.iter().filter(|(_, s)| s == "new").count() as i64;
     let unseen = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND state = 'new'")? - empty_new;
     let hard = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND buried_until IS NOT NULL")?;
@@ -718,19 +762,21 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
     let today_new = plan.new.len();
     // 상위 덱 목표를 따르는 하위 덱은 그 목표(예산 덱) 기준으로 센다. 사유 줄과 숫자가 같게
     let owner = by_id.get(&queue::budget_owner(deck_id, &by_id)).copied().unwrap_or(me);
-    let owner_unseen = if owner.id == deck_id {
-        unseen
-    } else {
-        let ids = descendants(owner.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-        crate::notetype::new_left(&con, &ids)?
-    };
-    let (per_day, _) = queue::new_target_for_deck(owner, today, owner_unseen);
+    // 예산 덱 아래에서 자기 설정을 가진 하위 덱은 따로 센다 (큐와 같다, QA T3-08)
+    let owned = descendants(owner.id, &decks).into_iter().filter(|d| queue::budget_owner(*d, &by_id) == owner.id);
+    let owner_unseen = crate::notetype::new_left(con, &owned.map(|i| i.to_string()).collect::<Vec<_>>().join(","))?;
+    let (per_day, why) = queue::new_target_for_deck(owner, today, owner_unseen);
     let finish_days = (per_day > 0 && owner_unseen > 0).then(|| (owner_unseen + per_day - 1) / per_day);
     let learnable = queue::learnable_days(today, owner.target_day, owner.include_target_day);
-    let on_track = learnable.map(|d| finish_days.unwrap_or(0) <= d.max(0) || owner_unseen == 0);
+    let on_track = learnable.map(|d| on_track(d, finish_days, owner_unseen));
     let studied = q("SELECT count(*) FROM review_log r JOIN card c ON c.id = r.card_id WHERE c.deck_id IN ($IDS)")? > 0;
-    let reason = plan.notes.iter().find(|n| n.starts_with(&me.name)).map(|n| n[me.name.len() + 2..].to_string())
-        .or_else(|| plan.notes.first().cloned());
+    // 상위 덱 목표를 따르는 하위 덱은 상위 덱 상세와 같은 지금 남은 수로 적는다. 큐의 메모는 하루를 시작할 때 수다 (QA V3-04).
+    // 오늘만 분량 · 계획 조정은 큐 메모가 그 이유를 적는다
+    let reason = if owner.id != deck_id && owner.today_new.is_none() && owner.new_shift == 0 {
+        Some(format!("{}: {why}", owner.name))
+    } else {
+        plan.notes.iter().find(|n| n.starts_with(&me.name)).map(|n| n[me.name.len() + 2..].to_string()).or_else(|| plan.notes.first().cloned())
+    };
 
     let config: Option<(Option<String>, i64, Option<i64>)> = con
         .query_row(
@@ -741,10 +787,10 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         .optional()
         .map_err(err)?;
     let (target_date, include_target_day, daily_new_limit) = config.unwrap_or((None, 0, None));
-    let write_src = write_mode_source(&con, deck_id)?;
+    let write_src = write_mode_source(con, deck_id)?;
 
     // C1-w: 덱 평균 (이 덱 전체)
-    let (all_reviews, all_again) = again_counts(&con, &id_list, today)?;
+    let (all_reviews, all_again) = again_counts(con, &id_list, today)?;
     let again_avg = (all_reviews > 0).then(|| all_again as f64 / all_reviews as f64);
     let today_date = db::date_from_day(today);
 
@@ -761,7 +807,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         let sub = descendants(id, &decks);
         let sub_ids = sub.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let cards: i64 = con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({sub_ids})"), [], |r| r.get(0)).map_err(err)?;
-        let unseen = crate::notetype::new_left(&con, &sub_ids)?;
+        let unseen = crate::notetype::new_left(con, &sub_ids)?;
         let (importance, importance_source, weak, dismissed, recovery_shown): (i64, String, bool, Option<String>, bool) = con
             .query_row(
                 "SELECT importance, importance_source, weak, weak_dismissed_until, weak_recovery_shown FROM deck WHERE id = ?1",
@@ -769,7 +815,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .map_err(err)?;
-        let (reviews14, again14) = again_counts(&con, &sub_ids, today)?;
+        let (reviews14, again14) = again_counts(con, &sub_ids, today)?;
         let again_rate = (reviews14 > 0).then(|| again14 as f64 / reviews14 as f64);
         let lapsed: i64 = con
             .query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({sub_ids}) AND lapses >= 3"), [], |r| r.get(0))
@@ -830,6 +876,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         hard_next: hard_next.map(|ms| db::date_from_day(study_day(ms))),
         backlog: plan.backlog.len() + plan.backlog_deferred,
         today_review: plan.ordered().len() - today_new - plan.returning.len(),
+        today_again: again_count(con, &plan, today)?,
         today_new,
         today_returning: plan.returning.len(),
         reason,
@@ -847,6 +894,7 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
         core_learned_pct: if core_total > 0 { core_seen * 100 / core_total } else { 0 },
         per_day,
         finish_days,
+        budget_unseen: owner_unseen,
         learnable_days: learnable,
         on_track,
         subdeck_count: ids.len() - 1,
@@ -953,7 +1001,7 @@ pub struct NoteEdit {
     special: Option<crate::recall::Special>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
     let con = state.db.lock().map_err(err)?;
     let (fields, ntid, exam): (String, i64, crate::exam::ExamState) = con
@@ -1094,6 +1142,8 @@ pub struct CardRow {
     sounds: [bool; 2],
     /// 앞면이 빈 카드 (학습에 나오지 않는다, NT49). C2 상태 배지 "앞면 빔"
     front_empty: bool,
+    /// 노트 유형 (NT9 [다른 유형으로 옮기기]는 한 유형만, T1-35)
+    note_type_id: i64,
 }
 
 /// 그림 가리기 카드의 자리 (M3 배지 "그림 가리기 · n/N", M4 행)
@@ -1187,8 +1237,9 @@ fn tag_filter(tag: &str) -> String {
     format!("AND ((' ' || lower(n.tags) || ' ') LIKE '% {t} %' ESCAPE '\\' OR (' ' || lower(n.tags)) LIKE '% {t}::%' ESCAPE '\\')")
 }
 
-/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기"
-#[tauri::command]
+/// C2. query 는 필드 원문에서 찾는다 (HTML 포함, 소리 파일 이름은 빼고). "tag:이름" 은 태그로 거른다. buried_only 는 A2-b "접어둔 카드 보기".
+/// after: 이 카드 id 다음부터 (목록을 이어 붙인다, T9-04). bare: 질문 · 답을 그리지 않는다 (Ctrl A 로 전부 고를 때, P0-7)
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn list_cards(
     state: State<AppState>,
@@ -1199,9 +1250,11 @@ pub fn list_cards(
     card_ids: Option<Vec<i64>>,
     weak_only: Option<bool>,
     suspended_only: Option<bool>,
+    after: Option<i64>,
+    bare: Option<bool>,
 ) -> Res<CardList> {
     let con = state.db.lock().map_err(err)?;
-    card_list(&con, deck_id, &query, limit, buried_only, card_ids, weak_only, suspended_only)
+    card_list(&con, deck_id, &query, limit, buried_only, card_ids, weak_only, suspended_only, after, bare.unwrap_or(false))
 }
 
 /// list_cards 의 본체 (테스트가 DB 로 부른다)
@@ -1215,6 +1268,8 @@ pub(crate) fn card_list(
     card_ids: Option<Vec<i64>>,
     weak_only: Option<bool>,
     suspended_only: Option<bool>,
+    after: Option<i64>,
+    bare: bool,
 ) -> Res<CardList> {
     let decks = load_decks(con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
@@ -1258,16 +1313,41 @@ pub(crate) fn card_list(
              FROM card_effective c JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
-             WHERE {filter}
+             WHERE {filter} AND c.id > ?3
              ORDER BY c.id LIMIT ?2"
         ))
         .map_err(err)?;
     let field_names = note_field_names(con)?;
     let fronts = crate::notetype::Fronts::load(con)?;
     let rows = st
-        .query_map(params![q, limit.unwrap_or(100)], |r| {
+        .query_map(params![q, limit.unwrap_or(100), after.unwrap_or(i64::MIN)], |r| {
             let fields: String = r.get(3)?;
             let nt: i64 = r.get(11)?;
+            let buried_until: Option<i64> = r.get(9)?;
+            let row = |question, answer, occlusion, sounds, front_empty| -> rusqlite::Result<CardRow> {
+                Ok(CardRow {
+                    id: r.get(0)?,
+                    note_id: r.get(1)?,
+                    deck_path: path_of(r.get(2)?, &by_id),
+                    question,
+                    answer,
+                    state: r.get(4)?,
+                    importance: r.get(5)?,
+                    own_importance: r.get(6)?,
+                    due_at: r.get(7)?,
+                    lapses: r.get(8)?,
+                    buried: buried_until.is_some(),
+                    buried_until: buried_until.map(|ms| db::date_from_day(study_day(ms))),
+                    exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
+                    occlusion,
+                    sounds,
+                    front_empty,
+                    note_type_id: nt,
+                })
+            };
+            if bare {
+                return row(String::new(), String::new(), None, [false; 2], false);
+            }
             let qfmt: Option<String> = r.get(12)?;
             let afmt: Option<String> = r.get(13)?;
             // 목록 칸은 글자 한 줄: 특수 필드({{Tags}} …)는 학습 화면과 같은 값으로, 힌트 상자({{hint:}})는 뺀다 (펼치기 이름 · 내용이 질문에 섞인다, NT10)
@@ -1286,25 +1366,8 @@ pub(crate) fn card_list(
                 Some(s) => (render::strip_tags(s.question()), s.answer_line()),
                 None => table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer)),
             };
-            let buried_until: Option<i64> = r.get(9)?;
-            Ok(CardRow {
-                id: r.get(0)?,
-                note_id: r.get(1)?,
-                deck_path: path_of(r.get(2)?, &by_id),
-                question,
-                answer,
-                state: r.get(4)?,
-                importance: r.get(5)?,
-                own_importance: r.get(6)?,
-                due_at: r.get(7)?,
-                lapses: r.get(8)?,
-                buried: buried_until.is_some(),
-                buried_until: buried_until.map(|ms| db::date_from_day(study_day(ms))),
-                exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
-                occlusion,
-                sounds: [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK)),
-                front_empty: fronts.empty(nt, r.get(10)?, &fields),
-            })
+            let sounds = [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK));
+            row(question, answer, occlusion, sounds, fronts.empty(nt, r.get(10)?, &fields))
         })
         .map_err(err)?
         .collect::<Result<_, _>>()
@@ -1609,7 +1672,7 @@ pub struct ConfigPreview {
     today_new: usize,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> Res<ConfigPreview> {
     let con = state.db.lock().map_err(err)?;
     let decks = load_decks(&con)?;
@@ -1666,10 +1729,7 @@ pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> R
     );
     let needed = days.filter(|d| *d > 0).map(|d| (remaining_new + d - 1) / d);
     let finish_days = if per_day > 0 { Some((remaining_new + per_day - 1) / per_day) } else { None };
-    let overflow = match (finish_days, days) {
-        (Some(f), Some(d)) if f > d => Some(f - d),
-        _ => None,
-    };
+    let overflow = overflow_days(finish_days, days);
     Ok(ConfigPreview {
         remaining_new,
         days,
@@ -1684,6 +1744,14 @@ pub fn preview_deck_config(state: State<AppState>, config: DeckConfigInput) -> R
         today_total: if paused { 0 } else { plan.ordered().len() },
         today_new: plan.new.len(),
     })
+}
+
+/// 목표일을 넘기는 날 수. 목표일이 오늘 · 지난 날이면 남은 신규를 오늘 모두 넣으니 넘기지 않는다 (QA T3-02)
+fn overflow_days(finish_days: Option<i64>, days: Option<i64>) -> Option<i64> {
+    match (finish_days, days) {
+        (Some(f), Some(d)) if d > 0 && f > d => Some(f - d),
+        _ => None,
+    }
 }
 
 // ------------------------------------------------------------------ B4. 중요도
@@ -1726,7 +1794,7 @@ pub struct BoardDeck {
 }
 
 /// B4. 카드가 직접 들어 있는 덱들. 카드는 자기 덱의 중요도를 상속하므로 중요도는 이 단위로 정한다
-#[tauri::command]
+#[tauri::command(async)]
 pub fn importance_board(state: State<AppState>, deck_id: i64) -> Res<Vec<BoardDeck>> {
     let con = state.db.lock().map_err(err)?;
     // N3 기출 근거는 카드 이동 · 자료 연결 · 기출 표시로 바뀐다. 볼 때 맞춘다 (바뀐 덱만 고친다)
@@ -1784,6 +1852,8 @@ pub struct QueueSummary {
     target: Option<TargetInfo>,
     /// 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수. D1 "시험 전 회독에서 N장을 이미 봤어요" (P9)
     mixed_today: i64,
+    /// 복습 묶음(learning · review · backlog) 중 오늘 이미 평가해 다시 볼 카드. 홈 · 덱 상세와 같은 수 (QA V9-04)
+    again: usize,
 }
 
 /// 목표일이 가장 가까운 덱. D1 "시험이 12일 남아 핵심 신규를 먼저" 문구에 쓴다
@@ -1795,7 +1865,7 @@ pub struct TargetInfo {
     days: i64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<QueueSummary> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -1851,7 +1921,14 @@ pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
         notes: plan.notes.clone(),
         target,
         mixed_today,
+        again: again_count(&con, &plan, today)?,
     })
+}
+
+/// 복습 묶음 중 오늘 이미 평가한 카드 (덱 상세 today_again · D1 과 같은 셈)
+fn again_count(con: &Connection, plan: &queue::QueuePlan, today: i64) -> Res<usize> {
+    let seen = seen_today(con, today)?;
+    Ok(plan.learning.iter().chain(&plan.review).chain(&plan.backlog).filter(|c| seen.contains(&c.id)).count())
 }
 
 // ------------------------------------------------------------------ D2~D5. 학습 세션
@@ -1869,6 +1946,7 @@ pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     let today = study_day(now);
     let (_, plan) = plan_for(&con, deck_ids.as_deref(), scale, today)?;
     let session_id = open_session(&con, &db::date_from_day(today), None, now)?;
+    forget_undo(&state)?;
     Ok(SessionStart { session_id, card_ids: plan.ordered().iter().map(|c| c.id).collect() })
 }
 
@@ -2028,9 +2106,7 @@ fn answer_at(
     }
     let today = study_day(now);
     // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 평가는 남기지 않고 세션을 닫는다. 화면이 새 날의 학습을 다시 연다 (I83)
-    let session_day: Option<String> =
-        con.query_row("SELECT study_day FROM study_session WHERE id = ?1", [session_id], |r| r.get(0)).optional().map_err(err)?;
-    if session_day.is_some_and(|d| d != db::date_from_day(today)) {
+    if past_day(con, session_id, now)? {
         con.execute("UPDATE study_session SET ended_at = ?2, end_reason = 'day_rollover' WHERE id = ?1 AND ended_at IS NULL", params![session_id, now])
             .map_err(err)?;
         return Ok((AnswerResult { action: "day_rollover".into(), due_in_ms: None }, None));
@@ -2139,15 +2215,25 @@ pub fn bury_card(state: State<AppState>, session_id: i64, card_id: i64) -> Res<(
 /// 되돌린 평가의 복습 기록은 지운다. review_log 는 append-only 지만, 방금 잘못 누른 키는 일어나지 않은 일로 본다 (DECISIONS I22)
 #[tauri::command]
 pub fn undo_last(state: State<AppState>, session_id: i64) -> Res<Option<i64>> {
+    undo_last_at(&state, session_id, now_ms())
+}
+
+/// 되돌릴 것은 이 세션의 마지막 평가 · 접기 하나다. 꺼내면 비므로 다시 불러도 더 이전 것을 되돌리지 않는다 (QA V3-01)
+fn undo_last_at(state: &AppState, session_id: i64, now: i64) -> Res<Option<i64>> {
+    let mut con = state.db.lock().map_err(err)?;
     let u = {
-        let mut stack = state.undo.lock().map_err(err)?;
-        match stack.last() {
-            Some(u) if u.session_id == session_id => stack.pop(),
-            _ => None,
+        let mut slot = state.undo.lock().map_err(err)?;
+        if !slot.last().is_some_and(|u| u.session_id == session_id) {
+            return Ok(None);
         }
+        // 학습일 경계 뒤에는 어제 평가를 되돌리지 않는다. 되돌린 뒤 다시 한 평가는 새 날이라 남지 않아 둘 다 사라진다 (QA V3-16).
+        // 칸은 꺼내지 않는다: 다시 눌러도 같은 이유를 말한다 (QA V9-06)
+        if past_day(&con, session_id, now)? {
+            return Err("어제 학습일의 평가는 되돌릴 수 없어요.".into());
+        }
+        slot.pop()
     };
     let Some(u) = u else { return Ok(None) };
-    let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
     let (s, buried_until, buried_reason) = &u.card;
     tx.execute(
@@ -2176,6 +2262,10 @@ pub fn undo_last(state: State<AppState>, session_id: i64) -> Res<Option<i64>> {
 /// 접어두기 취소 ("지금 다시 보기")
 #[tauri::command]
 pub fn unbury_card(state: State<AppState>, session_id: i64, card_id: i64) -> Res<()> {
+    unbury_at(&state, session_id, card_id)
+}
+
+fn unbury_at(state: &AppState, session_id: i64, card_id: i64) -> Res<()> {
     let con = state.db.lock().map_err(err)?;
     // Again 횟수도 되돌린다. 안 그러면 다시 꺼낸 카드가 Again 한 번에 또 접힌다
     con.execute(
@@ -2184,6 +2274,8 @@ pub fn unbury_card(state: State<AppState>, session_id: i64, card_id: i64) -> Res
     )
     .map_err(err)?;
     con.execute("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id = ?1", [card_id]).map_err(err)?;
+    // 꺼낸 카드의 접기 · 평가는 되돌릴 것이 아니다 (화면도 그 칸을 비운다). 남기면 끝 화면이 없는 되돌리기를 보인다 (QA V9-01)
+    state.undo.lock().map_err(err)?.retain(|u| !(u.session_id == session_id && u.card_id == card_id));
     Ok(())
 }
 
@@ -2208,10 +2300,14 @@ pub struct SessionSummary {
     /// 지금 다시 계산한 오늘 남은 분량 (같은 덱 범위, 같은 신규 배율)
     remaining_review: usize,
     remaining_new: usize,
+    /// 남은 카드 중 오늘 이미 본 카드 (학습 단계로 다시 나온다). 학습한 카드에도 들어 있어 합계가 맞게 따로 센다 (QA T2-01)
+    remaining_seen: usize,
     tomorrow: usize,
     tomorrow_review: usize,
     tomorrow_new: usize,
     tomorrow_decks: Vec<TomorrowDeck>,
+    /// 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다. 아무것도 평가하지 않은 학습이면 false (QA V3-01 · V3-16)
+    undoable: bool,
 }
 
 /// D5-c 내일 예정 한 줄 (최상위 덱)
@@ -2249,7 +2345,14 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         )
         .map_err(err)
     };
-    let studied = one("count(DISTINCT r.card_id)")?;
+    let seen: std::collections::HashSet<i64> = {
+        let mut st = con
+            .prepare(&format!("SELECT DISTINCT r.card_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({scope}) AND r.kind IS NULL"))
+            .map_err(err)?;
+        let rows = st.query_map([since], |r| r.get(0)).map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)?
+    };
+    let studied = seen.len() as i64;
     // 접어둔 카드 복귀는 신규로 세지 않는다 (D1 · 홈과 같게, I82)
     let new_done = one("count(DISTINCT CASE WHEN r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 THEN r.card_id END)")?;
     let again = one("coalesce(sum(r.rating = 1), 0)")?;
@@ -2263,7 +2366,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
              FROM session_card_state s JOIN card_effective c ON c.id = s.card_id JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
-             WHERE s.session_id = ?1 AND s.is_buried = 1 ORDER BY s.buried_at"
+             WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL ORDER BY s.buried_at"
         ))
         .map_err(err)?;
     let buried = st
@@ -2287,8 +2390,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         .map_err(err)?;
 
     // D5-c "내일 예정". 모든 덱, 최상위 덱별. 목표일이 가까운 덱부터
-    let cards = load_cards(&con)?;
-    let next = queue::build_queue(today + 1, &decks, &cards, None, 1.0);
+    let next = tomorrow_plan(&con, &decks, today)?;
     let tomorrow = next.ordered().len();
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let mut per_root: HashMap<i64, (usize, usize)> = HashMap::new();
@@ -2304,6 +2406,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         })
         .collect();
     tomorrow_decks.sort_by_key(|d| (d.dday.unwrap_or(i64::MAX), usize::MAX - (d.review + d.new)));
+    let undoable = state.undo.lock().map_err(err)?.last().is_some_and(|u| u.session_id == session_id) && !past_day(&con, session_id, now)?;
     Ok(SessionSummary {
         studied,
         new_done,
@@ -2313,19 +2416,40 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         buried,
         remaining_review: plan.ordered().len() - plan.new.len(),
         remaining_new: plan.new.len(),
+        remaining_seen: plan.ordered().iter().filter(|c| seen.contains(&c.id)).count(),
         tomorrow,
         tomorrow_review: next.ordered().len() - next.new.len(),
         tomorrow_new: next.new.len(),
         tomorrow_decks,
+        undoable,
     })
+}
+
+/// D5-c 내일 큐. 오늘만 정한 신규 분량 · 오늘 당겨 맞추기는 내일에 싣지 않고 내일 것을 싣는다 (QA T3-07)
+fn tomorrow_plan(con: &Connection, decks: &[queue::Deck], today: i64) -> Res<queue::QueuePlan> {
+    let mut decks = decks.to_vec();
+    for d in &mut decks {
+        d.today_new = None;
+    }
+    crate::plan::adjust_decks(con, &mut decks, today + 1)?;
+    Ok(queue::build_queue(today + 1, &decks, &load_cards(con)?, None, 1.0))
 }
 
 /// D5. 접어둔 카드를 오늘 다시 볼지(true) 다음 학습으로 넘길지(false). 오늘이면 다시 볼 카드 id 를 돌려준다
 #[tauri::command]
 pub fn resolve_buried(state: State<AppState>, session_id: i64, today: bool) -> Res<Vec<i64>> {
     let con = state.db.lock().map_err(err)?;
+    forget_undo(&state)?; // 접은 카드를 다시 보는 학습은 새 학습이다 (QA V3-01)
+    resolve_buried_in(&con, session_id, today)
+}
+
+/// 세션에서 접은 카드 중 아직 접혀 있는 것만 (카드 목록에서 이미 푼 카드는 뺀다, QA T2-03)
+fn resolve_buried_in(con: &Connection, session_id: i64, today: bool) -> Res<Vec<i64>> {
     let mut st = con
-        .prepare("SELECT card_id FROM session_card_state WHERE session_id = ?1 AND is_buried = 1")
+        .prepare(
+            "SELECT s.card_id FROM session_card_state s JOIN card c ON c.id = s.card_id
+             WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL",
+        )
         .map_err(err)?;
     let ids: Vec<i64> = st.query_map([session_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
     if today {
@@ -2380,10 +2504,37 @@ pub(crate) fn mime_of(name: &str) -> &'static str {
 #[tauri::command]
 pub fn save_media(state: State<AppState>, name: String, data_base64: String) -> Res<String> {
     use base64::Engine;
-    use std::hash::{Hash, Hasher};
     let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64.trim()).map_err(err)?;
-    if bytes.len() > 20 * 1024 * 1024 {
-        return Err("이미지가 너무 커요. 20MB 이하만 넣을 수 있어요.".into());
+    store_media(&state.db, &state.data_dir, &name, &bytes)
+}
+
+/// 탐색기에서 끌어 놓은 그림. 웹뷰 드롭은 내용 없이 경로만 준다 (QA T1-05). 그림 확장자만 받고, 크기는 읽기 전에 본다
+#[tauri::command]
+pub fn save_media_path(state: State<AppState>, path: String) -> Res<String> {
+    media_from_path(&state.db, &state.data_dir, std::path::Path::new(&path))
+}
+
+const MAX_MEDIA: usize = 20 << 20;
+const TOO_BIG: &str = "이미지가 너무 커요. 20MB 이하만 넣을 수 있어요.";
+
+fn media_from_path(db: &Mutex<Connection>, data_dir: &std::path::Path, path: &std::path::Path) -> Res<String> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") {
+        return Err("그림 파일만 넣을 수 있어요 (PNG · JPG · GIF · WEBP · BMP · SVG).".into());
+    }
+    if std::fs::metadata(path).map_err(err)?.len() > MAX_MEDIA as u64 {
+        return Err(TOO_BIG.into());
+    }
+    let bytes = std::fs::read(path).map_err(err)?;
+    store_media(db, data_dir, name, &bytes)
+}
+
+/// 미디어 폴더에 넣고 media 표에 적는다. 같은 내용이면 같은 이름이다
+fn store_media(db: &Mutex<Connection>, data_dir: &std::path::Path, name: &str, bytes: &[u8]) -> Res<String> {
+    use std::hash::{Hash, Hasher};
+    if bytes.len() > MAX_MEDIA {
+        return Err(TOO_BIG.into());
     }
     let ext = name
         .rsplit('.')
@@ -2395,19 +2546,49 @@ pub fn save_media(state: State<AppState>, name: String, data_base64: String) -> 
     bytes.hash(&mut h);
     let hash = format!("{:016x}", h.finish());
     let file = format!("neo-{hash}.{ext}");
-    let dir = media_dir(&state.data_dir);
+    let dir = media_dir(data_dir);
     std::fs::create_dir_all(&dir).map_err(err)?;
     let path = dir.join(&file);
     if !path.exists() {
-        std::fs::write(&path, &bytes).map_err(err)?;
+        std::fs::write(&path, bytes).map_err(err)?;
     }
-    let con = state.db.lock().map_err(err)?;
+    let con = db.lock().map_err(err)?;
     con.execute(
         "INSERT OR IGNORE INTO media (filename, rel_path, sha256, byte_size, mime_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![file, format!("media/{file}"), hash, bytes.len() as i64, mime_of(&file), now_ms()],
     )
     .map_err(err)?;
     Ok(file)
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+
+    #[test]
+    fn dropped_image_path_is_stored_and_checked() {
+        let dir = std::env::temp_dir().join(format!("na-media-path-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Mutex::new(crate::db::open(&dir.join("addiem.sqlite")).unwrap());
+        let png = dir.join("사진.PNG");
+        std::fs::write(&png, b"\x89PNG fake").unwrap();
+        let name = media_from_path(&db, &dir, &png).unwrap();
+        assert!(name.starts_with("neo-") && name.ends_with(".png"), "{name}");
+        assert_eq!(std::fs::read(media_dir(&dir).join(&name)).unwrap(), b"\x89PNG fake");
+        let rows: i64 = db.lock().unwrap().query_row("SELECT COUNT(*) FROM media WHERE filename = ?1", [&name], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+        // 같은 그림을 다시 놓으면 같은 이름
+        assert_eq!(media_from_path(&db, &dir, &png).unwrap(), name);
+
+        let txt = dir.join("notes.txt");
+        std::fs::write(&txt, b"hello").unwrap();
+        assert!(media_from_path(&db, &dir, &txt).unwrap_err().contains("그림 파일만"));
+
+        let big = dir.join("big.jpg");
+        std::fs::File::create(&big).unwrap().set_len(MAX_MEDIA as u64 + 1).unwrap();
+        assert_eq!(media_from_path(&db, &dir, &big).unwrap_err(), TOO_BIG);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// data URL 로 화면에 넣는 미디어의 상한 (T7-01). 100MB 그림이면 렌더러가 11분 넘게 멈췄다. 넘으면 화면이 "너무 커서" 자리 표시를 그린다
@@ -2456,33 +2637,40 @@ fn backup_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn last_backup(dir: &std::path::Path) -> Option<i64> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|x| x == "zip"))
-        .filter_map(|e| e.metadata().ok()?.modified().ok())
-        .max()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
+    backup_list(dir).first().map(|b| b.at)
 }
 
-/// 파일 하나로 백업한다: DB 사본(VACUUM INTO) + 미디어 폴더. 복원은 zip 을 풀어 데이터 폴더에 두면 된다
-pub(crate) fn write_backup(con: &Connection, data_dir: &std::path::Path) -> Res<std::path::PathBuf> {
-    write_backup_as(con, data_dir, "")
+/// 지금 시각(초까지)의 이름 조각. 그 이름이 이미 있으면 1초씩 뒤로 (같은 초에 두 번 만들어도 덮지 않게, QA T5-11)
+fn free_stamp(taken: impl Fn(&str) -> bool) -> String {
+    let mut t = chrono::Local::now();
+    loop {
+        let s = t.format("%Y%m%d-%H%M%S").to_string();
+        if !taken(&s) {
+            return s;
+        }
+        t += chrono::Duration::seconds(1);
+    }
 }
 
-/// tag: 백업 목록이 무엇의 백업인지 보이게 이름 끝에 붙인다 (BACKUP_KINDS). 빈 값이면 직접 만든 백업
+/// 파일 하나로 백업한다: DB 사본(VACUUM INTO) + 미디어 폴더. 복원은 zip 을 풀어 데이터 폴더에 두면 된다.
+/// tag: 백업 목록이 무엇의 백업인지 보이게 이름 끝에 붙인다 (BACKUP_KINDS). 빈 값이면 직접 만든 백업.
+/// before-sync · before-restore (동기화 기기 백업, sync/mod.rs local_backup)는 이름 앞에: addiem-before-restore-<시각>.zip
 pub(crate) fn write_backup_as(con: &Connection, data_dir: &std::path::Path, tag: &str) -> Res<std::path::PathBuf> {
     use std::io::Write;
     let dir = backup_dir(data_dir);
     std::fs::create_dir_all(&dir).map_err(err)?;
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let p = crate::legacy::BACKUP_PREFIX;
+    let zip_name = |stamp: &str| match tag {
+        "" => format!("{p}{stamp}.zip"),
+        t if t.starts_with("before-") => format!("{p}{t}-{stamp}.zip"),
+        t => format!("{p}{stamp}-{t}.zip"),
+    };
+    let stamp = free_stamp(|s| dir.join(zip_name(s)).exists());
     let db_copy = dir.join(format!(".addiem-{stamp}.sqlite"));
     let _ = std::fs::remove_file(&db_copy);
     con.execute("VACUUM INTO ?1", [db_copy.to_string_lossy()]).map_err(err)?;
 
-    let suffix = if tag.is_empty() { String::new() } else { format!("-{tag}") };
-    let out = dir.join(format!("{}{stamp}{suffix}.zip", crate::legacy::BACKUP_PREFIX));
+    let out = dir.join(zip_name(&stamp));
     let result = (|| -> Res<()> {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&out).map_err(err)?);
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -2519,21 +2707,16 @@ const AUTO_DAYS: i64 = 7;
 /// 기기 DB 가 끝없이 커지지 않게 (코디네이터 결정 2026-10-20)
 pub(crate) fn prune_auto_backups(con: &Connection, dir: &std::path::Path, now: i64) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
-    let mut autos: Vec<(i64, std::path::PathBuf, String)> = entries
+    let autos = entries
         .filter_map(Result::ok)
         .filter(|e| e.path().is_file())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            auto_backup(&name).map(|(_, at)| (at, e.path(), name))
+            // 모든 데이터 삭제 전 백업은 지운 데이터의 하나뿐인 사본일 수 있다: 정리하지 않는다 (QA T5-18)
+            auto_backup(&name).filter(|(kind, _)| *kind != "wipe").map(|(_, at)| (at, (e.path(), name)))
         })
         .collect();
-    autos.sort_by_key(|a| std::cmp::Reverse(a.0));
-    let mut gone = vec![];
-    for (i, (at, path, name)) in autos.into_iter().enumerate() {
-        if i >= AUTO_KEEP && now - at > AUTO_DAYS * db::DAY_MS && std::fs::remove_file(&path).is_ok() {
-            gone.push(name);
-        }
-    }
+    let gone: Vec<String> = expired(autos, now).into_iter().filter(|(path, _)| std::fs::remove_file(path).is_ok()).map(|(_, name)| name).collect();
     if !gone.is_empty() {
         // 정리가 실패해도 백업은 이미 만들었다 (다음 정리에서 다시 본다)
         let _ = con.execute(
@@ -2545,7 +2728,31 @@ pub(crate) fn prune_auto_backups(con: &Connection, dir: &std::path::Path, now: i
     gone
 }
 
-#[tauri::command]
+/// 보관 규칙에서 벗어난 것 (만든 시각 ms, 값): 최근 AUTO_KEEP 개 다음이면서 AUTO_DAYS 일이 지난 것
+fn expired<T>(mut items: Vec<(i64, T)>, now: i64) -> Vec<T> {
+    items.sort_by_key(|a| std::cmp::Reverse(a.0));
+    items.into_iter().enumerate().filter(|(i, (at, _))| *i >= AUTO_KEEP && now - at > AUTO_DAYS * db::DAY_MS).map(|(_, (_, t))| t).collect()
+}
+
+/// 복구 전 사본 addiem-before-restore-<시각>.sqlite (swap_in_db)도 자동 백업처럼 최근 AUTO_KEEP 개 + AUTO_DAYS 일 안의 것만 남긴다 (QA T5-10)
+fn prune_before_restore(data_dir: &std::path::Path, now: i64) {
+    let copies = std::fs::read_dir(data_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // 시각 꼴은 동기화 기기의 복구 전 백업 zip 과 같다 (auto_backup)
+            let stem = name.strip_suffix(".sqlite").filter(|n| n.contains("before-restore-"))?;
+            auto_backup(&format!("{stem}.zip")).map(|(_, at)| (at, e.path()))
+        })
+        .collect();
+    for path in expired(copies, now) {
+        remove_db_files(&path);
+    }
+}
+
+#[tauri::command(async)]
 pub fn app_info(state: State<AppState>) -> Res<AppInfo> {
     let con = state.db.lock().map_err(err)?;
     let n = |sql: &str| -> Res<i64> { con.query_row(sql, [], |r| r.get(0)).map_err(err) };
@@ -2610,7 +2817,7 @@ fn plan_rate(planned: i64, done: i64) -> f64 {
     (done as f64 / planned as f64).min(1.0)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -2710,7 +2917,7 @@ pub struct HeatDay {
 pub const HEATMAP_DAYS: i64 = 52 * 7;
 
 /// E2-h 학습 기록 히트맵. 오늘까지 52주. deck_id 가 있으면 그 덱(하위 덱 포함)만. 기록이 없는 날은 빠진다
-#[tauri::command]
+#[tauri::command(async)]
 pub fn heatmap(state: State<AppState>, deck_id: Option<i64>) -> Res<Vec<HeatDay>> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
@@ -2770,7 +2977,7 @@ pub struct LocalBackup {
     /// 만든 시각 (파일 시각, ms)
     at: i64,
     bytes: u64,
-    /// manual | update (덱 업데이트 적용 전) | restore (복구 전)
+    /// manual | update (덱 업데이트 적용 전) | restore (복구 전) … | other (앱이 만든 이름이 아닌 zip)
     kind: &'static str,
 }
 
@@ -2798,28 +3005,45 @@ fn auto_backup(name: &str) -> Option<(&'static str, i64)> {
     Some((kind, chrono::Local.from_local_datetime(&at).earliest()?.timestamp_millis()))
 }
 
-/// 백업 zip 이름 → 종류. 자동 백업이 아니면 직접 만든 백업
-fn backup_kind(name: &str) -> &'static str {
-    auto_backup(name).map_or("manual", |x| x.0)
+/// 백업 zip 이름 → (종류, 이름 속 시각). 자동 백업 · [백업 만들기]로 만든 이름(addiem-<YYYYmmdd-HHMMSS>.zip)이 아니면
+/// other (사용자가 넣은 파일 등. 목록에 파일 이름을 보인다, QA T5-15)
+fn backup_kind(name: &str) -> (&'static str, Option<i64>) {
+    use chrono::TimeZone;
+    if let Some((kind, at)) = auto_backup(name) {
+        return (kind, Some(at));
+    }
+    let manual = crate::legacy::backup_rest(name)
+        .and_then(|s| s.strip_suffix(".zip"))
+        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y%m%d-%H%M%S").ok())
+        .and_then(|at| chrono::Local.from_local_datetime(&at).earliest());
+    manual.map_or(("other", None), |at| ("manual", Some(at.timestamp_millis())))
 }
 
-/// 이 기기 백업 zip 들, 최근 것부터
-#[tauri::command]
-pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
-    let Ok(entries) = std::fs::read_dir(backup_dir(&state.data_dir)) else { return Ok(vec![]) };
+/// 백업 폴더의 zip 들, 최근 것부터. 시각은 앱이 만든 이름이면 이름 속 시각(자동 백업 정리와 같은 기준), 아니면 파일 수정 시각
+fn backup_list(dir: &std::path::Path) -> Vec<LocalBackup> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
     let mut out: Vec<LocalBackup> = entries
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "zip"))
         .filter_map(|e| {
             let m = e.metadata().ok()?;
-            let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
             let name = e.file_name().to_string_lossy().into_owned();
-            let kind = backup_kind(&name);
+            let (kind, named) = backup_kind(&name);
+            let at = match named {
+                Some(at) => at,
+                None => m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64,
+            };
             Some(LocalBackup { name, at, bytes: m.len(), kind })
         })
         .collect();
     out.sort_by_key(|b| std::cmp::Reverse(b.at));
-    Ok(out)
+    out
+}
+
+/// 이 기기 백업 zip 들, 최근 것부터
+#[tauri::command]
+pub fn local_backups(state: State<AppState>) -> Res<Vec<LocalBackup>> {
+    Ok(backup_list(&backup_dir(&state.data_dir)))
 }
 
 /// 백업 하나를 풀어 쓰는 최대 바이트 (DB + 미디어 + 원자료 합계). 압축 폭탄이 디스크를 채우지 않게
@@ -2845,37 +3069,136 @@ fn remove_db_files(path: &std::path::Path) {
     }
 }
 
-/// 복구할 백업을 지금 데이터 옆에 푼다: DB 는 임시 파일로 풀어 열리는지 확인하고, 미디어 · 원자료는 없는 것만 채운다
-/// (덮어쓰지 않으니 중간에 멈춰도 지금 데이터는 그대로다). 확인한 임시 DB 경로를 돌려준다
-fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<std::path::PathBuf> {
+/// 바꿔 넣기 전에 백업의 DB 가 이 앱의 학습 데이터인지 원본 연결로 확인한다 (db::open 은 스키마를 더하고 전역 설정을 바꾼다).
+/// 손상된 파일 · 빈 파일 · 다른 앱의 SQLite 는 막는다 (schema_meta 의 version · srs 행, QA T5-05).
+/// 지금 카드가 있는데 백업에 카드가 한 장도 없으면 지금 데이터를 덮지 않게 막는다. Drive 복구(sync)도 바꾸기 전에 부른다 (P0-8)
+pub(crate) fn validate_backup_db(path: &std::path::Path, current_cards: i64) -> Res<()> {
+    let not_ours = "이 앱에서 만든 백업이 아니에요. 다른 백업을 골라 주세요.";
+    let con = Connection::open(path).map_err(|_| not_ours.to_string())?;
+    let check: rusqlite::Result<String> = con.query_row("PRAGMA quick_check", [], |r| r.get(0));
+    if !matches!(check.as_deref(), Ok("ok")) {
+        return Err("백업의 데이터 파일이 손상됐어요.".into());
+    }
+    let meta: i64 = con.query_row("SELECT count(*) FROM schema_meta WHERE key IN ('version', 'srs')", [], |r| r.get(0)).unwrap_or(0);
+    let Some(cards) = con.query_row("SELECT count(*) FROM card", [], |r| r.get::<_, i64>(0)).ok().filter(|_| meta == 2) else {
+        return Err(not_ours.into());
+    };
+    if cards == 0 && current_cards > 0 {
+        return Err(format!("이 백업에는 카드가 한 장도 없어요. 지금 카드 {current_cards}장이 사라지지 않게 복구하지 않았어요."));
+    }
+    Ok(())
+}
+
+/// 풀어 둔 복구. db: 확인한 임시 DB. replace: 이미 있지만 크기가 백업과 달라 바꿀 파일 (.<이름>.part, 제 이름).
+/// 다른 것은 DB 를 바꾼 뒤에야 제자리로 옮긴다 (복구를 그만두면 지금 파일이 그대로 남게)
+struct Staged {
+    db: std::path::PathBuf,
+    replace: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+}
+
+impl Staged {
+    /// 복구를 그만둘 때: 풀어 둔 것만 지운다
+    fn discard(&self) {
+        remove_db_files(&self.db);
+        for (part, _) in &self.replace {
+            let _ = std::fs::remove_file(part);
+        }
+    }
+
+    /// DB 를 바꾼 뒤: 크기가 다르던 파일을 백업의 것으로. 못 옮기면 예전 파일이 남는다 (다시 복구하면 다시 고친다)
+    fn place(&self) {
+        for (part, to) in &self.replace {
+            if std::fs::rename(part, to).is_err() {
+                let _ = std::fs::remove_file(part);
+            }
+        }
+    }
+}
+
+/// 복구할 백업을 지금 데이터 옆에 푼다: DB 는 임시 파일로 풀어 확인하고(validate_backup_db), 미디어 · 원자료는
+/// 없는 것을 채우고 크기가 다른 것은 바꿀 준비를 한다. 파일마다 .<이름>.part 에 쓴 뒤 이름을 바꾸니 중간에 꺼져도 잘린 파일이
+/// 제 이름으로 남지 않는다 (QA T5-04). current_cards: 지금 DB 의 카드 수
+fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path, current_cards: i64) -> Res<Staged> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path).map_err(err)?).map_err(|_| "백업 파일을 읽을 수 없어요.".to_string())?;
-    let staged = data_dir.join(format!(".restore-{}.sqlite", now_ms()));
+    let mut staged = Staged { db: data_dir.join(format!(".restore-{}.sqlite", now_ms())), replace: vec![] };
     let result = (|| -> Res<()> {
         let f = crate::legacy::zip_db(&mut zip).ok_or_else(|| "백업 안에 데이터 파일이 없어요. 이 앱에서 만든 백업 파일이 맞는지 확인해 주세요.".to_string())?;
-        let mut used = copy_capped(f, &staged, MAX_RESTORE)?;
-        // db::open 은 전역 설정(하루 시작 시각)을 바꾸므로 여기서는 SQLite 파일인지만 본다. 스키마 문제는 swap_in_db 가 되돌린다
-        let check: rusqlite::Result<String> = Connection::open(&staged).and_then(|c| c.query_row("PRAGMA quick_check", [], |r| r.get(0)));
-        if !matches!(check.as_deref(), Ok("ok")) {
-            return Err("백업의 데이터 파일이 손상됐어요.".into());
-        }
+        let mut used = copy_capped(f, &staged.db, MAX_RESTORE)?;
+        validate_backup_db(&staged.db, current_cards)?;
         for i in 0..zip.len() {
             let f = zip.by_index(i).map_err(err)?;
             let name = f.name().map_err(err)?.into_owned();
             let Some((sub, file)) = name.split_once('/').filter(|(sub, _)| ["media", "sources"].contains(sub)) else { continue };
-            let dir = data_dir.join(sub);
-            if safe_media_name(file).is_err() || dir.join(file).exists() {
+            if safe_media_name(file).is_err() {
+                continue;
+            }
+            let (dir, to) = (data_dir.join(sub), data_dir.join(sub).join(file));
+            let have = std::fs::metadata(&to).ok().map(|m| m.len());
+            if have == Some(f.size()) {
                 continue;
             }
             std::fs::create_dir_all(&dir).map_err(err)?;
-            used += copy_capped(f, &dir.join(file), MAX_RESTORE - used)?;
+            let part = dir.join(format!(".{file}.part"));
+            let _ = std::fs::remove_file(&part);
+            used += copy_capped(f, &part, MAX_RESTORE - used)?;
+            if have.is_some() {
+                staged.replace.push((part, to));
+            } else {
+                std::fs::rename(&part, &to).map_err(err)?;
+            }
         }
         Ok(())
     })();
     match result {
         Ok(()) => Ok(staged),
         Err(e) => {
-            remove_db_files(&staged);
+            staged.discard();
             Err(e)
+        }
+    }
+}
+
+/// 지금 DB 를 열지 못했고 쓸 수 있는 백업이 모두 카드 0장일 때. 시작 오류 화면이 이 문장으로 알아보고 확인 창을 띄운다 (QA V1-01)
+pub(crate) const ONLY_EMPTY: &str = "카드가 있는 백업이 없어요. 쓸 수 있는 백업에는 카드가 한 장도 없어요.";
+
+/// 지금 데이터에 손대기 전에 차례로 풀고 확인해 처음으로 쓸 수 있는 백업. 깨졌거나 이 앱의 것이 아니면 다음 것으로.
+/// current_cards 가 None 이면 지금 DB 를 열지 못해(S1-6) 카드 수를 모른다: 카드 0장 백업은 건너뛰고 카드가 있는 백업부터 쓴다.
+/// 카드 0장 백업밖에 없으면 allow_empty(화면에서 확인)일 때만 그것으로, 아니면 ONLY_EMPTY (QA V1-01)
+fn stage_first(candidates: &[std::path::PathBuf], data_dir: &std::path::Path, current_cards: Option<i64>, allow_empty: bool) -> Res<(std::path::PathBuf, Staged)> {
+    let first = |cards: i64| {
+        let mut last = "백업 파일이 없어요.".to_string();
+        for p in candidates {
+            match stage_restore(p, data_dir, cards) {
+                Ok(s) => return Ok((p.clone(), s)),
+                Err(e) => last = e,
+            }
+        }
+        Err(if candidates.len() > 1 { format!("쓸 수 있는 백업을 찾지 못했어요. 백업 {}개를 모두 확인했어요.", candidates.len()) } else { last })
+    };
+    let Some(cards) = current_cards else {
+        // 카드가 1장 있다고 보면 validate_backup_db 가 0장 백업을 막는다
+        return first(1).or_else(|_| {
+            let (p, s) = first(0)?;
+            if allow_empty {
+                return Ok((p, s));
+            }
+            s.discard();
+            Err(ONLY_EMPTY.into())
+        });
+    };
+    first(cards)
+}
+
+/// 지난 실행이 복구 중에 꺼져 남긴 임시 파일: 데이터 폴더의 .restore-*.sqlite, media · sources 의 .<이름>.part (QA T5-10)
+pub(crate) fn clean_stale_restore(data_dir: &std::path::Path) {
+    for dir in [data_dir.to_path_buf(), data_dir.join("media"), data_dir.join("sources")] {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            // 미디어 · 원자료 이름은 점으로 시작하지 않는다 (safe_media_name)
+            let stale = if dir == data_dir { n.starts_with(".restore-") } else { n.starts_with('.') && n.ends_with(".part") };
+            if stale && e.path().is_file() {
+                let _ = std::fs::remove_file(e.path());
+            }
         }
     }
 }
@@ -2884,7 +3207,7 @@ fn stage_restore(zip_path: &std::path::Path, data_dir: &std::path::Path) -> Res<
 /// 중간에 실패하면 옮긴 파일을 되돌리고 원래 DB 를 다시 연다 (빈 데이터로 남지 않게)
 fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::path::Path) -> Res<()> {
     let db_path = db::file(data_dir);
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let stamp = free_stamp(|s| data_dir.join(format!("{}before-restore-{s}.sqlite", crate::legacy::BACKUP_PREFIX)).exists());
     // 파일을 옮기려면 연결부터 닫는다 (Windows 는 열린 파일을 옮기지 못한다)
     *con = db::open_in_memory().map_err(err)?;
     let mut moved = vec![];
@@ -2905,6 +3228,7 @@ fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::pa
     match result {
         Ok(c) => {
             *con = c;
+            prune_before_restore(data_dir, now_ms());
             Ok(())
         }
         Err(e) => {
@@ -2920,44 +3244,61 @@ fn swap_in_db(con: &mut Connection, data_dir: &std::path::Path, staged: &std::pa
     }
 }
 
-/// S1-6 "백업에서 복구" · 설정 › 이 기기 백업 [백업으로 복구]. name 이 없으면 가장 최근 백업 zip 으로 되돌린다.
+/// S1-6 "백업에서 복구" · 설정 › 이 기기 백업 [백업으로 복구]. name 이 없으면 최근 백업부터 차례로 보고 처음으로 쓸 수 있는 것으로
+/// 되돌린다 (가장 최근 zip 이 다른 앱의 것이어도 그 전 백업으로, QA T5-06).
 /// backup_first 면 바꾸기 전에 지금 상태를 백업한다 (-restore). 지금 파일은 지우지 않고 addiem-before-restore-<시각>.sqlite 로 옆에도 남긴다.
-/// 미디어는 없는 것만 채운다
+/// 미디어는 없는 것을 채우고 크기가 다른 것은 백업의 것으로 바꾼다. allow_empty: 지금 DB 를 열지 못했을 때 카드 0장 백업도 (stage_first)
 #[tauri::command]
-pub async fn restore_backup(state: State<'_, AppState>, name: Option<String>, backup_first: Option<bool>) -> Res<String> {
+pub async fn restore_backup(state: State<'_, AppState>, name: Option<String>, backup_first: Option<bool>, allow_empty: Option<bool>) -> Res<String> {
     let dir = backup_dir(&state.data_dir);
-    let latest = match name {
+    let candidates = match name {
         // 목록에서 고른 이름만 (경로 · 다른 폴더는 받지 않는다)
-        Some(n) if safe_media_name(&n).is_ok() && n.ends_with(".zip") && dir.join(&n).is_file() => dir.join(n),
+        Some(n) if safe_media_name(&n).is_ok() && n.ends_with(".zip") && dir.join(&n).is_file() => vec![dir.join(n)],
         Some(_) => return Err("그 백업 파일을 찾을 수 없어요.".into()),
-        None => std::fs::read_dir(&dir)
-            .map_err(|_| "백업 파일이 없어요.".to_string())?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "zip"))
-            .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-            .ok_or("백업 파일이 없어요.")?,
+        None => backup_list(&dir).into_iter().map(|b| dir.join(b.name)).collect(),
     };
-    // 지금 데이터에 손대기 전에 풀고 확인한다. 깨졌거나 안전하지 않은 백업이면 여기서 멈춘다
-    let staged = stage_restore(&latest, &state.data_dir)?;
+    // 지금 DB 를 열지 못했으면 빈 메모리 DB 라 카드 수를 모른다 (QA V1-01)
+    let cards = match state.startup_error.lock().map_err(err)?.is_some() {
+        true => None,
+        false => Some(state.db.lock().map_err(err)?.query_row("SELECT count(*) FROM card", [], |r| r.get(0)).map_err(err)?),
+    };
+    let (latest, staged) = stage_first(&candidates, &state.data_dir, cards, allow_empty.unwrap_or(false))?;
     let mut guard = state.db.lock().map_err(err)?;
     if backup_first.unwrap_or(false)
         && let Err(e) = write_backup_as(&guard, &state.data_dir, "restore")
     {
-        remove_db_files(&staged);
+        staged.discard();
         return Err(format!("지금 상태를 백업하지 못해 복구하지 않았어요. {e}"));
     }
-    swap_in_db(&mut guard, &state.data_dir, &staged)?;
+    if let Err(e) = swap_in_db(&mut guard, &state.data_dir, &staged.db) {
+        staged.discard();
+        return Err(e);
+    }
+    staged.place();
     // 동기화하던 백업이면 다음 동기화가 Drive 와 다시 맞춘다 (백업 뒤의 이 기기 · 다른 기기 변경을 받는다, Q2-09)
     crate::sync::engine::mark_restored(&guard).map_err(err)?;
     *state.startup_error.lock().map_err(err)? = None;
     Ok(latest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
-/// E1 "폴더 열기"
+/// S1-6 [빈 데이터로 시작] (백업이 없을 때, QA T8-11): 열지 못한 파일은 지우지 않고 addiem-before-restore-<시각>.sqlite 로
+/// 데이터 폴더에 남기고 새 데이터로 연다. 데이터를 열지 못한 상태에서만
 #[tauri::command]
-pub fn open_backup_dir(state: State<AppState>) -> Res<()> {
-    let dir = backup_dir(&state.data_dir);
+pub fn start_fresh(state: State<AppState>) -> Res<()> {
+    if state.startup_error.lock().map_err(err)?.is_none() {
+        return Err("학습 데이터가 이미 열려 있어요.".into());
+    }
+    let staged = state.data_dir.join(format!(".restore-{}.sqlite", now_ms()));
+    drop(db::open(&staged).map_err(err)?);
+    swap_in_db(&mut *state.db.lock().map_err(err)?, &state.data_dir, &staged)?;
+    *state.startup_error.lock().map_err(err)? = None;
+    Ok(())
+}
+
+/// E1 "폴더 열기" · S1-6 [데이터 폴더 열기] (data)
+#[tauri::command]
+pub fn open_backup_dir(state: State<AppState>, data: Option<bool>) -> Res<()> {
+    let dir = if data == Some(true) { state.data_dir.clone() } else { backup_dir(&state.data_dir) };
     std::fs::create_dir_all(&dir).map_err(err)?;
     #[cfg(target_os = "windows")]
     let program = "explorer";
@@ -3039,10 +3380,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let no_db = dir.join("no-db.zip");
         zip_with(&no_db, &[("media/a.png", b"png")]);
-        assert!(super::stage_restore(&no_db, &dir).unwrap_err().contains("데이터 파일이 없어요"));
+        assert!(super::stage_restore(&no_db, &dir, 0).err().unwrap().contains("데이터 파일이 없어요"));
         let garbage = dir.join("garbage.zip");
         zip_with(&garbage, &[("addiem.sqlite", b"not a database at all")]);
-        assert!(super::stage_restore(&garbage, &dir).is_err());
+        assert!(super::stage_restore(&garbage, &dir, 0).is_err());
         assert!(leftovers(&dir).is_empty(), "임시 DB 를 남기지 않는다");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3053,7 +3394,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
         set_marker(&con, "backup");
-        let zip = super::write_backup(&con, &dir).unwrap();
+        let zip = super::write_backup_as(&con, &dir, "").unwrap();
         set_marker(&con, "live");
 
         // 교체 중 실패 (임시 DB 가 사라짐): 원래 DB 가 제자리로 돌아오고 다시 열린다
@@ -3061,8 +3402,8 @@ mod tests {
         assert!(super::swap_in_db(&mut con, &dir, &missing).unwrap_err().contains("되돌렸어요"));
         assert_eq!(marker(&con), "live");
 
-        let staged = super::stage_restore(&zip, &dir).unwrap();
-        super::swap_in_db(&mut con, &dir, &staged).unwrap();
+        let staged = super::stage_restore(&zip, &dir, 0).unwrap();
+        super::swap_in_db(&mut con, &dir, &staged.db).unwrap();
         assert_eq!(marker(&con), "backup");
         assert!(leftovers(&dir).is_empty());
         let before = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with("addiem-before-restore-"));
@@ -3080,7 +3421,7 @@ mod tests {
         let con = crate::db::open_in_memory().unwrap();
         let at = |ago: i64| chrono::DateTime::from_timestamp_millis(now - ago).unwrap().with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S").to_string();
         let day = crate::db::DAY_MS;
-        let kinds = ["update", "move", "undo", "notetype", "deck", "wipe", "restore"];
+        let kinds = ["update", "move", "undo", "notetype", "deck", "cleanup", "restore"];
         let mut autos = vec![];
         for (i, days) in [1, 2].into_iter().chain(10..22).enumerate() {
             autos.push(format!("addiem-{}-{}.zip", at(days * day), kinds[i % kinds.len()]));
@@ -3093,6 +3434,8 @@ mod tests {
             "my-update.zip".into(),
             format!("addiem-{}-mine.zip", at(40 * day)),
             format!("addiem-{}-update.zip.part", at(40 * day)),
+            // 모든 데이터 삭제 전 백업은 오래돼도 남긴다 (QA T5-18)
+            format!("addiem-{}-wipe.zip", at(40 * day)),
         ];
         for n in autos.iter().chain(&keep) {
             std::fs::write(dir.join(n), b"x").unwrap();
@@ -3113,7 +3456,7 @@ mod tests {
         assert_eq!(journal, ["2meta", "2note"], "백업이 정리된 업데이트의 되돌리기 기록도 지운다 (가져온 기록 import_batch 는 남긴다)");
         assert_eq!(con.query_row("SELECT count(*) FROM import_batch", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
         let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일은 남는다: {left:?}");
+        assert!(keep.iter().all(|k| left.contains(k)), "직접 만든 백업 · 모르는 파일 · 삭제 전 백업은 남는다: {left:?}");
         assert!(super::prune_auto_backups(&con, &dir, now).is_empty(), "다시 불러도 지울 것이 없다");
         // 7일 안의 자동 백업은 10개가 넘어도 남긴다: 오늘 12개를 더하면 7일 넘은 10..17일 것만 지운다
         for i in 0..12 {
@@ -3134,13 +3477,221 @@ mod tests {
             ("addiem-20261020-101010-notetype.zip", "notetype"),
             ("addiem-before-sync-20261020-101010.zip", "sync"),
             ("addiem-before-restore-20261020-101010.zip", "restore"),
-            ("addiem-20261020-101010-mine.zip", "manual"),
-            ("my-update.zip", "manual"),
-            ("addiem-old-update.zip", "manual"),
+            // 앱이 만든 이름이 아닌 zip 은 직접 만든 백업과 구분한다 (QA T5-15)
+            ("addiem-20261020-101010-mine.zip", "other"),
+            ("my-update.zip", "other"),
+            ("addiem-old-update.zip", "other"),
             ("neoanki-20261020-101010-deck.zip", "deck"), // 예전 이름(Neo-Anki) 시절 자동 백업
+            ("neoanki-20261020-101010.zip", "manual"),
         ] {
-            assert_eq!(super::backup_kind(name), kind, "{name}");
+            assert_eq!(super::backup_kind(name).0, kind, "{name}");
         }
+    }
+
+    #[test]
+    fn backup_list_uses_the_time_in_the_name() {
+        // 목록 시각은 자동 백업 정리와 같은 이름 속 시각. 이름이 앱 것이 아니면 파일 시각 (QA T5-15)
+        let dir = std::env::temp_dir().join(format!("na-list-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in ["addiem-20261005-101010.zip", "addiem-20261006-101010-deck.zip", "mine.zip"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let list = super::backup_list(&dir);
+        let names: Vec<(&str, &str)> = list.iter().map(|b| (b.name.as_str(), b.kind)).collect();
+        assert_eq!(names, [("mine.zip", "other"), ("addiem-20261006-101010-deck.zip", "deck"), ("addiem-20261005-101010.zip", "manual")]);
+        assert_eq!(Some(list[2].at), super::backup_kind("addiem-20261005-101010.zip").1);
+        assert_eq!(super::last_backup(&dir), Some(list[0].at));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_backups_in_the_same_second_both_stay() {
+        // 같은 초에 두 번 만들어도 앞의 것을 덮지 않는다 (QA T5-11)
+        let dir = std::env::temp_dir().join(format!("na-same-sec-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
+        let a = super::write_backup_as(&con, &dir, "").unwrap();
+        let b = super::write_backup_as(&con, &dir, "").unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_file() && b.is_file());
+        assert_eq!(super::backup_kind(&b.file_name().unwrap().to_string_lossy()).0, "manual", "이름 꼴은 그대로");
+        drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drive_restore_backups_in_the_same_second_both_stay() {
+        // Drive 복구 · 합치기 전 이 기기 백업(addiem-before-restore-<시각>.zip)도 같은 초에 겹치면 앞의 것을 덮지 않는다 (QA V1-10)
+        let dir = std::env::temp_dir().join(format!("na-same-sec-drive-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
+        let a = super::write_backup_as(&con, &dir, "before-restore").unwrap();
+        let b = super::write_backup_as(&con, &dir, "before-restore").unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_file() && b.is_file());
+        for p in [&a, &b] {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with("addiem-before-restore-"), "{name}");
+            assert_eq!(super::backup_kind(&name).0, "restore", "{name}");
+        }
+        let sync = super::write_backup_as(&con, &dir, "before-sync").unwrap();
+        assert_eq!(super::backup_kind(&sync.file_name().unwrap().to_string_lossy()).0, "sync");
+        drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_copies_kept_before_restore_are_pruned_like_automatic_backups() {
+        // 복구할 때마다 데이터 폴더에 남는 addiem-before-restore-<시각>.sqlite 도 최근 10개 + 7일만 (QA T5-10)
+        let dir = std::env::temp_dir().join(format!("na-prune-copies-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = now_ms();
+        let at = |ago: i64| chrono::DateTime::from_timestamp_millis(now - ago).unwrap().with_timezone(&chrono::Local).format("%Y%m%d-%H%M%S").to_string();
+        let copy = |ago: i64| format!("addiem-before-restore-{}.sqlite", at(ago));
+        let hour = 3_600_000;
+        let recent: Vec<String> = (1..=10).map(|h| copy(h * hour)).collect();
+        let old = [copy(20 * crate::db::DAY_MS), copy(30 * crate::db::DAY_MS)];
+        let keep = ["addiem.sqlite".to_string(), "addiem-before-restore-x.sqlite".into(), format!("addiem-before-restore-{}.zip", at(40 * crate::db::DAY_MS))];
+        for n in recent.iter().chain(&old).chain(&keep) {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        std::fs::write(dir.join(format!("{}-wal", old[0])), b"x").unwrap();
+        super::prune_before_restore(&dir, now);
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(old.iter().all(|n| !left.iter().any(|l| l.starts_with(n.as_str()))), "오래된 사본과 -wal 은 지운다: {left:?}");
+        assert!(recent.iter().chain(&keep).all(|n| left.contains(n)), "최근 10개 · 다른 파일은 남는다: {left:?}");
+        // 7일 안이면 10개가 넘어도 남는다
+        std::fs::write(dir.join(copy(2 * crate::db::DAY_MS)), b"x").unwrap();
+        super::prune_before_restore(&dir, now);
+        assert!(dir.join(copy(2 * crate::db::DAY_MS)).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 카드 cards 장이 든 DB 파일의 바이트 (백업 zip 에 넣는다)
+    fn db_bytes(dir: &std::path::Path, cards: usize) -> Vec<u8> {
+        let path = dir.join(format!("src-{cards}-{}.sqlite", now_ms()));
+        let con = crate::db::open(&path).unwrap();
+        deck_with_cards(&con, cards, None);
+        con.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;").unwrap();
+        drop(con);
+        let bytes = std::fs::read(&path).unwrap();
+        super::remove_db_files(&path);
+        bytes
+    }
+
+    #[test]
+    fn restore_refuses_files_that_are_not_this_apps_data() {
+        // 빈 파일 · 다른 앱의 SQLite 는 quick_check 를 지나도 막는다. 카드가 있는데 카드 0장 백업도 막는다 (QA T5-05, P0-8)
+        let dir = std::env::temp_dir().join(format!("na-validate-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("other.sqlite");
+        Connection::open(&other).unwrap().execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);").unwrap();
+        let other_bytes = std::fs::read(&other).unwrap();
+        for (name, bytes) in [("empty.zip", Vec::new()), ("other.zip", other_bytes)] {
+            zip_with(&dir.join(name), &[("addiem.sqlite", &bytes)]);
+            let e = super::stage_restore(&dir.join(name), &dir, 0).err().unwrap();
+            assert!(e.contains("이 앱에서 만든 백업이 아니에요"), "{name}: {e}");
+        }
+        zip_with(&dir.join("no-cards.zip"), &[("addiem.sqlite", &db_bytes(&dir, 0)), ("media/a.png", b"png")]);
+        let e = super::stage_restore(&dir.join("no-cards.zip"), &dir, 5).err().unwrap();
+        assert!(e.contains("카드 5장이 사라지지 않게"), "{e}");
+        assert!(!dir.join("media").exists(), "막으면 미디어도 풀지 않는다");
+        // 지금도 비어 있으면 (S1-6 · 새 기기) 카드 없는 백업도 된다
+        super::stage_restore(&dir.join("no-cards.zip"), &dir, 0).unwrap().discard();
+        assert!(leftovers(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interrupted_media_is_fixed_by_restoring_again() {
+        // 복구 중 꺼져 잘린 채 남은 미디어: 다시 복구하면 백업의 것으로 바꾼다. 파일은 .part 에 쓰고 이름을 바꾼다 (QA T5-04, P0-4)
+        let dir = std::env::temp_dir().join(format!("na-part-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        let mut con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
+        deck_with_cards(&con, 1, None);
+        let full = vec![7u8; 1000];
+        let zip = dir.join("b.zip");
+        zip_with(&zip, &[("addiem.sqlite", &db_bytes(&dir, 2)), ("media/a.png", &full), ("media/b.png", b"bb"), ("sources/s.pdf", b"pdf")]);
+        std::fs::write(dir.join("media/a.png"), &full[..400]).unwrap(); // 지난번 복구가 잘라 놓은 파일
+        std::fs::write(dir.join("media/.b.png.part"), b"stale").unwrap(); // 지난번 임시 파일
+        let staged = super::stage_restore(&zip, &dir, 1).unwrap();
+        assert_eq!(std::fs::read(dir.join("media/b.png")).unwrap(), b"bb", "없던 파일은 바로 채운다");
+        assert_eq!(std::fs::metadata(dir.join("media/a.png")).unwrap().len(), 400, "있던 파일은 DB 를 바꾸기 전에는 그대로");
+        super::swap_in_db(&mut con, &dir, &staged.db).unwrap();
+        staged.place();
+        assert_eq!(std::fs::read(dir.join("media/a.png")).unwrap(), full);
+        assert_eq!(std::fs::read(dir.join("sources/s.pdf")).unwrap(), b"pdf");
+        let parts = std::fs::read_dir(dir.join("media")).unwrap().filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().ends_with(".part")).count();
+        assert_eq!(parts, 0, "임시 파일을 남기지 않는다");
+        // 같은 크기면 건드리지 않는다
+        let again = super::stage_restore(&zip, &dir, 2).unwrap();
+        assert!(again.replace.is_empty());
+        again.discard();
+        drop(con);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_falls_back_to_an_older_backup() {
+        // S1-6: 가장 최근 zip 이 이 앱의 백업이 아니면 그 전 백업으로 (QA T5-06)
+        let dir = std::env::temp_dir().join(format!("na-older-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("addiem-20261001-101010.zip");
+        zip_with(&good, &[("addiem.sqlite", &db_bytes(&dir, 1))]);
+        let bad = dir.join("from-someone.zip"); // 수정 시각이 지금이라 목록 맨 위
+        zip_with(&bad, &[("readme.txt", b"hi")]);
+        let list: Vec<_> = super::backup_list(&dir).into_iter().map(|b| dir.join(b.name)).collect();
+        assert_eq!(list, [bad.clone(), good.clone()]);
+        let (picked, staged) = super::stage_first(&list, &dir, Some(0), false).unwrap();
+        assert_eq!(picked, good);
+        staged.discard();
+        let e = super::stage_first(&[bad], &dir, Some(0), false).err().unwrap();
+        assert!(e.contains("데이터 파일이 없어요"), "하나만 볼 때는 그 백업의 까닭: {e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_skips_empty_backups_while_the_card_count_is_unknown() {
+        // S1-6: 지금 DB 를 열지 못해 카드 수를 모르면 더 최근의 카드 0장 백업을 건너뛰고 카드가 있는 백업으로.
+        // 0장 백업밖에 없으면 확인한 뒤에만 (QA V1-01)
+        let dir = std::env::temp_dir().join(format!("na-empty-first-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let full = dir.join("addiem-20261029-030713.zip");
+        zip_with(&full, &[("addiem.sqlite", &db_bytes(&dir, 3))]);
+        let empty = dir.join("addiem-20261029-040000.zip");
+        zip_with(&empty, &[("addiem.sqlite", &db_bytes(&dir, 0))]);
+        let list: Vec<_> = super::backup_list(&dir).into_iter().map(|b| dir.join(b.name)).collect();
+        assert_eq!(list, [empty.clone(), full.clone()], "카드 0장 백업이 더 최근");
+        let (picked, staged) = super::stage_first(&list, &dir, None, false).unwrap();
+        assert_eq!(picked, full);
+        staged.discard();
+        assert_eq!(super::stage_first(std::slice::from_ref(&empty), &dir, None, false).err().unwrap(), super::ONLY_EMPTY);
+        let (picked, staged) = super::stage_first(std::slice::from_ref(&empty), &dir, None, true).unwrap();
+        assert_eq!(picked, empty, "확인하면 카드 0장 백업으로");
+        staged.discard();
+        // 쓸 수 없는 백업만 있으면 그 까닭 그대로
+        let bad = dir.join("bad.zip");
+        zip_with(&bad, &[("readme.txt", b"hi")]);
+        assert!(super::stage_first(&[bad], &dir, None, false).err().unwrap().contains("데이터 파일이 없어요"));
+        assert!(leftovers(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_restore_files_are_cleaned_at_startup() {
+        // 복구 중 꺼져 남은 임시 DB · .part 는 다음 실행에 지운다 (QA T5-10). 데이터 · 미디어 · 복구 전 사본은 그대로
+        let dir = std::env::temp_dir().join(format!("na-stale-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        std::fs::create_dir_all(dir.join("sources")).unwrap();
+        let stale = [".restore-1.sqlite", ".restore-1.sqlite-wal", "media/.a.png.part", "sources/.s.pdf.part"];
+        let keep = ["addiem.sqlite", "addiem-before-restore-20261001-101010.sqlite", "media/a.png", "media/x.part", "sources/s.pdf"];
+        for n in stale.iter().chain(&keep) {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        super::clean_stale_restore(&dir);
+        assert!(stale.iter().all(|n| !dir.join(n).exists()));
+        assert!(keep.iter().all(|n| dir.join(n).exists()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 덱 하나에 기본 카드 n장 (하루 신규 상한 limit). 카드 id
@@ -3191,7 +3742,7 @@ mod tests {
         for c in [cards[0], cards[2], other[0]] {
             con.execute("UPDATE card SET state = 'suspended' WHERE id = ?1", [c]).unwrap();
         }
-        let list = |d: Option<i64>, q: &str, only: bool| super::card_list(&con, d, q, None, None, None, None, Some(only)).unwrap();
+        let list = |d: Option<i64>, q: &str, only: bool| super::card_list(&con, d, q, None, None, None, None, Some(only), None, false).unwrap();
         let ids = |l: &super::CardList| l.rows.iter().map(|r| r.id).collect::<Vec<_>>();
         let all = list(Some(deck), "", false);
         assert_eq!((all.total, all.suspended), (3, 2), "덱 범위 안의 학습 중지 2장 (다른 덱 것은 세지 않는다)");
@@ -3202,6 +3753,24 @@ mod tests {
         let everywhere = list(None, "", true);
         assert_eq!((everywhere.total, everywhere.suspended), (3, 3), "모든 덱");
         assert_eq!(list(Some(other_deck), "", false).suspended, 1);
+    }
+
+    #[test]
+    fn card_list_pages_after_an_id_and_bare_skips_rendering() {
+        // T9-04 · P0-7: 목록은 마지막 id 다음부터 이어 받고, Ctrl A 는 그리지 않은 행으로 전부 받는다
+        let con = crate::db::open_in_memory().unwrap();
+        let cards = deck_with_cards(&con, 5, None);
+        let deck: i64 = con.query_row("SELECT deck_id FROM card WHERE id = ?1", [cards[0]], |r| r.get(0)).unwrap();
+        let list = |limit: i64, after: Option<i64>, bare: bool| super::card_list(&con, Some(deck), "", Some(limit), None, None, None, None, after, bare).unwrap();
+        let ids = |l: &super::CardList| l.rows.iter().map(|r| r.id).collect::<Vec<_>>();
+        let first = list(2, None, false);
+        assert_eq!((ids(&first), first.total), (cards[..2].to_vec(), 5));
+        let next = list(2, Some(cards[1]), false);
+        assert_eq!((ids(&next), next.total), (cards[2..4].to_vec(), 5), "다음 쪽. 전체 수는 그대로");
+        assert_eq!(next.rows[0].question, "q2");
+        let all = list(5, None, true);
+        assert_eq!(ids(&all), cards);
+        assert!(all.rows.iter().all(|r| r.question.is_empty() && r.deck_path == ["t"] && r.note_type_id == first.rows[0].note_type_id), "그리지 않아도 덱 · 상태 · 노트 유형(T1-35)은 있다");
     }
 
     /// 오늘 학습일과 그 한가운데 시각 (경계 근처에서 돌려도 같은 날)
@@ -3268,6 +3837,140 @@ mod tests {
         assert_eq!((reason.as_str(), logs), ("day_rollover", 0));
         let s2 = session(&con, today);
         assert_eq!(super::answer_at(&mut con, &fsrs::FSRS::default(), s2, ids[0], 3, 1000, None, now).unwrap().0.action, "again_later");
+    }
+
+    fn undo_state(con: Connection) -> super::AppState {
+        super::AppState {
+            db: std::sync::Mutex::new(con),
+            fsrs: fsrs::FSRS::default(),
+            data_dir: Default::default(),
+            undo: Default::default(),
+            import_cancel: Default::default(),
+            startup_error: Default::default(),
+        }
+    }
+
+    fn rate(st: &super::AppState, s: i64, card: i64, now: i64) {
+        let u = super::answer_at(&mut st.db.lock().unwrap(), &st.fsrs, s, card, 3, 1000, None, now).unwrap().1.unwrap();
+        super::push_undo(st, u).unwrap();
+    }
+
+    fn log_count(st: &super::AppState) -> i64 {
+        st.db.lock().unwrap().query_row("SELECT count(*) FROM review_log", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn undo_is_one_step_and_only_for_this_run() {
+        // QA V3-01: 끝 화면 되돌리기는 방금 학습의 마지막 평가 하나만. 한 번 꺼내면 더 이전 평가로 거슬러 가지 못하고,
+        // 같은 날 같은 세션을 이어 쓴 새 학습(다른 덱, 평가 없음)에서는 앞 학습의 평가를 되돌리지 않는다
+        let con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 3, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        let st = undo_state(con);
+        rate(&st, s, ids[0], now);
+        rate(&st, s, ids[1], now + 1);
+        assert_eq!(super::undo_last_at(&st, s, now + 2).unwrap(), Some(ids[1]));
+        assert_eq!(super::undo_last_at(&st, s, now + 3).unwrap(), None, "한 단계뿐");
+        assert_eq!(log_count(&st), 1);
+        rate(&st, s, ids[2], now + 4);
+        super::forget_undo(&st).unwrap(); // 새 학습을 연다 (start_session · mix_start · resolve_buried)
+        assert_eq!(super::undo_last_at(&st, s, now + 5).unwrap(), None);
+        assert_eq!(log_count(&st), 2);
+    }
+
+    #[test]
+    fn undo_across_day_boundary_is_refused() {
+        // QA V3-16: 경계 전 평가를 경계 뒤에 되돌리지 않는다. 되돌린 뒤 다시 한 평가는 새 날이라 남지 않아 둘 다 사라졌다
+        let con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 1, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        let st = undo_state(con);
+        rate(&st, s, ids[0], now);
+        assert!(super::undo_last_at(&st, s, now + crate::db::DAY_MS).unwrap_err().contains("어제 학습일"));
+        // QA V9-06: 두 번째도 같은 이유를 말한다 (첫 번째가 칸을 꺼내 말없이 지나갔다)
+        assert!(super::undo_last_at(&st, s, now + crate::db::DAY_MS).unwrap_err().contains("어제 학습일"));
+        assert_eq!(log_count(&st), 1, "어제 평가는 남는다");
+    }
+
+    #[test]
+    fn unfolding_clears_that_cards_undo() {
+        // QA V9-01: X 평가 → Y 접기 → [지금 다시 보기]. 화면은 되돌릴 것이 없다고 하는데 칸에 Y 접기가 남아
+        // 끝 화면이 [마지막 평가 되돌리기]를 보이고, 누르면 이미 푼 Y 로 들어갔다
+        let con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 2, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        let st = undo_state(con);
+        rate(&st, s, ids[0], now);
+        let fold = super::snapshot(&st.db.lock().unwrap(), s, ids[1]).unwrap();
+        super::push_undo(&st, fold).unwrap(); // bury_card 가 남기는 칸
+        super::unbury_at(&st, s, ids[1]).unwrap();
+        assert_eq!(super::undo_last_at(&st, s, now + 2).unwrap(), None);
+        assert_eq!(log_count(&st), 1);
+    }
+
+    #[test]
+    fn child_deck_reason_counts_like_its_parent() {
+        // QA V3-04: 상위 덱 목표를 따르는 하위 덱의 사유 숫자는 상위 덱 상세와 같은 지금 남은 수 (큐 메모는 하루를 시작할 때 수)
+        let mut con = crate::db::open_in_memory().unwrap();
+        let (today, now) = mid_today();
+        con.execute("INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'P', 0, 0)", []).unwrap();
+        con.execute("INSERT INTO deck (id, name, parent_id, created_at, updated_at) VALUES (2, 'A', 1, 0, 0), (3, 'B', 1, 0, 0)", []).unwrap();
+        con.execute("INSERT INTO deck_config (deck_id, target_date, updated_at) VALUES (1, ?1, 0)", [crate::db::date_from_day(today + 24)]).unwrap();
+        for (deck_id, k) in [(2, 20), (3, 12)] {
+            for i in 0..k {
+                let card = super::NewCard { deck_id, kind: "basic".into(), front: format!("q{deck_id}-{i}"), back: "a".into(), importance: None };
+                super::insert_note(&con, &card, "", None).unwrap();
+            }
+        }
+        let a: Vec<i64> = con.prepare("SELECT id FROM card WHERE deck_id = 2 ORDER BY id LIMIT 2").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        let s = session(&con, today);
+        for id in a {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, id, 3, 1000, None, now).unwrap();
+        }
+        assert_eq!(super::deck_detail_in(&con, 1).unwrap().budget_unseen, 30);
+        assert_eq!(super::deck_detail_in(&con, 3).unwrap().reason.as_deref(), Some("P: 남은 30장 ÷ 24일 = 하루 2장"));
+    }
+
+    #[test]
+    fn done_screen_skips_cards_unburied_elsewhere() {
+        // QA T2-03: 두 번째 Again 으로 접힌 카드를 카드 목록에서 풀면 끝 화면 · [오늘 다시 보기] 에 남지 않는다
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 2, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        for id in [ids[0], ids[0], ids[1], ids[1]] {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, id, 1, 1000, None, now).unwrap();
+        }
+        con.execute("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id = ?1", [ids[0]]).unwrap();
+        assert_eq!(super::resolve_buried_in(&con, s, true).unwrap(), [ids[1]]);
+    }
+
+    #[test]
+    fn today_only_new_count_is_not_tomorrows() {
+        // QA T3-07: "오늘만 신규 5장"은 끝 화면의 내일 예정에 들어가지 않는다 (30장 ÷ 10일 = 3장)
+        let con = crate::db::open_in_memory().unwrap();
+        deck_with_cards(&con, 30, None);
+        let (today, _) = mid_today();
+        let date = crate::db::date_from_day;
+        con.execute("UPDATE deck_config SET target_date = ?1, today_new = 5, today_new_day = ?2", [date(today + 11), date(today)]).unwrap();
+        let decks = super::load_decks(&con).unwrap();
+        assert_eq!(decks[0].today_new, Some(5));
+        assert_eq!(super::tomorrow_plan(&con, &decks, today).unwrap().new.len(), 3);
+    }
+
+    #[test]
+    fn target_today_or_past_does_not_overflow() {
+        // QA T3-02: 목표일이 오늘(0일) · 지난 날(-9일)이면 남은 신규를 오늘 모두 넣는다. "N일 미뤄야" 경고가 없다
+        assert_eq!([super::overflow_days(Some(1), Some(0)), super::overflow_days(Some(1), Some(-9))], [None, None]);
+        assert_eq!(super::overflow_days(Some(27), Some(24)), Some(3));
+        // QA T3-03: 목표일이 오늘이고 오늘 다 넣으면 제때 끝난다. 상한에 걸려 하루를 넘기거나 이미 지났으면 아니다
+        assert!(super::on_track(0, Some(1), 4));
+        assert!(!super::on_track(0, Some(2), 4));
+        assert!(!super::on_track(-3, Some(1), 4));
+        assert!(super::on_track(24, Some(24), 32) && !super::on_track(24, Some(25), 32));
     }
 
     #[test]

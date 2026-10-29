@@ -74,10 +74,17 @@ const STORE = "addiem.keys";
 /** 바꾼 동작만 저장한다. 빈 문자열은 "미지정" (같은 범위에서 다른 동작에 내준 키) */
 type Overrides = Partial<Record<ActionId, string[]>>;
 
+/** 입력 칸 안에서 쓰는 동작. Ctrl · Alt 없는 키면 그 글자(예: ㄴ)를 칠 때 저장 · 수식이 돼 버린다 (QA T2-05) */
+const IN_FIELD: ActionId[] = ["save", "math"];
+export const needsModifier = (id: ActionId, chord: string) => IN_FIELD.includes(id) && !!chord && !/(^|\+)(Ctrl|Alt)\+/.test(chord);
+
 function load(): Overrides {
   try {
     const v = JSON.parse(localStorage.getItem(STORE) ?? "{}");
-    return v && typeof v === "object" ? v : {};
+    if (!v || typeof v !== "object") return {};
+    // 예전에 저장한 그런 키는 버리고 기본 키로 되돌린다 (녹화기도 이제 받지 않는다)
+    for (const id of IN_FIELD) if (Array.isArray(v[id]) && v[id].some((c: string) => needsModifier(id, c))) delete v[id];
+    return v;
   } catch {
     return {};
   }
@@ -133,8 +140,16 @@ export function useKeymap() {
 const SAME: Record<string, string> = { NumpadEnter: "Enter", NumpadSubtract: "Minus", NumpadAdd: "Equal", NumpadDecimal: "Period" };
 const normCode = (code: string) => SAME[code] ?? code.replace(/^Numpad(\d)$/, "Digit$1");
 
-/** 키 입력 하나를 저장 형식으로. 조합 키만 누른 경우는 null */
+/** 한글 조합 중인 키 입력. 조합 중 Enter · Esc 는 글자를 마치는 키다. Windows 한글 IME 는 keyCode 229 로 알린다 */
+export const composing = (e: KeyboardEvent) => e.isComposing || e.keyCode === 229;
+
+/** 확인용 Enter (조합 중 · Ctrl · Cmd 가 아닌). 입력 칸의 onKeyDown 과 document 리스너가 같이 쓴다 */
+export const plainEnter = (e: React.KeyboardEvent | KeyboardEvent) =>
+  e.key === "Enter" && !e.ctrlKey && !e.metaKey && !composing("nativeEvent" in e ? e.nativeEvent : e);
+
+/** 키 입력 하나를 저장 형식으로. 조합 키만 누른 경우와 한글 조합 중인 키는 null (조합 중 키가 단축키로 새지 않게) */
 export function chordOf(e: KeyboardEvent): string | null {
+  if (composing(e)) return null;
   if (["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"].includes(e.code)) return null;
   return [e.ctrlKey || e.metaKey ? "Ctrl" : "", e.altKey ? "Alt" : "", e.shiftKey ? "Shift" : "", normCode(e.code)].filter(Boolean).join("+");
 }

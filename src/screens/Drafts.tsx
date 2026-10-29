@@ -5,7 +5,7 @@ import "../styles/quality.css";
 import "../styles/drafts.css";
 import { useEffect, useRef, useState } from "react";
 import { aiApi, aiError, api, errorText, qualityApi, type AiError, type CardView } from "../api";
-import { AiConnect, AiErrorBox, SendList, UsingPlan, refreshAi, sentRows } from "../ai";
+import { AiConnect, AiErrorBox, SendList, SLOW, STOPPED, UsingPlan, refreshAi, sentRows, useSlow } from "../ai";
 import { pageOf, placeOf, ragApi, SIGNAL_LABEL, type Draft, type DraftAmount, type DraftCard, type Sent } from "../sourceApi";
 import { renderCardHtml } from "../cardHtml";
 import { eul, n, useKey, useLeaveGuard, useNav, type Route } from "../nav";
@@ -39,7 +39,7 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
   const [amount, setAmount] = useState(amount0);
   const [cloze, setCloze] = useState(cloze0);
   const [busy, setBusy] = useState(false);
-  const [slow, setSlow] = useState(false);
+  const slow = useSlow(busy);
   const [fail, setFail] = useState<AiError | null>(null);
   const [connect, setConnect] = useState<{ start: "intro" | "wait"; reconsent: boolean } | null>(null);
   const seq = useRef(0);
@@ -47,11 +47,6 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
   useEffect(() => {
     ragApi.preview(picked).then(setRows, (e) => setFail(aiError(e)));
   }, [picked]);
-  useEffect(() => {
-    if (!busy) return setSlow(false);
-    const t = setTimeout(() => setSlow(true), 30_000);
-    return () => clearTimeout(t);
-  }, [busy]);
   // 창을 닫으면 보내던 요청도 멈춘다
   useEffect(
     () => () => {
@@ -59,8 +54,12 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
     },
     [],
   );
+  const toast = useToast();
   const stop = () => {
-    if (inFlight.current) aiApi.cancel().catch(() => {});
+    if (inFlight.current) {
+      aiApi.cancel().catch(() => {});
+      toast(STOPPED);
+    }
     inFlight.current = false;
     seq.current++;
     setBusy(false);
@@ -94,7 +93,8 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
   // 연결 창은 이 창 대신 뜬다. 돌아오면 저절로 보내지 않는다
   if (connect) return <AiConnect start={connect.start} reconsent={connect.reconsent} onDone={() => setConnect(null)} />;
   return (
-    <Modal title="카드 초안 만들기" sub="고른 구간으로 ChatGPT가 초안을 만들어요. 승인하기 전에는 카드가 생기지 않아요." onClose={onClose} className="draft-send">
+    // 보내는 중에 바깥 클릭 · X · Esc 는 [취소]처럼 요청만 멈추고 창은 둔다. 말없이 닫혀 아직 만드는 줄 알았다 (QA T7-01)
+    <Modal title="카드 초안 만들기" sub="고른 구간으로 ChatGPT가 초안을 만들어요. 승인하기 전에는 카드가 생기지 않아요." onClose={busy ? stop : onClose} className="draft-send">
       <div className="draft-opts">
         <div className="draft-opt">
           <span className="draft-opt__label">
@@ -155,7 +155,7 @@ export function DraftSend({ picked, amount: amount0 = "normal", cloze: cloze0 = 
         {busy ? (
           <span className="ai-busy">
             <Spinner size={16} />
-            <span className="t-label-m c-secondary">{slow ? "오래 걸려요 · [취소]로 멈출 수 있어요" : "ChatGPT가 초안을 만드는 중…"}</span>
+            <span className="t-label-m c-secondary">{slow ? `${SLOW} · [취소]로 멈출 수 있어요` : "ChatGPT가 초안을 만드는 중…"}</span>
           </span>
         ) : (
           <UsingPlan />
@@ -214,8 +214,15 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
     return true;
   });
   useKey("Escape", () => (panel ? setPanel(null) : back()), editing === null && !asking && !resend && !askResend);
-  // 앞·뒷면을 고친 초안. [다시 만들기]가 말없이 덮지 않게 먼저 묻는다 (QA T5-04)
-  const edited = items.filter((x) => x.front !== draft.cards[x.key]?.front || x.back !== draft.cards[x.key]?.back).length;
+  // 손본 초안 (앞·뒷면 · 빼기 · 체크 · 중요도)과 넣을 곳. [다시 만들기]가 말없이 덮지 않게 먼저 묻는다 (QA T5-04 · T7-07)
+  const base = itemsOf(draft);
+  const edited =
+    base.length - items.length +
+    items.filter((x) => {
+      const b = base[x.key];
+      return !b || x.front !== b.front || x.back !== b.back || x.on !== b.on || x.level !== b.level;
+    }).length;
+  const touched = edited > 0 || deckId !== draft.deck_id;
 
   const seg = (id: number) => draft.sent.find((s) => s.id === id);
   const set = (key: number, patch: Partial<Item>) => setItems((list) => list.map((x) => (x.key === key ? { ...x, ...patch } : x)));
@@ -370,7 +377,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
           <span className="t-caption c-tertiary">중요도는 제안대로 · 바꾸려면 칩을 눌러요</span>
         </span>
         <span className="drafts__bar-right">
-          <Button variant="ghost" size="M" icon="rotate" label="다시 만들기" onClick={() => (edited ? setAskResend(true) : setResend(true))} />
+          <Button variant="ghost" size="M" icon="rotate" label="다시 만들기" onClick={() => (touched ? setAskResend(true) : setResend(true))} />
           <Button size="M" icon="check" label={`${n(chosen.length)}장 만들기`} disabled={!chosen.length} busy={busy} busyLabel="만드는 중…" onClick={apply} />
         </span>
       </div>
@@ -387,7 +394,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
       )}
       {askResend && (
         <DiscardModal
-          title={`고친 초안 ${n(edited)}장이 있어요`}
+          title={edited ? `고친 초안 ${n(edited)}장이 있어요` : "넣을 곳을 바꿨어요"}
           text="다시 만들면 고친 내용은 사라지고 새 초안으로 바뀌어요."
           keep="계속 보기"
           discard="버리고 다시 만들기"

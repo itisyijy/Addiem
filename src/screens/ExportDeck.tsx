@@ -86,7 +86,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     } catch (e) {
       // 멈추면 백엔드가 만들던 파일만 지운다. 실패도 확인 단계로 돌아가 다른 위치를 고르게 한다
       if (cancelled.current) toast({ title: "내보내기를 멈췄어요", text: "덱은 그대로예요" });
-      else toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e)} · 다른 위치를 골라 다시 시도해 주세요` });
+      else toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e).replace(/\.$/, "")} · 다른 위치를 골라 다시 시도해 주세요` });
     } finally {
       clearTimeout(timer);
       unlisten();
@@ -110,7 +110,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
         action: { label: "폴더에서 보기", onClick: () => reveal(r.path) },
       });
     } catch (e) {
-      toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e)} · 다른 위치를 골라 다시 시도해 주세요` });
+      toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e).replace(/\.$/, "")} · 다른 위치를 골라 다시 시도해 주세요` });
       setFile(null);
     }
   };
@@ -197,8 +197,8 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     );
   }
 
-  // 내보내는 동안 바깥을 눌러도 닫히지 않는다 (C1-xp). Modal 은 Esc·닫기 버튼에서만 이벤트를 넘기므로 그때만 멈춘다
-  const close = file ? (e?: unknown) => e && !cancelling && cancel() : onClose;
+  // 내보내는 동안 바깥을 눌러도(mousedown) 닫히지 않는다 (C1-xp). Esc · 닫기 버튼은 멈춘다 (T4-06: Modal 은 어느 길이든 인자 없이 부른다)
+  const close = file ? () => window.event?.type !== "mousedown" && !cancelling && cancel() : onClose;
 
   if (slow && file && !csv) {
     return (
@@ -217,6 +217,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     `노트 ${n(info.notes)}개`,
     `카드 ${n(info.cards)}장`,
     info.media > 0 && `미디어 ${n(info.media)}개`,
+    info.archived > 0 && `보관한 하위 덱 ${n(info.archived)}개는 빼요`,
   ];
   return (
     <Modal title="덱 내보내기" sub="형식을 고르고 저장할 곳을 정해요" className="modal--export" onClose={close}>

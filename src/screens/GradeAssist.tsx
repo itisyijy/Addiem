@@ -3,7 +3,8 @@
 // 학습 흐름을 막지 않는다: 기다리는 동안에도 1–4 가 되고, 결과 전에 평가하면 요청을 멈추고 결과는 버린다 (Study 가 stop() 을 부른다)
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { aiApi, aiError, type AiError } from "../api";
-import { AiConnect, AiErrorBox, ScopeLine, SendList, UsingPlan, refreshAi, sentRows, useAiStatus, type SendRow } from "../ai";
+import { AiConnect, AiErrorBox, ScopeLine, SendList, SLOW, STOPPED, UsingPlan, refreshAi, sentRows, useAiStatus, useSlow, type SendRow } from "../ai";
+import { useToast } from "../toast";
 import { placeOf, ragApi, type Grade, type GradeScope, type Sent } from "../sourceApi";
 import { actionKey } from "../keys";
 import { n, useKey, useOverlayScope } from "../nav";
@@ -44,12 +45,12 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   const [phase, setPhase] = useState<Phase>("idle");
   const [result, setResult] = useState<Grade | null>(null);
   const [fail, setFail] = useState<AiError | null>(null);
-  const [slow, setSlow] = useState(false);
   const [showSent, setShowSent] = useState(false);
   const [connect, setConnect] = useState<{ start: "intro" | "wait"; reconsent: boolean } | null>(null);
   const seq = useRef(0);
   const inFlight = useRef(false); // 보내 놓고 아직 답을 받지 않은 요청
   const confirmBox = useRef<HTMLDivElement>(null);
+  const toast = useToast();
   /** 보내던 요청을 멈춘다. 끝까지 돌면 결과는 버려도 사용량은 줄어든다 */
   const cancel = () => {
     if (inFlight.current) aiApi.cancel().catch(() => {});
@@ -75,18 +76,15 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
       },
       () => {},
     );
-    // 카드가 바뀌거나(접어두기 · 되돌리기 · 다음 카드) 학습 화면을 떠나면(그만하기 · 이동) 보내던 요청도 멈춘다 (QA T5-01)
+    // 카드가 바뀌거나(접어두기 · 되돌리기 · 다음 카드) 학습 화면을 떠나면(그만하기 · 이동) 보내던 요청도 멈추고 [취소]처럼 알린다 (QA T5-01 · V5-03)
     return () => {
       live = false;
+      if (inFlight.current) toast(STOPPED);
       cancel();
     };
     // typed 는 비교할 때 정해진다 (비교 화면에서는 바뀌지 않는다)
   }, [cardId, on]);
-  useEffect(() => {
-    if (phase !== "busy") return setSlow(false);
-    const t = setTimeout(() => setSlow(true), 30_000);
-    return () => clearTimeout(t);
-  }, [phase]);
+  const slow = useSlow(phase === "busy");
 
   // 확인 목록은 카드 위에 뜨는 겹침 창이다: [보내기]에 초점 (Enter 로 보낸다), Esc 는 목록만 닫는다 (학습을 그만두지 않게).
   // 떠 있는 동안 화면 단축키는 쉬고 평가 버튼은 눌러진다. 기다리는 동안에는 아무것도 막지 않는다
@@ -96,7 +94,9 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   }, [phase]);
   useKey("Escape", () => setPhase("idle"), phase === "confirm", { modal: true });
 
+  // [취소] · 결과 전 평가: 화면은 바로 돌아오고, 결과는 버려도 이미 보낸 요청은 사용량에 들어간다고 알린다 (QA R-05 · T7-05)
   const stop = useCallback(() => {
+    if (inFlight.current) toast(STOPPED);
     cancel();
     seq.current++;
     setPhase((p) => (p === "busy" || p === "confirm" ? "idle" : p));
@@ -194,7 +194,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   const slot = !on ? null : phase === "busy" ? (
     <div className="grade grade--wait" role="status">
       <Spinner size={16} />
-      <span className="t-label-m c-secondary">{slow ? "오래 걸려요" : "ChatGPT가 답을 보는 중… 평가는 지금 해도 돼요"}</span>
+      <span className="t-label-m c-secondary">{slow ? `${SLOW} · 평가는 지금 해도 돼요` : "ChatGPT가 답을 보는 중… 평가는 지금 해도 돼요"}</span>
       <button type="button" className="ai-link t-label-s" onClick={stop}>
         취소
       </button>

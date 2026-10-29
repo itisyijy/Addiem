@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "re
 import { api, errorText, planApi, type DeckDetail, type Level, type PlanMode, type Subdeck } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Input, Kbd, StatTile } from "../ui";
 import { n, studyDate, useKey, useNav, useOverlayScope } from "../nav";
-import { actionKey } from "../keys";
+import { actionKey, plainEnter } from "../keys";
 import { useToast, type ToastInput } from "../toast";
 import { Modal, NewDeckModal } from "./NewDeck";
 import { ExportDeckDialog } from "./ExportDeck";
@@ -143,7 +143,11 @@ function Header({ d, reload, variant }: { d: DeckDetail; reload: Reload; variant
         </div>
         <div className="deck__actions">
           {variant === "full" && (
-            <Button variant="secondary" size="M" icon="list" label="카드 보기" onClick={() => nav({ name: "cards", deckId: d.id })} />
+            <>
+              {/* 카드가 생긴 뒤에도 더 넣을 길이 보이게 (QA T1-08) */}
+              <Button variant="secondary" size="M" icon="plus" label="카드 추가" shortcut={actionKey("addCard")} onClick={() => nav({ name: "addCard", deckId: d.id })} />
+              <Button variant="secondary" size="M" icon="list" label="카드 보기" onClick={() => nav({ name: "cards", deckId: d.id })} />
+            </>
           )}
           {/* I1 [자료 N] (screens/Sources.tsx). 빈 덱에도 둔다: 강의 PDF 부터 넣고 그림·표 · 초안으로 첫 카드를 만들 수 있게 (QA T4-03) */}
           <SourcesButton deckId={d.id} />
@@ -196,7 +200,8 @@ function RenameTitle({ d, sub, onDone }: { d: DeckDetail; sub: string; onDone: (
         onFocus={(e) => e.currentTarget.select()}
         onChange={() => setError(undefined)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
+          // 한글 조합 중 Enter 는 글자만 마친다. 그 Enter 로 칸을 나가면 확정 Enter 가 화면의 "Enter = 학습 시작"으로 샌다 (QA T1-25 · T8-09)
+          if (plainEnter(e)) e.currentTarget.blur();
           if (e.key === "Escape") {
             e.currentTarget.value = d.name;
             e.currentTarget.blur();
@@ -247,20 +252,27 @@ function reasonText(d: DeckDetail, adjust: Adjust) {
   if (adjust?.mode === "spread") return `앞선 시험 전에 나눠 넣어요 · 하루 신규 ${n(d.per_day)}장 (충돌 조정 ${adjust.delta > 0 ? "+" : ""}${n(adjust.delta)}장)`;
   // H1 "실제 속도에 맞춰 다시 나누기"를 끈 덱. 큐가 남긴 문장으로 알아본다
   if (d.reason?.startsWith("하루 몫")) return `하루 신규 ${n(d.per_day)}장으로 고정했어요 · 학습 계획에서 바꿀 수 있어요`;
-  // 상위 덱 목표를 따르는 하위 덱은 이 덱 설정으로 계산할 수 없다. 큐가 남긴 문장("상위 덱: 남은 …")을 그대로 쓴다
+  // 상위 덱 몫을 하위 덱이 함께 쓴다. 다른 하위 덱이 몫을 먼저 가져가 이 덱이 0장인 날을 "마쳤어요"로 보이지 않게 (QA V3-14)
+  const shared = d.parent_id !== null && !d.target_date && d.daily_new_limit === null && d.today_new_override === null;
+  if (shared && d.today_new === 0 && d.done_today === 0 && d.per_day > 0)
+    return `오늘 이 덱 신규는 0장이에요 · ${d.target_from ? `「${d.target_from.name}」` : "상위 덱"} 하루 신규 ${n(d.per_day)}장을 다른 하위 덱이 먼저 써요`;
+  // 상위 덱 목표를 따르는 하위 덱은 이 덱 설정으로 계산할 수 없다. 상위 덱 상세와 같은 지금 남은 수로 백엔드가 만든 문장을 쓴다 (QA V3-04)
   if (!d.target_date && d.target_from && d.reason) return d.reason;
   if (!d.target_date || d.learnable_days === null) return `목표일 없음 · 하루 신규 상한 ${n(d.per_day)}장대로`;
-  if (d.learnable_days <= 0) return `목표일이 지났어요 · 남은 신규 ${n(d.unseen)}장을 모두 올렸어요`;
-  const needed = Math.ceil(d.unseen / d.learnable_days);
+  // 당일 학습을 끈 목표일 당일은 "지났어요"가 아니다 (QA T3-03). 수는 이 덱 예산이 나눌 신규만 (자기 설정을 가진 하위 덱은 따로, QA T3-08)
+  if (d.learnable_days === 0) return `오늘이 목표일이에요 · 남은 신규 ${n(d.budget_unseen)}장을 오늘 모두 올렸어요`;
+  if (d.learnable_days < 0) return `목표일이 지났어요 · 남은 신규 ${n(d.budget_unseen)}장을 모두 올렸어요`;
+  const needed = Math.ceil(d.budget_unseen / d.learnable_days);
   if (d.daily_new_limit !== null && needed > d.daily_new_limit)
     return `하루 ${n(needed)}장이 필요한데 상한이 ${n(d.daily_new_limit)}장이에요`;
-  return `남은 신규 ${n(d.unseen)}장 ÷ ${n(d.learnable_days)}일 = 하루 ${n(needed)}장`;
+  return `남은 신규 ${n(d.budget_unseen)}장 ÷ ${n(d.learnable_days)}일 = 하루 ${n(needed)}장`;
 }
 
 function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
   const nav = useNav();
   const today = d.today_review + d.today_new + d.today_returning; // 남은 분량
-  const planned = d.done_today + today;
+  // 다시 볼 카드는 오늘 완료에도 들어 있다. 두 번 세면 "오늘 완료 4 / 계획 10"이 요약의 9장과 어긋난다 (QA V6-02)
+  const planned = d.done_today + today - d.today_again;
   // 쉬는 중에도 막지는 않는다 (C1-p). D1 이 예정 복습만 보여준다
   const canStart = today > 0 || d.paused;
   const start = useCallback(() => canStart && nav({ name: "summary", deckIds: [d.id] }), [nav, d.id, canStart]);
@@ -292,8 +304,13 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
           </p>
           <div className="deck__today-mix t-body-m">
             <span>
-              <span className="c-on-inverse">복습</span> <b>{n(d.today_review)}</b>
+              <span className="c-on-inverse">복습</span> <b>{n(d.today_review - d.today_again)}</b>
             </span>
+            {d.today_again > 0 && (
+              <span>
+                <span className="c-on-inverse">다시 볼</span> <b>{n(d.today_again)}</b>
+              </span>
+            )}
             <span>
               <span className="c-on-inverse">신규</span> <b>{n(d.today_new)}</b>
             </span>
@@ -309,7 +326,9 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
                   <span className="t-title-s">{n(d.done_today)}</span>
                   <span className="t-body-s c-tertiary">/ 계획 {n(planned)}</span>
                 </span>
-                <span className="t-body-s c-tertiary">남은 {n(today)}장</span>
+                <span className="t-body-s c-tertiary">
+                  남은 {n(today - d.today_again)}장{d.today_again > 0 && ` · 다시 볼 ${n(d.today_again)}장`}
+                </span>
               </div>
               <div className="deck__done-track">
                 <span className="deck__done-fill" style={{ width: `${(d.done_today / planned) * 100}%` }} />
@@ -335,7 +354,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
             <Button
               className="deck__start"
               icon="arrow-right"
-              label={today === 0 ? "오늘 학습을 마쳤어요" : d.done_today > 0 ? "이어서 학습" : "학습 시작"}
+              label={today === 0 ? (d.done_today > 0 ? "오늘 학습을 마쳤어요" : "오늘 볼 카드가 없어요") : d.done_today > 0 ? "이어서 학습" : "학습 시작"}
               shortcut={today > 0 ? "Enter" : undefined}
               disabled={today === 0}
               onClick={start}
@@ -1096,7 +1115,7 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
           setTyped(e.target.value);
           setError(undefined);
         }}
-        onKeyDown={(e) => e.key === "Enter" && run()}
+        onKeyDown={(e) => plainEnter(e) && run()}
         error={error}
       />
       <div className="modal__actions">
