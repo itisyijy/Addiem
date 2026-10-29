@@ -45,9 +45,10 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
       setBusy(false);
     }
   };
-  // 마지막 카드의 평가(또는 두 번째 Again 의 접기)를 여기서 되돌리고 그 카드로 학습에 다시 들어간다 (QA T2-02)
+  // 마지막 카드의 평가(또는 두 번째 Again 의 접기)를 여기서 되돌리고 그 카드로 학습에 다시 들어간다 (QA T2-02).
+  // 방금 끝난 학습에서 한 평가 · 접기가 없으면 버튼도 Ctrl Z 도 없다. 백엔드도 한 번만 꺼낸다 (QA V3-01)
   const undo = async () => {
-    if (busy) return;
+    if (busy || !s.undoable) return;
     setBusy(true);
     try {
       const id = await api.undoLast(sessionId);
@@ -58,9 +59,12 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
     }
     setBusy(false);
   };
-  useKey({ action: "undo" }, () => void undo());
-  // 남은 카드 중 오늘 이미 본 카드(학습 단계)는 학습한 카드에도 들어 있다. 두 칸의 합이 처음 분량과 맞게 따로 적는다 (QA T2-01)
+  useKey({ action: "undo" }, () => void undo(), s.undoable);
+  // 남은 카드 중 오늘 이미 본 카드(학습 단계)는 학습한 카드에도 들어 있다. 두 칸의 합이 처음 분량과 맞게 따로 적는다 (QA T2-01).
+  // 머리말 · 복습 칸 · 오른쪽 제목도 같은 수로: 다시 볼 카드는 "예정 복습"이나 "남은 N장"에 넣지 않는다 (QA V3-02 · V6-02)
   const unseen = remaining - s.remaining_seen;
+  const reviewLeft = s.remaining_review - s.remaining_seen;
+  const again = s.remaining_seen > 0 ? ` · 다시 볼 카드 ${n(s.remaining_seen)}장` : "";
 
   return (
     <main className="done">
@@ -68,7 +72,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
         <span className="pill">
           <span className={`dot ${finished ? "dot--local" : "dot--warm"}`} />
           <span className="t-label-s c-secondary">
-            {finished ? `오늘 예정 ${n(s.studied)}장 모두 봤어요` : `오늘 예정 중 ${n(remaining)}장이 남았어요`}
+            {finished ? `오늘 예정 ${n(s.studied)}장 모두 봤어요` : `오늘 예정 중 ${n(unseen)}장이 남았어요${again}`}
           </span>
         </span>
         <div className="done__gap" />
@@ -81,7 +85,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
           <StatTile
             label="복습"
             value={n(s.review_done)}
-            sub={finished ? undefined : s.remaining_review === 0 ? "예정 복습 모두 끝" : `예정 복습 ${n(s.remaining_review)}장 남음`}
+            sub={finished ? undefined : reviewLeft === 0 ? "예정 복습 모두 끝" : `예정 복습 ${n(reviewLeft)}장 남음`}
           />
           <StatTile label="신규" value={n(s.new_done)} sub={finished ? undefined : `${n(s.new_done + s.remaining_new)}장 중`} />
           <StatTile
@@ -91,7 +95,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
           />
         </div>
         <div className="done__note">
-          <Button variant="ghost" size="M" icon="rotate" label="마지막 평가 되돌리기" shortcut={actionKey("undo")} onClick={undo} disabled={busy} />
+          {s.undoable && <Button variant="ghost" size="M" icon="rotate" label="마지막 평가 되돌리기" shortcut={actionKey("undo")} onClick={undo} disabled={busy} />}
           {error && !folded && <p className="t-body-s c-danger">{error}</p>}
         </div>
         {/* D5-d: 접어둔 카드가 없으면 오른쪽 패널 제목이 같은 말을 한다 */}
@@ -113,7 +117,13 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
             <span className={`done__folded-icon ${finished ? "done__icon--ok" : ""}`}>
               <Icon name={finished ? "check" : "clock"} size={20} />
             </span>
-            <h2 className="t-title-m">{finished ? "접어둔 카드가 남지 않았어요" : `남은 ${n(remaining)}장은 오늘 안에 이어서 할 수 있어요`}</h2>
+            <h2 className="t-title-m">
+              {finished
+                ? "접어둔 카드가 남지 않았어요"
+                : s.remaining_seen > 0
+                  ? `남은 ${n(unseen)}장과 다시 볼 ${n(s.remaining_seen)}장은 오늘 안에 이어서 할 수 있어요`
+                  : `남은 ${n(remaining)}장은 오늘 안에 이어서 할 수 있어요`}
+            </h2>
           </header>
           <p className="t-body-s c-secondary">
             {finished ? "오늘 예정 학습을 마쳤어요. 내일 예상 분량을 확인해 보세요." : "접어둔 카드가 남지 않았어요. 여기서 멈추면 내일 계획은 이렇게 잡혀요."}

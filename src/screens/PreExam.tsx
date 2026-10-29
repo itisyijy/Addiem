@@ -86,10 +86,12 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
       setError(errorText(e));
     }
   }, [plan, count, isMix, scope, every, mix.length, nav, deckIds]);
+  const [asking, setAsking] = useState(false);
   const restart = async () => {
     if (!plan) return;
     await cramApi.mixRestart(plan.deck_id).catch((e) => setError(errorText(e)));
     await load();
+    setAsking(false);
   };
   useKey("Enter", start, count > 0);
   useKey("Escape", back);
@@ -170,7 +172,7 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
             </p>
             <div className="cram__cta">
               {isMix && roundDone ? (
-                <Button icon="rotate" label="처음부터 다시" onClick={restart} />
+                <Button icon="rotate" label="처음부터 다시" onClick={() => setAsking(true)} />
               ) : (
                 <Button icon="arrow-right" label={isMix ? "혼합 회독 시작" : "압축 회독 시작"} onClick={start} disabled={count === 0} />
               )}
@@ -268,7 +270,21 @@ export function PreExam({ deckIds }: { deckIds: number[] | null }) {
           </div>
         </section>
       )}
+      {asking && <RestartAsk onClose={() => setAsking(false)} onRestart={restart} />}
     </main>
+  );
+}
+
+/** [처음부터 다시] 확인 (P1 · P3). 회독 진행을 0% 로 되돌리기 전에 묻는다 (Enter · 클릭 한 번에 지워지지 않게, QA T3-12 · V3-06) */
+function RestartAsk({ onClose, onRestart }: { onClose: () => void; onRestart: () => void }) {
+  return (
+    <Modal title="회독을 처음부터 다시 셀까요?" onClose={onClose} variant="confirm" icon="rotate">
+      <p className="t-body-m c-secondary">회독 진행이 0%로 돌아가요. 평가 기록과 복습 일정은 그대로예요.</p>
+      <div className="modal__actions">
+        <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={onClose} />
+        <Button size="M" icon="rotate" label="처음부터 다시" onClick={onRestart} />
+      </div>
+    </Modal>
   );
 }
 
@@ -382,15 +398,7 @@ export function MixDone({ sessionId, run, stats, minutes, completed }: { session
           </div>
         )}
       </section>
-      {asking && (
-        <Modal title="회독을 처음부터 다시 셀까요?" onClose={() => setAsking(false)} variant="confirm" icon="rotate">
-          <p className="t-body-m c-secondary">회독 진행이 0%로 돌아가요. 평가 기록과 복습 일정은 그대로예요.</p>
-          <div className="modal__actions">
-            <Button variant="ghost" size="M" label="취소" shortcut="Esc" onClick={() => setAsking(false)} />
-            <Button size="M" icon="rotate" label="처음부터 다시" onClick={restart} />
-          </div>
-        </Modal>
-      )}
+      {asking && <RestartAsk onClose={() => setAsking(false)} onRestart={restart} />}
     </main>
   );
 }

@@ -133,7 +133,9 @@ function ActiveHome({ data, reload }: { data: HomeData; reload: () => void }) {
           </div>
           <div className="home__legend t-body-m">
             <span className="c-secondary">
-              <span className="dot dot--ink" /> 복습 {n(data.review)}
+              {/* 오늘 이미 평가해 학습 단계로 다시 볼 카드는 복습이라 부르지 않는다 (끝 화면과 같은 말, QA V6-02) */}
+              <span className="dot dot--ink" /> 복습 {n(data.review - data.again)}
+              {data.again > 0 && ` · 다시 볼 ${n(data.again)}`}
             </span>
             <span className="c-secondary">
               <span className="dot dot--accent" /> 신규 {n(data.new)}
@@ -269,7 +271,11 @@ function DeckPanel({ title, caption, data, mode, reload }: PanelProps) {
           key={d.id}
           name={d.name}
           badge={badge(d.dday)}
-          counts={mode === "today" ? `복습 ${n(d.review)} · 신규 ${n(d.new)}` : `완료 · 내일 복습 ${n(d.tomorrow)}`}
+          counts={
+            mode === "today"
+              ? `복습 ${n(d.review - d.again)}${d.again > 0 ? ` · 다시 볼 ${n(d.again)}` : ""} · 신규 ${n(d.new)}`
+              : `완료 · 내일 복습 ${n(d.tomorrow)}`
+          }
           total={d.review + d.new}
           onStudy={mode === "today" ? () => nav({ name: "summary", deckIds: [d.id] }) : undefined}
           onOpen={open(d.id)}

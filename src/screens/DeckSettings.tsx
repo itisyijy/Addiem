@@ -96,8 +96,11 @@ export function DeckSettings({ deckId }: { deckId: number }) {
   const set = (patch: Partial<DeckConfig>) => setEdit({ ...edit, ...patch });
   const hasDate = edit.target_date !== null;
   const warn = hasDate && ((after.overflow_days ?? 0) > 0 || after.never_finish);
-  const limitShown = edit.daily_new_limit ?? (hasDate ? null : 20);
-  const todayShown = edit.today_new ?? (edit.paused ? after.today_new : after.per_day); // 쉬는 중이면 오늘 신규는 0
+  // 자기 설정 없이 상위 덱 목표를 따르는 하위 덱: 칸에 이 덱 단독 기본값(목표일 없음 · 상한 20 · 오늘 N장)을 보이지 않는다.
+  // 상한은 상위 덱 것을 함께 쓰고, 오늘 신규는 덱 상세가 센 이 덱 몫이다 (QA V3-05)
+  const following = !!deck.target_from && !hasDate && edit.daily_new_limit === null && edit.today_new === null;
+  const limitShown = edit.daily_new_limit ?? (hasDate || following ? null : 20);
+  const todayShown = edit.today_new ?? (following ? deck.today_new : edit.paused ? after.today_new : after.per_day); // 쉬는 중이면 오늘 신규는 0
   // 아무것도 바꾸지 않았으면 오른쪽은 "지금 계획"으로 값만 보여준다
   const changed = JSON.stringify(edit) !== JSON.stringify(saved);
   const paused = !!edit.paused;
@@ -185,7 +188,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
             <span className="settings__date">
               <span className="segment segment--boxed">
                 <button className={`segment__item t-label-m ${!hasDate ? "is-selected" : ""}`} onClick={() => set({ target_date: null })}>
-                  목표일 없음
+                  {deck.target_from ? "상위 덱 목표" : "목표일 없음"}
                 </button>
                 <button
                   className={`segment__item t-label-m ${hasDate ? "is-selected" : ""}`}
@@ -237,7 +240,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
               <span className="t-body-s c-secondary">별도 설정이 없는 하위 덱은 이 상한을 함께 나눠 써요. 권장량보다 작으면 경고해요.</span>
             </span>
             <Stepper
-              value={limitShown === null ? "없음" : n(limitShown)}
+              value={limitShown !== null ? n(limitShown) : following ? "상위" : "없음"}
               warn={warn}
               label="하루 신규 카드 상한"
               onReset={edit.daily_new_limit !== null ? () => set({ daily_new_limit: null }) : undefined}

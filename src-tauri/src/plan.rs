@@ -469,7 +469,9 @@ pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan
     let recompute = owner_deck.filter(|d| d.target_day.is_some()).map(|d| d.fixed_new.is_none());
     let pace = match (deck_id, recompute) {
         // daily_plan 은 최상위 덱 단위로만 남는다. H2 조정이 걸린 덱은 바뀐 이유가 충돌 조정이라 속도 탓으로 말하지 않는다
-        (Some(id), Some(true)) if by_id.get(&id).is_some_and(|d| d.parent_id.is_none() && d.new_from.is_none() && d.new_until.is_none()) => pace_line(&con, id, today, &decks, days.first().map_or(0, |x| x.share), target.map(|t| t - today))?,
+        (Some(id), Some(true)) if by_id.get(&id).is_some_and(|d| d.parent_id.is_none() && d.new_from.is_none() && d.new_until.is_none()) => {
+            pace_line(&con, id, today, &decks, auto_share(today, &decks, &cards, &scope, &shifts, &done_new, backlog_seen), target.map(|t| t - today))?
+        }
         _ => None,
     };
     Ok(StudyPlan {
@@ -489,6 +491,12 @@ pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan
         recompute,
         has_conflict: find_conflicts(&con, today, &decks, &cards, &time, true)?.into_iter().next().is_some(),
     })
+}
+
+/// 다시 나눈 오늘 몫. "오늘만 신규 분량"은 사용자가 손으로 정한 수라 다시 나눈 결과로 말하지 않는다 (QA V3-03)
+fn auto_share(today: i64, decks: &[Deck], cards: &[Card], scope: &HashSet<i64>, shifts: &HashMap<(i64, i64), i64>, done_new: &HashMap<i64, i64>, backlog_seen: i64) -> i64 {
+    let auto: Vec<Deck> = decks.iter().map(|d| Deck { today_new: None, ..d.clone() }).collect();
+    project(today, 1, &auto, cards, scope, shifts, done_new, backlog_seen)[0].share
 }
 
 /// 지난 7일 계획 대비 한 비율과, 밀린 신규를 남은 날에 다시 나눠 하루 몫이 바뀐 이유.
@@ -862,6 +870,17 @@ mod tests {
         // 당겨 맞추기: 오늘 +5
         let days = project(T, 3, &[d], &news(100, 1, 1), &scope, &[((1, T), 5)].into(), &HashMap::new(), 0);
         assert_eq!(days[0].new, 15);
+    }
+
+    #[test]
+    fn pace_uses_the_recomputed_share_not_today_only() {
+        // QA V3-03: 오늘만 신규를 5장으로 바꿔도 "하루 신규 1장 → N장"의 N 은 다시 나눈 몫 (32장 ÷ 24일 = 2장)
+        let d = Deck { target_day: Some(T + 24), today_new: Some(5), ..deck(1) };
+        let scope: HashSet<i64> = [1].into();
+        let cards = news(32, 1, 1);
+        let none = HashMap::new();
+        assert_eq!(project(T, 1, std::slice::from_ref(&d), &cards, &scope, &none, &HashMap::new(), 0)[0].share, 5, "오늘 막대는 오늘만 분량 그대로");
+        assert_eq!(auto_share(T, &[d], &cards, &scope, &none, &HashMap::new(), 0), 2);
     }
 
     #[test]
