@@ -86,7 +86,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
     } catch (e) {
       // 멈추면 백엔드가 만들던 파일만 지운다. 실패도 확인 단계로 돌아가 다른 위치를 고르게 한다
       if (cancelled.current) toast({ title: "내보내기를 멈췄어요", text: "덱은 그대로예요" });
-      else toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e).replace(/.$/, "")} · 다른 위치를 골라 다시 시도해 주세요` });
+      else toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e).replace(/\.$/, "")} · 다른 위치를 골라 다시 시도해 주세요` });
     } finally {
       clearTimeout(timer);
       unlisten();
@@ -110,7 +110,7 @@ export function ExportDeckDialog({ deckId, onClose }: { deckId: number; onClose:
         action: { label: "폴더에서 보기", onClick: () => reveal(r.path) },
       });
     } catch (e) {
-      toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e).replace(/.$/, "")} · 다른 위치를 골라 다시 시도해 주세요` });
+      toast({ tone: "error", title: "저장하지 못했어요", text: `${errorText(e).replace(/\.$/, "")} · 다른 위치를 골라 다시 시도해 주세요` });
       setFile(null);
     }
   };
