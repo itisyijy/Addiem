@@ -12,27 +12,19 @@ import { placeOf, SIGNAL_LABEL, SIGNAL_TONE, type Sent } from "./sourceApi";
 // OpenAI 공식 로그인 버튼 로고 (developers.openai.com/assets/siwc/sign-in-buttons, 고치지 않고 쓴다)
 import logoWhite from "./assets/brand/chatgpt-logo-white.svg";
 import logoBlack from "./assets/brand/chatgpt-logo-black.svg";
+import { store } from "./store";
 import "./styles/sync.css";
 import "./styles/ai.css";
 
 // ---------------------------------------------------------------- 상태 (설정과 나누기 창이 같은 값을 본다)
 
-let current: AiStatus | null = null;
-const subs = new Set<(s: AiStatus) => void>();
-export const refreshAi = () =>
-  aiApi.status().then((s) => {
-    current = s;
-    subs.forEach((f) => f(s));
-  }, () => {});
+const status = store<AiStatus | null>(null);
+export const refreshAi = () => aiApi.status().then(status.set, () => {});
 
 export function useAiStatus() {
-  const [s, setS] = useState(current);
+  const s = status.use();
   useEffect(() => {
-    subs.add(setS);
     refreshAi();
-    return () => {
-      subs.delete(setS);
-    };
   }, []);
   return s;
 }

@@ -12,31 +12,22 @@ import { useToast } from "./toast";
 import { n, useKey, useModalScope, useNav, useOverlayScope } from "./nav";
 import { plainEnter } from "./keys";
 import { useFocusTrap } from "./screens/NewDeck";
+import { store } from "./store";
 import "./styles/sync.css";
 
 // ---------------------------------------------------------------- 상태 (화면 여러 곳이 같은 값을 본다)
 
-let current: SyncStatus | null = null;
-const subs = new Set<(s: SyncStatus) => void>();
+const status = store<SyncStatus | null>(null);
 let started = false;
-const publish = (s: SyncStatus) => {
-  current = s;
-  subs.forEach((f) => f(s));
-};
-export const refreshSync = () => syncApi.status().then(publish, () => {});
+export const refreshSync = () => syncApi.status().then(status.set, () => {});
 
 export function useSyncStatus() {
-  const [s, setS] = useState(current);
+  const s = status.use();
   useEffect(() => {
-    subs.add(setS);
-    if (!started) {
-      started = true;
-      refreshSync();
-      listen<SyncStatus>("sync-status", (e) => publish(e.payload));
-    } else if (current) setS(current);
-    return () => {
-      subs.delete(setS);
-    };
+    if (started) return;
+    started = true;
+    refreshSync();
+    listen<SyncStatus>("sync-status", (e) => status.set(e.payload));
   }, []);
   return s;
 }
@@ -440,7 +431,7 @@ function ConnectModal({ from, onDone }: { from?: "home" | "settings" | "login"; 
       const r = e.payload;
       if (r.ok && r.probe) {
         // 다시 로그인: 이어서 맞춘다. 처음 연결: Drive 에 무엇이 있는지 보고 K3 · K6-f · K6-m
-        if (current?.connected) {
+        if (status.get()?.connected) {
           syncApi.now().catch(() => {});
           toast({ title: "다시 로그인했어요", text: "이어서 맞춰요" });
           onDone(null);
@@ -492,7 +483,7 @@ function ConnectModal({ from, onDone }: { from?: "home" | "settings" | "login"; 
   return (
     <Sheet label="브라우저에서 Google 로그인을 마쳐 주세요" onClose={cancel} className="sync-k2">
       <Spinner size={36} />
-      <h2 className="t-title-m">{url === null && current?.folder ? "개발용 폴더에 연결하는 중" : "브라우저에서 Google 로그인을 마쳐 주세요"}</h2>
+      <h2 className="t-title-m">{url === null && status.get()?.folder ? "개발용 폴더에 연결하는 중" : "브라우저에서 Google 로그인을 마쳐 주세요"}</h2>
       <p className="t-body-s c-secondary sync-center">기본 브라우저에 로그인 창을 열었어요. 계정을 고르고 권한을 허용하면 이 창으로 자동으로 돌아와요.</p>
       <div className="sync-box">
         <span className="t-label-s c-tertiary">Addiem이 요청하는 권한 2개</span>

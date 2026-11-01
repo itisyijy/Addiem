@@ -1,7 +1,7 @@
 // 단축키 표 (Figma E4 45:5593). 바꿀 수 있는 동작만 여기 있다. Esc · Enter · Tab 같은 고정 키와 화면 안 메뉴 키는 각 화면에 그대로 둔다.
 // 키는 KeyboardEvent.code 로 저장한다 (한/영 상태와 무관). 조합은 "Ctrl+KeyZ" 처럼 Ctrl · Alt · Shift 를 앞에 붙인다.
 // 표시는 영문 대문자 (KeyE -> "E", Ctrl+KeyZ -> "Ctrl Z")
-import { useSyncExternalStore } from "react";
+import { store } from "./store";
 
 export type Scope = "study" | "app" | "occlusion";
 export type ActionId = "reveal" | "rate" | "edit" | "bury" | "undo" | "source" | "grade" | "replay" | "newDeck" | "import" | "addCard" | "save" | "math";
@@ -91,24 +91,22 @@ function load(): Overrides {
 }
 
 let overrides = load();
-let snapshot = { ...DEFAULTS, ...overrides } as Record<ActionId, string[]>;
-const listeners = new Set<() => void>();
+const map = store({ ...DEFAULTS, ...overrides } as Record<ActionId, string[]>);
 
 function commit(next: Overrides) {
   overrides = next;
-  snapshot = { ...DEFAULTS, ...overrides } as Record<ActionId, string[]>;
   try {
     if (Object.keys(overrides).length) localStorage.setItem(STORE, JSON.stringify(overrides));
     else localStorage.removeItem(STORE);
   } catch {
     // 저장이 막힌 환경. 이번 실행에만 적용된다
   }
-  listeners.forEach((f) => f());
+  map.set({ ...DEFAULTS, ...overrides } as Record<ActionId, string[]>);
 }
 
-export const getKeys = (id: ActionId) => snapshot[id];
+export const getKeys = (id: ActionId) => map.get()[id];
 export const isChanged = (id: ActionId) => id in overrides;
-export const keymap = () => snapshot;
+export const keymap = () => map.get();
 
 /** 동작의 키를 바꾼다. 기본값과 같으면 바꾼 목록에서 뺀다 */
 export function setKeys(id: ActionId, keys: string[]) {
@@ -124,15 +122,7 @@ export const exportKeys = () => ({ ...overrides });
 export const importKeys = (o: Overrides) => commit({ ...o });
 
 /** 화면이 바뀐 키로 다시 그려지게 (힌트 줄, 키 칩) */
-export function useKeymap() {
-  return useSyncExternalStore(
-    (f) => {
-      listeners.add(f);
-      return () => listeners.delete(f);
-    },
-    () => snapshot,
-  );
-}
+export const useKeymap = map.use;
 
 // ---------------------------------------------------------------- 키 읽기 · 맞추기 · 표시
 
@@ -157,7 +147,7 @@ export function chordOf(e: KeyboardEvent): string | null {
 /** 이 입력이 동작의 몇 번째 키인가. 아니면 -1 (평가는 0~3) */
 export function matchAction(id: ActionId, e: KeyboardEvent): number {
   const c = chordOf(e);
-  return c ? snapshot[id].indexOf(c) : -1;
+  return c ? map.get()[id].indexOf(c) : -1;
 }
 
 const NAMES: Record<string, string> = {
@@ -175,7 +165,7 @@ export function keyLabel(chord: string): string {
     .join(" ");
 }
 /** 동작의 지금 키 이름. 평가는 index 로 하나씩 */
-export const actionKey = (id: ActionId, index = 0) => keyLabel(snapshot[id][index] ?? "");
+export const actionKey = (id: ActionId, index = 0) => keyLabel(map.get()[id][index] ?? "");
 
 /** 대비 계산 같은 순수 함수 검사처럼, 키 이름 변환을 cdpp 로 확인할 수 있게 */
 export function selfCheck() {
