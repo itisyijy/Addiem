@@ -2,18 +2,13 @@
 //! 이 모듈은 카드를 몰래 바꾸지 않는다. 바꾸는 것은 사용자가 승인한 split_apply · rewrite_apply 뿐이고, 한 번의 변경으로 기록해 되돌릴 수 있다
 
 use crate::commands::{self, AppState, NewCard};
-use crate::db::{now_ms, DAY_MS};
+use crate::db::{self, now_ms, DAY_MS};
 use crate::{notetype, queue, render};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 검사 기준 (G1 화면 아래 한 줄과 같다)
 const LONG_LINES: i64 = 8;
@@ -71,14 +66,7 @@ pub(crate) fn html_lines(html: &str) -> Vec<String> {
             (None, c) => out.push(c),
         }
     }
-    let out = out
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    out.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|l| !l.is_empty()).collect()
+    render::decode_entities(&out).lines().map(crate::table::flat).filter(|l| !l.is_empty()).collect()
 }
 
 /// 목록 항목 표시로 시작하는가 (①, 1., 1), -, •, · 등)
@@ -599,7 +587,7 @@ fn has_media(html: &str) -> bool {
 
 /// 고쳐 쓰기 화면의 글자: 줄마다 띄어쓰기를 하나로, 빈 줄은 뺀다 (html_lines 와 같은 모양)
 pub(crate) fn tidy(text: &str) -> String {
-    text.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+    text.lines().map(crate::table::flat).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 /// 필드 → 고쳐 쓰기 화면의 글자 (태그 · [sound:] 를 뺀 줄들)
@@ -653,17 +641,17 @@ fn qa_slots(slot_names: &[String], qfmt: &str, afmt: &str) -> Option<(usize, usi
 
 fn card_texts(con: &Connection, filter: &str, args: &[&dyn rusqlite::ToSql]) -> Res<Vec<(i64, CardText)>> {
     let names = commands::note_field_names(con)?;
-    let mut st = con
-        .prepare(&format!(
+    db::rows(
+        con,
+        &format!(
             "SELECT c.id, c.deck_id, n.fields, n.note_type_id, t.qfmt, t.afmt, c.template_ord, n.id
              FROM card c JOIN note n ON n.id = c.note_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {}
              WHERE {filter} ORDER BY c.id",
             crate::notetype::TEMPLATE_OF_CARD
-        ))
-        .map_err(err)?;
-    let rows = st
-        .query_map(args, |r| {
+        ),
+        args,
+        |r| {
             let fields: String = r.get(2)?;
             let nt: i64 = r.get(3)?;
             let q: Option<String> = r.get(4)?;
@@ -689,22 +677,24 @@ fn card_texts(con: &Connection, filter: &str, args: &[&dyn rusqlite::ToSql]) -> 
                     qa,
                 },
             ))
-        })
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        },
+    )
+    .map_err(err)
 }
 
 /// 카드별 최근 14일 Again 횟수
 fn again_counts(con: &Connection, card_filter: &str, args: &[&dyn rusqlite::ToSql]) -> Res<HashMap<i64, i64>> {
     let since = now_ms() - AGAIN_DAYS * DAY_MS;
-    let mut st = con
-        .prepare(&format!(
+    db::rows(
+        con,
+        &format!(
             "SELECT r.card_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id
              WHERE r.rating = 1 AND r.reviewed_at >= {since} AND r.kind IS NULL AND {card_filter} GROUP BY r.card_id"
-        ))
-        .map_err(err)?;
-    let rows = st.query_map(args, |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        ),
+        args,
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)
 }
 
 fn with_again(mut flags: Vec<Flag>, again: i64) -> Vec<Flag> {
@@ -746,13 +736,8 @@ pub fn quality_check(state: State<AppState>, deck_id: i64) -> Res<Vec<QualityCar
     let ids = commands::descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let scope = format!("c.deck_id IN ({ids}) AND c.state <> 'suspended'");
     let again = again_counts(&con, &scope, &[])?;
-    let hidden: HashMap<i64, bool> = {
-        let mut st = con
-            .prepare(&format!("SELECT c.id FROM card c WHERE {scope} AND c.quality_hidden_until > ?1"))
-            .map_err(err)?;
-        let rows = st.query_map([now_ms()], |r| r.get::<_, i64>(0)).map_err(err)?;
-        rows.map(|r| r.map(|id| (id, true))).collect::<Result<_, _>>().map_err(err)?
-    };
+    let hidden: HashMap<i64, bool> =
+        db::rows(&con, &format!("SELECT c.id FROM card c WHERE {scope} AND c.quality_hidden_until > ?1"), [now_ms()], |r| Ok((r.get::<_, i64>(0)?, true))).map_err(err)?;
     let mut out = vec![];
     for (id, t) in card_texts(&con, &scope, &[])? {
         let shape = text_flags(&t.question, &t.answer);
@@ -1081,18 +1066,16 @@ pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow
     let con = state.db.lock().map_err(err)?;
     let decks = commands::load_decks(&con)?;
     let ids = commands::descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let mut st = con
-        .prepare(&format!(
+    db::rows(
+        &con,
+        &format!(
             "SELECT id, kind, json_extract(payload, '$.how'), summary, card_id, created_at, undone_at IS NOT NULL FROM card_change
              WHERE (kind = 'split' OR (kind = 'rewrite' AND created_at >= ?1)) AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
-        ))
-        .map_err(err)?;
-    let rows = st
-        .query_map([now_ms() - REWRITE_DAYS * DAY_MS], |r| {
-            Ok(ChangeRow { id: r.get(0)?, kind: r.get(1)?, how: r.get(2)?, summary: r.get(3)?, card_id: r.get(4)?, created_at: r.get(5)?, undone: r.get(6)? })
-        })
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        ),
+        [now_ms() - REWRITE_DAYS * DAY_MS],
+        |r| Ok(ChangeRow { id: r.get(0)?, kind: r.get(1)?, how: r.get(2)?, summary: r.get(3)?, card_id: r.get(4)?, created_at: r.get(5)?, undone: r.get(6)? }),
+    )
+    .map_err(err)
 }
 
 // ------------------------------------------------------------------ 8.2 고쳐 쓰기 (서식 제안 · 질문과 답 맞추기)
@@ -1182,10 +1165,7 @@ pub(crate) fn apply_rewrite(con: &mut Connection, card_id: i64, question: &str, 
     let nt = notetype::load(&tx, t.note_type_id)?;
     if nt.cloze() {
         let keep = notetype::card_ords(&nt, &next);
-        let ords: Vec<u32> = {
-            let mut st = tx.prepare("SELECT template_ord FROM card WHERE note_id = ?1").map_err(err)?;
-            st.query_map([t.note_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-        };
+        let ords: Vec<u32> = db::rows(&tx, "SELECT template_ord FROM card WHERE note_id = ?1", [t.note_id], |r| r.get(0)).map_err(err)?;
         let lost = ords.iter().filter(|o| !keep.contains(o)).count();
         if lost > 0 {
             return Err(format!("빈칸 번호가 줄어 카드 {lost}장이 지워져요. 카드 편집에서 직접 고쳐 주세요."));

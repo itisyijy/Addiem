@@ -7,7 +7,8 @@ import {
   type NoteTypeSample as Sample, type Part,
 } from "../api";
 import type { ChangeImpact, ChangePlan, NoteTypeRow } from "../api";
-import { useSyncStatus, when } from "../sync";
+import { useSyncStatus } from "../sync";
+import { when } from "../dates";
 import { Badge, Button, Checkbox, Icon, type IconName } from "../ui";
 import { eul, eun, iga, n, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, matchAction, plainEnter } from "../keys";

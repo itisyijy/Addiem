@@ -9,10 +9,28 @@ pub const DAY_MS: i64 = 86_400_000;
 /// 데이터 폴더 안의 DB 파일 이름
 pub const FILE: &str = "addiem.sqlite";
 
-/// 데이터 폴더의 DB 파일. 예전 이름(neoanki.sqlite)을 아직 옮기지 못했으면 그것 (legacy.rs)
+/// 여러 줄을 읽어 모은다 (prepare · query_map · collect 한 번에)
+pub fn rows<T, B: FromIterator<T>>(con: &Connection, sql: &str, params: impl rusqlite::Params, f: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>) -> rusqlite::Result<B> {
+    con.prepare(sql)?.query_map(params, f)?.collect()
+}
+
+/// schema_meta 한 값 (기기 안에서만 쓰는 설정)
+pub fn meta(con: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    con.query_row("SELECT value FROM schema_meta WHERE key = ?1", [key], |r| r.get(0)).optional()
+}
+
+/// None 이면 지운다
+pub fn set_meta(con: &Connection, key: &str, value: Option<&str>) -> rusqlite::Result<()> {
+    match value {
+        Some(v) => con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, ?2)", [key, v]),
+        None => con.execute("DELETE FROM schema_meta WHERE key = ?1", [key]),
+    }
+    .map(|_| ())
+}
+
+/// 데이터 폴더의 DB 파일
 pub fn file(dir: &Path) -> std::path::PathBuf {
-    let old = dir.join(crate::legacy::OLD_DB_FILE);
-    if !dir.join(FILE).exists() && old.exists() { old } else { dir.join(FILE) }
+    dir.join(FILE)
 }
 /// 하루 경계. 기본은 새벽 4시 이전을 전날로 친다 (study-queue-spec 2장). E1 에서 바꾼다.
 /// schema_meta.day_cutoff_hour 가 정본이고, 여기에는 열 때 읽어 둔다
@@ -23,7 +41,7 @@ pub fn cutoff_hour() -> i64 {
 }
 
 pub fn set_cutoff_hour(con: &Connection, hour: i64) -> rusqlite::Result<()> {
-    con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('day_cutoff_hour', ?1)", [hour.to_string()])?;
+    set_meta(con, "day_cutoff_hour", Some(&hour.to_string()))?;
     DAY_CUTOFF_HOUR.store(hour, Ordering::Relaxed);
     Ok(())
 }
@@ -162,8 +180,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         "UPDATE study_session SET ended_at = started_at, end_reason = 'app_exit' WHERE ended_at IS NULL",
         [],
     )?;
-    let hour: Option<String> = con.query_row("SELECT value FROM schema_meta WHERE key = 'day_cutoff_hour'", [], |r| r.get(0)).optional()?;
-    if let Some(h) = hour.and_then(|h| h.parse::<i64>().ok()).filter(|h| (0..=12).contains(h)) {
+    if let Some(h) = meta(&con, "day_cutoff_hour")?.and_then(|h| h.parse::<i64>().ok()).filter(|h| (0..=12).contains(h)) {
         DAY_CUTOFF_HOUR.store(h, Ordering::Relaxed);
     }
     Ok(con)
@@ -245,8 +262,7 @@ fn sync_schema(con: &Connection) -> rusqlite::Result<()> {
         ))?;
     }
     // 이 기기 (처음 열 때 한 번). 이름은 컴퓨터 이름, K3 에서 바꾼다
-    let device: Option<String> = con.query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).optional()?;
-    if device.is_none() {
+    if meta(con, "device_uid")?.is_none() {
         con.execute(&format!("INSERT INTO schema_meta (key, value) VALUES ('device_uid', {NEW_UID})"), [])?;
         let name = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "이 기기".into());
         con.execute("INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [name])?;

@@ -1,6 +1,6 @@
 // 화면 전환과 단축키. 데스크톱 앱이라 URL 라우팅을 쓰지 않는다
 import { createContext, useContext, useEffect, useRef } from "react";
-import type { AnkiPreview, ImportResult, SessionSummary, UpdateSummary } from "./api";
+import type { ImportResult, SessionSummary, UpdateSummary } from "./api";
 import type { UndoSummary } from "./api";
 import type { Draft, DraftAmount } from "./sourceApi";
 import type { MixRun, MixStats } from "./written";
@@ -10,8 +10,8 @@ export type Route =
   | { name: "home" }
   | { name: "newDeck" } // B1. 홈 위 모달
   | { name: "import"; pick?: boolean; path?: string } // B2. pick: 단축키 I 로 들어오면 파일 선택 창을 바로 연다. path: 그 파일을 다시 살펴본다 (B2-u [방식 바꾸기])
-  | { name: "deckUpdate"; path: string; info: AnkiPreview; summary: UpdateSummary; pulled: boolean } // B2-u 요약 · B2-k · B2-kt · B2-p (pulled: 다른 기기 변경을 받고 판정했다)
-  | { name: "updateResult"; summary: UpdateSummary; info: AnkiPreview } // B3-u
+  | { name: "deckUpdate"; path: string; summary: UpdateSummary } // B2-u 요약 · B2-k · B2-kt · B2-p
+  | { name: "updateResult"; summary: UpdateSummary } // B3-u
   | { name: "updateUndone"; undo: UndoSummary } // DU2-u2 이 업데이트를 되돌린 결과
   | { name: "importJson"; deckId?: number } // B2-j
   | { name: "importResult"; result: ImportResult } // B3
@@ -85,6 +85,18 @@ export function useOverlayScope(active = true) {
   }, [active]);
 }
 
+/** 메뉴: 떠 있는 동안 화면 단축키는 꺼지고, Esc(뒤에 esc 도) · 아무 곳 클릭으로 닫는다. 메뉴 안 클릭은 메뉴가 stopPropagation 한다 */
+export function useMenu(open: boolean, close: () => void, esc?: () => void) {
+  useOverlayScope(open);
+  useKey("Escape", () => (close(), esc?.()), open, { modal: true });
+  useEffect(() => {
+    if (!open) return;
+    const f = () => close();
+    window.addEventListener("click", f);
+    return () => window.removeEventListener("click", f);
+  }, [open]);
+}
+
 const FOCUSABLE = "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
 function nearFocusable(from: HTMLElement) {
   const ok = (x: HTMLElement) => x.matches(FOCUSABLE) && !x.hasAttribute("disabled") && x.offsetParent !== null;
@@ -105,8 +117,6 @@ function openerOf(el: Element | null) {
   }
   return at;
 }
-/** 예전 이름 (Modal) */
-export const useModalScope = () => useOverlayScope();
 
 /** 바꿀 수 있는 동작 (keys.ts). KeyboardEvent.code 로 맞춘다. 평가처럼 키가 여럿이면 handler 의 index 로 몇 번째인지 */
 export type KeySpec = string | string[] | { action: ActionId };

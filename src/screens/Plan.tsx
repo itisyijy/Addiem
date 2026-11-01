@@ -7,15 +7,13 @@ import { api, errorText, planApi, type PlanBar, type PlanConflict, type PlanMode
 import { n, ro, useKey, useNav, type Route } from "../nav";
 import { useToast } from "../toast";
 import { Badge, Button, Icon, Toggle } from "../ui";
-import { dateWithDay } from "./Deck";
+import { dateWithDay, monthDay } from "../dates";
 import { cram, type CramPlan } from "../written";
 
 const md = (iso: string) => {
   const [, m, d] = iso.split("-").map(Number);
   return { m, d };
 };
-/** "10월 26일" */
-const monthDay = (iso: string) => `${md(iso).m}월 ${md(iso).d}일`;
 const dayNum = (iso: string) => `${md(iso).d}일`;
 /** 막대 아래 날짜: 첫 칸과 달이 바뀌는 칸은 "10/7", 나머지는 날만 */
 const tick = (iso: string, first: boolean) => (first || md(iso).d === 1 ? `${md(iso).m}/${md(iso).d}` : String(md(iso).d));

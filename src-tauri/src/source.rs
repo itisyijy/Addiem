@@ -3,7 +3,7 @@
 //! 원본은 <data_dir>/sources/ 로 복사해 두고 고치지 않는다. 자료를 지워도 카드는 그대로 (연결만 끊긴다)
 
 use crate::commands::{answer_part, descendants, load_decks, note_field_names, render_fields, AppState};
-use crate::db::now_ms;
+use crate::db::{self, now_ms};
 use crate::{embed, exam, render};
 use quick_xml::events::Event;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -14,12 +14,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 신호와 가중치 (post-mvp 5장). 하이라이트·밑줄·색은 사용자가 일부러 남긴 것이라 높고,
 /// 볼드는 원본 서식일 수 있어 낮다. 배열 순서가 곧 신뢰도 순이다 (I1 배지 순서).
@@ -117,9 +112,7 @@ pub fn source_list(state: State<AppState>, deck_id: i64) -> Res<Vec<Material>> {
 
 fn materials_in(con: &Connection, deck_id: i64) -> Res<Vec<Material>> {
     let ids = subtree(con, deck_id)?;
-    let mut st = con.prepare(&format!("{MATERIAL_SQL} WHERE m.deck_id IN ({ids}) ORDER BY {MATERIAL_ORDER}")).map_err(err)?;
-    let rows = st.query_map([], material_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
-    Ok(rows)
+    db::rows(con, &format!("{MATERIAL_SQL} WHERE m.deck_id IN ({ids}) ORDER BY {MATERIAL_ORDER}"), [], material_row).map_err(err)
 }
 
 pub(crate) fn material(con: &Connection, id: i64) -> Res<Material> {
@@ -176,8 +169,8 @@ pub fn source_add(state: State<AppState>, deck_id: i64, path: String) -> Res<Mat
 /// 이 기기에 복사본이 없는 자료(동기화로 목록만 받음)는 견주지 않는다
 fn same_file(con: &Connection, data_dir: &Path, deck_id: i64, kind: &str, bytes: &[u8]) -> Res<Option<String>> {
     let ids = subtree(con, crate::rag::root_of(con, deck_id)?)?;
-    let mut st = con.prepare(&format!("SELECT m.file_name, m.rel_path FROM source_material m WHERE m.deck_id IN ({ids}) AND m.kind = ?1 ORDER BY {MATERIAL_ORDER}")).map_err(err)?;
-    let rows: Vec<(String, String)> = st.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let rows: Vec<(String, String)> =
+        db::rows(con, &format!("SELECT m.file_name, m.rel_path FROM source_material m WHERE m.deck_id IN ({ids}) AND m.kind = ?1 ORDER BY {MATERIAL_ORDER}"), [kind], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
     let same = |rel: &str| {
         let path = data_dir.join(rel);
         crate::commands::safe_rel_path(rel, "sources")
@@ -276,7 +269,7 @@ pub fn source_save_pdf(state: State<AppState>, material_id: i64, pages: i64, seg
 
 /// 제목 구간의 글: 단계만큼 "#" + 띄어쓰기 + 제목 ("## 3.2 요약"). 새 열 없이 단계를 담는다 (OT2). PDF 는 화면(outline.ts headingText)이 같게 쓴다
 fn heading_text(level: usize, title: &str) -> String {
-    format!("{} {}", "#".repeat(level.clamp(1, 6)), title.split_whitespace().collect::<Vec<_>>().join(" "))
+    format!("{} {}", "#".repeat(level.clamp(1, 6)), crate::table::flat(title))
 }
 
 /// "## 3.2 요약" → (2, "3.2 요약"). 표시가 없으면 1단계 그대로
@@ -450,18 +443,15 @@ pub fn source_save_outline(state: State<AppState>, material_id: i64, headings: O
             pptx_headings(&slides, &p.sections)
         }
     };
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    save_headings(&tx, material_id, &headings)?;
-    tx.commit().map_err(err)?;
-    outline_of(&con, material_id)
+    state.write(|tx| save_headings(tx, material_id, &headings))?;
+    source_outline(state, material_id)
 }
 
 /// 읽은(ready) 자료의 제목 구간만 바꾼다. 같은 제목이면 아무것도 쓰지 않는다 (동기화 변경이 불지 않게)
 fn save_headings(con: &Connection, material_id: i64, headings: &[NewSegment]) -> Res<()> {
     let ready: bool = con.query_row("SELECT status = 'ready' FROM source_material WHERE id = ?1", [material_id], |r| r.get(0)).map_err(err)?;
-    let mut st = con.prepare("SELECT page, ord, text FROM source_segment WHERE material_id = ?1 AND signals = 'heading' ORDER BY page, ord, text").map_err(err)?;
-    let old: Vec<(i64, i64, String)> = st.query_map([material_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let old: Vec<(i64, i64, String)> =
+        db::rows(con, "SELECT page, ord, text FROM source_segment WHERE material_id = ?1 AND signals = 'heading' ORDER BY page, ord, text", [material_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
     let mut new: Vec<(i64, i64, String)> =
         headings.iter().filter(|h| sorted_signals(&h.signals) == [HEADING] && !h.text.trim().is_empty()).map(|h| (h.page, h.ord, h.text.trim().to_string())).collect();
     new.sort();
@@ -518,8 +508,7 @@ fn segment_row(r: &rusqlite::Row) -> rusqlite::Result<Segment> {
 }
 
 pub(crate) fn segments_of(con: &Connection, material_id: i64) -> Res<Vec<Segment>> {
-    let mut st = con.prepare(&format!("{SEGMENT_SQL} WHERE material_id = ?1 ORDER BY page, ord")).map_err(err)?;
-    let mut segs: Vec<Segment> = st.query_map([material_id], segment_row).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let mut segs: Vec<Segment> = db::rows(con, &format!("{SEGMENT_SQL} WHERE material_id = ?1 ORDER BY page, ord"), [material_id], segment_row).map_err(err)?;
     let mut st = con
         .prepare(&format!(
             "SELECT l.segment_id, l.card_id, l.method, l.origin FROM source_link l JOIN source_segment s ON s.id = l.segment_id
@@ -640,12 +629,11 @@ fn link_notes(con: &Connection, segment_id: i64, note_ids: &[i64]) -> Res<()> {
 /// 다른 경로로 만든 노트(M 그림 가리기 · Q 목록)를 영역에 잇는다. 구간 id 를 돌려준다
 #[tauri::command]
 pub fn source_region_link(state: State<AppState>, material_id: i64, page: i64, rects: Vec<[f64; 4]>, kind: String, text: String, note_ids: Vec<i64>) -> Res<i64> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let seg = region_segment(&tx, &Region { material_id, page, rects, kind, text })?;
-    link_notes(&tx, seg, &note_ids)?;
-    tx.commit().map_err(err)?;
-    Ok(seg)
+    state.write(|tx| {
+        let seg = region_segment(tx, &Region { material_id, page, rects, kind, text })?;
+        link_notes(tx, seg, &note_ids)?;
+        Ok(seg)
+    })
 }
 
 /// IT3 [카드 N장 만들기] · 그림을 앞면에 둔 카드: 초안(table::drafts 또는 화면이 만든 HTML)을 저장하고 영역에 잇는다.
@@ -1043,7 +1031,7 @@ fn parse_slide(xml: &str) -> Vec<Para> {
             Event::End(e) => match e.local_name().as_ref() {
                 "p" => {
                     if let Some(mut p) = cur.take() {
-                        p.text = p.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        p.text = crate::table::flat(&p.text);
                         if !p.text.is_empty() {
                             if has_star(&p.text) {
                                 p.signals.push("star");
@@ -1558,9 +1546,7 @@ pub(crate) fn embed_cached(app: &AppHandle, kind: &str, items: &[(i64, String)],
     let state = app.state::<AppState>();
     let cached: HashMap<i64, (String, Vec<u8>)> = {
         let con = state.db.lock().map_err(err)?;
-        let mut st = con.prepare("SELECT ref_id, text_hash, vec FROM embedding_cache WHERE kind = ?1 AND model = ?2").map_err(err)?;
-        let rows = st.query_map(params![kind, embed::MODEL_KEY], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?)))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
+        db::rows(&con, "SELECT ref_id, text_hash, vec FROM embedding_cache WHERE kind = ?1 AND model = ?2", params![kind, embed::MODEL_KEY], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?)))).map_err(err)?
     };
     let mut out = HashMap::new();
     let mut todo = vec![];
@@ -1690,11 +1676,13 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         .map_err(err)?;
         let ids = subtree(&con, deck_id)?;
         let cards = card_texts(&con, &ids)?;
-        let mut st = con
-            .prepare(&format!("SELECT m.id, m.file_name FROM source_material m WHERE m.deck_id IN ({ids}) AND m.status = 'ready' ORDER BY {MATERIAL_ORDER}"))
-            .map_err(err)?;
-        let materials: Vec<(i64, String)> =
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+        let materials: Vec<(i64, String)> = db::rows(
+            &con,
+            &format!("SELECT m.id, m.file_name FROM source_material m WHERE m.deck_id IN ({ids}) AND m.status = 'ready' ORDER BY {MATERIAL_ORDER}"),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(err)?;
         let mut segs = vec![];
         for (m, _) in &materials {
             segs.push(link_candidates(segments_of(&con, *m)?));
@@ -1727,10 +1715,7 @@ fn analyze(app: &AppHandle, deck_id: i64) -> Res<Analysis> {
         [],
     )
     .map_err(err)?;
-    let manual: std::collections::HashSet<i64> = {
-        let mut st = con.prepare("SELECT DISTINCT card_id FROM source_link WHERE method = 'manual'").map_err(err)?;
-        st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-    };
+    let manual: std::collections::HashSet<i64> = db::rows(&con, "SELECT DISTINCT card_id FROM source_link WHERE method = 'manual'", [], |r| r.get(0)).map_err(err)?;
     let card_refs: Vec<(i64, &[f32])> =
         cards.iter().filter(|c| !manual.contains(&c.id)).filter_map(|c| card_vecs.get(&c.id).map(|v| (c.id, v.as_slice()))).collect();
     let seg_refs: Vec<(i64, &[f32])> = seg_vecs.iter().map(|(id, v)| (*id, v.as_slice())).collect();
@@ -1795,9 +1780,8 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
     }
     drop(st);
     // 8.4 기출은 여기서 더하지 않는다. 기출 비율 규칙이 따로 제안하고 근거 줄을 붙인다 (exam::suggest_all, N3)
-    let mut st = con.prepare(&format!("SELECT deck_id, count(*) FROM card WHERE deck_id IN ({ids}) GROUP BY deck_id")).map_err(err)?;
-    let counts: Vec<(i64, usize)> = st.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
-    drop(st);
+    let counts: Vec<(i64, usize)> =
+        db::rows(con, &format!("SELECT deck_id, count(*) FROM card WHERE deck_id IN ({ids}) GROUP BY deck_id"), [], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)?;
     let scores: Vec<DeckScore> = counts
         .iter()
         .map(|(id, n)| {
@@ -1865,13 +1849,16 @@ fn suggest(con: &Connection, ids: &str) -> Res<usize> {
 /// 하위 덱 자료들의 핵심 범위: 강조 구간 id → 그 범위를 말하는 글 ("a.pdf의 '3장 요약' 구간과 연결됐어요. … (22–24쪽)").
 /// 제목 구간이 있는 자료만 읽는다
 fn core_ranges(con: &Connection, ids: &str) -> Res<HashMap<i64, String>> {
-    let mut st = con
-        .prepare(&format!(
+    let rows: Vec<(i64, String)> = db::rows(
+        con,
+        &format!(
             "SELECT m.id, m.file_name FROM source_material m WHERE m.deck_id IN ({ids})
              AND EXISTS (SELECT 1 FROM source_segment s WHERE s.material_id = m.id AND s.signals = 'heading') ORDER BY m.id"
-        ))
-        .map_err(err)?;
-    let rows: Vec<(i64, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+        ),
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)?;
     let mut core = HashMap::new();
     for (m, file) in rows {
         let o = outline_of(con, m)?;
@@ -2401,8 +2388,7 @@ mod tests {
 
     /// (덱, 중요도, 출처, 근거) 전부
     fn deck_rows(con: &Connection) -> Vec<(i64, i64, String, Option<String>)> {
-        let mut st = con.prepare("SELECT id, importance, importance_source, importance_reason FROM deck ORDER BY id").unwrap();
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap()
+        db::rows(con, "SELECT id, importance, importance_source, importance_reason FROM deck ORDER BY id", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap()
     }
 
     #[test]
@@ -2466,10 +2452,7 @@ mod tests {
         let s = add_seg(&con, 3, 0, "강조", "highlight");
         link(&con, s, cards[&2][0]).unwrap();
         let head = |page, ord, text: &str, signal: &str| NewSegment { page, ord, text: text.into(), signals: vec![signal.into()], rects: None, before: None, after: None };
-        let ids = |con: &Connection| -> Vec<i64> {
-            let mut st = con.prepare("SELECT id FROM source_segment ORDER BY id").unwrap();
-            st.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
-        };
+        let ids = |con: &Connection| -> Vec<i64> { db::rows(con, "SELECT id FROM source_segment ORDER BY id", [], |r| r.get(0)).unwrap() };
         // 제목만 들어간다 (강조 신호가 섞인 구간은 버린다). 강조 구간 · 연결은 그대로
         save_headings(&con, 1, &[head(1, 0, "# 1장", "heading"), head(3, 0, "# 2장 요약", "heading"), head(2, 0, "몰래 강조", "highlight")]).unwrap();
         let first = ids(&con);
@@ -2495,8 +2478,7 @@ mod tests {
         let a = add_seg(&con, 1, 0, "강조", "highlight");
         let f = add_seg(&con, 1, 1, "그림 · 1쪽", "figure");
         add_seg(&con, 1, -1, "## 3장 요약", "heading");
-        let mut st = con.prepare(&sql).unwrap();
-        let mut got: Vec<i64> = st.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        let mut got: Vec<i64> = db::rows(&con, &sql, [], |r| r.get(0)).unwrap();
         got.sort();
         assert_eq!(got, vec![a, f]);
     }

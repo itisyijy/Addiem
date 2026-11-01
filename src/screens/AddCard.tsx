@@ -3,14 +3,14 @@
 import { forwardRef, Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, type CardKindHint, type DeckDetail, type Level, type NoteTypeDetail, type NoteTypeRow } from "../api";
 import { Button, Checkbox, Icon, Importance, LEVEL_LABEL, Badge, Toggle } from "../ui";
-import { eul, eun, n, ro, useKey, useLeaveGuard, useNav, useOverlayScope, type Route } from "../nav";
+import { eul, eun, n, ro, useKey, useLeaveGuard, useNav, useMenu, type Route } from "../nav";
 import { actionKey, chordOf, getKeys, matchAction, useKeymap } from "../keys";
 import { baseName, imageTag, plainText, renderCardHtml, savedImage, sanitize, toStoredHtml } from "../cardHtml";
 import { deckFace, scopeCss } from "../cardCss";
 import { checkMath, findMath, withMath } from "../math";
 import { useToast, type ToastInput } from "../toast";
 import { useFileDrop } from "../fileDrop";
-import { when } from "../sync";
+import { when } from "../dates";
 import { DiscardModal } from "./NewDeck";
 import { menuKeys } from "./Deck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";
@@ -1050,22 +1050,7 @@ function TypeMenu({ open, setOpen, types, deckTypes, current, onPick, onEdit, on
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   // 떠 있는 동안 화면 단축키는 꺼지고 Esc 는 메뉴만 닫는다 (C1-m 과 같다)
-  useOverlayScope(open);
-  useKey(
-    "Escape",
-    () => {
-      setOpen(false);
-      trigger.current?.focus();
-    },
-    open,
-    { modal: true },
-  );
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setOpen(false);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [open, setOpen]);
+  useMenu(open, () => setOpen(false), () => trigger.current?.focus());
 
   const name = (r: NoteTypeRow) => (r.native_kind ? (TYPE_LABEL[r.native_kind] ?? r.name) : r.name);
   const mine = deckTypes.map((id) => types.find((r) => r.id === id)).filter((r): r is NoteTypeRow => !!r);

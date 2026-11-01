@@ -99,7 +99,7 @@ type Drag =
   | { kind: "pan"; x: number; y: number; left: number; top: number };
 
 const strip = (list: EShape[]): Shape[] => list.map(({ key: _key, ...s }) => s);
-const clamp = (v: number) => Math.min(1, Math.max(0, v));
+export const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
 /** 카드 편집(E)에서 고치는 질문(머리말) · 추가 설명. 글자만 고친다 (고치지 않으면 원래 HTML 그대로) */
 export type IoTexts = { header: string; backExtra: string };

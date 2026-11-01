@@ -9,12 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 신규 카드를 처음 본 뒤 다시 나오는 날 (Good 기준 FSRS 첫 간격의 근사).
 /// ponytail: 고정 근사다. 카드별 안정도로 내다보려면 날마다 srs 를 돌려야 하고, 계획 화면에는 이 정도면 충분하다
@@ -34,20 +29,14 @@ const CONFLICT_GAP: i64 = 7;
 
 /// 충돌 조정 · 오늘 당겨 맞추기 · 하루 몫 고정을 덱에 싣는다. 목표일은 그대로 둔다
 pub(crate) fn adjust_decks(con: &Connection, decks: &mut [Deck], today: i64) -> Res<()> {
-    let pairs = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> Res<HashMap<i64, i64>> {
-        let mut st = con.prepare(sql).map_err(err)?;
-        let rows = st.query_map(p, |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)
-    };
+    let pairs = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> Res<HashMap<i64, i64>> { db::rows(con, sql, p, |r| Ok((r.get(0)?, r.get(1)?))).map_err(err) };
     let fixed = pairs("SELECT deck_id, fixed_new_per_day FROM deck_config WHERE fixed_new_per_day IS NOT NULL", &[])?;
     let shift = pairs("SELECT deck_id, sum(delta) FROM plan_shift WHERE day = ?1 GROUP BY deck_id", &[&db::date_from_day(today)])?;
     for d in decks.iter_mut() {
         d.fixed_new = fixed.get(&d.id).copied();
         d.new_shift = shift.get(&d.id).copied().unwrap_or(0);
     }
-    let mut st = con.prepare("SELECT deck_a, deck_b, mode FROM plan_conflict").map_err(err)?;
-    let rows: Vec<(i64, i64, String)> =
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let rows: Vec<(i64, i64, String)> = db::rows(con, "SELECT deck_a, deck_b, mode FROM plan_conflict", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
     for (a, b, mode) in rows {
         let Some(ta) = decks.iter().find(|d| d.id == a).and_then(|d| d.target_day) else { continue };
         if let Some(d) = decks.iter_mut().find(|d| d.id == b) {
@@ -502,14 +491,13 @@ fn auto_share(today: i64, decks: &[Deck], cards: &[Card], scope: &HashSet<i64>, 
 /// 지난 7일 계획 대비 한 비율과, 밀린 신규를 남은 날에 다시 나눠 하루 몫이 바뀐 이유.
 /// 바뀌지 않았거나 기록(daily_plan)이 없으면 None
 fn pace_line(con: &Connection, deck_id: i64, today: i64, decks: &[Deck], now_new: i64, days_left: Option<i64>) -> Res<Option<String>> {
-    let mut st = con
-        .prepare("SELECT study_day, planned_review + planned_new, planned_new FROM daily_plan WHERE deck_id = ?1 AND study_day >= ?2 AND study_day < ?3 ORDER BY study_day")
-        .map_err(err)?;
-    let rows: Vec<(String, i64, i64)> = st
-        .query_map(params![deck_id, db::date_from_day(today - 7), db::date_from_day(today)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(err)?
-        .collect::<Result<_, _>>()
-        .map_err(err)?;
+    let rows: Vec<(String, i64, i64)> = db::rows(
+        con,
+        "SELECT study_day, planned_review + planned_new, planned_new FROM daily_plan WHERE deck_id = ?1 AND study_day >= ?2 AND study_day < ?3 ORDER BY study_day",
+        params![deck_id, db::date_from_day(today - 7), db::date_from_day(today)],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .map_err(err)?;
     // 비교는 가장 최근(어제 쪽) 계획의 하루 신규와
     let Some(last) = rows.last() else { return Ok(None) };
     let scope: HashSet<i64> = commands::descendants(deck_id, decks).into_iter().collect();

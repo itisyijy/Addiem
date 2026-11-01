@@ -3,7 +3,7 @@ import "../styles/deck.css";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, planApi, type DeckDetail, type Level, type PlanMode, type Subdeck } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Input, Kbd, StatTile } from "../ui";
-import { n, studyDate, useKey, useNav, useOverlayScope } from "../nav";
+import { n, studyDate, useKey, useNav, useMenu } from "../nav";
 import { actionKey, plainEnter } from "../keys";
 import { useToast, type ToastInput } from "../toast";
 import { Modal, NewDeckModal } from "./NewDeck";
@@ -12,12 +12,8 @@ import { SourcesButton } from "./Sources";
 import { ExamLine } from "./Exam";
 import { CramHint } from "./StudyParts";
 import { useSyncStatus } from "../sync";
+import { addDays, dateWithDay, iso, md, monthDay, parse } from "../dates";
 
-const WEEKDAY = "일월화수목금토";
-export function dateWithDay(iso: string) {
-  const [y, m, d] = iso.split("-").map(Number);
-  return `${m}월 ${d}일 (${WEEKDAY[new Date(y, m - 1, d).getDay()]})`;
-}
 /** queue.rs BURY_RETURN_DAYS. 접어둔 카드는 학습일 기준 3일 뒤 오늘의 학습에 돌아온다 */
 export const BURY_DAYS = 3;
 /** 지금 접으면 돌아오는 날 "10월 18일 (토)" */
@@ -29,18 +25,6 @@ export function buryReturnDay() {
 export const ddayLabel = (dd: number) => (dd === 0 ? "D-day" : dd > 0 ? `D-${dd}` : `D+${-dd}`);
 /** "10월 16일(금)". 쉬기 배너·메뉴는 괄호 앞을 띄우지 않는다 (C1-p, C1-r) */
 const dayTight = (iso: string) => dateWithDay(iso).replace(" (", "(");
-const parse = (iso: string) => {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d);
-};
-const iso = (t: Date) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
-export const addDays = (s: string, days: number) => {
-  const t = parse(s);
-  t.setDate(t.getDate() + days);
-  return iso(t);
-};
-/** "10월 17일" */
-const monthDay = (s: string) => `${parse(s).getMonth() + 1}월 ${parse(s).getDate()}일`;
 
 type Reload = () => Promise<unknown>;
 
@@ -423,7 +407,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
                 d.hard === 0
                   ? "두 번 막히거나 직접 접은 카드"
                   : `자동 ${n(d.hard_auto)} · 직접 ${n(d.hard - d.hard_auto)} · ${
-                      d.hard_next && d.hard_next > studyDate().toLocaleDateString("sv-SE") ? `${+d.hard_next.slice(5, 7)}/${+d.hard_next.slice(8, 10)}` : "오늘"
+                      d.hard_next && d.hard_next > studyDate().toLocaleDateString("sv-SE") ? md(d.hard_next) : "오늘"
                     } 복귀`
               }
             />
@@ -759,22 +743,9 @@ function MoreMenu({ d, onRename, onPause, onResume }: {
   const today = iso(studyDate());
   // Esc 로 닫으면 초점을 ⋯ 버튼으로 돌려준다 (사라진 메뉴 항목에 초점이 남지 않게)
   // 메뉴가 떠 있는 동안 화면 단축키는 꺼지고 메뉴가 키를 받는다 (E4 노트)
-  useOverlayScope(open);
-  useKey(
-    "Escape",
-    () => {
-      setOpen(false);
-      trigger.current?.focus();
-    },
-    open,
-    { modal: true },
-  );
-
+  useMenu(open, () => setOpen(false), () => trigger.current?.focus());
   useEffect(() => {
-    if (!open) return setPauseOpen(false);
-    const close = () => setOpen(false);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    if (!open) setPauseOpen(false);
   }, [open]);
 
   // 확인 창 없이 바로 보관하고, 5초 동안 되돌릴 수 있게 한다

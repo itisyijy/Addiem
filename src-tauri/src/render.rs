@@ -18,7 +18,7 @@ pub struct Rendered {
 /// 값은 실제 Anki 와 같다 (pylib 26.9.3 으로 확인, 코디네이터 QA): 태그는 공백으로 잇고 앞뒤 공백 없음, 덱은 전체 경로 "A::B", 하위 덱은 마지막 칸
 pub fn special_fields(tags: &str, deck_path: &[String], type_name: &str, card_name: &str) -> [(String, String); 6] {
     [
-        ("Tags".into(), crate::occlusion::escape(&tags.split_whitespace().collect::<Vec<_>>().join(" "))),
+        ("Tags".into(), crate::occlusion::escape(&crate::table::flat(tags))),
         ("Deck".into(), crate::occlusion::escape(&deck_path.join("::"))),
         ("Subdeck".into(), crate::occlusion::escape(deck_path.last().map_or("", String::as_str))),
         ("Type".into(), crate::occlusion::escape(type_name)),
@@ -402,14 +402,12 @@ pub fn strip_tags(html: &str) -> String {
             (None, c) => out.push(c),
         }
     }
-    let out = out
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::table::flat(&decode_entities(&out))
+}
+
+/// strip_tags · quality::html_lines 가 태그를 뗀 뒤 푸는 엔티티
+pub(crate) fn decode_entities(s: &str) -> String {
+    s.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
 }
 
 #[cfg(test)]

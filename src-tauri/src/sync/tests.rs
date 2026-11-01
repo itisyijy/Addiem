@@ -1859,7 +1859,7 @@ fn card_type_deleted_while_note_edited_elsewhere_leaves_no_orphan() {
     env.sync(&b);
     let ty = a.uid("note_type", id);
     let t = db::now_ms();
-    a.at(t + 1000, || nt::delete_template(&a.con(), id, rev, false).unwrap());
+    a.at(t + 1000, || nt::delete_template(&a.con(), id, rev).unwrap());
     b.at(t + 2000, || edit_note(&b, &note, &["질문", "B 가 고친 답"]));
     for d in [&b, &a, &b, &a] {
         env.sync(d);
@@ -2065,7 +2065,7 @@ fn card_type_deleted_while_a_card_is_recreated_and_a_cloze_re_added_elsewhere() 
         let ty = a.uid("note_type", id);
         let old_rev: String = b.con().query_row("SELECT c.uid FROM card c JOIN note n ON n.id = c.note_id WHERE n.uid = ?1 AND c.template_ord = ?2", params![note, rev], |r| r.get(0)).unwrap();
         let t = db::now_ms();
-        a.at(t + 1000, || nt::delete_template(&a.con(), id, rev, false).unwrap());
+        a.at(t + 1000, || nt::delete_template(&a.con(), id, rev).unwrap());
         b.edit_at(t + 2000, "DELETE FROM card WHERE uid = ?1", [&old_rev]);
         b.at(t + 2500, || edit_note(&b, &note, &["질문", "B 가 고친 답"]));
         let bcz = b.id("note", &cz).unwrap();

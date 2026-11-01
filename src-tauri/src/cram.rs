@@ -13,12 +13,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 const SHAKY_DAYS: f64 = 7.0;
 const STABLE_DAYS: f64 = 30.0;
@@ -206,21 +201,20 @@ pub fn cram_answer(state: State<AppState>, card_id: i64, rating: u8, elapsed_ms:
     if !(1..=4).contains(&rating) {
         return Err("평가 값이 올바르지 않아요.".into());
     }
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let now = now_ms();
-    tx.execute(
-        "INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, kind)
-         SELECT id, ?2, ?3, ?4, interval_days, interval_days, state, 0, 'cram' FROM card WHERE id = ?1",
-        params![card_id, now, rating, elapsed_ms],
-    )
-    .map_err(err)?;
-    let log_id = tx.last_insert_rowid();
-    if let Some(m) = marks {
-        crate::recall::save_marks(&tx, card_id, log_id, &m, now)?;
-    }
-    tx.commit().map_err(err)?;
-    Ok(log_id)
+    state.write(|tx| {
+        let now = now_ms();
+        tx.execute(
+            "INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, kind)
+             SELECT id, ?2, ?3, ?4, interval_days, interval_days, state, 0, 'cram' FROM card WHERE id = ?1",
+            params![card_id, now, rating, elapsed_ms],
+        )
+        .map_err(err)?;
+        let log_id = tx.last_insert_rowid();
+        if let Some(m) = marks {
+            crate::recall::save_marks(tx, card_id, log_id, &m, now)?;
+        }
+        Ok(log_id)
+    })
 }
 
 /// 압축 회독 평가 되돌리기 (Ctrl+Z). 압축 회독 기록만 지운다 (지난번 표시는 그 전 값으로)
@@ -436,14 +430,14 @@ fn summary(con: &Connection, session_id: i64, since: i64, t: &queue::Deck, decks
     let (weak_ids, _) = weak_scope(t, decks);
     let all = items(con, &commands::descendants(t.id, decks), &weak_ids)?;
     let seen = round_seen(con, t)?;
-    let mut st = con
-        .prepare(
-            "SELECT c.deck_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id
-             WHERE r.session_id = ?1 AND r.reviewed_at >= ?2 AND r.rating = 1 GROUP BY c.deck_id ORDER BY 2 DESC, 1",
-        )
-        .map_err(err)?;
-    let again: Vec<(i64, i64)> =
-        st.query_map([session_id, since], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let again: Vec<(i64, i64)> = db::rows(
+        con,
+        "SELECT c.deck_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id
+         WHERE r.session_id = ?1 AND r.reviewed_at >= ?2 AND r.rating = 1 GROUP BY c.deck_id ORDER BY 2 DESC, 1",
+        [session_id, since],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)?;
     let total: i64 = again.iter().map(|a| a.1).sum();
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let depth = commands::path_of(t.id, &by_id).len();

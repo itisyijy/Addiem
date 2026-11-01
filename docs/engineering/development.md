@@ -172,9 +172,6 @@ npx tsc --noEmit
 ## 도구
 
 ```bash
-python tools/import_reference.py --self-test     # 스키마 자체 검사
-python tools/import_reference.py <파일.colpkg>    # Anki 패키지 -> Addiem 스키마
-python tools/import_reference.py <파일.json>      # JSON 일괄 가져오기
 python tools/queue_reference.py                  # 큐 알고리즘 테스트
 python tools/queue_reference.py <적재된.sqlite>   # 실제 데이터로 큐 구성
 ```

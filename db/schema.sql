@@ -4,7 +4,7 @@
 -- 새 테이블은 여기 더하면 기존 DB 에도 생긴다. 기존 테이블에 열을 더할 때는 db.rs 의 열 목록에 함께 적는다
 --
 -- 이 파일이 데이터 모델의 정본이다. docs/engineering/data-model.md 는 이 파일을 설명한다.
--- 검증: tools/import_reference.py 가 실제 Anki 컬렉션을 이 스키마에 적재한다.
+-- 검증: 스파이크 1 의 tools/import_reference.py (v0.1.2 에서 뺐다, git 0a85e2e 에 있다) 가 실제 Anki 컬렉션을 이 스키마에 적재했다.
 --
 -- 규칙
 --   시각   : UTC epoch milliseconds (INTEGER)

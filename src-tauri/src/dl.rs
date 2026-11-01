@@ -5,11 +5,126 @@
 //! 멈추거나 끝낸 연결은 버린다: 읽던 스레드는 다음 데이터 · 끊김 · 전체 제한(STRAY)에서 스스로 끝난다.
 //! 오류는 화면에 쓸 사용자 문구만 돌려주고 원인 글은 로그(stderr)로 (J1 · J18)
 
+use crate::{Res, err};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
+
+/// 받을 파일 하나: 저장 이름, 바이트, SHA-256, 고정 리비전 주소
+pub struct File {
+    pub name: &'static str,
+    pub size: u64,
+    pub sha: &'static str,
+    pub url: &'static str,
+}
+
+/// 모델 하나의 받기 (embed.rs 분석 모델 · llm.rs 개념 관계 확인 모델이 하나씩)
+pub struct Model {
+    pub files: &'static [File],
+    downloading: AtomicBool,
+    cancel: AtomicBool,
+    /// 마지막 받기가 실패하거나 멈춘 까닭 (keep_failure)
+    failed: Mutex<Option<String>>,
+}
+
+#[derive(Serialize, Clone)]
+struct DownloadProgress {
+    done: u64,
+    total: u64,
+}
+
+impl Model {
+    pub const fn new(files: &'static [File]) -> Model {
+        Model { files, downloading: AtomicBool::new(false), cancel: AtomicBool::new(false), failed: Mutex::new(None) }
+    }
+
+    /// 받은 파일이 모두 있는가. 해시는 받을 때 확인했으므로 여기서는 크기만 본다
+    pub fn installed(&self, dir: &Path) -> bool {
+        self.files.iter().all(|f| dir.join(f.name).metadata().is_ok_and(|m| m.len() == f.size))
+    }
+
+    /// 내려받을 전체 크기
+    pub fn bytes(&self) -> u64 {
+        self.files.iter().map(|f| f.size).sum()
+    }
+
+    pub fn downloading(&self) -> bool {
+        self.downloading.load(Ordering::SeqCst)
+    }
+
+    pub fn failure(&self) -> Option<String> {
+        failure(&self.failed)
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// 받는 중에 앱이 닫혀 남은 .part 를 지운다 (받는 중이 아닐 때만. 그동안 새 받기가 시작되지 않게 깃발을 잠깐 쥔다)
+    pub fn clean_parts(&self, dir: &Path) {
+        if self.downloading.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return;
+        }
+        for f in self.files {
+            let _ = std::fs::remove_file(dir.join(format!("{}.part", f.name)));
+        }
+        self.downloading.store(false, Ordering::SeqCst);
+    }
+
+    /// [내려받기]. event 이벤트로 진행을 알린다. job(진행 알림)이 백그라운드에서 받는다
+    pub async fn download(&'static self, app: AppHandle, event: &'static str, job: impl FnOnce(&dyn Fn(u64, u64)) -> Res<()> + Send + 'static) -> Res<()> {
+        if self.downloading.swap(true, Ordering::SeqCst) {
+            return Err("이미 내려받고 있어요.".into());
+        }
+        self.cancel.store(false, Ordering::SeqCst);
+        let a = app.clone();
+        let res = tauri::async_runtime::spawn_blocking(move || {
+            job(&|done, total| {
+                let _ = a.emit(event, DownloadProgress { done, total });
+            })
+        })
+        .await
+        .map_err(err)
+        .and_then(|r| r);
+        // 까닭은 null 이벤트 전에 남긴다 (이벤트를 받은 화면이 상태를 다시 읽는다)
+        let res = keep_failure(&self.failed, res);
+        self.downloading.store(false, Ordering::SeqCst);
+        // 어떻게 끝나든(다 받음 · 실패 · 멈춤) null: 받기를 시작하지 않은 화면(다시 들어온 배너 · 설정)도 막대를 지우고 상태를 다시 읽는다 (QA T6-03 · T7-04)
+        let _ = app.emit(event, None::<DownloadProgress>);
+        res
+    }
+
+    /// 파일들을 dir 에 받는다 (막는 함수). 지난번에 다 받은 파일은 건너뛴다. 멈추거나 실패하면 받던 파일만 지운다. progress(받은 바이트, 전체)
+    pub fn fetch_all(&self, dir: &Path, url: impl Fn(&File) -> String, progress: &dyn Fn(u64, u64)) -> Res<()> {
+        std::fs::create_dir_all(dir).map_err(err)?;
+        let total = self.bytes();
+        let mut done = 0;
+        for f in self.files {
+            let path = dir.join(f.name);
+            if path.metadata().is_ok_and(|m| m.len() == f.size) && sha256_file(&path).map_err(err)? == f.sha {
+                done += f.size;
+                continue;
+            }
+            let part = dir.join(format!("{}.part", f.name));
+            fetch(&url(f), f.size, f.sha, &part, &|| self.cancel.load(Ordering::SeqCst), |got| progress(done + got, total))?;
+            std::fs::rename(&part, &path).map_err(err)?;
+            done += f.size;
+        }
+        progress(total, total);
+        Ok(())
+    }
+}
+
+pub fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut h = Sha256::new();
+    std::io::copy(&mut std::fs::File::open(path)?, &mut h)?;
+    Ok(format!("{:x}", h.finalize()))
+}
 
 /// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다 (시험에서는 2초)
 const IDLE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
@@ -39,7 +154,7 @@ enum Msg {
 }
 
 /// url 을 part 에 받고 크기 · SHA-256 을 맞춘다. progress(받은 바이트)는 1MiB 마다. 실패하면 part 를 지운다
-pub fn fetch(url: &str, size: u64, sha: &str, part: &Path, cancel: &dyn Fn() -> bool, progress: impl FnMut(u64)) -> Result<(), String> {
+fn fetch(url: &str, size: u64, sha: &str, part: &Path, cancel: &dyn Fn() -> bool, progress: impl FnMut(u64)) -> Result<(), String> {
     let res = fetch_into(url, size, sha, part, cancel, progress);
     match res {
         Err(e) if std::fs::remove_file(part).is_ok() && e == STOPPED => Err(format!("{STOPPED} · 받던 파일은 지웠어요")),
@@ -128,14 +243,14 @@ fn stream(url: &str, limit: u64, idle: Duration, cancel: &dyn Fn() -> bool, mut 
 
 /// 받기가 어떻게 끝났는지 slot 에 남긴다: 실패 · 멈춤이면 그 문구, 다 받으면 비운다.
 /// 받기를 시작하지 않은 화면(다시 들어온 설정 · 배너)도 상태 명령으로 까닭을 보인다 (QA T6-03 · T7-04)
-pub fn keep_failure(slot: &Mutex<Option<String>>, res: Result<(), String>) -> Result<(), String> {
+fn keep_failure(slot: &Mutex<Option<String>>, res: Result<(), String>) -> Result<(), String> {
     if let Ok(mut s) = slot.lock() {
         *s = res.as_ref().err().cloned();
     }
     res
 }
 
-pub fn failure(slot: &Mutex<Option<String>>) -> Option<String> {
+fn failure(slot: &Mutex<Option<String>>) -> Option<String> {
     slot.lock().ok().and_then(|s| s.clone())
 }
 
@@ -143,7 +258,25 @@ pub fn failure(slot: &Mutex<Option<String>>) -> Option<String> {
 pub mod tests {
     use super::*;
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// QA (2026-10-22): 받는 중 앱을 닫아 남은 .part 는 받는 중이 아닐 때만 지운다
+    #[test]
+    fn leftover_parts_go_only_when_not_downloading() {
+        let m = Model::new(&[File { name: "model.safetensors", size: 1, sha: "", url: "" }]);
+        let d = std::env::temp_dir().join(format!("na-dl-test-parts-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("model.safetensors.part"), b"x").unwrap();
+        std::fs::write(d.join("config.json"), b"{}").unwrap();
+        m.downloading.store(true, Ordering::SeqCst);
+        m.clean_parts(&d);
+        assert!(d.join("model.safetensors.part").exists(), "받는 중에는 둔다");
+        m.downloading.store(false, Ordering::SeqCst);
+        m.clean_parts(&d);
+        assert!(!d.join("model.safetensors.part").exists());
+        assert!(d.join("config.json").exists(), "받은 파일은 둔다");
+        assert!(!m.downloading(), "깃발을 놓는다");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// 로컬 서버 (연결 하나): 헤더는 total 바이트라고 하고 send 바이트만 보낸 뒤 hold 동안 연결을 연 채 아무것도 보내지 않는다.
     /// 돌려주는 주소 뒤의 경로는 보지 않는다

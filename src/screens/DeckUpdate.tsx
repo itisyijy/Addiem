@@ -21,14 +21,14 @@ import { Modal } from "./NewDeck";
 import { renderCardHtml } from "../cardHtml";
 import { scopeCss } from "../cardCss";
 import { Badge, Button, Icon, Kbd, Segment, Spinner, StatTile, type IconName } from "../ui";
-import { eul, eun, lockNav, n, ro, useKey, useNav, useOverlayScope } from "../nav";
+import { eul, eun, lockNav, n, ro, useKey, useNav, useMenu } from "../nav";
 import { menuKeys } from "./Deck";
 import { useSyncStatus } from "../sync";
 import { IssueList } from "./Import";
 import { nativeLabels } from "./AddCard";
+import { eta, monthDayAt } from "../dates";
 import "../styles/update.css";
 
-const day = (ms: number) => new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric" }).format(ms);
 const clock = (ms: number) => new Intl.DateTimeFormat("ko-KR", { hour: "numeric", minute: "2-digit" }).format(ms);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** 덱 "이름" (업데이트한 덱의 최상위 덱) */
@@ -102,7 +102,7 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
     : [];
   const go = () => {
     if (mode === "add") return onAdd();
-    if (summary) nav({ name: "deckUpdate", path, info, summary, pulled: pull === "done" });
+    if (summary) nav({ name: "deckUpdate", path, summary });
   };
   useKey("Enter", go, mode === "add" || ready);
 
@@ -250,7 +250,7 @@ function conflictPicks(conflicts: UpdateSummary["conflicts"]) {
 
 type Step = "summary" | "conflicts" | "looks" | "apply";
 
-export function DeckUpdate({ path, info, summary: first }: { path: string; info: AnkiPreview; summary: UpdateSummary; pulled: boolean }) {
+export function DeckUpdate({ path, summary: first }: { path: string; summary: UpdateSummary }) {
   const nav = useNav();
   const [summary, setSummary] = useState(() => labeled(first));
   const [step, setStep] = useState<Step>("summary");
@@ -294,7 +294,7 @@ export function DeckUpdate({ path, info, summary: first }: { path: string; info:
       />
     );
   if (step === "looks") return <LookCompare summary={summary} looks={looks} onPick={setLooks} onBack={() => back()} />;
-  if (step === "apply") return <ApplyProgress path={path} info={info} summary={summary} choices={choices} onBack={() => setStep("summary")} />;
+  if (step === "apply") return <ApplyProgress path={path} summary={summary} choices={choices} onBack={() => setStep("summary")} />;
   return (
     <UpdateSummaryView
       s={summary}
@@ -709,7 +709,7 @@ function FieldCompare({ f, pick, showBase, cursor, edited, preview, onPick, onBa
         <>
           <Kbd k={who === "mine" ? "1" : "2"} />
           <span className="t-label-m">{who === "mine" ? "내 것" : "새 버전"}</span>
-          <span className="t-caption c-tertiary">{who === "mine" ? `${day(edited)}에 고침` : "이 파일"}</span>
+          <span className="t-caption c-tertiary">{who === "mine" ? `${monthDayAt(edited)}에 고침` : "이 파일"}</span>
           {chosen && <Icon name="check" size={16} className="c-accent" />}
           {fallback && <Badge>고르지 않으면 이것</Badge>}
           {who === "new" && sameName && <span className="t-caption c-warn">이름은 같고 그림이 달라요</span>}
@@ -1104,7 +1104,7 @@ function LookSide({ item, who, face, pick }: { item: LookItem; who: Pick; face: 
     <div className={`du-look ${pick === who ? "is-chosen" : fallback ? "is-default" : ""}`}>
       <span className="du-side__head">
         <span className="t-label-m">{who === "mine" ? "내 모양" : "새 모양"}</span>
-        <span className="t-caption c-tertiary">{who === "mine" ? (l.edited_at ? `${day(l.edited_at)}에 고침` : "이 기기") : "이 파일"}</span>
+        <span className="t-caption c-tertiary">{who === "mine" ? (l.edited_at ? `${monthDayAt(l.edited_at)}에 고침` : "이 기기") : "이 파일"}</span>
         {fallback && <Badge>고르지 않으면 이것</Badge>}
       </span>
       <div className="du-look__card study">
@@ -1146,7 +1146,7 @@ const STEPS = [
 ] as const;
 const NO_BACKUP = "적용 전 백업을 만들지 못해";
 
-function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: string; info: AnkiPreview; summary: UpdateSummary; choices: UpdateChoices; onBack: () => void }) {
+function ApplyProgress({ path, summary: s, choices, onBack }: { path: string; summary: UpdateSummary; choices: UpdateChoices; onBack: () => void }) {
   const nav = useNav();
   const [prog, setProg] = useState<UpdateProgress | null>(null);
   const [backupAt, setBackupAt] = useState<number | null>(null);
@@ -1183,7 +1183,7 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
     api.applyUpdate(path, choices).then(
       (result) => {
         lockNav(false);
-        if (mounted.current) nav({ name: "updateResult", summary: result, info });
+        if (mounted.current) nav({ name: "updateResult", summary: result });
       },
       (e) => {
         lockNav(false);
@@ -1203,8 +1203,7 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
   const active = at + (ended ? 1 : 0);
   const frac = prog && !ended && prog.step !== "done" && prog.total > 0 ? prog.done / prog.total : 0;
   const ratio = Math.min(1, (active + frac) / STEPS.length);
-  const elapsed = (Date.now() - started.current) / 1000;
-  const left = ratio >= 0.05 && ratio < 1 ? Math.max(1, Math.ceil((elapsed * (1 - ratio)) / ratio)) : null;
+  const left = eta(ratio, started.current);
   const fields = s.types.reduce((a, t) => a + t.new_fields.length, 0);
   const tpls = s.types.reduce((a, t) => a + t.new_templates.length, 0);
   const touched = s.changed + s.merged + s.conflicts.length;
@@ -1280,7 +1279,7 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
           <div className="import__progress-head">
             <span className="t-title-s">적용하는 중</span>
             <span className="t-label-m c-accent">
-              {Math.floor(ratio * 100)}%{left !== null && ` · 약 ${left < 60 ? `${left}초` : `${Math.ceil(left / 60)}분`} 남음`}
+              {Math.floor(ratio * 100)}%{left !== null && ` · ${left}`}
             </span>
           </div>
           <div className="progress__track">
@@ -1340,7 +1339,7 @@ function report(s: UpdateSummary) {
   return lines.join("\n");
 }
 
-export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; info: AnkiPreview }) {
+export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary }) {
   const nav = useNav();
   const sync = useSyncStatus();
   const [undoing, setUndoing] = useState(false);
@@ -1524,22 +1523,7 @@ function TidyMenu({ notes, cards, onSuspend, onDelete }: { notes: number; cards:
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
   // 떠 있는 동안 화면 단축키는 꺼지고 Esc 는 메뉴만 닫는다 (C1-m 과 같다)
-  useOverlayScope(open);
-  useKey(
-    "Escape",
-    () => {
-      setOpen(false);
-      box.current?.querySelector("button")?.focus();
-    },
-    open,
-    { modal: true },
-  );
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setOpen(false);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [open]);
+  useMenu(open, () => setOpen(false), () => box.current?.querySelector("button")?.focus());
   const pick = (f?: () => void) => () => {
     setOpen(false);
     f?.();
@@ -1702,7 +1686,7 @@ export function UndoConfirm({ batch, onClose }: { batch: number; onClose: () => 
       {u && !u.blocked && (
         <>
           <p className="t-body-m c-secondary">
-            {day(u.applied_at)}에 적용한 「{u.file_name}」 업데이트로 바뀐 것만 업데이트 전으로 돌려요. 공부한 기록은 지우지 않아요.
+            {monthDayAt(u.applied_at)}에 적용한 「{u.file_name}」 업데이트로 바뀐 것만 업데이트 전으로 돌려요. 공부한 기록은 지우지 않아요.
           </p>
           {lines.length > 0 ? (
             <ul className="du-undo__lines">
@@ -1756,7 +1740,7 @@ export function UndoResultScreen({ undo: u }: { undo: UndoSummary }) {
         <span className="result__title">
           <h1 className="t-title-l">{partial ? "업데이트를 되돌렸어요 · 일부는 남겼어요" : "업데이트를 되돌렸어요"}</h1>
           <span className="t-body-s c-secondary">
-            {u.file_name} ({day(u.applied_at)} 적용) · 공부한 기록은 지우지 않았어요
+            {u.file_name} ({monthDayAt(u.applied_at)} 적용) · 공부한 기록은 지우지 않았어요
           </span>
         </span>
       </div>

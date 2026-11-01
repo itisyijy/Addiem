@@ -10,12 +10,7 @@ use crate::{quality, render};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 앱이 만드는 서술형 노트 유형 (db.rs NATIVE_TYPES). 필드: 질문 · 모범 답안 · 채점 메모
 pub const NATIVE: &str = "서술형";
@@ -580,25 +575,24 @@ pub fn add_written_card(state: State<AppState>, card: WrittenNew) -> Res<i64> {
     if render::is_blank(&card.answer) {
         return Err("모범 답안을 입력해 주세요.".into());
     }
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let now = now_ms();
-    let ntid = crate::db::native_type_id(&tx, "written").map_err(err)?;
-    tx.execute(
-        "INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-        params![ntid, serde_json::to_string(&[&card.question, &card.answer, &card.memo]).map_err(err)?, now],
-    )
-    .map_err(err)?;
-    let nid = tx.last_insert_rowid();
-    tx.execute(
-        "INSERT INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at)
-         VALUES (?1, ?2, 0, ?3, CASE WHEN ?3 IS NULL THEN NULL ELSE 'user' END, ?4, ?4)",
-        params![nid, card.deck_id, card.importance, now],
-    )
-    .map_err(err)?;
-    save_setting(&tx, nid, card.write, &card.keywords, &[])?;
-    tx.commit().map_err(err)?;
-    Ok(nid)
+    state.write(|tx| {
+        let now = now_ms();
+        let ntid = crate::db::native_type_id(tx, "written").map_err(err)?;
+        tx.execute(
+            "INSERT INTO note (note_type_id, fields, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+            params![ntid, serde_json::to_string(&[&card.question, &card.answer, &card.memo]).map_err(err)?, now],
+        )
+        .map_err(err)?;
+        let nid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO card (note_id, deck_id, template_ord, importance, importance_source, created_at, updated_at)
+             VALUES (?1, ?2, 0, ?3, CASE WHEN ?3 IS NULL THEN NULL ELSE 'user' END, ?4, ?4)",
+            params![nid, card.deck_id, card.importance, now],
+        )
+        .map_err(err)?;
+        save_setting(tx, nid, card.write, &card.keywords, &[])?;
+        Ok(nid)
+    })
 }
 
 // ------------------------------------------------------------------ G3 학습 중 신호

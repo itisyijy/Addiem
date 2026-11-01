@@ -16,12 +16,7 @@ use crate::{quality, rag, render, written};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 pub const LIST: &str = "Addiem 목록 회상";
 pub const CHOICE: &str = "Addiem 선택형";
@@ -453,7 +448,7 @@ const DISTRACTOR_INSTRUCTIONS: &str = "선택형 암기 카드의 오답 보기�
 
 /// 편집기 보기 칸은 글자다. [sound:] 만 빼고 띄어쓰기를 하나로 (AU6)
 fn option_text(t: &str) -> String {
-    render::strip_sound(t).split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::table::flat(&render::strip_sound(t))
 }
 
 /// 같은 보기인가: 공백을 모두 빼고 대소문자를 무시한다 ("데이터 링크" = "데이터링크", "syn-ack" = "SYN-ACK")

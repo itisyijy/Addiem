@@ -28,20 +28,18 @@ mod qa_real_anki;
 
 use tauri::Manager;
 
+/// 명령이 화면에 돌려주는 오류는 글자 한 줄이다
+pub(crate) type Res<T> = Result<T, String>;
+
+pub(crate) fn err<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // 예전 이름(Neo-Anki) 시절 폴더를 새 식별자 폴더로 (legacy.rs). WebView2 데이터(화면 설정)가 로컬 폴더에 있어 창을 만들기 전에 옮긴다.
-            // 데이터 폴더를 옮기지 못하면 이번에는 예전 폴더를 그대로 쓴다
-            let default_dir = match std::env::var_os("ADDIEM_DATA_DIR") {
-                Some(_) => None,
-                None => {
-                    legacy::move_dir(&app.path().app_local_data_dir()?);
-                    Some(legacy::move_dir(&app.path().app_data_dir()?))
-                }
-            };
             // 첫 창은 여기서 만든다 (tauri.conf.json create: false). 만들기 전에 크기를 정해 커졌다 줄어드는 깜빡임이 없다.
             // 켤 때마다 주 모니터 작업 영역에 맞추고, 크기와 상관없이 작업 영역 가운데에 둔다. 모니터를 못 읽으면 설정 크기(1280×800) 그대로
             // ponytail: 크기 기억은 하지 않는다. 필요하면 닫을 때 크기를 저장해 여기서 읽는다
@@ -56,12 +54,11 @@ pub fn run() {
             }
             // %APPDATA%\<식별자> (DECISIONS H1: 식별자가 바뀌면 이 경로가 바뀐다).
             // ADDIEM_DATA_DIR 로 바꿀 수 있다. 테스트가 실제 데이터를 건드리지 않게 하기 위한 것이다
-            let data_dir = match default_dir {
-                Some(dir) => dir,
-                None => std::env::var_os("ADDIEM_DATA_DIR").unwrap_or_default().into(),
+            let data_dir = match std::env::var_os("ADDIEM_DATA_DIR") {
+                Some(dir) => dir.into(),
+                None => app.path().app_data_dir()?,
             };
             std::fs::create_dir_all(&data_dir)?;
-            legacy::rename_files(&data_dir);
             // 지난 실행이 가져오는 중에 끊겨 남긴 임시 컬렉션 (T7-05)
             import::clean_stale(&data_dir);
             commands::clean_stale_restore(&data_dir);
@@ -165,9 +162,7 @@ pub fn run() {
             recall::update_list_note, recall::update_choice_note, recall::ai_distractors,
             // 8.1 노트 유형 · 카드 템플릿 (1단계 엔진, 화면은 2단계)
             notetype::note_types, notetype::note_type_detail, notetype::deck_note_types, notetype::clone_note_type, notetype::rename_note_type,
-            notetype::delete_note_type, notetype::add_note_field, notetype::rename_note_field, notetype::reorder_note_fields,
-            notetype::delete_note_field, notetype::add_card_template, notetype::delete_card_template, notetype::save_card_template,
-            notetype::save_note_type_css, notetype::note_type_empty_fronts, notetype::preview_template, notetype::add_typed_note,
+            notetype::delete_note_type, notetype::preview_template, notetype::add_typed_note,
             notetype::change_type_plan, notetype::change_note_type,
             notetype::template_layout, notetype::build_template_layout, notetype::suggest_card_kind,
             notetype::note_type_samples, notetype::save_note_type, notetype::rename_field_refs,

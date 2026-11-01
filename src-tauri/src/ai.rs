@@ -15,7 +15,7 @@ use crate::commands::AppState;
 use crate::quality::{self, SplitPart, SplitProposal};
 use crate::rag;
 use crate::sync::{auth, crypto, store};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Value as J, json};
 use std::io::BufRead;
@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use ureq::http::{Method, Request};
+use crate::Res;
 
 const AUTHORIZE: &str = "https://auth.openai.com/api/accounts/authorize";
 const TOKEN: &str = "https://auth.openai.com/api/accounts/oauth/token";
@@ -67,8 +68,6 @@ const MIN_ITEMS: usize = 3;
 const MAX_ITEMS: usize = 60;
 const MAX_INPUT_CHARS: usize = 6000;
 const MAX_FRONT_CHARS: usize = 200;
-
-type Res<T> = Result<T, String>;
 
 // ---------------------------------------------------------------- 오류 (화면이 kind 로 고른다)
 
@@ -130,6 +129,19 @@ impl std::fmt::Display for AiError {
 impl Serialize for AiError {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         json!({ "kind": self.kind(), "message": self.to_string() }).serialize(s)
+    }
+}
+
+/// 백그라운드 스레드가 끝나지 못했다 (spawn_blocking)
+impl From<String> for AiError {
+    fn from(e: String) -> Self {
+        AiError::Other(e)
+    }
+}
+
+impl From<tauri::Error> for AiError {
+    fn from(e: tauri::Error) -> Self {
+        AiError::Other(e.to_string())
     }
 }
 
@@ -223,20 +235,8 @@ fn revoke_req(client_id: &str, refresh: &str) -> store::Req {
     auth::form(REVOKE, &[("token", refresh), ("token_type_hint", "refresh_token"), ("client_id", client_id)])
 }
 
-fn get_req(uri: &str, token: Option<&str>) -> store::Req {
-    let b = Request::builder().method(Method::GET).uri(uri);
-    let b = match token {
-        Some(t) => b.header("Authorization", format!("Bearer {t}")),
-        None => b,
-    };
-    b.body(vec![]).unwrap()
-}
-
 fn responses_req(token: &str, body: &J) -> store::Req {
-    Request::builder()
-        .method(Method::POST)
-        .uri(RESPONSES)
-        .header("Authorization", format!("Bearer {token}"))
+    store::req(Method::POST, RESPONSES, token)
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
         .body(body.to_string().into_bytes())
@@ -266,27 +266,9 @@ fn has_use_scope(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == USE_SCOPE)
 }
 
-struct Tokens {
-    access: String,
-    /// 만료 시각 (ms). 1분 앞당긴다
-    expires: i64,
-    refresh: Option<String>,
-    id_token: Option<String>,
-    /// 받은 권한. 실제 응답(교환 · 새로 고치기)에는 늘 있어서, 없으면 아무 권한도 받지 않은 것으로 본다
-    scope: String,
-}
-
-fn parse_tokens(body: &[u8]) -> Result<Tokens, AiError> {
+fn parse_tokens(body: &[u8]) -> Result<auth::Tokens, AiError> {
     let v: J = serde_json::from_slice(body).map_err(|_| AiError::Other("토큰 응답을 읽지 못했어요.".into()))?;
-    let access = v["access_token"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| AiError::Other("토큰을 받지 못했어요.".into()))?.to_string();
-    let scope = v["scope"].as_str().unwrap_or_default().to_string();
-    Ok(Tokens {
-        expires: crate::db::now_ms() + (v["expires_in"].as_i64().unwrap_or(3600) - 60) * 1000,
-        refresh: v["refresh_token"].as_str().map(String::from),
-        id_token: v["id_token"].as_str().map(String::from),
-        access,
-        scope,
-    })
+    auth::tokens(&v).filter(|t| !t.access.is_empty()).ok_or_else(|| AiError::Other("토큰을 받지 못했어요.".into()))
 }
 
 /// 새로 고치기 거절. 쓸 수 없는 토큰이면 Expired (토큰을 지우고 다시 로그인), 네트워크 · 서버 오류면 토큰을 지우지 않는다
@@ -369,7 +351,7 @@ fn verify_id_token(agent: &ureq::Agent, token: &str, client_id: &str, nonce: &st
     if head["alg"] != "RS256" {
         return Err(other("ID 토큰 서명 방식이 맞지 않아요".into()));
     }
-    let r = store::send(agent, get_req(JWKS, None)).map_err(net)?;
+    let r = store::send(agent, Request::get(JWKS).body(vec![]).unwrap()).map_err(net)?;
     let jwks: J = serde_json::from_slice(&r.body).map_err(|_| other("OpenAI 서명 키를 받지 못했어요".into()))?;
     verify_rs256(&jwks, head["kid"].as_str(), signed.as_bytes(), &sig).map_err(other)?;
     check_claims(&claims, client_id, nonce, crate::db::now_ms() / 1000).map_err(other)
@@ -392,7 +374,7 @@ fn pick_models(body: &J) -> Vec<String> {
 }
 
 fn list_models(agent: &ureq::Agent, token: &str) -> Result<Vec<String>, Reject> {
-    let r = store::send(agent, get_req(MODELS, Some(token))).map_err(|e| Reject::Fail(net(e)))?;
+    let r = store::send(agent, store::req(Method::GET, MODELS, token).body(vec![]).unwrap()).map_err(|e| Reject::Fail(net(e)))?;
     if r.status != 200 {
         return Err(classify(r.status, &r.body));
     }
@@ -717,19 +699,14 @@ impl AiState {
 }
 
 fn get_meta(con: &Connection, key: &str) -> Option<String> {
-    con.query_row("SELECT value FROM schema_meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
+    crate::db::meta(con, key).ok().flatten()
 }
 
 fn set_meta(con: &Connection, key: &str, value: Option<&str>) -> Result<(), AiError> {
-    match value {
-        Some(v) => con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, ?2)", [key, v]),
-        None => con.execute("DELETE FROM schema_meta WHERE key = ?1", [key]),
-    }
-    .map(|_| ())
-    .map_err(|e| AiError::Other(e.to_string()))
+    crate::db::set_meta(con, key, value).map_err(|e| AiError::Other(e.to_string()))
 }
 
-fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Result<T, AiError>) -> Result<T, AiError> {
+pub(crate) fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Result<T, AiError>) -> Result<T, AiError> {
     let st = app.state::<AppState>();
     let con = st.db.lock().map_err(|_| AiError::Other("데이터베이스를 잠그지 못했어요".into()))?;
     f(&con)
@@ -782,7 +759,7 @@ fn access_token(app: &AppHandle, st: &AiState, force: bool) -> Result<String, Ai
     }
     let t = parse_tokens(&r.body)?;
     if let Some(new) = &t.refresh {
-        auth::save_secret(REFRESH, new).map_err(AiError::Other)?;
+        auth::save_secret(REFRESH, new)?;
     }
     *cached = Some((t.access.clone(), t.expires));
     Ok(t.access)
@@ -873,12 +850,7 @@ fn connect_blocking(
     nonce: &str,
 ) -> Result<(String, bool), (&'static str, String)> {
     let st = app.state::<AiState>();
-    let q = auth::wait_callback(listener, CALLBACK, &p.state, "ChatGPT 연결을 마쳤어요", &st.auth_cancel).map_err(|e| match e {
-        auth::WaitError::Timeout => ("timeout", "5분 안에 로그인을 마치지 않아 기다리기를 멈췄어요.".to_string()),
-        auth::WaitError::Cancelled => ("cancelled", String::new()),
-        auth::WaitError::Denied => ("denied", "로그인을 취소했어요.".to_string()),
-        auth::WaitError::Other(m) => ("error", m),
-    })?;
+    let q = auth::wait_callback(listener, CALLBACK, &p.state, "ChatGPT 연결을 마쳤어요", &st.auth_cancel).map_err(auth::WaitError::reason)?;
     let client = issued_client(pending.as_deref(), q.get("client_id").map(String::as_str)).map_err(|m| ("error", m))?;
     let r = store::send(&st.agent, token_req(&client, q.get("code").map_or("", String::as_str), &p.verifier, redirect)).map_err(|e| fail(net(e)))?;
     if r.status != 200 {
@@ -907,7 +879,7 @@ fn fail(e: AiError) -> (&'static str, String) {
 }
 
 /// ID 토큰 · 권한 · 요금제를 확인하고 저장한다. 실패하면 부른 쪽이 새 토큰을 폐기한다
-fn save_connection(app: &AppHandle, st: &AiState, client: &str, t: &Tokens, nonce: &str) -> Result<(String, bool), (&'static str, String)> {
+fn save_connection(app: &AppHandle, st: &AiState, client: &str, t: &auth::Tokens, nonce: &str) -> Result<(String, bool), (&'static str, String)> {
     let id = t.id_token.as_deref().ok_or_else(|| ("error", "ID 토큰을 받지 못했어요. 다시 시도해 주세요.".to_string()))?;
     let who = verify_id_token(&st.agent, id, client, nonce).map_err(fail)?;
     // 이 기기에 있던 연결 (아래에서 새 토큰으로 바꾼다)
@@ -1001,14 +973,14 @@ pub fn ai_cancel(state: State<AiState>) {
 #[tauri::command]
 /// segment_ids: 첫 확인 목록에서 남긴 구간 (R3). 이 카드에 연결된 구간만 받는다. 비면 카드 한 장만 (L4 그대로)
 pub async fn ai_regroup(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) -> Result<SplitProposal, AiError> {
-    tauri::async_runtime::spawn_blocking(move || regroup_blocking(&app, card_id, &segment_ids)).await.map_err(|e| AiError::Other(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || regroup_blocking(&app, card_id, &segment_ids)).await?
 }
 
 fn regroup_blocking(app: &AppHandle, card_id: i64, segment_ids: &[i64]) -> Result<SplitProposal, AiError> {
     let (rule, sent) = with_db(app, |c| {
-        let rule = quality::suggest(c, card_id, None).map_err(AiError::Other)?;
-        let picks: Vec<(i64, &str)> = rag::linked_segments(c, card_id).map_err(AiError::Other)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
-        Ok((rule, rag::sent_of(c, &picks).map_err(AiError::Other)?))
+        let rule = quality::suggest(c, card_id, None)?;
+        let picks: Vec<(i64, &str)> = rag::linked_segments(c, card_id)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
+        Ok((rule, rag::sent_of(c, &picks)?))
     })?;
     let items = regroup_items(&rule.answer);
     if items.len() < MIN_ITEMS {
@@ -1037,16 +1009,8 @@ fn regroup_blocking(app: &AppHandle, card_id: i64, segment_ids: &[i64]) -> Resul
 /// R3 근거 칩: 카드들이 실제로 인용한 구간 (처음 나온 순서, 겹치지 않게). 보내지 않은 번호면 BadOutput (일부도 쓰지 않는다)
 fn parse_cited(text: &str, sent: &[rag::Sent]) -> Result<Vec<rag::Sent>, AiError> {
     let v = parse_json(text)?;
-    let mut out: Vec<rag::Sent> = vec![];
-    for c in v["cards"].as_array().into_iter().flatten() {
-        for n in c["segments"].as_array().into_iter().flatten() {
-            let id = rag::segment_at(sent, n).ok_or_else(|| AiError::BadOutput("보내지 않은 구간 번호예요".into()))?;
-            if !out.iter().any(|s| s.id == id) {
-                out.extend(sent.iter().find(|s| s.id == id).cloned());
-            }
-        }
-    }
-    Ok(out)
+    let ns = v["cards"].as_array().into_iter().flatten().flat_map(|c| c["segments"].as_array().into_iter().flatten());
+    rag::cited(sent, ns).ok_or_else(|| AiError::BadOutput("보내지 않은 구간 번호예요".into()))
 }
 
 // ---------------------------------------------------------------- 8.2 AI로 확인 (질문과 답이 맞는지 · 고친 안 제안)
@@ -1166,13 +1130,7 @@ fn parse_check(text: &str, question: &str, answer: &str, sent: &[rag::Sent], loc
         v["checks"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::trim).filter(ok)).take(MAX_CHECKS).map(String::from).collect()
     };
     // 근거 구간은 고친 안이 있을 때만 본다. 보내지 않은 번호를 인용하면 고친 안을 쓰지 않는다 (근거 칩이 틀리면 안 된다)
-    let mut evidence: Vec<rag::Sent> = vec![];
-    for n in v["segments"].as_array().into_iter().flatten().filter(|_| fix.is_some()) {
-        let id = rag::segment_at(sent, n).ok_or_else(|| bad("보내지 않은 구간 번호예요"))?;
-        if !evidence.iter().any(|s| s.id == id) {
-            evidence.extend(sent.iter().find(|s| s.id == id).cloned());
-        }
-    }
+    let evidence = rag::cited(sent, v["segments"].as_array().into_iter().flatten().filter(|_| fix.is_some())).ok_or_else(|| bad("보내지 않은 구간 번호예요"))?;
     Ok(CardCheck { matches, reason, fix, kept_locked, checks, sent: sent.to_vec(), evidence })
 }
 
@@ -1224,9 +1182,9 @@ fn check_instructions(locked: [bool; 2], sources: bool) -> String {
 
 /// 원래 질문과 답 · 함께 보낸 구간 · 보내는 글 · 지시 (DB 를 읽기만 한다)
 fn check_prepare(con: &Connection, card_id: i64, segment_ids: &[i64]) -> Result<(quality::Rewrite, Vec<rag::Sent>, String, String), AiError> {
-    let r = quality::rewrite_of(con, card_id).map_err(AiError::Other)?;
-    let picks: Vec<(i64, &str)> = rag::linked_segments(con, card_id).map_err(AiError::Other)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
-    let sent = rag::sent_of(con, &picks).map_err(AiError::Other)?;
+    let r = quality::rewrite_of(con, card_id)?;
+    let picks: Vec<(i64, &str)> = rag::linked_segments(con, card_id)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
+    let sent = rag::sent_of(con, &picks)?;
     let input = check_input(&r.question, &r.answer, &sent);
     if input.chars().count() > MAX_INPUT_CHARS {
         return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 직접 고쳐 주세요.".into()));
@@ -1252,8 +1210,7 @@ pub async fn ai_check_card(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) 
         }
         res
     })
-    .await
-    .map_err(|e| AiError::Other(e.to_string()))?
+    .await?
 }
 
 /// 실패 까닭을 이 기기의 `ai-errors.log`(데이터 폴더)와 stderr 에 한 줄로 남긴다. 카드 글 · 응답 글은 남기지 않는다 (까닭 글만).
@@ -1386,11 +1343,11 @@ mod tests {
     #[test]
     fn callback_on_auth_path_with_issued_client() {
         let line = "GET /auth/callback?code=c0de&state=st&scope=openid&client_id=oaiapp_9 HTTP/1.1";
-        let Ok(auth::Callback::Code(q)) = auth::parse_callback(line, CALLBACK, "st") else { panic!() };
+        let auth::Callback::Code(q) = auth::parse_callback(line, CALLBACK, "st") else { panic!() };
         assert_eq!((q["code"].as_str(), q["client_id"].as_str()), ("c0de", "oaiapp_9"));
-        assert_eq!(auth::parse_callback("GET /?code=c&state=st HTTP/1.1", CALLBACK, "st"), Ok(auth::Callback::Ignore), "다른 경로는 무시");
-        assert_eq!(auth::parse_callback(line, CALLBACK, "other"), Ok(auth::Callback::Ignore), "state 가 다르면 받지 않고 계속 기다린다");
-        assert_eq!(auth::parse_callback("GET /auth/callback?state=st&error=access_denied HTTP/1.1", CALLBACK, "st"), Ok(auth::Callback::Denied));
+        assert_eq!(auth::parse_callback("GET /?code=c&state=st HTTP/1.1", CALLBACK, "st"), auth::Callback::Ignore, "다른 경로는 무시");
+        assert_eq!(auth::parse_callback(line, CALLBACK, "other"), auth::Callback::Ignore, "state 가 다르면 받지 않고 계속 기다린다");
+        assert_eq!(auth::parse_callback("GET /auth/callback?state=st&error=access_denied HTTP/1.1", CALLBACK, "st"), auth::Callback::Denied);
         // 처음 등록: 새 id 를 받는다. 다시 로그인: 저장한 id 와 달라지면 받지 않는다
         assert_eq!(issued_client(None, Some("oaiapp_9")), Ok("oaiapp_9".into()));
         assert!(issued_client(None, None).is_err() && issued_client(None, Some("dynamic_agent_client")).is_err());
