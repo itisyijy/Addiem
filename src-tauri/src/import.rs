@@ -756,12 +756,35 @@ struct AType {
     fields: Vec<String>,
     css: String,
     templates: Vec<(u32, String, String, String)>, // ord, 이름, 앞면, 뒷면
-    /// 원본과 다르게 보일 수 있는 기능 (스크립트, 빈칸 type-in, TTS)
-    degraded: Vec<&'static str>,
+    /// 원본과 다르게 보일 수 있는 기능 (스크립트, 빈칸 type-in, TTS). 템플릿 ord 마다, 기능이 있는 템플릿만 (T2-19)
+    degraded: Vec<(u32, Vec<&'static str>)>,
     /// Anki originalStockKind (0 = 사용자 정의). 내보낼 때 다시 붙인다 (I78)
     stock: i64,
     /// 카드 종류마다 덱 (Anki deck override, 템플릿 did · target_deck_id): (ord, Anki 덱 id). NT76
     decks: Vec<(u32, i64)>,
+}
+
+impl AType {
+    /// 카드(ord)가 쓰는 템플릿의 기능. 빈칸 유형은 템플릿이 하나이고 카드 ord 가 빈칸 번호라, 템플릿이 하나면 모든 카드가 그것을 쓴다
+    fn degraded_at(&self, ord: u32) -> &[&'static str] {
+        let one = self.templates.len() == 1;
+        self.degraded.iter().find(|(o, _)| one || *o == ord).map_or(&[], |(_, f)| f)
+    }
+
+    /// 템플릿 어디에든 있는 기능 (노트 유형 하나로 볼 때)
+    fn features(&self) -> Vec<&'static str> {
+        let mut out = vec![];
+        for f in self.degraded.iter().flat_map(|(_, f)| f) {
+            if !out.contains(f) {
+                out.push(*f);
+            }
+        }
+        out
+    }
+}
+
+fn degraded_by_ord(templates: &[(u32, String, String, String)], voices: &[String]) -> Vec<(u32, Vec<&'static str>)> {
+    templates.iter().map(|t| (t.0, degraded_features(&format!("{}\n{}", t.2, t.3), voices))).filter(|(_, f)| !f.is_empty()).collect()
 }
 
 struct Package {
@@ -938,14 +961,7 @@ fn read_modern(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
                 (ord, n, pb_str(&c, 1), pb_str(&c, 2))
             })
             .collect();
-        let mut degraded = vec![];
-        for t in &templates {
-            for f in degraded_features(&format!("{}\n{}", t.2, t.3), voices) {
-                if !degraded.contains(&f) {
-                    degraded.push(f);
-                }
-            }
-        }
+        let degraded = degraded_by_ord(&templates, voices);
         types.insert(id, AType { name, fields, css: pb_str(&cfg, 3), templates, degraded, stock: stock.unwrap_or(0), decks: tdecks });
     }
     Ok((decks, types))
@@ -980,14 +996,7 @@ fn read_legacy(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut degraded = vec![];
-            for tp in &templates {
-                for f in degraded_features(&format!("{}\n{}", tp.2, tp.3), voices) {
-                    if !degraded.contains(&f) {
-                        degraded.push(f);
-                    }
-                }
-            }
+            let degraded = degraded_by_ord(&templates, voices);
             let stock = t.get("originalStockKind").and_then(Value::as_i64).unwrap_or(0);
             let tdecks: Vec<(u32, i64)> = t
                 .get("tmpls")
@@ -1202,7 +1211,7 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>,
         .col
         .prepare(&format!(
             "SELECT c.id, c.nid, c.did, c.odid, c.type, c.queue, {REAL_DUE}, n.mid, n.guid, n.flds LIKE '%[latex]%',
-                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{{document}}%' OR n.flds LIKE '%\\usepackage%'
+                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{{document}}%' OR n.flds LIKE '%\\usepackage%', c.ord
              FROM cards c JOIN notes n ON n.id = c.nid",
         ))
         .map_err(err)?;
@@ -1242,7 +1251,8 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>,
         if !s.types.contains(&mid) {
             s.types.push(mid);
         }
-        for (f, t) in pkg.types.get(&mid).into_iter().flat_map(|t| t.degraded.iter().map(move |f| (f, t))) {
+        let ord: u32 = r.get(11).map_err(err)?;
+        for (f, t) in pkg.types.get(&mid).into_iter().flat_map(|t| t.degraded_at(ord).iter().map(move |f| (f, t))) {
             match s.degraded.iter_mut().find(|x| x.feature == *f) {
                 Some(x) => {
                     x.cards += 1;
@@ -1275,22 +1285,24 @@ fn count(col: &Connection, sql: &str) -> Res<usize> {
     col.query_row(sql, [], |r| r.get::<_, i64>(0)).map(|n| n as usize).map_err(err)
 }
 
-/// 노트타입별 카드 수
-fn cards_by_type(col: &Connection) -> Res<HashMap<i64, usize>> {
-    db::rows(col, "SELECT n.mid, count(*) FROM cards c JOIN notes n ON n.id = c.nid GROUP BY n.mid", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)
+/// (노트타입, 카드 종류 ord)별 카드 수. 기능은 카드 종류(템플릿)마다 다르다 (T2-19)
+fn cards_by_type(col: &Connection) -> Res<HashMap<(i64, u32), usize>> {
+    db::rows(col, "SELECT n.mid, c.ord, count(*) FROM cards c JOIN notes n ON n.id = c.nid GROUP BY n.mid, c.ord", [], |r| {
+        Ok(((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?), r.get::<_, i64>(2)? as usize))
+    })
+    .map_err(err)
 }
 
-fn degraded_summary(pkg: &Package, by_type: &HashMap<i64, usize>) -> Vec<Degraded> {
+fn degraded_summary(pkg: &Package, by_type: &HashMap<(i64, u32), usize>) -> Vec<Degraded> {
     let mut out: Vec<Degraded> = vec![];
-    for (id, t) in &pkg.types {
-        let cards = by_type.get(id).copied().unwrap_or(0);
-        if cards == 0 {
-            continue;
-        }
-        for f in &t.degraded {
+    for (&(mid, ord), &cards) in by_type {
+        let Some(t) = pkg.types.get(&mid) else { continue };
+        for f in t.degraded_at(ord) {
             match out.iter_mut().find(|d| d.feature == *f) {
                 Some(d) => {
-                    d.note_types.push(t.name.clone());
+                    if !d.note_types.contains(&t.name) {
+                        d.note_types.push(t.name.clone());
+                    }
                     d.cards += cards;
                 }
                 None => out.push(Degraded { feature: f.to_string(), note_types: vec![t.name.clone()], cards }),
@@ -1309,7 +1321,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
     let tops: BTreeSet<&String> = paths.iter().filter_map(|p| p.first()).collect();
     let prefixes: BTreeSet<&[String]> = paths.iter().flat_map(|p| (2..=p.len()).map(move |d| &p[..d])).collect();
     let by_type = cards_by_type(&pkg.col)?;
-    let used_types: Vec<&i64> = pkg.types.keys().filter(|id| by_type.contains_key(id)).collect();
+    let used_types: Vec<&i64> = pkg.types.keys().filter(|id| by_type.keys().any(|(m, _)| m == *id)).collect();
     // 밀린 복습: 기한(컬렉션 생성일부터의 일수)이 오늘보다 앞선 복습 카드
     let crt_day = db::study_day(pkg.col.query_row("SELECT crt FROM col", [], |r| r.get::<_, i64>(0)).map_err(err)? * 1000);
     let overdue_before = db::study_day(now_ms()) - crt_day;
@@ -1454,13 +1466,13 @@ fn run_import_selected(
     let by_type = match &chosen {
         None => cards_by_type(&pkg.col)?,
         Some(c) => {
-            let mut st = pkg.col.prepare("SELECT n.mid, c.id FROM cards c JOIN notes n ON n.id = c.nid").map_err(err)?;
-            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(err)?;
-            let mut out: HashMap<i64, usize> = HashMap::new();
+            let mut st = pkg.col.prepare("SELECT n.mid, c.ord, c.id FROM cards c JOIN notes n ON n.id = c.nid").map_err(err)?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?, r.get::<_, i64>(2)?))).map_err(err)?;
+            let mut out: HashMap<(i64, u32), usize> = HashMap::new();
             for row in rows {
-                let (mid, id) = row.map_err(err)?;
+                let (mid, ord, id) = row.map_err(err)?;
                 if c.cards.contains(&id) {
-                    *out.entry(mid).or_default() += 1;
+                    *out.entry((mid, ord)).or_default() += 1;
                 }
             }
             out
@@ -1496,7 +1508,7 @@ fn run_import_selected(
     // 8.1 이미 있던 유형(같은 모델 id)은 사용자가 필드 순서 · 이름 · 카드 종류를 고쳤을 수 있다: 들어오는 필드는 자리로, 카드 ord 는 우리 ord 로
     let mut remap: HashMap<i64, Remap> = HashMap::new();
     for (aid, t) in &pkg.types {
-        if !by_type.contains_key(aid) {
+        if !by_type.keys().any(|(m, _)| m == aid) {
             continue;
         }
         // 내보낸 내 덱의 앱 기본 유형은 내보낸 모델 id 로 찾는다 (DU55, 새 "Basic" 이 생기지 않게)
@@ -1932,7 +1944,7 @@ fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64, deck_of: DeckOf) 
             t.css,
             now,
             t.degraded.is_empty() as i64,
-            (!t.degraded.is_empty()).then(|| t.degraded.join(", ")),
+            (!t.degraded.is_empty()).then(|| t.features().join(", ")),
             aid,
             (t.stock > 0).then_some(t.stock),
             deck_update::new_type_origin(t)
@@ -2116,6 +2128,28 @@ mod tests {
         let t = "{{tts en_US:Front}}{{tts zh_CN:Back}}<br>{{tts zh_TW speed=0.8:Back}}";
         assert_eq!(degraded_features(t, &["en".into(), "ko".into()]), ["읽어주기(중국어)"], "언어마다 한 번");
         assert!(degraded_features(t, &["en".into(), "zh".into()]).is_empty(), "OS 음성이 있으면 알리지 않는다");
+    }
+
+    #[test]
+    fn degraded_cards_are_counted_per_template() {
+        // T2-19: 기능을 쓰는 카드 종류의 카드만 센다. 빈칸 유형은 템플릿 하나를 모든 빈칸 카드가 쓴다
+        use deck_update::testpkg::{self, Model, note};
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-t219-{}-{}", std::process::id(), now_ms())));
+        std::fs::create_dir_all(&tmp.0).unwrap();
+        let p = tmp.0.join("tts.apkg");
+        let tts = Model { id: 1, name: "TTS", fields: vec!["Front", "Back"], templates: vec![("1", "{{Front}}", "{{Back}}"), ("2", "{{tts zh_CN:Back}}", "{{Front}}")], css: "" };
+        let cz = Model { id: 2, name: "Cloze", fields: vec!["Text"], templates: vec![("Cloze", "{{cloze:Text}}<script>x()</script>", "{{cloze:Text}}")], css: "" };
+        let notes: Vec<_> = (1..=3).map(|i| note(i, ["g1", "g2", "g3"][i as usize - 1], 1, &["a", "b"], &[(1, 0), (1, 1)])).chain([note(9, "g9", 2, &["{{c1::a}} {{c2::b}}"], &[(1, 0), (1, 1)])]).collect();
+        testpkg::write(&p, &[tts, cz], &[(1, "A")], &notes, &[]);
+        let pkg = open_package(&p, &tmp.0, &["en".into()]).unwrap();
+        let mut sum = degraded_summary(&pkg, &cards_by_type(&pkg.col).unwrap());
+        sum.sort_by(|a, b| a.feature.cmp(&b.feature));
+        let got: Vec<_> = sum.iter().map(|d| (d.feature.as_str(), d.cards)).collect();
+        assert_eq!(got, [("스크립트", 2), ("읽어주기(중국어)", 3)]);
+        let stats = deck_stats(&pkg, &HashSet::new(), &HashSet::new(), 0).unwrap();
+        let mut got: Vec<_> = stats[0].degraded.iter().map(|d| (d.feature.as_str(), d.cards)).collect();
+        got.sort();
+        assert_eq!(got, [("스크립트", 2), ("읽어주기(중국어)", 3)], "덱 고르기 트리도 같게");
     }
 
     #[test]
