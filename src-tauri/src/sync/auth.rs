@@ -159,6 +159,18 @@ pub enum WaitError {
     Other(String),
 }
 
+impl WaitError {
+    /// 로그인 결과 이벤트의 (reason, message). 화면은 timeout 에는 제 문구를 쓴다
+    pub fn reason(self) -> (&'static str, String) {
+        match self {
+            WaitError::Timeout => ("timeout", "시간이 지났어요".into()),
+            WaitError::Cancelled => ("cancelled", String::new()),
+            WaitError::Denied => ("denied", "로그인을 취소했어요".into()),
+            WaitError::Other(e) => ("error", e),
+        }
+    }
+}
+
 /// 루프백 서버: 코드가 올 때까지 (최대 5분, 취소하면 바로) 기다린다 (Google)
 pub fn wait_code(listener: TcpListener, state: &str, cancel: &AtomicBool) -> Result<String, WaitError> {
     wait_callback(listener, "/", state, "Google 로그인을 마쳤어요", cancel).map(|mut q| q.remove("code").unwrap_or_default())

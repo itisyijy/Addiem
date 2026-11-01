@@ -635,10 +635,10 @@ pub fn sync_connect(state: State<SyncState>) -> Res<Option<String>> {
     std::thread::spawn(move || {
         let fail = |reason: &str, message: String| AuthEvent { ok: false, reason: Some(reason.into()), message: Some(message), probe: None };
         let ev = match auth::wait_code(listener, &p.state, &sh.auth_cancel) {
-            Err(auth::WaitError::Timeout) => fail("timeout", "시간이 지났어요".into()),
-            Err(auth::WaitError::Cancelled) => fail("cancelled", String::new()),
-            Err(auth::WaitError::Denied) => fail("denied", "로그인을 취소했어요".into()),
-            Err(auth::WaitError::Other(e)) => fail("error", e),
+            Err(e) => {
+                let (reason, message) = e.reason();
+                fail(reason, message)
+            }
             Ok(code) => match auth::exchange(&sh.agent, client, &code, &p.verifier, &redirect) {
                 Err(e) => fail("error", e.to_string()),
                 // 받은 토큰은 쓰지 않고 버린다. 폐기(revoke)하면 이 계정의 다른 기기 로그인까지 끊긴다 (others_active)
