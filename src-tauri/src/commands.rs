@@ -3258,11 +3258,11 @@ pub fn open_backup_dir(state: State<AppState>, data: Option<bool>) -> Res<()> {
     Ok(())
 }
 
-/// E1 "하루 시작 시각". 0시부터 12시 사이
+/// E1 "하루 시작 시각". 0시부터 6시 사이 (I20)
 #[tauri::command]
 pub fn set_cutoff_hour(state: State<AppState>, hour: i64) -> Res<()> {
-    if !(0..=12).contains(&hour) {
-        return Err("하루 시작 시각은 0시부터 12시 사이여야 해요.".into());
+    if !db::CUTOFF_HOURS.contains(&hour) {
+        return Err("하루 시작 시각은 0시부터 6시 사이여야 해요.".into());
     }
     let con = state.db.lock().map_err(err)?;
     db::set_cutoff_hour(&con, hour).map_err(err)
