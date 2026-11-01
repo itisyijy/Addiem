@@ -105,7 +105,7 @@ fn deck_name_level(name: &str) -> Option<(i64, String)> {
     const CORE: [&str; 8] = ["요약", "핵심", "정리", "기출", "필수", "summary", "core", "essential"];
     const SUPP: [&str; 7] = ["부록", "참고", "심화", "보충", "appendix", "extra", "advanced"];
     let lower = name.to_lowercase();
-    let reason = |k: &str| format!("하위 덱 이름에 '{k}'{} 있어요", if crate::quality::has_batchim(k) { "이" } else { "가" });
+    let reason = |k: &str| format!("하위 덱 이름에 '{k}'{} 있어요", if crate::table::final_consonant(k) { "이" } else { "가" });
     let core = CORE.iter().find(|k| lower.contains(*k));
     let supp = SUPP.iter().find(|k| lower.contains(*k));
     match (core, supp) {
@@ -1533,7 +1533,7 @@ fn run_import_selected(
         nt_map.insert(*aid, id);
         // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
         if crate::recall::unrecognized(&t.name, &t.fields) {
-            result.issues.push(issue("info", "recall_type", format!("노트 유형 '{}'은 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name)));
+            result.issues.push(issue("info", "recall_type", format!("노트 유형 '{}'{} 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name, if crate::table::final_consonant(&t.name) { "은" } else { "는" })));
         }
     }
 
@@ -1920,10 +1920,11 @@ fn run_import_selected(
             "warning",
             "degraded_template",
             format!(
-                "노트 유형 '{}'이 {}{} 써요. {what} ({}장)",
+                "노트 유형 '{}'{} {}{} 써요. {what} ({}장)",
                 d.note_types.join("', '"),
+                if d.note_types.last().is_some_and(|t| crate::table::final_consonant(t)) { "이" } else { "가" },
                 d.feature,
-                if crate::quality::has_batchim(&d.feature) { "을" } else { "를" },
+                if crate::table::final_consonant(&d.feature) { "을" } else { "를" },
                 n(d.cards)
             ),
         ));
@@ -2173,6 +2174,8 @@ mod tests {
         assert_eq!(deck_name_level("3장 정리").map(|t| t.1), Some("하위 덱 이름에 '정리'가 있어요".to_string()), "받침 없는 낱말은 '가'");
         assert_eq!(deck_name_level("3장 요약").map(|t| t.1), Some("하위 덱 이름에 '요약'이 있어요".to_string()));
         assert_eq!(deck_name_level("Core").map(|t| t.1), Some("하위 덱 이름에 'core'가 있어요".to_string()));
+        // G3-05: 영문도 읽는 소리로 (table::final_consonant, I57). essential(에센셜) → '이'
+        assert_eq!(deck_name_level("Essential").map(|t| t.1), Some("하위 덱 이름에 'essential'이 있어요".to_string()));
     }
 
     #[test]

@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { Badge, Button, Checkbox, Icon, Input, Segment, Spinner, Toggle, type IconName } from "./ui";
 import { useToast } from "./toast";
-import { n, useKey, useNav, useMenu, useOverlayScope } from "./nav";
+import { eun, n, useKey, useNav, useMenu, useOverlayScope } from "./nav";
 import { plainEnter } from "./keys";
 import { dateWithDay, hm, iso, monthDayAt, when } from "./dates";
 import { useFocusTrap } from "./screens/NewDeck";
@@ -99,11 +99,6 @@ export const size = (b: number) =>
   b >= 1e9 ? `${(b / 1e9).toFixed(1)}GB` : b >= 1e8 ? `${Math.round(b / 1e6)}MB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)}MB` : `${Math.ceil(b / 1e3)}KB`;
 const counts = (c: { decks: number; cards: number; reviews: number } | null | undefined) =>
   c ? `덱 ${n(c.decks)}개 · 카드 ${n(c.cards)}장 · 복습 기록 ${n(c.reviews)}건` : "덱 · 카드 수를 아직 몰라요";
-/** 은/는 */
-const eun = (w: string) => {
-  const c = w.charCodeAt(w.length - 1);
-  return c >= 0xac00 && c <= 0xd7a3 && (c - 0xac00) % 28 ? "은" : "는";
-};
 const others = (s: SyncStatus | null) => (s?.devices ?? []).filter((d) => !d.me && !d.stale).map((d) => d.name);
 
 /** 상단 바(K5)와 설정(K4)이 같은 말을 쓴다 */
