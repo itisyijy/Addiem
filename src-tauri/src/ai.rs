@@ -272,27 +272,9 @@ fn has_use_scope(scope: &str) -> bool {
     scope.split_whitespace().any(|s| s == USE_SCOPE)
 }
 
-struct Tokens {
-    access: String,
-    /// 만료 시각 (ms). 1분 앞당긴다
-    expires: i64,
-    refresh: Option<String>,
-    id_token: Option<String>,
-    /// 받은 권한. 실제 응답(교환 · 새로 고치기)에는 늘 있어서, 없으면 아무 권한도 받지 않은 것으로 본다
-    scope: String,
-}
-
-fn parse_tokens(body: &[u8]) -> Result<Tokens, AiError> {
+fn parse_tokens(body: &[u8]) -> Result<auth::Tokens, AiError> {
     let v: J = serde_json::from_slice(body).map_err(|_| AiError::Other("토큰 응답을 읽지 못했어요.".into()))?;
-    let access = v["access_token"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| AiError::Other("토큰을 받지 못했어요.".into()))?.to_string();
-    let scope = v["scope"].as_str().unwrap_or_default().to_string();
-    Ok(Tokens {
-        expires: crate::db::now_ms() + (v["expires_in"].as_i64().unwrap_or(3600) - 60) * 1000,
-        refresh: v["refresh_token"].as_str().map(String::from),
-        id_token: v["id_token"].as_str().map(String::from),
-        access,
-        scope,
-    })
+    auth::tokens(&v).filter(|t| !t.access.is_empty()).ok_or_else(|| AiError::Other("토큰을 받지 못했어요.".into()))
 }
 
 /// 새로 고치기 거절. 쓸 수 없는 토큰이면 Expired (토큰을 지우고 다시 로그인), 네트워크 · 서버 오류면 토큰을 지우지 않는다
@@ -913,7 +895,7 @@ fn fail(e: AiError) -> (&'static str, String) {
 }
 
 /// ID 토큰 · 권한 · 요금제를 확인하고 저장한다. 실패하면 부른 쪽이 새 토큰을 폐기한다
-fn save_connection(app: &AppHandle, st: &AiState, client: &str, t: &Tokens, nonce: &str) -> Result<(String, bool), (&'static str, String)> {
+fn save_connection(app: &AppHandle, st: &AiState, client: &str, t: &auth::Tokens, nonce: &str) -> Result<(String, bool), (&'static str, String)> {
     let id = t.id_token.as_deref().ok_or_else(|| ("error", "ID 토큰을 받지 못했어요. 다시 시도해 주세요.".to_string()))?;
     let who = verify_id_token(&st.agent, id, client, nonce).map_err(fail)?;
     // 이 기기에 있던 연결 (아래에서 새 토큰으로 바꾼다)

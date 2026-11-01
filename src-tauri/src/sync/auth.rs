@@ -217,17 +217,24 @@ pub struct Tokens {
     /// 만료 시각 (ms)
     pub expires: i64,
     pub refresh: Option<String>,
+    /// OpenID ID 토큰 (ChatGPT, ai.rs)
+    pub id_token: Option<String>,
+    /// 받은 권한. 실제 응답(교환 · 새로 고치기)에는 늘 있어서, 없으면 아무 권한도 받지 않은 것으로 본다
     pub scope: String,
 }
 
 pub fn parse_tokens(body: &[u8]) -> SRes<Tokens> {
-    let v: serde_json::Value = serde_json::from_slice(body).map_err(other)?;
-    let access = v["access_token"].as_str().ok_or_else(|| other("토큰을 받지 못했어요"))?.to_string();
-    Ok(Tokens {
-        access,
+    tokens(&serde_json::from_slice(body).map_err(other)?).ok_or_else(|| other("토큰을 받지 못했어요"))
+}
+
+/// 토큰 응답 (Google · ChatGPT). access_token 이 없으면 없다
+pub(crate) fn tokens(v: &serde_json::Value) -> Option<Tokens> {
+    Some(Tokens {
+        access: v["access_token"].as_str()?.to_string(),
         // 만료 1분 전에 새로 받는다
         expires: crate::db::now_ms() + (v["expires_in"].as_i64().unwrap_or(3600) - 60) * 1000,
         refresh: v["refresh_token"].as_str().map(String::from),
+        id_token: v["id_token"].as_str().map(String::from),
         scope: v["scope"].as_str().unwrap_or_default().to_string(),
     })
 }
