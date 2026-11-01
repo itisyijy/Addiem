@@ -85,16 +85,14 @@ fn past_day(con: &Connection, session_id: i64, now: i64) -> Res<bool> {
 // ------------------------------------------------------------------ 공통 로딩
 
 pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
-    let mut st = con
-        .prepare(
-            "SELECT d.id, d.name, d.parent_id, c.target_date, COALESCE(c.include_target_day,0), c.daily_new_limit,
-                    CASE WHEN c.today_new_day = ?1 THEN c.today_new END, COALESCE(c.paused, 0), c.paused_until, d.weak
-             FROM deck d LEFT JOIN deck_config c ON c.deck_id = d.id WHERE d.archived_at IS NULL",
-        )
-        .map_err(err)?;
     let today = study_day(now_ms());
-    let rows = st
-        .query_map([db::date_from_day(today)], |r| {
+    let mut decks: Vec<queue::Deck> = db::rows(
+        con,
+        "SELECT d.id, d.name, d.parent_id, c.target_date, COALESCE(c.include_target_day,0), c.daily_new_limit,
+                CASE WHEN c.today_new_day = ?1 THEN c.today_new END, COALESCE(c.paused, 0), c.paused_until, d.weak
+         FROM deck d LEFT JOIN deck_config c ON c.deck_id = d.id WHERE d.archived_at IS NULL",
+        [db::date_from_day(today)],
+        |r| {
             let target: Option<String> = r.get(3)?;
             let until = r.get::<_, Option<String>>(8)?.as_deref().and_then(db::day_from_date);
             Ok(queue::Deck {
@@ -111,9 +109,9 @@ pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
                 weak: r.get::<_, i64>(9)? == 1,
                 ..Default::default()
             })
-        })
-        .map_err(err)?;
-    let mut decks: Vec<queue::Deck> = rows.collect::<Result<_, _>>().map_err(err)?;
+        },
+    )
+    .map_err(err)?;
     // H 시험 계획: 충돌 조정 · 당겨 맞추기 · 하루 몫 고정을 큐가 따르게 한다 (목표일은 그대로)
     crate::plan::adjust_decks(con, &mut decks, today)?;
     Ok(decks)
@@ -121,16 +119,16 @@ pub(crate) fn load_decks(con: &Connection) -> Res<Vec<queue::Deck>> {
 
 pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
     let fronts = crate::notetype::Fronts::load(con)?;
-    let mut st = con
-        .prepare(&format!(
+    db::rows(
+        con,
+        &format!(
             "SELECT c.id, c.deck_id, c.state, c.eff_importance, c.due_at, COALESCE(c.anki_card_id, c.id), c.buried_until,
                     CASE WHEN {IS_CLOZE} THEN NULL ELSE c.note_id END, c.note_id, {}, n.note_type_id, c.template_ord, n.fields
              FROM card_effective c JOIN note n ON n.id = c.note_id JOIN note_type nt ON nt.id = n.note_type_id",
             crate::exam::IS_EXAM
-        ))
-        .map_err(err)?;
-    let rows = st
-        .query_map([], |r| {
+        ),
+        [],
+        |r| {
             Ok(queue::Card {
                 id: r.get(0)?,
                 deck_id: r.get(1)?,
@@ -145,9 +143,9 @@ pub(crate) fn load_cards(con: &Connection) -> Res<Vec<queue::Card>> {
                 exam: r.get(9)?,
                 front_empty: fronts.empty(r.get(10)?, r.get(11)?, &r.get::<_, String>(12)?),
             })
-        })
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        },
+    )
+    .map_err(err)
 }
 
 pub(crate) fn today_start_ms(today: i64) -> i64 {
@@ -156,16 +154,14 @@ pub(crate) fn today_start_ms(today: i64) -> i64 {
 
 /// 덱별로 오늘 처음 학습한 신규 카드 수
 pub(crate) fn introduced_today(con: &Connection, today: i64) -> Res<HashMap<i64, i64>> {
-    let mut st = con
-        .prepare(
-            "SELECT c.deck_id, count(DISTINCT r.card_id) FROM review_log r JOIN card c ON c.id = r.card_id
-             WHERE r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 AND r.reviewed_at >= ?1 GROUP BY c.deck_id",
-        )
-        .map_err(err)?;
-    let rows = st
-        .query_map([today_start_ms(today)], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(
+        con,
+        "SELECT c.deck_id, count(DISTINCT r.card_id) FROM review_log r JOIN card c ON c.id = r.card_id
+         WHERE r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 AND r.reviewed_at >= ?1 GROUP BY c.deck_id",
+        [today_start_ms(today)],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)
 }
 
 /// 오늘 이미 한 학습 (큐가 오늘 분량을 다시 만들지 않게)
@@ -175,10 +171,9 @@ fn today_progress(con: &Connection, today: i64) -> Res<queue::Today> {
     let backlog_done: i64 = con
         .query_row("SELECT count(DISTINCT card_id) FROM review_log WHERE overdue = 1 AND reviewed_at >= ?1", [since], |r| r.get(0))
         .map_err(err)?;
-    let mut st = con
-        .prepare("SELECT DISTINCT c.note_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND r.kind IS NULL")
-        .map_err(err)?;
-    let siblings_seen = st.query_map([since], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let siblings_seen =
+        db::rows(con, "SELECT DISTINCT c.note_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND r.kind IS NULL", [since], |r| r.get(0))
+            .map_err(err)?;
     Ok(queue::Today { introduced: introduced_today(con, today)?, backlog_done: backlog_done as usize, siblings_seen })
 }
 
@@ -228,9 +223,7 @@ fn plan_for(con: &Connection, deck_ids: Option<&[i64]>, scale: f64, day: i64) ->
 
 /// 오늘(학습일) 평가한 카드. 남은 카드 중 이 카드는 학습 단계로 다시 나오는 것이라 "다시 볼 카드"로 따로 센다 (QA T2-01 · V6-02)
 fn seen_today(con: &Connection, today: i64) -> Res<std::collections::HashSet<i64>> {
-    let mut st = con.prepare("SELECT DISTINCT card_id FROM review_log WHERE reviewed_at >= ?1 AND kind IS NULL").map_err(err)?;
-    let rows = st.query_map([today_start_ms(today)], |r| r.get(0)).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(con, "SELECT DISTINCT card_id FROM review_log WHERE reviewed_at >= ?1 AND kind IS NULL", [today_start_ms(today)], |r| r.get(0)).map_err(err)
 }
 
 // ------------------------------------------------------------------ A. 홈
@@ -283,13 +276,9 @@ pub fn home(state: State<AppState>) -> Res<Home> {
     let today = study_day(now_ms());
     // 쉬기 날짜가 지난 덱은 다시 시작한다
     let today_date = db::date_from_day(today);
-    let resumed: Vec<String> = {
-        let mut st = con
-            .prepare("SELECT d.name FROM deck_config c JOIN deck d ON d.id = c.deck_id WHERE c.paused = 1 AND c.paused_until < ?1")
+    let resumed: Vec<String> =
+        db::rows(&con, "SELECT d.name FROM deck_config c JOIN deck d ON d.id = c.deck_id WHERE c.paused = 1 AND c.paused_until < ?1", [&today_date], |r| r.get(0))
             .map_err(err)?;
-        let rows = st.query_map([&today_date], |r| r.get(0)).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
     con.execute("UPDATE deck_config SET paused = 0, paused_until = NULL WHERE paused = 1 AND paused_until < ?1", [&today_date])
         .map_err(err)?;
     let (decks, plan) = plan_for(&con, None, 1.0, today)?;
@@ -506,23 +495,21 @@ pub struct ArchivedDeck {
 #[tauri::command(async)]
 pub fn archived_decks(state: State<AppState>) -> Res<Vec<ArchivedDeck>> {
     let con = state.db.lock().map_err(err)?;
-    let mut st = con
-        .prepare(
-            "WITH RECURSIVE tops AS (
-                 SELECT d.id FROM deck d LEFT JOIN deck p ON p.id = d.parent_id
-                 WHERE d.archived_at IS NOT NULL AND (p.id IS NULL OR p.archived_at IS NULL)
-             ),
-             sub(top, id) AS (SELECT id, id FROM tops UNION ALL SELECT sub.top, d.id FROM deck d JOIN sub ON d.parent_id = sub.id)
-             SELECT d.id, d.name, d.archived_at,
-                    (SELECT count(*) FROM card c WHERE c.deck_id IN (SELECT id FROM sub WHERE sub.top = d.id)),
-                    (SELECT count(*) - 1 FROM sub WHERE sub.top = d.id),
-                    cfg.target_date
-             FROM deck d JOIN tops t ON t.id = d.id LEFT JOIN deck_config cfg ON cfg.deck_id = d.id ORDER BY d.archived_at DESC",
-        )
-        .map_err(err)?;
     let today = study_day(now_ms());
-    let rows = st
-        .query_map([], |r| {
+    db::rows(
+        &con,
+        "WITH RECURSIVE tops AS (
+             SELECT d.id FROM deck d LEFT JOIN deck p ON p.id = d.parent_id
+             WHERE d.archived_at IS NOT NULL AND (p.id IS NULL OR p.archived_at IS NULL)
+         ),
+         sub(top, id) AS (SELECT id, id FROM tops UNION ALL SELECT sub.top, d.id FROM deck d JOIN sub ON d.parent_id = sub.id)
+         SELECT d.id, d.name, d.archived_at,
+                (SELECT count(*) FROM card c WHERE c.deck_id IN (SELECT id FROM sub WHERE sub.top = d.id)),
+                (SELECT count(*) - 1 FROM sub WHERE sub.top = d.id),
+                cfg.target_date
+         FROM deck d JOIN tops t ON t.id = d.id LEFT JOIN deck_config cfg ON cfg.deck_id = d.id ORDER BY d.archived_at DESC",
+        [],
+        |r| {
             let target_date: Option<String> = r.get(5)?;
             Ok(ArchivedDeck {
                 id: r.get(0)?,
@@ -533,9 +520,9 @@ pub fn archived_decks(state: State<AppState>) -> Res<Vec<ArchivedDeck>> {
                 target_passed: target_date.as_deref().and_then(db::day_from_date).is_some_and(|t| t < today),
                 target_date,
             })
-        })
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        },
+    )
+    .map_err(err)
 }
 
 /// 덱을 잠시 쉬게 하거나 다시 학습한다. 하위 덱까지 오늘의 큐에서 빠진다.
@@ -584,10 +571,7 @@ pub fn delete_deck(state: State<AppState>, deck_id: i64) -> Res<()> {
 fn delete_deck_rows(tx: &Connection, deck_id: i64) -> Res<()> {
     // 보관한 하위 덱도 포함한다 (load_decks 는 보관한 덱을 빼므로 SQL 로 직접 훑는다)
     let sub = "WITH RECURSIVE sub(id) AS (SELECT ?1 UNION ALL SELECT d.id FROM deck d JOIN sub ON d.parent_id = sub.id)";
-    let notes: Vec<i64> = {
-        let mut st = tx.prepare(&format!("{sub} SELECT DISTINCT note_id FROM card WHERE deck_id IN (SELECT id FROM sub)")).map_err(err)?;
-        st.query_map([deck_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-    };
+    let notes: Vec<i64> = db::rows(tx, &format!("{sub} SELECT DISTINCT note_id FROM card WHERE deck_id IN (SELECT id FROM sub)"), [deck_id], |r| r.get(0)).map_err(err)?;
     tx.execute(&format!("{sub} DELETE FROM card WHERE deck_id IN (SELECT id FROM sub)"), [deck_id]).map_err(err)?;
     // 이 덱에 카드가 있던 노트 중 카드가 하나도 남지 않은 것만 지운다. 빈칸 노트의 카드가 다른 덱에 있을 수 있고,
     // 다른 곳의 카드 없는 노트(동기화가 되살리는 중인 노트 등)는 이 덱과 상관없다 (T3-07: 그 노트의 나중 수정을 모든 기기에서 지웠다)
@@ -1099,11 +1083,8 @@ pub(crate) fn save_note_fields_at(tx: &Connection, note_id: i64, values: &[Strin
     if ords.is_empty() {
         return Err("빈칸을 하나 이상 만들어 주세요.".into());
     }
-    let existing: Vec<(i64, u32, i64)> = {
-        let mut st = tx.prepare("SELECT id, template_ord, deck_id FROM card WHERE note_id = ?1").map_err(err)?;
-        let rows = st.query_map([note_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let existing: Vec<(i64, u32, i64)> =
+        db::rows(tx, "SELECT id, template_ord, deck_id FROM card WHERE note_id = ?1", [note_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
     let deck_id = existing.first().map(|e| e.2).ok_or("카드를 찾을 수 없어요.")?;
     // 새 빈칸 번호의 카드: 그 유형의 카드 종류에 정한 덱(NT76), 없으면 노트의 첫 카드 덱
     let deck_id = notetype::template_deck(tx, nt.id, 0)?.unwrap_or(deck_id);
@@ -1309,8 +1290,11 @@ pub(crate) fn card_list(
     let total: i64 = con
         .query_row(&format!("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE {filter}"), [q], |r| r.get(0))
         .map_err(err)?;
-    let mut st = con
-        .prepare(&format!(
+    let field_names = note_field_names(con)?;
+    let fronts = crate::notetype::Fronts::load(con)?;
+    let rows = db::rows(
+        con,
+        &format!(
             "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL,
                     c.buried_until, c.template_ord, nt.id, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS},
                     n.tags, nt.name, coalesce(t.name, '')
@@ -1319,12 +1303,9 @@ pub(crate) fn card_list(
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
              WHERE {filter} AND c.id > ?3
              ORDER BY c.id LIMIT ?2"
-        ))
-        .map_err(err)?;
-    let field_names = note_field_names(con)?;
-    let fronts = crate::notetype::Fronts::load(con)?;
-    let rows = st
-        .query_map(params![q, limit.unwrap_or(100), after.unwrap_or(i64::MIN)], |r| {
+        ),
+        params![q, limit.unwrap_or(100), after.unwrap_or(i64::MIN)],
+        |r| {
             let fields: String = r.get(3)?;
             let nt: i64 = r.get(9)?;
             let buried_until: Option<i64> = r.get(7)?;
@@ -1370,10 +1351,9 @@ pub(crate) fn card_list(
             };
             let sounds = [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK));
             row(question, answer, occlusion, sounds, fronts.empty(nt, r.get(8)?, &fields))
-        })
-        .map_err(err)?
-        .collect::<Result<_, _>>()
-        .map_err(err)?;
+        },
+    )
+    .map_err(err)?;
     let suspended: i64 = con.query_row(&format!("SELECT count(*) FROM card c WHERE c.deck_id IN ({ids}) AND c.state = 'suspended'"), [], |r| r.get(0)).map_err(err)?;
     Ok(CardList { rows, total, suspended })
 }
@@ -1525,10 +1505,7 @@ pub fn delete_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     let mut con = state.db.lock().map_err(err)?;
     let tx = con.transaction().map_err(err)?;
     let ids = id_list(&card_ids);
-    let notes: Vec<i64> = {
-        let mut st = tx.prepare(&format!("SELECT DISTINCT note_id FROM card WHERE id IN ({ids})")).map_err(err)?;
-        st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-    };
+    let notes: Vec<i64> = db::rows(&tx, &format!("SELECT DISTINCT note_id FROM card WHERE id IN ({ids})"), [], |r| r.get(0)).map_err(err)?;
     tx.execute(&format!("DELETE FROM card WHERE id IN ({ids})"), []).map_err(err)?;
     tx.execute(
         &format!("DELETE FROM note WHERE id IN ({}) AND NOT EXISTS (SELECT 1 FROM card WHERE note_id = note.id)", id_list(&notes)),
@@ -1540,14 +1517,11 @@ pub fn delete_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
 
 /// 노트 유형 id -> (이름, 자리별 필드 이름). 지운 자리는 "" (notetype.rs). 전에는 이름 키라 같은 이름의 가져온 유형과 앱 유형이 서로 덮였다
 pub(crate) fn note_field_names(con: &Connection) -> Res<HashMap<i64, (String, Vec<String>)>> {
-    let mut st = con.prepare("SELECT id, name, fields FROM note_type").map_err(err)?;
-    let rows = st
-        .query_map([], |r| {
-            let fields: String = r.get(2)?;
-            Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, serde_json::from_str::<Vec<String>>(&fields).unwrap_or_default())))
-        })
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(con, "SELECT id, name, fields FROM note_type", [], |r| {
+        let fields: String = r.get(2)?;
+        Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, serde_json::from_str::<Vec<String>>(&fields).unwrap_or_default())))
+    })
+    .map_err(err)
 }
 
 pub(crate) fn render_fields(
@@ -1805,14 +1779,14 @@ pub fn importance_board(state: State<AppState>, deck_id: i64) -> Res<Vec<BoardDe
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let base = path_of(deck_id, &by_id);
     let ids = descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let mut st = con
-        .prepare(&format!(
+    db::rows(
+        &con,
+        &format!(
             "SELECT d.id, count(c.id), d.importance, d.importance_source, d.importance_reason
              FROM deck d JOIN card c ON c.deck_id = d.id WHERE d.id IN ({ids}) GROUP BY d.id ORDER BY d.id"
-        ))
-        .map_err(err)?;
-    let rows = st
-        .query_map([], |r| {
+        ),
+        [],
+        |r| {
             let id: i64 = r.get(0)?;
             let full = path_of(id, &by_id);
             let rel = full.get(base.len()..).unwrap_or_default();
@@ -1825,9 +1799,9 @@ pub fn importance_board(state: State<AppState>, deck_id: i64) -> Res<Vec<BoardDe
                 source: r.get(3)?,
                 reason: r.get(4)?,
             })
-        })
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        },
+    )
+    .map_err(err)
 }
 
 // ------------------------------------------------------------------ D1. 학습 시작 전 요약
@@ -2347,13 +2321,13 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         )
         .map_err(err)
     };
-    let seen: std::collections::HashSet<i64> = {
-        let mut st = con
-            .prepare(&format!("SELECT DISTINCT r.card_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({scope}) AND r.kind IS NULL"))
-            .map_err(err)?;
-        let rows = st.query_map([since], |r| r.get(0)).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let seen: std::collections::HashSet<i64> = db::rows(
+        &con,
+        &format!("SELECT DISTINCT r.card_id FROM review_log r JOIN card c ON c.id = r.card_id WHERE r.reviewed_at >= ?1 AND c.deck_id IN ({scope}) AND r.kind IS NULL"),
+        [since],
+        |r| r.get(0),
+    )
+    .map_err(err)?;
     let studied = seen.len() as i64;
     // 접어둔 카드 복귀는 신규로 세지 않는다 (D1 · 홈과 같게, I82)
     let new_done = one("count(DISTINCT CASE WHEN r.prev_state = 'new' AND coalesce(r.from_buried, 0) = 0 THEN r.card_id END)")?;
@@ -2362,17 +2336,17 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
 
     let names = note_field_names(&con)?;
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
-    let mut st = con
-        .prepare(&format!(
+    let buried: Vec<_> = db::rows(
+        &con,
+        &format!(
             "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, s.buried_reason, c.eff_importance, c.deck_id
              FROM session_card_state s JOIN card_effective c ON c.id = s.card_id JOIN note n ON n.id = c.note_id
              JOIN note_type nt ON nt.id = n.note_type_id
              LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
              WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL ORDER BY s.buried_at"
-        ))
-        .map_err(err)?;
-    let buried = st
-        .query_map([session_id], |r| {
+        ),
+        [session_id],
+        |r| {
             let fields: String = r.get(1)?;
             let nt: i64 = r.get(2)?;
             let q: Option<String> = r.get(3)?;
@@ -2386,10 +2360,9 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
                 importance: r.get(7)?,
                 deck_path: path_of(r.get(8)?, &by_id),
             })
-        })
-        .map_err(err)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(err)?;
+        },
+    )
+    .map_err(err)?;
 
     // D5-c "내일 예정". 모든 덱, 최상위 덱별. 목표일이 가까운 덱부터
     let next = tomorrow_plan(&con, &decks, today)?;
@@ -2447,13 +2420,14 @@ pub fn resolve_buried(state: State<AppState>, session_id: i64, today: bool) -> R
 
 /// 세션에서 접은 카드 중 아직 접혀 있는 것만 (카드 목록에서 이미 푼 카드는 뺀다, QA T2-03)
 fn resolve_buried_in(con: &Connection, session_id: i64, today: bool) -> Res<Vec<i64>> {
-    let mut st = con
-        .prepare(
-            "SELECT s.card_id FROM session_card_state s JOIN card c ON c.id = s.card_id
-             WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL",
-        )
-        .map_err(err)?;
-    let ids: Vec<i64> = st.query_map([session_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let ids: Vec<i64> = db::rows(
+        con,
+        "SELECT s.card_id FROM session_card_state s JOIN card c ON c.id = s.card_id
+         WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL",
+        [session_id],
+        |r| r.get(0),
+    )
+    .map_err(err)?;
     if today {
         for id in &ids {
             con.execute("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id = ?1", [id]).map_err(err)?;
@@ -2823,19 +2797,15 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
     let target_decks = decks.iter().filter(|d| d.target_day.is_some()).count();
 
     // 날짜별로 목표일 덱들의 계획을 합친다
-    let rows: Vec<(String, i64, i64)> = {
-        let mut st = con
-            .prepare(
-                "SELECT study_day, deck_id, planned_review + planned_new FROM daily_plan
-                 WHERE has_target = 1 AND planned_review + planned_new > 0 AND study_day >= ?1 AND study_day < ?2
-                 ORDER BY study_day",
-            )
-            .map_err(err)?;
-        st.query_map(params![db::date_from_day(today - 14), db::date_from_day(today)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(err)?
-            .collect::<Result<_, _>>()
-            .map_err(err)?
-    };
+    let rows: Vec<(String, i64, i64)> = db::rows(
+        &con,
+        "SELECT study_day, deck_id, planned_review + planned_new FROM daily_plan
+         WHERE has_target = 1 AND planned_review + planned_new > 0 AND study_day >= ?1 AND study_day < ?2
+         ORDER BY study_day",
+        params![db::date_from_day(today - 14), db::date_from_day(today)],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .map_err(err)?;
     let mut plan_days: Vec<PlanDay> = vec![];
     for (day, deck_id, planned) in rows {
         let d = db::day_from_date(&day).ok_or("날짜 형식이 올바르지 않아요.")?;
@@ -2862,17 +2832,16 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
     }
     let first_session_day: Option<i64> =
         con.query_row("SELECT min(started_at) FROM study_session", [], |r| r.get(0)).map_err(err)?;
-    let mut sessions: Vec<bool> = {
-        let mut st = con
-            .prepare(
-                "SELECT s.end_reason = 'completed' FROM study_session s
-                 WHERE s.ended_at IS NOT NULL AND s.mode IS NULL
-                   AND EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id AND x.buried_at IS NOT NULL)
-                 ORDER BY s.started_at DESC LIMIT 20",
-            )
-            .map_err(err)?;
-        st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-    };
+    let mut sessions: Vec<bool> = db::rows(
+        &con,
+        "SELECT s.end_reason = 'completed' FROM study_session s
+         WHERE s.ended_at IS NOT NULL AND s.mode IS NULL
+           AND EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id AND x.buried_at IS NOT NULL)
+         ORDER BY s.started_at DESC LIMIT 20",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(err)?;
     sessions.reverse();
     let (bury_sessions, bury_completed): (i64, i64) = con
         .query_row(
