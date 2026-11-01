@@ -424,7 +424,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
                 // 앞뒤 둘 다: 노트 하나에서 카드 두 장 (앞 → 뒤, 뒤 → 앞)
                 let reversed = ["reversed", "Basic (and reversed card)"].iter().any(|t| note_type.eq_ignore_ascii_case(t));
                 if !cloze && !reversed && !note_type.eq_ignore_ascii_case("basic") {
-                    issues.push(at(i, "info", "note_type", format!("노트타입 '{note_type}'의 카드는 질문과 답변으로 가져왔어요")));
+                    issues.push(at(i, "info", "note_type", format!("노트 유형 '{note_type}'의 카드는 질문과 답변으로 가져왔어요")));
                 }
                 (front, back, if cloze { "cloze" } else if reversed { "reversed" } else { "basic" }, vec![])
             }
@@ -1528,7 +1528,7 @@ fn run_import_selected(
         nt_map.insert(*aid, id);
         // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
         if crate::recall::unrecognized(&t.name, &t.fields) {
-            result.issues.push(issue("info", "recall_type", format!("노트타입 '{}'은 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name)));
+            result.issues.push(issue("info", "recall_type", format!("노트 유형 '{}'은 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name)));
         }
     }
 
@@ -1915,7 +1915,7 @@ fn run_import_selected(
             "warning",
             "degraded_template",
             format!(
-                "노트타입 '{}'이 {}{} 써요. {what} ({}장)",
+                "노트 유형 '{}'이 {}{} 써요. {what} ({}장)",
                 d.note_types.join("', '"),
                 d.feature,
                 if crate::quality::has_batchim(&d.feature) { "을" } else { "를" },

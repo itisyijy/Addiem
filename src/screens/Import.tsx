@@ -322,8 +322,8 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
       label: "노트 유형",
       value: all
         ? info.note_types_ok === info.note_types
-          ? `${n(info.note_types)}종 모두 지원 (필드 치환 템플릿)`
-          : `${n(info.note_types)}종 중 ${n(info.note_types_ok)}종 지원 (필드 치환 템플릿)`
+          ? `${n(info.note_types)}종 모두 지원 (필드 치환 카드 모양)`
+          : `${n(info.note_types)}종 중 ${n(info.note_types_ok)}종 지원 (필드 치환 카드 모양)`
         : none
           ? "고른 덱 없음"
           : typesOk === types.length
@@ -339,11 +339,11 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
           ? []
           : [{ icon: "info" as IconName, tone: "c-secondary", label: "읽어주기", value: `이 기기에 ${lang} 음성이 없어 ${n(s.cards)}장은 소리 없이 보여요` }];
       return s.cards === 0
-        ? [{ icon: "check" as IconName, tone: "c-success", label: `${d.feature}${eul(d.feature)} 쓰는 템플릿`, value: "고른 덱에는 없어요" }]
+        ? [{ icon: "check" as IconName, tone: "c-success", label: `${d.feature}${eul(d.feature)} 쓰는 카드 모양`, value: "고른 덱에는 없어요" }]
         : [{
             icon: "alert" as IconName,
             tone: "c-warn",
-            label: `${d.feature}${eul(d.feature)} 쓰는 템플릿`,
+            label: `${d.feature}${eul(d.feature)} 쓰는 카드 모양`,
             value: `${n(s.types)}종 · ${n(s.cards)}장은 ${d.feature === "빈칸 입력칸" ? "써 넣은 답을 본문 전체와 비교해요" : "일부가 다르게 보여요"}`,
           }];
     }),
@@ -1475,7 +1475,7 @@ export function ImportResultScreen({ result: r }: { result: ImportResult }) {
             <div className={`stat ${r.check_cards > 0 ? "stat--warn" : ""}`}>
               <p className="t-body-s c-secondary">확인이 필요한 카드</p>
               <p className="t-title-l">{n(r.check_cards)}</p>
-              <p className="t-caption c-tertiary">{r.check_cards > 0 ? "템플릿 기능" : "없음"}</p>
+              <p className="t-caption c-tertiary">{r.check_cards > 0 ? "카드 모양 기능" : "없음"}</p>
             </div>
             <StatTile label="지원하지 않은 항목" value={`${n(unsupported)}종`} sub={unsupported > 0 ? "아래에서 확인" : "없음"} />
           </>
