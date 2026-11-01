@@ -1135,8 +1135,6 @@ pub struct CardRow {
     importance: i64,
     /// 카드에 직접 정한 중요도인가 (C2 "개별")
     own_importance: bool,
-    due_at: Option<i64>,
-    lapses: i64,
     buried: bool,
     /// 접어둔 카드가 돌아오는 학습일 "2026-10-19" (C2 상태 배지. 덱 상세 hard_next 와 같은 계산)
     buried_until: Option<String>,
@@ -1313,7 +1311,7 @@ pub(crate) fn card_list(
         .map_err(err)?;
     let mut st = con
         .prepare(&format!(
-            "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL, c.due_at, c.lapses,
+            "SELECT c.id, c.note_id, c.deck_id, n.fields, c.state, c.eff_importance, c.importance IS NOT NULL,
                     c.buried_until, c.template_ord, nt.id, t.qfmt, t.afmt, n.exam_hits, n.exam_names, {IO_POS},
                     n.tags, nt.name, coalesce(t.name, '')
              FROM card_effective c JOIN note n ON n.id = c.note_id
@@ -1328,8 +1326,8 @@ pub(crate) fn card_list(
     let rows = st
         .query_map(params![q, limit.unwrap_or(100), after.unwrap_or(i64::MIN)], |r| {
             let fields: String = r.get(3)?;
-            let nt: i64 = r.get(11)?;
-            let buried_until: Option<i64> = r.get(9)?;
+            let nt: i64 = r.get(9)?;
+            let buried_until: Option<i64> = r.get(7)?;
             let row = |question, answer, occlusion, sounds, front_empty| -> rusqlite::Result<CardRow> {
                 Ok(CardRow {
                     id: r.get(0)?,
@@ -1340,11 +1338,9 @@ pub(crate) fn card_list(
                     state: r.get(4)?,
                     importance: r.get(5)?,
                     own_importance: r.get(6)?,
-                    due_at: r.get(7)?,
-                    lapses: r.get(8)?,
                     buried: buried_until.is_some(),
                     buried_until: buried_until.map(|ms| db::date_from_day(study_day(ms))),
-                    exam: crate::exam::ExamState::of(r.get(1)?, r.get(14)?, r.get(15)?),
+                    exam: crate::exam::ExamState::of(r.get(1)?, r.get(12)?, r.get(13)?),
                     occlusion,
                     sounds,
                     front_empty,
@@ -1354,13 +1350,13 @@ pub(crate) fn card_list(
             if bare {
                 return row(String::new(), String::new(), None, [false; 2], false);
             }
-            let qfmt: Option<String> = r.get(12)?;
-            let afmt: Option<String> = r.get(13)?;
+            let qfmt: Option<String> = r.get(10)?;
+            let afmt: Option<String> = r.get(11)?;
             // 목록 칸은 글자 한 줄: 특수 필드({{Tags}} …)는 학습 화면과 같은 값으로, 힌트 상자({{hint:}})는 뺀다 (펼치기 이름 · 내용이 질문에 섞인다, NT10)
-            let special = render::special_fields(&r.get::<_, String>(18)?, &path_of(r.get(2)?, &by_id), &r.get::<_, String>(19)?, &r.get::<_, String>(20)?);
-            let rendered = render_fields_with(&field_names, nt, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(10)?, &special);
+            let special = render::special_fields(&r.get::<_, String>(16)?, &path_of(r.get(2)?, &by_id), &r.get::<_, String>(17)?, &r.get::<_, String>(18)?);
+            let rendered = render_fields_with(&field_names, nt, &fields, qfmt.as_deref(), afmt.as_deref(), r.get(8)?, &special);
             let rendered = render::Rendered { front: render::drop_hints(&rendered.front), back: render::drop_hints(&rendered.back) };
-            let occlusion = io_pos(qfmt.as_deref(), r.get(10)?, r.get(16)?, r.get(17)?);
+            let occlusion = io_pos(qfmt.as_deref(), r.get(8)?, r.get(14)?, r.get(15)?);
             // 그림 가리기 답은 칸 이름(질문 칸에 보인다)이라 답변 칸에는 덧붙임(Back Extra, 4번째 필드)만
             let answer = match occlusion {
                 Some(_) => serde_json::from_str::<Vec<String>>(&fields).ok().and_then(|v| v.get(3).map(|x| render::strip_tags(x))).unwrap_or_default(),
@@ -1373,7 +1369,7 @@ pub(crate) fn card_list(
                 None => table_brief(&rendered.front, &rendered.back).unwrap_or((render::strip_tags(&rendered.front), answer)),
             };
             let sounds = [rendered.front.as_str(), answer_part(&rendered.back)].map(|h| h.contains(render::SOUND_MARK));
-            row(question, answer, occlusion, sounds, fronts.empty(nt, r.get(10)?, &fields))
+            row(question, answer, occlusion, sounds, fronts.empty(nt, r.get(8)?, &fields))
         })
         .map_err(err)?
         .collect::<Result<_, _>>()
@@ -2624,7 +2620,6 @@ fn media_data_url(data_dir: &std::path::Path, name: &str) -> Res<String> {
 pub struct AppInfo {
     /// 학습 데이터를 열지 못한 이유 (S1-6)
     startup_error: Option<String>,
-    data_dir: String,
     backup_dir: String,
     /// 가장 최근 백업 파일의 시각 (ms)
     last_backup: Option<i64>,
@@ -2765,7 +2760,6 @@ pub fn app_info(state: State<AppState>) -> Res<AppInfo> {
     let db_path = db::file(&state.data_dir);
     Ok(AppInfo {
         startup_error: state.startup_error.lock().map_err(err)?.clone(),
-        data_dir: state.data_dir.display().to_string(),
         backup_dir: backup_dir(&state.data_dir).display().to_string(),
         last_backup: last_backup(&backup_dir(&state.data_dir)),
         cutoff_hour: db::cutoff_hour(),
@@ -2797,8 +2791,6 @@ pub struct MvpMetrics {
     plan_days: Vec<PlanDay>,
     /// ① 일별 완료율의 중앙값. 0~1. 계획이 있던 날만으로 계산한다
     plan_median: Option<f64>,
-    /// ① 판정 전 남은 날 계산용: 목표일 덱의 계획이 처음 남은 날
-    first_plan_day: Option<String>,
     /// ② 판정 전 남은 날 계산용: 이 앱에서 처음 학습한 날
     first_session_day: Option<String>,
     /// ② 보류가 생긴 세션들 (오래된 것부터 최근 20개). true = 끝까지 마침
@@ -2868,10 +2860,6 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
             _ => plan_days.push(PlanDay { day, planned, done }),
         }
     }
-    let first_plan_day: Option<String> = con
-        .query_row("SELECT min(study_day) FROM daily_plan WHERE has_target = 1 AND planned_review + planned_new > 0", [], |r| r.get(0))
-        .map_err(err)?;
-
     let first_session_day: Option<i64> =
         con.query_row("SELECT min(started_at) FROM study_session", [], |r| r.get(0)).map_err(err)?;
     let mut sessions: Vec<bool> = {
@@ -2900,7 +2888,6 @@ pub fn mvp_metrics(state: State<AppState>) -> Res<MvpMetrics> {
         target_decks,
         plan_median: median(plan_days.iter().map(|p| plan_rate(p.planned, p.done)).collect()),
         plan_days,
-        first_plan_day,
         first_session_day: first_session_day.map(|ms| db::date_from_day(study_day(ms))),
         sessions,
         bury_rate: (bury_sessions > 0).then(|| bury_completed as f64 / bury_sessions as f64),
