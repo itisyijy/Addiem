@@ -70,6 +70,9 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("deck", "weak", "INTEGER NOT NULL DEFAULT 0"),
         ("deck", "weak_dismissed_until", "TEXT"),
         ("deck", "weak_recovery_shown", "INTEGER NOT NULL DEFAULT 0"),
+        // 약함으로 확정한 시각 (ms). "요즘 괜찮아요"는 이 뒤의 평가만 본다 (QA T3-23). NULL 이면 최근 14일 그대로 (옛 앱 · 옛 기록).
+        // 동기화 표의 NULL 허용 열이라 옛 앱은 모르는 열로 건너뛴다
+        ("deck", "weak_since", "INTEGER"),
         // G1 [그대로 두기]: 이 시각까지 점검 목록에 다시 올리지 않는다
         ("card", "quality_hidden_until", "INTEGER"),
         // H1 "실제 속도에 맞춰 다시 나누기"를 끄면 정해 둔 하루 몫. NULL 이면 매일 다시 나눈다

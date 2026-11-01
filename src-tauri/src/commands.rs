@@ -700,14 +700,18 @@ const WEAK_RATIO_OF_AVG: f64 = 1.5;
 const WEAK_ABS_RATE: f64 = 0.25;
 const WEAK_DAYS: i64 = 14;
 
-/// 덱들(하위 덱 포함)의 최근 14일 복습 수와 Again 수
-fn again_counts(con: &Connection, ids: &str, today: i64) -> Res<(i64, i64)> {
+/// 덱들(하위 덱 포함)의 since(ms) 뒤 복습 수와 Again 수. 보통은 최근 14일 (window)
+fn window(today: i64) -> i64 {
+    today_start_ms(today - WEAK_DAYS + 1)
+}
+
+fn again_counts(con: &Connection, ids: &str, since: i64) -> Res<(i64, i64)> {
     con.query_row(
         &format!(
             "SELECT count(*), coalesce(sum(r.rating = 1), 0) FROM review_log r JOIN card c ON c.id = r.card_id
              WHERE c.deck_id IN ({ids}) AND r.reviewed_at >= ?1 AND r.kind IS NULL"
         ),
-        [today_start_ms(today - WEAK_DAYS + 1)],
+        [since],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .map_err(err)
@@ -777,7 +781,7 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
     let write_src = write_mode_source(con, deck_id)?;
 
     // C1-w: 덱 평균 (이 덱 전체)
-    let (all_reviews, all_again) = again_counts(con, &id_list, today)?;
+    let (all_reviews, all_again) = again_counts(con, &id_list, window(today))?;
     let again_avg = (all_reviews > 0).then(|| all_again as f64 / all_reviews as f64);
     let today_date = db::date_from_day(today);
 
@@ -795,14 +799,14 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
         let sub_ids = sub.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let cards: i64 = con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({sub_ids})"), [], |r| r.get(0)).map_err(err)?;
         let unseen = crate::notetype::new_left(con, &sub_ids)?;
-        let (importance, importance_source, weak, dismissed, recovery_shown): (i64, String, bool, Option<String>, bool) = con
+        let (importance, importance_source, weak, dismissed, recovery_shown, weak_since): (i64, String, bool, Option<String>, bool, Option<i64>) = con
             .query_row(
-                "SELECT importance, importance_source, weak, weak_dismissed_until, weak_recovery_shown FROM deck WHERE id = ?1",
+                "SELECT importance, importance_source, weak, weak_dismissed_until, weak_recovery_shown, weak_since FROM deck WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .map_err(err)?;
-        let (reviews14, again14) = again_counts(con, &sub_ids, today)?;
+        let (reviews14, again14) = again_counts(con, &sub_ids, window(today))?;
         let again_rate = (reviews14 > 0).then(|| again14 as f64 / reviews14 as f64);
         let lapsed: i64 = con
             .query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({sub_ids}) AND lapses >= 3"), [], |r| r.get(0))
@@ -812,7 +816,14 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
             _ => false,
         };
         let weak_suggested = !weak && reviews14 >= WEAK_MIN_REVIEWS && high && dismissed.is_none_or(|u| u < today_date);
-        let weak_recovered = weak && !recovery_shown && reviews14 >= WEAK_MIN_REVIEWS && matches!((again_rate, again_avg), (Some(r), Some(a)) if r < a);
+        // 확정한 뒤의 평가만 본다. 확정 전 기록으로 바로 "요즘 괜찮아요"가 뜨지 않게 (QA T3-23)
+        let weak_recovered = weak && !recovery_shown && {
+            let (n, again) = match weak_since.filter(|s| *s > window(today)) {
+                Some(s) => again_counts(con, &sub_ids, s)?,
+                None => (reviews14, again14),
+            };
+            n >= WEAK_MIN_REVIEWS && again_avg.is_some_and(|a| (again as f64 / n as f64) < a)
+        };
         let levels: i64 = con
             .query_row(
                 &format!("SELECT count(DISTINCT d.importance) FROM deck d WHERE d.id IN ({sub_ids}) AND EXISTS (SELECT 1 FROM card c WHERE c.deck_id = d.id)"),
@@ -1374,8 +1385,11 @@ pub fn set_cards_importance(state: State<AppState>, card_ids: Vec<i64>, level: O
 #[tauri::command]
 pub fn set_deck_weak(state: State<AppState>, deck_id: i64, weak: bool) -> Res<()> {
     let con = state.db.lock().map_err(err)?;
-    con.execute("UPDATE deck SET weak = ?2, weak_recovery_shown = 0, updated_at = ?3 WHERE id = ?1", params![deck_id, weak, now_ms()])
-        .map_err(err)?;
+    con.execute(
+        "UPDATE deck SET weak = ?2, weak_recovery_shown = 0, weak_since = CASE WHEN ?2 THEN ?3 END, updated_at = ?3 WHERE id = ?1",
+        params![deck_id, weak, now_ms()],
+    )
+    .map_err(err)?;
     Ok(())
 }
 
@@ -3939,6 +3953,33 @@ mod tests {
         con.execute("UPDATE deck_config SET mix_since = 5", []).unwrap();
         assert_eq!(save("2030-01-10"), Some(5));
         assert!(save("2030-01-12").is_some_and(|t| t > 5));
+    }
+
+    #[test]
+    fn weak_recovery_counts_only_reviews_after_marking() {
+        // QA T3-23: 약함으로 확정한 직후에는 확정 전 기록으로 "요즘 괜찮아요"를 띄우지 않는다. 확정 뒤 20번 이상 보고 평균 아래면 띄운다
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'P', 0, 0)", []).unwrap();
+        con.execute("INSERT INTO deck (id, name, parent_id, created_at, updated_at) VALUES (2, 'A', 1, 0, 0), (3, 'B', 1, 0, 0)", []).unwrap();
+        for deck_id in [2, 3] {
+            let card = super::NewCard { deck_id, kind: "basic".into(), front: format!("q{deck_id}"), back: "a".into(), importance: None };
+            super::insert_note(&con, &card, "", None).unwrap();
+        }
+        let card = |deck: i64| -> i64 { con.query_row("SELECT id FROM card WHERE deck_id = ?1", [deck], |r| r.get(0)).unwrap() };
+        let now = now_ms();
+        let log = |deck: i64, at: i64, rating: i64, k: usize| {
+            for _ in 0..k {
+                con.execute("INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_state) VALUES (?1, ?2, ?3, 1000, 'review')", params![card(deck), at, rating]).unwrap();
+            }
+        };
+        // 덱 평균을 올리는 B (모두 Again), A 는 확정 전에 잘 본 20번
+        log(3, now - 3_600_000, 1, 20);
+        log(2, now - 3_600_000, 3, 20);
+        con.execute("UPDATE deck SET weak = 1, weak_since = ?1 WHERE id = 2", [now - 1000]).unwrap();
+        let recovered = |con: &Connection| super::deck_detail_in(con, 1).unwrap().tree.iter().find(|s| s.id == 2).unwrap().weak_recovered;
+        assert!(!recovered(&con), "확정 전 기록만 있다");
+        log(2, now, 3, 20);
+        assert!(recovered(&con));
     }
 
     #[test]
