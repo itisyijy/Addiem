@@ -1,6 +1,6 @@
 // M 그림 가리기. 칸은 Anki Image Occlusion 형식 그대로 백엔드(occlusion.rs)가 읽고 쓴다. 좌표는 그림 대비 비율 0–1
 import { invoke } from "@tauri-apps/api/core";
-import { baseName, savedImage } from "./cardHtml";
+import { baseName, savedImage, saveImage } from "./cardHtml";
 
 export type Shape = {
   /** cN. 카드 번호이자 칸의 안정된 id. 같은 번호 = 묶음. 0 은 Anki 글자 칸 (카드 없음) */
@@ -67,13 +67,7 @@ const refused = (name: string) => /\.(gif|svg|heic|heif)$/i.test(name);
 /** 원본 그대로 미디어 폴더에 복사한다 (save_media) */
 export async function storeImage(file: File): Promise<Picture> {
   if (refused(file.name) || /gif|svg|hei[cf]/i.test(file.type) || !file.type.startsWith("image/")) throw new Error(REFUSED);
-  const url = await new Promise<string>((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
-  });
-  const name = await invoke<string>("save_media", { name: file.name || "image.png", dataBase64: url.split(",")[1] ?? "" });
+  const { name, url } = await saveImage(file, file.name || "image.png");
   return { name, url, fileName: file.name || name, ...(await naturalSize(url)) };
 }
 

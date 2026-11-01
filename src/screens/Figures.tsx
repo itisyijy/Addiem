@@ -4,9 +4,8 @@
 // 만든 카드는 그 쪽 · 영역 구간에 이어진다 (IT9). 흐름(useFlows) · 메뉴 · 오른쪽 목록 · 차례로 만들기(IT8)는 PDF 도 같이 쓴다
 import "../styles/figures.css";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { api, errorText, qualityApi } from "../api";
-import { sanitize } from "../cardHtml";
+import { sanitize, saveImage } from "../cardHtml";
 import { Badge, Button, Checkbox, Icon, Input, Segment as SegmentControl, type IconName } from "../ui";
 import { n, useKey, useOverlayScope } from "../nav";
 import { useToast } from "../toast";
@@ -51,9 +50,6 @@ const tableText = (rows: Cell[][]) =>
     .join("\n");
 const imageLabel = (img: SlideImage) => img.descr.trim() || img.name.trim() || `그림 ${img.index + 1}`;
 
-/** data URL 그림(PDF 에서 자른 것)을 미디어 폴더에. 파일 이름은 save_media 가 내용으로 정한다 */
-export const storeDataUrl = (url: string, name = "figure.png") => invoke<string>("save_media", { name, dataBase64: url.split(",")[1] ?? "" });
-
 // ---------------------------------------------------------------- 썸네일 (원본 바이트 → Blob URL)
 
 // 자료마다 한 번만 받는다. 카드를 만들 때 같은 Blob 을 미디어 폴더에 넣는다 (CSP 가 blob: fetch 를 막아 Blob 을 들고 있는다)
@@ -91,13 +87,7 @@ function useThumb(materialId: number, page: number, img: SlideImage) {
 /** 카드를 만들 때만 미디어 폴더에 넣는다. 파일 이름은 save_media 가 내용으로 정한다 (자료 안 이름은 믿지 않는다) */
 async function storeImage(materialId: number, page: number, img: SlideImage) {
   const { blob } = await thumb(materialId, page, img);
-  const data = await new Promise<string>((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(blob);
-  });
-  return storeDataUrl(data, `slide.${img.ext}`);
+  return (await saveImage(blob, `slide.${img.ext}`)).name;
 }
 
 // ---------------------------------------------------------------- 흐름 (PPTX · PDF 공통)

@@ -4,13 +4,14 @@
 // 스캔본(글자 없음)도 쪽을 그려 끌어서 잡은 영역으로 그림 카드만 만든다 (IT10)
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { errorText } from "../api";
+import { storeDataUrl } from "../cardHtml";
 import { n, useKey, useOverlayScope } from "../nav";
 import { useToast } from "../toast";
 import { Button, Icon } from "../ui";
 import { cropPage, cropSize, pageLayout } from "../pdf";
 import { boxOf, captionOf, figuresOf, gridIn, rectOf, suggestTables, type Layout } from "../figures";
 import { PdfPage } from "./Sources";
-import { cellsOf, FigList, FigMenu, sameRect, storeDataUrl, useBulk, useFlows, type FigRow, type FigSource, type MenuEntry } from "./Figures";
+import { cellsOf, FigList, FigMenu, sameRect, useBulk, useFlows, type FigRow, type FigSource, type MenuEntry } from "./Figures";
 import { isRegion, sourceApi, type Material, type Rect, type Segment } from "../sourceApi";
 
 // ---------------------------------------------------------------- 문서 전체 읽기 · 찾은 것
