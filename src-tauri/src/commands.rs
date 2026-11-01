@@ -1305,6 +1305,7 @@ pub(crate) fn card_list(
         .map_err(err)?;
     let field_names = note_field_names(con)?;
     let fronts = crate::notetype::Fronts::load(con)?;
+    let back_at = today_start_ms(study_day(now_ms()) + 1);
     let rows = db::rows(
         con,
         &format!(
@@ -1332,7 +1333,7 @@ pub(crate) fn card_list(
                     state: r.get(4)?,
                     importance: r.get(5)?,
                     own_importance: r.get(6)?,
-                    buried: buried_until.is_some(),
+                    buried: buried_until.is_some_and(|ms| ms >= back_at),
                     buried_until: buried_until.map(|ms| db::date_from_day(study_day(ms))),
                     exam: crate::exam::ExamState::of(r.get(1)?, r.get(12)?, r.get(13)?),
                     occlusion,
@@ -3973,6 +3974,10 @@ mod tests {
         let deck = super::deck_detail_in(&con, con.query_row("SELECT deck_id FROM card WHERE id = ?1", [ids[0]], |r| r.get(0)).unwrap()).unwrap();
         assert_eq!((home.done_today, deck.done_today), (1, 1));
         assert_eq!((home.buried, deck.hard), (1, 1));
+        // 카드 목록의 "접어둠" 표시도 아직 접힌 카드에만
+        let list = super::card_list(&con, None, "", None, None, None, None, None, None, true).unwrap();
+        let folded: Vec<i64> = list.rows.iter().filter(|r| r.buried).map(|r| r.id).collect();
+        assert_eq!(folded, vec![ids[2]]);
     }
 
     #[test]
