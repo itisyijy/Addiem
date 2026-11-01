@@ -546,22 +546,31 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
     };
     // 만들어질 덱을 센다. 읽기만 한다
     let mut new_paths: HashSet<Vec<String>> = HashSet::new();
-    let mut roots: Vec<String> = vec![];
+    // (이미 있는 덱 id, 이름). 이미 있으면 그 덱의 이름, 새 덱끼리는 가져오기처럼 대소문자를 가리지 않고 하나로 (QA V2-01)
+    let mut roots: Vec<(Option<i64>, String)> = vec![];
     let mut known = HashMap::new();
     let mut existing = HashSet::new();
     for c in &cards {
         let path = relative_path(&c.deck, target.as_ref().map(|t| t.1.as_str()));
-        let root_name = target.as_ref().map(|t| t.1.clone()).or_else(|| path.first().cloned()).unwrap_or_default();
+        let mut root = match &target {
+            Some((id, name)) => (Some(*id), name.clone()),
+            None => (None, path.first().cloned().unwrap_or_default()),
+        };
         let mut parent = target.as_ref().map(|t| t.0);
         let mut missing = false;
         for d in 1..=path.len() {
             if !missing {
-                let found: Option<i64> = con
-                    .query_row("SELECT id FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![parent, path[d - 1]], |r| r.get(0))
+                let found: Option<(i64, String)> = con
+                    .query_row("SELECT id, name FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![parent, path[d - 1]], |r| Ok((r.get(0)?, r.get(1)?)))
                     .optional()
                     .map_err(err)?;
                 match found {
-                    Some(id) => parent = Some(id),
+                    Some((id, name)) => {
+                        if parent.is_none() {
+                            root = (Some(id), name);
+                        }
+                        parent = Some(id)
+                    }
                     None => missing = true,
                 }
             }
@@ -576,8 +585,8 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
             existing.insert(c.index);
             continue;
         }
-        if !roots.contains(&root_name) {
-            roots.push(root_name);
+        if !roots.iter().any(|r| r.0 == root.0 && (r.0.is_some() || r.1.eq_ignore_ascii_case(&root.1))) {
+            roots.push(root);
         }
     }
     let issues = drop_existing(issues, &existing);
@@ -589,7 +598,7 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
         // 참고(info)는 경고에 세지 않는다. 결과 화면과 같은 수 (T4-07)
         warnings: issues.iter().filter(|i| i.severity == "warning").count(),
         issues,
-        roots,
+        roots: roots.into_iter().map(|r| r.1).collect(),
         new_decks: new_paths.len(),
         error,
     })
@@ -2565,6 +2574,9 @@ mod tests {
         assert_eq!((p.ok, p.existing), (1, 1));
         assert!(p.issues.is_empty(), "{:?}", p.issues.iter().map(|i| &i.detail).collect::<Vec<_>>());
         assert_eq!(p.roots, ["B"]);
+        // V2-01: 대소문자만 다른 이름은 이미 있는 덱 이름으로 한 번. 새 덱끼리도 한 번 (가져오기도 한 덱으로 합친다)
+        let p = json_preview(&con, r#"[{"front": "x", "back": "1", "deck": "b"}, {"front": "y", "back": "1", "deck": "B"}, {"front": "z", "back": "1", "deck": "new"}, {"front": "w", "back": "1", "deck": "NEW"}]"#, None).unwrap();
+        assert_eq!(p.roots, ["B", "new"]);
         let r = run_import_json(&mut con, again, "f".into(), None).unwrap();
         assert_eq!(r.issues.iter().map(|i| i.kind).collect::<Vec<_>>(), ["existing"]);
         assert_eq!((r.notes, r.decks, r.roots.len()), (1, 1, 1));
