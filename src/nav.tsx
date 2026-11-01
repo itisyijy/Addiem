@@ -156,7 +156,7 @@ export function useKey(
       // 마우스로 누른 버튼 · 체크박스(:focus-visible 아님)에 남은 초점은 화면 키를 가져가지 않는다. 체크박스는 Enter 로 바뀌지 않으니 Enter 는 늘 화면 것 (QA T2-11 · V3-08 · V6-07).
       // 글자 · 숫자 단축키는 버튼에 초점이 있어도 동작한다 (마우스로 [답 보기]를 누른 뒤에도 1–4 가 되게)
       const control = "button, a[href], select, summary, input[type=checkbox], [role=button], [role=menuitem], [role=option], [role=checkbox], [role=switch], [role=radio], [role=tab]";
-      const box = e.key === "Enter" && t?.matches("input[type=checkbox]");
+      const box = e.key === "Enter" && t?.matches("input[type=checkbox], [role=checkbox]"); // 체크박스 역할 버튼(내보내기 열 칩)도 같다 (G2-04)
       if ((e.key === "Enter" || e.key === " ") && !box && t && t === keyFocus && t.closest(control)) return;
       let index: number;
       if (spec.startsWith("@")) {

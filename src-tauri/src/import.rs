@@ -105,7 +105,7 @@ fn deck_name_level(name: &str) -> Option<(i64, String)> {
     const CORE: [&str; 8] = ["요약", "핵심", "정리", "기출", "필수", "summary", "core", "essential"];
     const SUPP: [&str; 7] = ["부록", "참고", "심화", "보충", "appendix", "extra", "advanced"];
     let lower = name.to_lowercase();
-    let reason = |k: &str| format!("하위 덱 이름에 '{k}'{} 있어요", if crate::quality::has_batchim(k) { "이" } else { "가" });
+    let reason = |k: &str| format!("하위 덱 이름에 '{k}'{} 있어요", if crate::table::final_consonant(k) { "이" } else { "가" });
     let core = CORE.iter().find(|k| lower.contains(*k));
     let supp = SUPP.iter().find(|k| lower.contains(*k));
     match (core, supp) {
@@ -126,7 +126,7 @@ struct Decks {
 }
 
 impl Decks {
-    /// 경로대로 찾거나 만든다. 같은 이름이 있으면 그 덱에 합친다 (Anki 와 같다)
+    /// 경로대로 찾거나 만든다. 같은 이름이 있으면 (덱 이름 규칙처럼 대소문자만 달라도) 그 덱에 합친다 (Anki 와 같다)
     fn ensure(&mut self, con: &Connection, parent: Option<i64>, parts: &[String], now: i64) -> Res<i64> {
         let mut cur = parent;
         for name in parts {
@@ -135,7 +135,7 @@ impl Decks {
                 Some(id) => *id,
                 None => {
                     let found: Option<(i64, Option<i64>)> = con
-                        .query_row("SELECT id, archived_at FROM deck WHERE parent_id IS ?1 AND name = ?2", params![cur, name], |r| {
+                        .query_row("SELECT id, archived_at FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![cur, name], |r| {
                             Ok((r.get(0)?, r.get(1)?))
                         })
                         .optional()
@@ -262,7 +262,12 @@ struct JsonCard {
 }
 
 fn split_path(p: &str) -> Vec<String> {
-    p.split("::").map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+    p.split("::").map(import_deck_name).filter(|s| !s.is_empty()).collect()
+}
+
+/// 가져온 덱 이름 한 단계: 덱 이름 규칙(clean_deck_name)을 따르고, 100자를 넘으면 거절하지 않고 자른다 (G3-01)
+pub(super) fn import_deck_name(s: &str) -> String {
+    crate::commands::clean_deck_name(s).chars().take(100).collect::<String>().trim_end().to_string()
 }
 
 fn has_cloze(s: &str) -> bool {
@@ -470,7 +475,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
 /// 대상 덱이 있으면 경로를 그 아래로 옮긴다. 경로 첫 단계가 대상 덱 이름이면 겹치지 않게 뗀다
 fn relative_path(path: &[String], target_name: Option<&str>) -> Vec<String> {
     match target_name {
-        Some(t) if path.first().is_some_and(|p| p == t) => path[1..].to_vec(),
+        Some(t) if path.first().is_some_and(|p| p.to_lowercase() == t.to_lowercase()) => path[1..].to_vec(),
         Some(_) => path.to_vec(),
         None => path.to_vec(),
     }
@@ -552,7 +557,7 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
         for d in 1..=path.len() {
             if !missing {
                 let found: Option<i64> = con
-                    .query_row("SELECT id FROM deck WHERE parent_id IS ?1 AND name = ?2", params![parent, path[d - 1]], |r| r.get(0))
+                    .query_row("SELECT id FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![parent, path[d - 1]], |r| r.get(0))
                     .optional()
                     .map_err(err)?;
                 match found {
@@ -1195,7 +1200,7 @@ pub struct DeckStat {
 
 /// 우리 덱 경로로 옮길 때의 이름 (앞뒤 공백을 떼고 빈 이름은 뺀다). 가져오기와 덱 고르기 트리가 같은 경로를 쓴다
 fn deck_parts(d: &ADeck) -> Vec<String> {
-    let parts: Vec<String> = d.path.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<String> = d.path.iter().map(|s| import_deck_name(s)).filter(|s| !s.is_empty()).collect();
     if parts.is_empty() { vec![DEFAULT_DECK.into()] } else { parts }
 }
 
@@ -1528,7 +1533,7 @@ fn run_import_selected(
         nt_map.insert(*aid, id);
         // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
         if crate::recall::unrecognized(&t.name, &t.fields) {
-            result.issues.push(issue("info", "recall_type", format!("노트 유형 '{}'은 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name)));
+            result.issues.push(issue("info", "recall_type", format!("노트 유형 '{}'{} 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name, if crate::table::final_consonant(&t.name) { "은" } else { "는" })));
         }
     }
 
@@ -1915,10 +1920,11 @@ fn run_import_selected(
             "warning",
             "degraded_template",
             format!(
-                "노트 유형 '{}'이 {}{} 써요. {what} ({}장)",
+                "노트 유형 '{}'{} {}{} 써요. {what} ({}장)",
                 d.note_types.join("', '"),
+                if d.note_types.last().is_some_and(|t| crate::table::final_consonant(t)) { "이" } else { "가" },
                 d.feature,
-                if crate::quality::has_batchim(&d.feature) { "을" } else { "를" },
+                if crate::table::final_consonant(&d.feature) { "을" } else { "를" },
                 n(d.cards)
             ),
         ));
@@ -2168,6 +2174,8 @@ mod tests {
         assert_eq!(deck_name_level("3장 정리").map(|t| t.1), Some("하위 덱 이름에 '정리'가 있어요".to_string()), "받침 없는 낱말은 '가'");
         assert_eq!(deck_name_level("3장 요약").map(|t| t.1), Some("하위 덱 이름에 '요약'이 있어요".to_string()));
         assert_eq!(deck_name_level("Core").map(|t| t.1), Some("하위 덱 이름에 'core'가 있어요".to_string()));
+        // G3-05: 영문도 읽는 소리로 (table::final_consonant, I57). essential(에센셜) → '이'
+        assert_eq!(deck_name_level("Essential").map(|t| t.1), Some("하위 덱 이름에 'essential'이 있어요".to_string()));
     }
 
     #[test]
@@ -2588,6 +2596,18 @@ mod tests {
         run_import_json(&mut con, r#"{"deck": "A", "cards": [{"front": "q", "back": "a"}]}"#, "f".into(), None).unwrap();
         let archived: i64 = con.query_row("SELECT count(*) FROM deck WHERE archived_at IS NOT NULL", [], |r| r.get(0)).unwrap();
         assert_eq!(archived, 0);
+    }
+
+    #[test]
+    fn imported_deck_names_follow_the_deck_name_rules() {
+        // G3-01: "DECK" 은 있는 "Deck" 에 합치고, 보이지 않는 글자는 빼고, 100자를 넘으면 거절하지 않고 자른다
+        let mut con = db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('Deck', 0, 0)", []).unwrap();
+        let long = "가".repeat(130);
+        let json = format!(r#"[{{"deck": "DECK::​하위﻿ ", "front": "q", "back": "a"}}, {{"deck": "{long}", "front": "q2", "back": "a"}}]"#);
+        run_import_json(&mut con, &json, "f".into(), None).unwrap();
+        let names: Vec<String> = db::rows(&con, "SELECT name FROM deck ORDER BY id", [], |r| r.get(0)).unwrap();
+        assert_eq!(names, vec!["Deck".to_string(), "하위".into(), "가".repeat(100)]);
     }
 
     #[test]

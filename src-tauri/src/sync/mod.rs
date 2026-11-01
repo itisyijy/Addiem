@@ -895,8 +895,10 @@ fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
     if o.later {
         return join_locked(sh, o, "fresh");
     }
-    // R-03 합류하는 동안 "맞추는 중"(syncing). 단계는 join_locked 가 정한다 (이 기기 백업 → 합치기)
-    working(&sh.status, || sh.emit(), "merge", || join_locked(sh, o, "fresh"))
+    // R-03 합류하는 동안 "맞추는 중"(syncing). 단계는 join_locked 가 정한다 (이 기기 백업 → 합치기).
+    // 백업이 있는 합류는 처음부터 "백업하는 중": 잠금 확인(암호 풀기)이 길어도 "합치는 중"이 백업보다 먼저 보이지 않는다 (G3-02)
+    let first = if o.mode == Join::New { "merge" } else { "local-backup" };
+    working(&sh.status, || sh.emit(), first, || join_locked(sh, o, "fresh"))
 }
 
 /// run 잠금을 쥔 채로 부른다. fresh_kind: 새로 시작할 때 다른 기기 고르는 창에 보일 이유 (fresh · lock · unlock)

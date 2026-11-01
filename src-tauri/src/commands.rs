@@ -423,10 +423,16 @@ fn record_daily_plan(con: &Connection, today: i64, roots: &[&queue::Deck], per_r
 
 // ------------------------------------------------------------------ B1. 새 덱
 
-/// 덱 이름을 다듬고 확인한다: 보이지 않는 글자(U+200B–200D, U+2060, U+FEFF)를 빼고, 비었거나 :: 가 있거나 100자를 넘으면 거절
-fn deck_name(name: &str) -> Res<String> {
+/// 보이지 않는 글자(U+200B–200D, U+2060, U+FEFF)를 빼고 앞뒤 공백을 자른다. 가져오기도 같은 규칙을 쓴다 (G3-01)
+pub(crate) fn clean_deck_name(name: &str) -> String {
     let name: String = name.chars().filter(|c| !matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')).collect();
-    let name = name.trim();
+    name.trim().to_string()
+}
+
+/// 덱 이름을 다듬고 확인한다: clean_deck_name 뒤 비었거나 :: 가 있거나 100자를 넘으면 거절
+fn deck_name(name: &str) -> Res<String> {
+    let name = clean_deck_name(name);
+    let name = name.as_str();
     if name.is_empty() {
         return Err("덱 이름을 입력해 주세요.".into());
     }

@@ -6,7 +6,7 @@ import { Badge, Button, Checkbox, Icon, Importance, Input, Kbd, StatTile } from 
 import { n, studyDate, useKey, useNav, useMenu } from "../nav";
 import { actionKey, plainEnter } from "../keys";
 import { useToast, type ToastInput } from "../toast";
-import { Modal, NewDeckModal } from "./NewDeck";
+import { Modal, NewDeckModal, fitDeckName } from "./NewDeck";
 import { ExportDeckDialog } from "./ExportDeck";
 import { SourcesButton } from "./Sources";
 import { ExamLine } from "./Exam";
@@ -179,11 +179,14 @@ function RenameTitle({ d, sub, onDone }: { d: DeckDetail; sub: string; onDone: (
       <input
         className={`deck__rename t-title-l ${error ? "is-error" : ""}`}
         aria-label="덱 이름"
-        maxLength={100}
         defaultValue={d.name}
         autoFocus
         onFocus={(e) => e.currentTarget.select()}
-        onChange={() => setError(undefined)}
+        onChange={(e) => {
+          const fit = fitDeckName(e.currentTarget.value);
+          if (fit !== e.currentTarget.value) e.currentTarget.value = fit;
+          setError(undefined);
+        }}
         onKeyDown={(e) => {
           // 한글 조합 중 Enter 는 글자만 마친다. 그 Enter 로 칸을 나가면 확정 Enter 가 화면의 "Enter = 학습 시작"으로 샌다 (QA T1-25 · T8-09)
           if (plainEnter(e)) e.currentTarget.blur();

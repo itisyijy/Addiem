@@ -570,7 +570,7 @@ impl DeckFinder {
                 .optional()
                 .map_err(err)
         };
-        let trimmed = |p: &[String]| p.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>();
+        let trimmed = |p: &[String]| p.iter().map(|s| import_deck_name(s)).filter(|s| !s.is_empty()).collect::<Vec<_>>();
         let id = match by_anki(real)? {
             Some(id) => {
                 tx.execute("UPDATE deck SET archived_at = NULL, updated_at = ?2 WHERE id = ?1 AND archived_at IS NOT NULL", params![id, now]).map_err(err)?;
@@ -1677,7 +1677,7 @@ pub struct UndoSummary {
 
 const NO_JOURNAL: &str = "이 업데이트는 되돌릴 기록이 없어요. 설정 › 이 기기 백업의 [백업으로 복구]를 써 주세요.";
 const UNDONE: &str = "이미 되돌린 업데이트예요.";
-const LATER: &str = "그 뒤에 같은 덱을 다시 업데이트해서 마지막 업데이트만 되돌릴 수 있어요. 이 업데이트는 [백업으로 복구]로 돌려요.";
+const LATER: &str = "그 뒤의 업데이트가 같은 노트 · 노트 유형을 다시 고쳐서 이 업데이트는 되돌릴 수 없어요. [백업으로 복구]로 돌려요.";
 
 /// 되돌리기. dry 면 같은 일을 해 보고 되돌린다 (확인 창의 수). 되돌림은 보통 편집이다 (동기화로 다른 기기에도 간다)
 pub(crate) fn undo(con: &mut Connection, batch: i64, dry: bool) -> Res<UndoSummary> {

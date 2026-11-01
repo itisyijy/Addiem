@@ -672,7 +672,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             role="tab"
             aria-selected={effMode === "easy"}
             disabled={!cur?.layout}
-            title={cur?.layout ? undefined : "이 템플릿은 HTML로만 고칠 수 있어요"}
+            title={cur?.layout ? undefined : "이 카드 모양은 HTML로만 고칠 수 있어요"}
             className={`segment__item t-label-m ${effMode === "easy" ? "is-selected" : ""}`}
             onClick={() => setMode("easy")}
           >
@@ -770,7 +770,7 @@ function Editor({ d, ord, note, back, reload }: { d: Detail; ord?: number; note?
             {effMode === "html" && !cur?.layout && cur?.reason && (
               <p className="nte__notice nte__notice--lock">
                 <Icon name="lock" size={16} />
-                <span className="t-label-m">이 템플릿은 HTML로만 고칠 수 있어요</span>
+                <span className="t-label-m">이 카드 모양은 HTML로만 고칠 수 있어요</span>
                 <span className="t-caption c-secondary">
                   {cur.reason}
                   {iga(cur.reason)} 있어 쉬운 편집이 그대로 옮기지 못해요. 고쳐도 HTML은 그대로 남아요.

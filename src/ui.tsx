@@ -262,7 +262,7 @@ export function DeckRow({
   onOpen: () => void;
 }) {
   return (
-    <div className="deckrow" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onOpen()}>
+    <div className="deckrow" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && onOpen()}>
       <div className="deckrow__main">
         <div className="deckrow__name">
           <span className="t-body-m-strong">{name}</span>
