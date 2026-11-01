@@ -1917,11 +1917,11 @@ fn queue_preview_in(con: &Connection, deck_ids: Option<Vec<i64>>, scale: f64) ->
         plan.per_deck_new_target.get(&d.id).copied().unwrap_or(0)
             + introduced.iter().filter(|(id, _)| queue::budget_owner(**id, &by_id) == d.id).map(|(_, k)| k).sum::<i64>()
     };
-    // 하위 덱은 신규를 나누는 예산 덱의 목표를 따른다 (QA T3-08). 오늘 신규를 내놓는 덱 중에서 고른다 (QA G1-03)
+    // 하위 덱은 신규를 나누는 예산 덱의 목표를 따른다 (QA T3-08). 오늘 신규를 내놓는 덱 중에서 고른다 (QA G1-03). 쉬는 덱은 큐처럼 뺀다 (QA V1-01)
     let target = match wanted
         .iter()
         .filter_map(|&id| by_id.get(&queue::budget_owner(id, &by_id)).copied())
-        .filter(|d| per_day(d) > 0)
+        .filter(|d| per_day(d) > 0 && !crate::plan::paused_on(d.id, today, &by_id))
         .filter_map(|d| d.target_day.map(|t| (d, t - today)))
         .filter(|(_, dd)| *dd >= 0)
         .min_by_key(|(_, dd)| *dd)
