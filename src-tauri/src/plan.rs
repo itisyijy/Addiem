@@ -78,7 +78,7 @@ impl DayLoad {
 }
 
 /// d 날에 이 덱이(조상 포함) 쉬고 있는가
-fn paused_on(id: i64, d: i64, by_id: &HashMap<i64, &Deck>) -> bool {
+pub(crate) fn paused_on(id: i64, d: i64, by_id: &HashMap<i64, &Deck>) -> bool {
     let mut cur = by_id.get(&id).copied();
     for _ in 0..64 {
         let Some(x) = cur else { return false };
@@ -655,7 +655,8 @@ fn avg30(con: &Connection, today: i64, decks: &[Deck]) -> Res<Option<f64>> {
 }
 
 fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], time: &Time, include_resolved: bool) -> Res<Vec<Conflict>> {
-    let mut roots: Vec<&Deck> = decks.iter().filter(|d| d.parent_id.is_none() && d.target_day.is_some_and(|t| t >= today)).collect();
+    // 쉬는 덱은 겹치는 시험으로 보지 않는다 (QA G1-08)
+    let mut roots: Vec<&Deck> = decks.iter().filter(|d| d.parent_id.is_none() && !d.paused && d.target_day.is_some_and(|t| t >= today)).collect();
     if roots.len() < 2 {
         return Ok(vec![]);
     }
@@ -747,7 +748,7 @@ pub fn plan_conflict(state: State<AppState>, include_resolved: Option<bool>) -> 
     // 충돌 판단은 이미 고른 조정을 빼고 해야 하므로 load_decks 의 조정 위에서 b 만 되돌려 계산한다
     let decks = commands::load_decks(&con)?;
     // 다가오는 목표일을 가진 최상위 덱이 둘 없으면 카드를 읽지 않는다 (홈이 뜰 때마다 부른다, QA V7-07. find_conflicts 와 같은 조건)
-    if decks.iter().filter(|d| d.parent_id.is_none() && d.target_day.is_some_and(|t| t >= today)).count() < 2 {
+    if decks.iter().filter(|d| d.parent_id.is_none() && !d.paused && d.target_day.is_some_and(|t| t >= today)).count() < 2 {
         return Ok(None);
     }
     let cards = commands::load_cards(&con)?;
@@ -942,6 +943,20 @@ mod tests {
         assert_eq!(find_over(T, &days, |_| Some(100)), Some((T + 1, None, 0, 1)));
         // 시간을 넣지 않았으면 안내도 없다
         assert_eq!(find_over(T, &days, |_| None), None);
+    }
+
+    #[test]
+    fn paused_deck_is_not_a_conflict() {
+        // QA G1-08: 쉬는 덱은 H2 겹치는 시험에 들지 않는다
+        let con = db::open_in_memory().unwrap();
+        let today = study_day(now_ms());
+        let decks = [Deck { target_day: Some(today + 3), ..deck(1) }, Deck { target_day: Some(today + 5), ..deck(2) }];
+        let mut cards = news(60, 1, 1);
+        cards.extend(news(60, 2, 100));
+        let time = Time { weekday_min: Some(1), weekend_min: Some(1), sec_per_card: 10.0, measured: false };
+        assert_eq!(find_conflicts(&con, today, &decks, &cards, &time, true).unwrap().len(), 1);
+        let paused = [decks[0].clone(), Deck { paused: true, ..decks[1].clone() }];
+        assert!(find_conflicts(&con, today, &paused, &cards, &time, true).unwrap().is_empty());
     }
 
     #[test]
