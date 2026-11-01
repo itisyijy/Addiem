@@ -1007,9 +1007,9 @@ pub(crate) fn undo(con: &mut Connection, change_id: i64) -> Res<()> {
 /// "그 뒤에 고친 내용이 있어요 · 되돌리면 그 내용도 사라져요" 확인을 받은 뒤에만 준다 (CQ2)
 pub(crate) fn undo_at(con: &mut Connection, change_id: i64, force: bool) -> Res<bool> {
     let tx = con.transaction().map_err(err)?;
-    let (kind, card_id, payload, undone): (String, Option<i64>, String, Option<i64>) = tx
-        .query_row("SELECT kind, card_id, payload, undone_at FROM card_change WHERE id = ?1", [change_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    let (kind, card_id, payload, undone, made_at): (String, Option<i64>, String, Option<i64>, i64) = tx
+        .query_row("SELECT kind, card_id, payload, undone_at, created_at FROM card_change WHERE id = ?1", [change_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })
         .optional()
         .map_err(err)?
@@ -1024,8 +1024,10 @@ pub(crate) fn undo_at(con: &mut Connection, change_id: i64, force: bool) -> Res<
     } else {
         let p: SplitPayload = serde_json::from_str(&payload).map_err(err)?;
         for nid in &p.new_notes {
-            // 새 카드에 복습 기록이 있어도 기록은 남는다 (review_log.card_id 가 NULL 이 된다)
-            tx.execute("DELETE FROM note WHERE id = ?1", [nid]).map_err(err)?;
+            // 새 카드에 복습 기록이 있어도 기록은 남는다 (review_log.card_id 가 NULL 이 된다).
+            // 노트 id 는 지운 뒤 다시 쓰일 수 있어, 변경보다 나중에 만든 노트는 지우지 않는다 (QA W9: 손으로 지운 뒤 새로 만든 노트)
+            // ponytail: 1분 여유, 변경 기록에 노트 만든 시각을 남기면 정확해진다
+            tx.execute("DELETE FROM note WHERE id = ?1 AND created_at <= ?2", params![nid, made_at + 60_000]).map_err(err)?;
         }
         if let (Some(card), Some(prev)) = (card_id, p.prev_state) {
             tx.execute("UPDATE card SET state = ?2, updated_at = ?3 WHERE id = ?1", params![card, prev, now_ms()]).map_err(err)?;
@@ -1401,6 +1403,27 @@ mod tests {
         // 고쳐 쓰기 기록은 new_notes 가 없어 0
         con.execute("INSERT INTO card_change (kind, deck_id, summary, payload, created_at) VALUES ('rewrite', ?1, 's', '{}', ?2)", params![deck, now_ms()]).unwrap();
         assert!(recent_of(&con, deck).unwrap().iter().filter(|c| c.kind == "rewrite").all(|c| c.studied == 0));
+    }
+
+    #[test]
+    fn undo_keeps_notes_made_after_the_change() {
+        // 나누기로 만든 노트를 손으로 지우고 새로 만들면 같은 id 가 다시 쓰인다. 그 뒤 [되돌리기]는 새 노트를 지우지 않는다
+        let mut con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let card = NewCard { deck_id: deck, kind: "basic".into(), front: "Q?".into(), back: "① a<br>② b<br>③ c".into(), importance: None };
+        commands::insert_note(&con, &card, "", None).unwrap();
+        let orig: i64 = con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap();
+        let parts: Vec<SplitPart> = (1..=3).map(|i| SplitPart { front: format!("Q {i}?"), back: "a".into() }).collect();
+        let change = apply_split(&mut con, orig, &parts, true).unwrap();
+        let reused: i64 = con.query_row("SELECT max(note_id) FROM card", [], |r| r.get(0)).unwrap();
+        // 2분 전 변경, 마지막 노트는 그 뒤에 새로 만든 노트(같은 id)인 셈
+        con.execute("UPDATE card_change SET created_at = created_at - 120000 WHERE id = ?1", [change]).unwrap();
+        con.execute("UPDATE note SET created_at = created_at - 120000 WHERE id != ?1", [reused]).unwrap();
+        undo(&mut con, change).unwrap();
+        let left: Vec<i64> = db::rows(&con, "SELECT id FROM note ORDER BY id", [], |r| r.get(0)).unwrap();
+        assert!(left.contains(&reused), "변경보다 나중에 만든 노트는 남는다");
+        assert_eq!(left.len(), 2, "원래 노트 + 나중 노트, 나눈 노트 둘은 지운다");
     }
 
     // ------------------------------------------------------------------ 8.2 질문과 답의 대응 · 서식 · 고쳐 쓰기
