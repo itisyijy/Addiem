@@ -1385,11 +1385,11 @@ mod tests {
     #[test]
     fn callback_on_auth_path_with_issued_client() {
         let line = "GET /auth/callback?code=c0de&state=st&scope=openid&client_id=oaiapp_9 HTTP/1.1";
-        let Ok(auth::Callback::Code(q)) = auth::parse_callback(line, CALLBACK, "st") else { panic!() };
+        let auth::Callback::Code(q) = auth::parse_callback(line, CALLBACK, "st") else { panic!() };
         assert_eq!((q["code"].as_str(), q["client_id"].as_str()), ("c0de", "oaiapp_9"));
-        assert_eq!(auth::parse_callback("GET /?code=c&state=st HTTP/1.1", CALLBACK, "st"), Ok(auth::Callback::Ignore), "다른 경로는 무시");
-        assert_eq!(auth::parse_callback(line, CALLBACK, "other"), Ok(auth::Callback::Ignore), "state 가 다르면 받지 않고 계속 기다린다");
-        assert_eq!(auth::parse_callback("GET /auth/callback?state=st&error=access_denied HTTP/1.1", CALLBACK, "st"), Ok(auth::Callback::Denied));
+        assert_eq!(auth::parse_callback("GET /?code=c&state=st HTTP/1.1", CALLBACK, "st"), auth::Callback::Ignore, "다른 경로는 무시");
+        assert_eq!(auth::parse_callback(line, CALLBACK, "other"), auth::Callback::Ignore, "state 가 다르면 받지 않고 계속 기다린다");
+        assert_eq!(auth::parse_callback("GET /auth/callback?state=st&error=access_denied HTTP/1.1", CALLBACK, "st"), auth::Callback::Denied);
         // 처음 등록: 새 id 를 받는다. 다시 로그인: 저장한 id 와 달라지면 받지 않는다
         assert_eq!(issued_client(None, Some("oaiapp_9")), Ok("oaiapp_9".into()));
         assert!(issued_client(None, None).is_err() && issued_client(None, Some("dynamic_agent_client")).is_err());

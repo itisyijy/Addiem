@@ -106,22 +106,22 @@ pub enum Callback {
 
 /// 브라우저가 루프백으로 보낸 요청 줄: "GET /?state=..&code=..&scope=.. HTTP/1.1".
 /// path 는 리디렉트 주소의 경로 (Google "/" · ChatGPT "/auth/callback"). 다른 경로는 무시한다
-pub fn parse_callback(request_line: &str, path: &str, state: &str) -> Result<Callback, String> {
+pub fn parse_callback(request_line: &str, path: &str, state: &str) -> Callback {
     let target = request_line.split_whitespace().nth(1).unwrap_or("");
-    let Ok(url) = url::Url::parse(&format!("http://127.0.0.1{target}")) else { return Ok(Callback::Ignore) };
+    let Ok(url) = url::Url::parse(&format!("http://127.0.0.1{target}")) else { return Callback::Ignore };
     let q: Query = url.query_pairs().into_owned().collect();
     if q.is_empty() || url.path() != path {
-        return Ok(Callback::Ignore);
+        return Callback::Ignore;
     }
     // 다른 요청은 무시하고 계속 기다린다. 오류로 끝내면 아무 웹페이지나 로컬 프로세스가 이 포트로 요청 하나만 보내도 로그인이 취소된다
     // (코드는 state · PKCE 때문에 넣지 못한다)
     if q.get("state").map(String::as_str) != Some(state) {
-        return Ok(Callback::Ignore);
+        return Callback::Ignore;
     }
     if q.contains_key("error") {
-        return Ok(Callback::Denied);
+        return Callback::Denied;
     }
-    if q.contains_key("code") { Ok(Callback::Code(q)) } else { Ok(Callback::Ignore) }
+    if q.contains_key("code") { Callback::Code(q) } else { Callback::Ignore }
 }
 
 fn done_page(title: &str) -> String {
@@ -195,16 +195,15 @@ pub fn wait_callback(listener: TcpListener, path: &str, state: &str, done: &str,
                 let line = text.lines().next().unwrap_or("");
                 let res = parse_callback(line, path, state);
                 let page = match &res {
-                    Ok(Callback::Code(_)) => done_page(done),
-                    Ok(Callback::Denied) => done_page("로그인을 취소했어요"),
+                    Callback::Code(_) => done_page(done),
+                    Callback::Denied => done_page("로그인을 취소했어요"),
                     _ => String::new(),
                 };
                 let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len());
                 match res {
-                    Ok(Callback::Code(c)) => return Ok(c),
-                    Ok(Callback::Denied) => return Err(WaitError::Denied),
-                    Ok(Callback::Ignore) => {}
-                    Err(e) => return Err(WaitError::Other(e)),
+                    Callback::Code(c) => return Ok(c),
+                    Callback::Denied => return Err(WaitError::Denied),
+                    Callback::Ignore => {}
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(150)),
@@ -261,12 +260,8 @@ pub fn revoke(agent: &ureq::Agent, token: &str) {
 /// 검증용 데이터 폴더(ADDIEM_DATA_DIR)로 띄운 앱은 폴더마다 다른 항목 이름을 쓴다.
 /// 실제 앱의 로그인 토큰을 읽거나 덮거나 지우지 않게 하려는 것
 fn secret_name(name: &str) -> String {
-    use sha2::Digest;
     match std::env::var_os("ADDIEM_DATA_DIR").filter(|v| !v.is_empty()) {
-        Some(dir) => {
-            let h = sha2::Sha256::digest(dir.to_string_lossy().as_bytes());
-            format!("{name}@{}", h[..4].iter().map(|b| format!("{b:02x}")).collect::<String>())
-        }
+        Some(dir) => format!("{name}@{}", crypto::hex(&crypto::sha256(dir.to_string_lossy().as_bytes())[..4])),
         None => name.to_string(),
     }
 }
@@ -322,11 +317,11 @@ mod tests {
     #[test]
     fn callback_parsing_and_scopes() {
         let line = "GET /?state=abc&code=4%2F0Ab&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file HTTP/1.1";
-        assert!(matches!(parse_callback(line, "/", "abc"), Ok(Callback::Code(q)) if q["code"] == "4/0Ab"));
-        assert_eq!(parse_callback(line, "/", "zzz"), Ok(Callback::Ignore), "state 가 다르면 받지 않고 계속 기다린다 (CSRF · 취소 공격)");
-        assert_eq!(parse_callback("GET /?state=zzz&error=access_denied HTTP/1.1", "/", "abc"), Ok(Callback::Ignore), "남이 보낸 취소도 무시");
-        assert_eq!(parse_callback("GET /?state=abc&error=access_denied HTTP/1.1", "/", "abc"), Ok(Callback::Denied));
-        assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1", "/", "abc"), Ok(Callback::Ignore));
+        assert!(matches!(parse_callback(line, "/", "abc"), Callback::Code(q) if q["code"] == "4/0Ab"));
+        assert_eq!(parse_callback(line, "/", "zzz"), Callback::Ignore, "state 가 다르면 받지 않고 계속 기다린다 (CSRF · 취소 공격)");
+        assert_eq!(parse_callback("GET /?state=zzz&error=access_denied HTTP/1.1", "/", "abc"), Callback::Ignore, "남이 보낸 취소도 무시");
+        assert_eq!(parse_callback("GET /?state=abc&error=access_denied HTTP/1.1", "/", "abc"), Callback::Denied);
+        assert_eq!(parse_callback("GET /favicon.ico HTTP/1.1", "/", "abc"), Callback::Ignore);
         assert!(granted_all("https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file"));
         assert!(!granted_all("https://www.googleapis.com/auth/drive.file"), "하나만 허용하면 다시 연결");
     }

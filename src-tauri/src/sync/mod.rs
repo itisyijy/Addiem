@@ -88,10 +88,6 @@ pub struct Device {
     pub reviews_at: Option<i64>,
 }
 
-enum Job {
-    Sync { pull: bool, push: bool },
-}
-
 pub struct SyncState(Arc<Shared>);
 
 struct Shared {
@@ -99,7 +95,8 @@ struct Shared {
     folder: Option<PathBuf>,
     /// 동기화 작업은 한 번에 하나
     run: Mutex<()>,
-    jobs: Mutex<Option<mpsc::Sender<Job>>>,
+    /// 받기 · 올리기 (pull, push)
+    jobs: Mutex<Option<mpsc::Sender<(bool, bool)>>>,
     status: Mutex<Status>,
     paused: AtomicBool,
     /// 접근 토큰과 만료 시각 (ms). 새로 고칠 토큰은 키체인에
@@ -240,7 +237,7 @@ pub fn setup(app: &AppHandle) {
     std::thread::spawn(move || worker(sh, rx));
 }
 
-fn worker(sh: Arc<Shared>, rx: mpsc::Receiver<Job>) {
+fn worker(sh: Arc<Shared>, rx: mpsc::Receiver<(bool, bool)>) {
     // 앱 실행: 받기 -> 올리기
     run(&sh, true, true);
     let mut failures = 0u32;
@@ -250,7 +247,7 @@ fn worker(sh: Arc<Shared>, rx: mpsc::Receiver<Job>) {
         let wait = if offline { (Duration::from_secs(30) * 2u32.pow(failures.min(6))).min(PERIOD) } else { PERIOD };
         failures = if offline { failures + 1 } else { 0 };
         match rx.recv_timeout(wait) {
-            Ok(Job::Sync { pull, push }) => run(&sh, pull, push),
+            Ok((pull, push)) => run(&sh, pull, push),
             Err(mpsc::RecvTimeoutError::Timeout) if !sh.paused.load(Ordering::Relaxed) => run(&sh, true, offline),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -260,7 +257,7 @@ fn worker(sh: Arc<Shared>, rx: mpsc::Receiver<Job>) {
 
 fn enqueue(sh: &Shared, pull: bool, push: bool) {
     if let Ok(Some(tx)) = sh.jobs.lock().as_deref() {
-        let _ = tx.send(Job::Sync { pull, push });
+        let _ = tx.send((pull, push));
     }
 }
 
