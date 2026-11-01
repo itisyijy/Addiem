@@ -8,6 +8,7 @@ import { Badge, Button, Icon, Spinner, StatTile, Toggle, type IconName } from ".
 import { eul, lockNav, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { useFileDrop } from "../fileDrop";
+import { baseName } from "../cardHtml";
 import { Modal } from "./NewDeck";
 import { UpdateChoice } from "./DeckUpdate";
 import "../styles/import.css";
@@ -25,7 +26,6 @@ const EXAMPLE = String.raw`{ "deck": "정보처리기사",
 
 /** 파일 크기. 0.1MB 미만은 KB (0.0MB 로 보이지 않게) */
 const mb = (bytes: number) => (bytes < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`);
-const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const JSON_FILE = /\.json$/i;
 /** 붙여넣기 · 파일 선택 · 끌어놓기가 같은 상한 (import.rs read_json_file · parse_json) */
 const MAX_TEXT = 20 * 1024 * 1024;

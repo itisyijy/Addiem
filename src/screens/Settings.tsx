@@ -4,7 +4,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { api, errorText, type AppInfo, type ArchivedDeck, type HeatDay, type LocalBackup, type MvpMetrics } from "../api";
 import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
-import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useMenu, useOverlayScope } from "../nav";
+import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, eun, gwa, ro, useMenu, useOverlayScope } from "../nav";
 import {
   ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, needsModifier, plainEnter, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
   type ActionId,
@@ -866,8 +866,6 @@ function Archived({ focus }: { focus: boolean }) {
 
 // ---------------------------------------------------------------- E4 단축키 바꾸기 (Figma 45:5593)
 
-const eun = (w: string) => (eul(w) === "을" ? "은" : "는");
-const wa = (w: string) => (eul(w) === "을" ? "과" : "와");
 const RATE_NAMES = ["Again", "Hard", "Good", "Easy"];
 
 /** 행을 눌러 새 키를 누르면 바뀐다. 한 번에 한 행만 녹음. 겹침은 같은 범위 안에서만 막는다 */
@@ -969,7 +967,7 @@ function KeysTable() {
             <span className="t-caption c-warn">
               {other.scope === a.scope
                 ? `${key}${eun(key)} '${other.label}'에 쓰고 있어요. 바꿔 쓰면 '${other.label}'${eun(other.label)} 미지정이 돼요.`
-                : `${key}${eun(key)} 이 화면에서 쓰지 않지만 '${other.label}'(${SCOPE_LABEL[other.scope]})${wa(other.label)} 같아요. ${SCOPE_LABEL[a.scope]}에서는 '${a.label}'${ro(a.label)} 쓸까요?`}
+                : `${key}${eun(key)} 이 화면에서 쓰지 않지만 '${other.label}'(${SCOPE_LABEL[other.scope]})${gwa(other.label)} 같아요. ${SCOPE_LABEL[a.scope]}에서는 '${a.label}'${ro(a.label)} 쓸까요?`}
             </span>
           ) : recording && id === "rate" ? (
             <span className="t-caption c-accent">

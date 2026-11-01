@@ -11,6 +11,7 @@ import { Button, Icon } from "../ui";
 import { cropPage, cropSize, pageLayout } from "../pdf";
 import { boxOf, captionOf, figuresOf, gridIn, rectOf, suggestTables, type Layout } from "../figures";
 import { PdfPage } from "./Sources";
+import { clamp } from "./Occlusion";
 import { cellsOf, FigList, FigMenu, sameRect, useBulk, useFlows, type FigRow, type FigSource, type MenuEntry } from "./Figures";
 import { isRegion, sourceApi, type Material, type Rect, type Segment } from "../sourceApi";
 
@@ -157,7 +158,6 @@ const PAGE_W = 540;
 const HOW = "글자 위치로 칸을 나눴어요 · 틀린 칸은 눌러 고쳐요";
 const round = (r: Rect) => r.map((v) => Math.round(v * 1e4) / 1e4) as Rect;
 const pos = (r: Rect) => ({ left: `${r[0] * 100}%`, top: `${r[1] * 100}%`, width: `${r[2] * 100}%`, height: `${r[3] * 100}%` });
-const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
 type Sel = { key: string; page: number; menu: boolean };
 
