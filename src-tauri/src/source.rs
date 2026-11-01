@@ -443,11 +443,8 @@ pub fn source_save_outline(state: State<AppState>, material_id: i64, headings: O
             pptx_headings(&slides, &p.sections)
         }
     };
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    save_headings(&tx, material_id, &headings)?;
-    tx.commit().map_err(err)?;
-    outline_of(&con, material_id)
+    state.write(|tx| save_headings(tx, material_id, &headings))?;
+    source_outline(state, material_id)
 }
 
 /// 읽은(ready) 자료의 제목 구간만 바꾼다. 같은 제목이면 아무것도 쓰지 않는다 (동기화 변경이 불지 않게)
@@ -632,12 +629,11 @@ fn link_notes(con: &Connection, segment_id: i64, note_ids: &[i64]) -> Res<()> {
 /// 다른 경로로 만든 노트(M 그림 가리기 · Q 목록)를 영역에 잇는다. 구간 id 를 돌려준다
 #[tauri::command]
 pub fn source_region_link(state: State<AppState>, material_id: i64, page: i64, rects: Vec<[f64; 4]>, kind: String, text: String, note_ids: Vec<i64>) -> Res<i64> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let seg = region_segment(&tx, &Region { material_id, page, rects, kind, text })?;
-    link_notes(&tx, seg, &note_ids)?;
-    tx.commit().map_err(err)?;
-    Ok(seg)
+    state.write(|tx| {
+        let seg = region_segment(tx, &Region { material_id, page, rects, kind, text })?;
+        link_notes(tx, seg, &note_ids)?;
+        Ok(seg)
+    })
 }
 
 /// IT3 [카드 N장 만들기] · 그림을 앞면에 둔 카드: 초안(table::drafts 또는 화면이 만든 HTML)을 저장하고 영역에 잇는다.

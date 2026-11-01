@@ -106,13 +106,12 @@ pub fn set(con: &Connection, target: &str, states: &[ExamState]) -> Res<()> {
 /// target "card" 는 카드의 노트에 단다 (자료 구간 표시를 연결된 카드에 퍼뜨릴 때, N3)
 #[tauri::command]
 pub fn mark_exam(state: State<AppState>, target: String, ids: Vec<i64>, exam: Option<String>) -> Res<usize> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let (target, ids) = if target == "card" { ("note".to_string(), notes_of(&tx, &ids)?) } else { (target, ids) };
-    let n = mark(&tx, &target, &ids, exam.as_deref())?;
-    suggest_all(&tx)?;
-    tx.commit().map_err(err)?;
-    Ok(n)
+    state.write(|tx| {
+        let (target, ids) = if target == "card" { ("note".to_string(), notes_of(tx, &ids)?) } else { (target, ids) };
+        let n = mark(tx, &target, &ids, exam.as_deref())?;
+        suggest_all(tx)?;
+        Ok(n)
+    })
 }
 
 /// 카드들의 노트 (한 번씩)
@@ -123,11 +122,10 @@ fn notes_of(con: &Connection, card_ids: &[i64]) -> Res<Vec<i64>> {
 
 #[tauri::command]
 pub fn set_exam(state: State<AppState>, target: String, states: Vec<ExamState>) -> Res<()> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    set(&tx, &target, &states)?;
-    suggest_all(&tx)?;
-    tx.commit().map_err(err)
+    state.write(|tx| {
+        set(tx, &target, &states)?;
+        suggest_all(tx).map(|_| ())
+    })
 }
 
 // ------------------------------------------------------------------ 덱의 기출 (N1 · N2 시험 목록, N4 한 줄)

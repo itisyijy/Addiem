@@ -453,11 +453,7 @@ pub(crate) fn save(con: &Connection, input: &OcclusionInput) -> Res<i64> {
 
 #[tauri::command]
 pub fn save_occlusion(state: State<AppState>, note: OcclusionInput) -> Res<i64> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let id = save(&tx, &note)?;
-    tx.commit().map_err(err)?;
-    Ok(id)
+    state.write(|tx| save(tx, &note))
 }
 
 /// 이름이 있는 칸 수 (C1-xr "칸 이름 N개는 Anki에서 보이지 않아요")
