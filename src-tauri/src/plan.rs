@@ -740,12 +740,16 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
 }
 
 /// 홈 배너와 H2 화면. include_resolved 가 false 면 아직 고르지 않은 첫 충돌만
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plan_conflict(state: State<AppState>, include_resolved: Option<bool>) -> Res<Option<Conflict>> {
     let con = state.db.lock().map_err(err)?;
     let today = study_day(now_ms());
     // 충돌 판단은 이미 고른 조정을 빼고 해야 하므로 load_decks 의 조정 위에서 b 만 되돌려 계산한다
     let decks = commands::load_decks(&con)?;
+    // 다가오는 목표일을 가진 최상위 덱이 둘 없으면 카드를 읽지 않는다 (홈이 뜰 때마다 부른다, QA V7-07. find_conflicts 와 같은 조건)
+    if decks.iter().filter(|d| d.parent_id.is_none() && d.target_day.is_some_and(|t| t >= today)).count() < 2 {
+        return Ok(None);
+    }
     let cards = commands::load_cards(&con)?;
     let time = read_time(&con)?;
     Ok(find_conflicts(&con, today, &decks, &cards, &time, include_resolved.unwrap_or(false))?.into_iter().next())

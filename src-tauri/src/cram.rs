@@ -152,7 +152,7 @@ pub struct CramPlan {
 }
 
 /// H3 압축 회독을 열 수 있으면 그 계획. 목표일이 14일보다 멀거나 지났으면, 배운 카드가 없으면 없다 (입구 · 계획 줄을 숨긴다, QA T3-18)
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Option<CramPlan>> {
     cram_plan_in(&*state.db.lock().map_err(err)?, deck_ids)
 }
