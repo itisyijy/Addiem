@@ -570,7 +570,7 @@ impl DeckFinder {
                 .optional()
                 .map_err(err)
         };
-        let trimmed = |p: &[String]| p.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>();
+        let trimmed = |p: &[String]| p.iter().map(|s| import_deck_name(s)).filter(|s| !s.is_empty()).collect::<Vec<_>>();
         let id = match by_anki(real)? {
             Some(id) => {
                 tx.execute("UPDATE deck SET archived_at = NULL, updated_at = ?2 WHERE id = ?1 AND archived_at IS NOT NULL", params![id, now]).map_err(err)?;

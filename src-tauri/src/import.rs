@@ -126,7 +126,7 @@ struct Decks {
 }
 
 impl Decks {
-    /// 경로대로 찾거나 만든다. 같은 이름이 있으면 그 덱에 합친다 (Anki 와 같다)
+    /// 경로대로 찾거나 만든다. 같은 이름이 있으면 (덱 이름 규칙처럼 대소문자만 달라도) 그 덱에 합친다 (Anki 와 같다)
     fn ensure(&mut self, con: &Connection, parent: Option<i64>, parts: &[String], now: i64) -> Res<i64> {
         let mut cur = parent;
         for name in parts {
@@ -135,7 +135,7 @@ impl Decks {
                 Some(id) => *id,
                 None => {
                     let found: Option<(i64, Option<i64>)> = con
-                        .query_row("SELECT id, archived_at FROM deck WHERE parent_id IS ?1 AND name = ?2", params![cur, name], |r| {
+                        .query_row("SELECT id, archived_at FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![cur, name], |r| {
                             Ok((r.get(0)?, r.get(1)?))
                         })
                         .optional()
@@ -262,7 +262,12 @@ struct JsonCard {
 }
 
 fn split_path(p: &str) -> Vec<String> {
-    p.split("::").map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+    p.split("::").map(import_deck_name).filter(|s| !s.is_empty()).collect()
+}
+
+/// 가져온 덱 이름 한 단계: 덱 이름 규칙(clean_deck_name)을 따르고, 100자를 넘으면 거절하지 않고 자른다 (G3-01)
+pub(super) fn import_deck_name(s: &str) -> String {
+    crate::commands::clean_deck_name(s).chars().take(100).collect::<String>().trim_end().to_string()
 }
 
 fn has_cloze(s: &str) -> bool {
@@ -470,7 +475,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
 /// 대상 덱이 있으면 경로를 그 아래로 옮긴다. 경로 첫 단계가 대상 덱 이름이면 겹치지 않게 뗀다
 fn relative_path(path: &[String], target_name: Option<&str>) -> Vec<String> {
     match target_name {
-        Some(t) if path.first().is_some_and(|p| p == t) => path[1..].to_vec(),
+        Some(t) if path.first().is_some_and(|p| p.to_lowercase() == t.to_lowercase()) => path[1..].to_vec(),
         Some(_) => path.to_vec(),
         None => path.to_vec(),
     }
@@ -552,7 +557,7 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
         for d in 1..=path.len() {
             if !missing {
                 let found: Option<i64> = con
-                    .query_row("SELECT id FROM deck WHERE parent_id IS ?1 AND name = ?2", params![parent, path[d - 1]], |r| r.get(0))
+                    .query_row("SELECT id FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![parent, path[d - 1]], |r| r.get(0))
                     .optional()
                     .map_err(err)?;
                 match found {
@@ -1195,7 +1200,7 @@ pub struct DeckStat {
 
 /// 우리 덱 경로로 옮길 때의 이름 (앞뒤 공백을 떼고 빈 이름은 뺀다). 가져오기와 덱 고르기 트리가 같은 경로를 쓴다
 fn deck_parts(d: &ADeck) -> Vec<String> {
-    let parts: Vec<String> = d.path.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<String> = d.path.iter().map(|s| import_deck_name(s)).filter(|s| !s.is_empty()).collect();
     if parts.is_empty() { vec![DEFAULT_DECK.into()] } else { parts }
 }
 
@@ -2588,6 +2593,18 @@ mod tests {
         run_import_json(&mut con, r#"{"deck": "A", "cards": [{"front": "q", "back": "a"}]}"#, "f".into(), None).unwrap();
         let archived: i64 = con.query_row("SELECT count(*) FROM deck WHERE archived_at IS NOT NULL", [], |r| r.get(0)).unwrap();
         assert_eq!(archived, 0);
+    }
+
+    #[test]
+    fn imported_deck_names_follow_the_deck_name_rules() {
+        // G3-01: "DECK" 은 있는 "Deck" 에 합치고, 보이지 않는 글자는 빼고, 100자를 넘으면 거절하지 않고 자른다
+        let mut con = db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('Deck', 0, 0)", []).unwrap();
+        let long = "가".repeat(130);
+        let json = format!(r#"[{{"deck": "DECK::​하위﻿ ", "front": "q", "back": "a"}}, {{"deck": "{long}", "front": "q2", "back": "a"}}]"#);
+        run_import_json(&mut con, &json, "f".into(), None).unwrap();
+        let names: Vec<String> = db::rows(&con, "SELECT name FROM deck ORDER BY id", [], |r| r.get(0)).unwrap();
+        assert_eq!(names, vec!["Deck".to_string(), "하위".into(), "가".repeat(100)]);
     }
 
     #[test]
