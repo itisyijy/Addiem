@@ -21,7 +21,7 @@ import { Modal } from "./NewDeck";
 import { renderCardHtml } from "../cardHtml";
 import { scopeCss } from "../cardCss";
 import { Badge, Button, Icon, Kbd, Segment, Spinner, StatTile, type IconName } from "../ui";
-import { eul, eun, lockNav, n, ro, useKey, useNav, useOverlayScope } from "../nav";
+import { eul, eun, lockNav, n, ro, useKey, useNav, useMenu } from "../nav";
 import { menuKeys } from "./Deck";
 import { useSyncStatus } from "../sync";
 import { IssueList } from "./Import";
@@ -1524,22 +1524,7 @@ function TidyMenu({ notes, cards, onSuspend, onDelete }: { notes: number; cards:
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
   // 떠 있는 동안 화면 단축키는 꺼지고 Esc 는 메뉴만 닫는다 (C1-m 과 같다)
-  useOverlayScope(open);
-  useKey(
-    "Escape",
-    () => {
-      setOpen(false);
-      box.current?.querySelector("button")?.focus();
-    },
-    open,
-    { modal: true },
-  );
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setOpen(false);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [open]);
+  useMenu(open, () => setOpen(false), () => box.current?.querySelector("button")?.focus());
   const pick = (f?: () => void) => () => {
     setOpen(false);
     f?.();

@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { Badge, Button, Checkbox, Icon, Input, Segment, Spinner, Toggle, type IconName } from "./ui";
 import { useToast } from "./toast";
-import { n, useKey, useModalScope, useNav, useOverlayScope } from "./nav";
+import { n, useKey, useModalScope, useNav, useMenu } from "./nav";
 import { plainEnter } from "./keys";
 import { useFocusTrap } from "./screens/NewDeck";
 import { store } from "./store";
@@ -206,14 +206,7 @@ function Option({ on, onPick, icon, title, badge, text }: { on: boolean; onPick:
 export function SyncButton() {
   const s = useSyncStatus();
   const [open, setOpen] = useState(false);
-  useOverlayScope(open);
-  useKey("Escape", () => setOpen(false), open, { modal: true });
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setOpen(false);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [open]);
+  useMenu(open, () => setOpen(false));
   if (!s?.connected) return null;
   const l = line(s);
   const pill = s.state === "login" ? "다시 로그인" : s.state === "quota" ? "Drive 공간 부족" : null;
@@ -1436,14 +1429,7 @@ function Connected({ s }: { s: SyncStatus }) {
   useEffect(() => {
     api.appInfo().then((i) => setBytes([i.db_bytes, i.media_bytes]), () => {});
   }, [s.last_sync]);
-  useOverlayScope(!!menu);
-  useKey("Escape", () => setMenu(null), !!menu, { modal: true });
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [menu]);
+  useMenu(!!menu, () => setMenu(null));
   const loadBackups = useCallback(() => {
     if (!joined) return;
     syncApi.backups().then(setBackups, () => setBackups([]));

@@ -4,7 +4,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { api, errorText, type AppInfo, type ArchivedDeck, type HeatDay, type LocalBackup, type MvpMetrics } from "../api";
 import { Badge, Button, Checkbox, Icon, Input, Kbd, Toggle } from "../ui";
 import { useToast } from "../toast";
-import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useOverlayScope } from "../nav";
+import { hourLabel, n, setCutoff, studyDate, useKey, useNav, eul, ro, useMenu, useOverlayScope } from "../nav";
 import {
   ACTIONS, FIXED, FIXED_ROWS, SCOPE_LABEL, actionOf, chordOf, exportKeys, importKeys, isChanged, keyLabel, needsModifier, plainEnter, reservedLabel, resetAllKeys, resetKeys, setKeys, useKeymap,
   type ActionId,
@@ -655,14 +655,7 @@ function Heatmap() {
   useEffect(() => {
     api.home().then((h) => setDecks([...h.decks, ...h.idle_decks].map(({ id, name }) => ({ id, name }))), () => {});
   }, []);
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(false);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [menu]);
-  useOverlayScope(menu);
-  useKey("Escape", () => setMenu(false), menu, { modal: true });
+  useMenu(menu, () => setMenu(false));
   useEffect(() => {
     api.heatmap(deck?.id ?? null).then((rows) => setDays(new Map(rows.map((r) => [r.day, r]))), () => setDays(new Map()));
   }, [deck]);

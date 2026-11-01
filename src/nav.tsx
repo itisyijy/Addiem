@@ -85,6 +85,18 @@ export function useOverlayScope(active = true) {
   }, [active]);
 }
 
+/** 메뉴: 떠 있는 동안 화면 단축키는 꺼지고, Esc(뒤에 esc 도) · 아무 곳 클릭으로 닫는다. 메뉴 안 클릭은 메뉴가 stopPropagation 한다 */
+export function useMenu(open: boolean, close: () => void, esc?: () => void) {
+  useOverlayScope(open);
+  useKey("Escape", () => (close(), esc?.()), open, { modal: true });
+  useEffect(() => {
+    if (!open) return;
+    const f = () => close();
+    window.addEventListener("click", f);
+    return () => window.removeEventListener("click", f);
+  }, [open]);
+}
+
 const FOCUSABLE = "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
 function nearFocusable(from: HTMLElement) {
   const ok = (x: HTMLElement) => x.matches(FOCUSABLE) && !x.hasAttribute("disabled") && x.offsetParent !== null;

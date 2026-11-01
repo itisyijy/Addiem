@@ -3,7 +3,7 @@ import "../styles/deck.css";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorText, planApi, type DeckDetail, type Level, type PlanMode, type Subdeck } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Input, Kbd, StatTile } from "../ui";
-import { n, studyDate, useKey, useNav, useOverlayScope } from "../nav";
+import { n, studyDate, useKey, useNav, useMenu } from "../nav";
 import { actionKey, plainEnter } from "../keys";
 import { useToast, type ToastInput } from "../toast";
 import { Modal, NewDeckModal } from "./NewDeck";
@@ -759,22 +759,9 @@ function MoreMenu({ d, onRename, onPause, onResume }: {
   const today = iso(studyDate());
   // Esc 로 닫으면 초점을 ⋯ 버튼으로 돌려준다 (사라진 메뉴 항목에 초점이 남지 않게)
   // 메뉴가 떠 있는 동안 화면 단축키는 꺼지고 메뉴가 키를 받는다 (E4 노트)
-  useOverlayScope(open);
-  useKey(
-    "Escape",
-    () => {
-      setOpen(false);
-      trigger.current?.focus();
-    },
-    open,
-    { modal: true },
-  );
-
+  useMenu(open, () => setOpen(false), () => trigger.current?.focus());
   useEffect(() => {
-    if (!open) return setPauseOpen(false);
-    const close = () => setOpen(false);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    if (!open) setPauseOpen(false);
   }, [open]);
 
   // 확인 창 없이 바로 보관하고, 5초 동안 되돌릴 수 있게 한다
