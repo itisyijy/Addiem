@@ -179,6 +179,7 @@ function RenameTitle({ d, sub, onDone }: { d: DeckDetail; sub: string; onDone: (
       <input
         className={`deck__rename t-title-l ${error ? "is-error" : ""}`}
         aria-label="덱 이름"
+        maxLength={100}
         defaultValue={d.name}
         autoFocus
         onFocus={(e) => e.currentTarget.select()}
@@ -1054,7 +1055,9 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const ok = typed.trim() === name.trim();
+  // 보이지 않는 글자(U+200B–200D, U+2060, U+FEFF)는 덱 이름에서 빼는 것과 같게 양쪽 다 빼고 비교한다 (QA T1-21)
+  const bare = (s: string) => s.replace(/[​-‍⁠﻿]/g, "").trim();
+  const ok = bare(typed) === bare(name);
   const sync = useSyncStatus();
   const synced = !!sync?.connected && !!sync.enabled;
 

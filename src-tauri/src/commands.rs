@@ -413,8 +413,9 @@ fn record_daily_plan(con: &Connection, today: i64, roots: &[&queue::Deck], per_r
 
 // ------------------------------------------------------------------ B1. 새 덱
 
-#[tauri::command]
-pub fn create_deck(state: State<AppState>, name: String, parent_id: Option<i64>) -> Res<i64> {
+/// 덱 이름을 다듬고 확인한다: 보이지 않는 글자(U+200B–200D, U+2060, U+FEFF)를 빼고, 비었거나 :: 가 있거나 100자를 넘으면 거절
+fn deck_name(name: &str) -> Res<String> {
+    let name: String = name.chars().filter(|c| !matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')).collect();
     let name = name.trim();
     if name.is_empty() {
         return Err("덱 이름을 입력해 주세요.".into());
@@ -422,18 +423,34 @@ pub fn create_deck(state: State<AppState>, name: String, parent_id: Option<i64>)
     if name.contains("::") {
         return Err("이름에 :: 는 쓸 수 없어요. 하위 덱은 덱 안에서 만들어요.".into());
     }
-    let con = state.db.lock().map_err(err)?;
-    let dup: Option<i64> = con
+    if name.chars().count() > 100 {
+        return Err("덱 이름은 100자까지 쓸 수 있어요.".into());
+    }
+    Ok(name.to_string())
+}
+
+/// 같은 자리에 대소문자만 달라도 같은 이름이 있으면 거절한다 (이미 있는 겹침은 그대로 둔다). 보관한 덱이면 꺼내는 곳을 알려 준다
+fn check_deck_dup(con: &Connection, name: &str, parent_id: Option<i64>, except: Option<i64>) -> Res<()> {
+    let archived: Option<bool> = con
         .query_row(
-            "SELECT id FROM deck WHERE name = ?1 AND parent_id IS ?2",
-            params![name, parent_id],
+            "SELECT archived_at IS NOT NULL FROM deck WHERE name = ?1 COLLATE NOCASE AND parent_id IS ?2 AND id IS NOT ?3 ORDER BY archived_at IS NOT NULL LIMIT 1",
+            params![name, parent_id, except],
             |r| r.get(0),
         )
         .optional()
         .map_err(err)?;
-    if dup.is_some() {
-        return Err("같은 이름의 덱이 이미 있어요.".into());
+    match archived {
+        Some(true) => Err("보관한 덱에 같은 이름이 있어요 · 설정 › 보관한 덱에서 꺼낼 수 있어요".into()),
+        Some(false) => Err("같은 이름의 덱이 이미 있어요.".into()),
+        None => Ok(()),
     }
+}
+
+#[tauri::command]
+pub fn create_deck(state: State<AppState>, name: String, parent_id: Option<i64>) -> Res<i64> {
+    let name = deck_name(&name)?;
+    let con = state.db.lock().map_err(err)?;
+    check_deck_dup(&con, &name, parent_id, None)?;
     let now = now_ms();
     con.execute(
         "INSERT INTO deck (parent_id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
@@ -445,28 +462,35 @@ pub fn create_deck(state: State<AppState>, name: String, parent_id: Option<i64>)
 
 #[tauri::command]
 pub fn rename_deck(state: State<AppState>, deck_id: i64, name: String) -> Res<()> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("덱 이름을 입력해 주세요.".into());
-    }
-    if name.contains("::") {
-        return Err("이름에 :: 는 쓸 수 없어요. 하위 덱은 덱 안에서 만들어요.".into());
-    }
+    let name = deck_name(&name)?;
     let con = state.db.lock().map_err(err)?;
     // 최상위 덱은 parent_id 가 NULL 이라 UNIQUE 제약이 걸리지 않는다. create_deck 처럼 직접 본다
-    let dup: bool = con
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM deck d JOIN deck me ON me.id = ?1 WHERE d.name = ?2 AND d.parent_id IS me.parent_id AND d.id <> ?1)",
-            params![deck_id, name],
-            |r| r.get(0),
-        )
-        .map_err(err)?;
-    if dup {
-        return Err("같은 이름의 덱이 이미 있어요.".into());
-    }
+    let parent: Option<i64> = con.query_row("SELECT parent_id FROM deck WHERE id = ?1", [deck_id], |r| r.get(0)).map_err(err)?;
+    check_deck_dup(&con, &name, parent, Some(deck_id))?;
     con.execute("UPDATE deck SET name = ?2, updated_at = ?3 WHERE id = ?1", params![deck_id, name, now_ms()])
         .map_err(|e| if e.to_string().contains("UNIQUE") { "같은 이름의 덱이 이미 있어요.".into() } else { err(e) })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod deck_name_tests {
+    use super::*;
+
+    #[test]
+    fn deck_names_are_cleaned_and_checked() {
+        assert_eq!(deck_name(" \u{200B}스페인어\u{FEFF} ").unwrap(), "스페인어");
+        assert!(deck_name("\u{200B}\u{2060}").is_err());
+        assert!(deck_name(&"가".repeat(100)).is_ok());
+        assert!(deck_name(&"가".repeat(101)).is_err());
+
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'Deck', 0, 0)", []).unwrap();
+        con.execute("INSERT INTO deck (id, name, created_at, updated_at, archived_at) VALUES (2, 'Old', 0, 0, 1)", []).unwrap();
+        assert_eq!(check_deck_dup(&con, "DECK", None, None).unwrap_err(), "같은 이름의 덱이 이미 있어요.");
+        assert!(check_deck_dup(&con, "deck", None, Some(1)).is_ok()); // 자기 이름의 대소문자만 바꾸기
+        assert!(check_deck_dup(&con, "old", None, None).unwrap_err().starts_with("보관한 덱에"));
+        assert!(check_deck_dup(&con, "Deck", Some(1), None).is_ok());
+    }
 }
 
 #[tauri::command]
