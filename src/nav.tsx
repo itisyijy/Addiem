@@ -125,6 +125,24 @@ function openerOf(el: Element | null) {
 let keyFocus: EventTarget | null = null;
 window.addEventListener("focusin", (e) => (keyFocus = e.target instanceof Element && e.target.matches(":focus-visible") ? e.target : null), true);
 
+/**
+ * 체크박스 역할 버튼은 Enter 로 바뀌지 않는다 (Enter 는 화면 것, I192). 브라우저가 Enter 로 누르는 click 만 막는다:
+ * keydown 을 막으면 화면 단축키(useKey)도 그 키를 버리기 때문 (QA V1-02, 카드 목록 · 그림 · 가져오기 고르기 칸)
+ */
+let enterBox: EventTarget | null = null;
+window.addEventListener("keydown", (e) => (enterBox = e.key === "Enter" && e.target instanceof Element && e.target.matches("[role=checkbox]") ? e.target : null), true);
+window.addEventListener(
+  "click",
+  (e) => {
+    if (e.detail === 0 && enterBox && e.target === enterBox) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    enterBox = null;
+  },
+  true,
+);
+
 /** 바꿀 수 있는 동작 (keys.ts). KeyboardEvent.code 로 맞춘다. 평가처럼 키가 여럿이면 handler 의 index 로 몇 번째인지 */
 export type KeySpec = string | string[] | { action: ActionId };
 
