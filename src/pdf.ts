@@ -4,7 +4,7 @@ import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { isHeading, sourceApi, type NewSegment, type Rect, type Signal } from "./sourceApi";
-import { layoutOf, type Layout } from "./figures";
+import { layoutOf, splitsRun, type Layout } from "./figures";
 import { headingSegments, headingsOf, outlineOf, type PageLine } from "./outline";
 
 // 한글 PDF 는 내장 CMap(KSCms-UHC-H 등)을 쓰는 일이 많다. connect-src 가 ipc 만 열려 있어 fetch 대신
@@ -232,12 +232,12 @@ export async function readPdf(materialId: number): Promise<{ pages: number; segm
     };
     pageLines.push(lines.map((l) => ({ text: l.text, size: l.size, rect: rectOf(l) })));
     starts.push([]);
-    // 같은 신호가 이어지는 줄(두 줄짜리 하이라이트)은 한 구간으로
+    // 같은 신호가 이어지는 줄(두 줄짜리 하이라이트)은 한 구간으로. 크기 · 간격이 바뀌거나 이름표 · 제목 번호로 시작하면 나눈다 (QA T6-15)
     let ord = 0;
     for (let i = 0; i < lines.length; i++) {
       if (!sigs[i].length) continue;
       let j = i;
-      while (j + 1 < lines.length && sigs[j + 1].join() === sigs[i].join() && !hasStar(lines[j + 1].text)) j++;
+      while (j + 1 < lines.length && sigs[j + 1].join() === sigs[i].join() && !hasStar(lines[j + 1].text) && !splitsRun(lines[j], lines[j + 1])) j++;
       const rects = lines.slice(i, j + 1).map(rectOf);
       starts[p - 1].push(i);
       segments.push({

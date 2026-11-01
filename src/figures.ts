@@ -338,13 +338,25 @@ export function tableCandidates(lay: Layout): Candidate[] {
 
 export const suggestTables = (lay: Layout) => tableCandidates(lay).filter((c) => !c.reason);
 
+/** 이름표 앞 번호 ("그림 3-6" · "Fig. 2" · "Figure S1"). 낱말 뒤 숫자 · 영문 한 자+숫자만 (Tablet · Figures 는 아님) */
+export const CAPTION = /^(그림|표|도표|사진|Figure|Fig\.?|Table)\s*(?:\d|[A-Z](?=[-.]?\d))[\w.-]*/i;
+/** 이름표의 번호 부분 ("Figure 1. 회귀" → "Figure 1"), 없으면 undefined */
+export const captionTag = (text: string) => text.match(CAPTION)?.[0].replace(/[.-]+$/, "");
+/** 강조 구간 묶기 (QA T6-15): 같은 신호로 이어진 두 줄(a 다음 b)이 다른 덩어리인가.
+ * 글자 크기가 10% 넘게 바뀜 · 기준선 간격이 크기의 1.6배 넘음 · b 가 이름표나 제목 번호("1." · "2.1")로 시작. box 는 pdf 좌표, 아래는 기준선 − 0.25×크기 */
+export const splitsRun = (a: { text: string; size: number; box: number[] }, b: { text: string; size: number; box: number[] }) =>
+  Math.abs(b.size - a.size) > a.size * 0.1 ||
+  Math.abs(a.box[1] + a.size * 0.25 - (b.box[1] + b.size * 0.25)) > a.size * 1.6 ||
+  CAPTION.test(b.text) ||
+  /^\d+(\.\d+)*\.?\s/.test(b.text);
+
 /** 그림 · 표 이름표: 바로 아래(없으면 위) 줄이 "그림 3-4 …" · "표 2 …" · "Figure 1 …" 처럼 시작하면 그 글 (40자) */
 export function captionOf(lay: Layout, box: Box): string {
   const near = rowsOf(lay.items.filter((it) => Math.min(it.box[2], box[2]) - Math.max(it.box[0], box[0]) > 0));
   const text = (r: Chunk[]) => r.map((c) => c.text.trim()).join(" ");
   const below = near.find((r) => r[0].box[1] >= box[3] - 1 && r[0].box[1] <= box[3] + r[0].size * 2.5);
   const above = [...near].reverse().find((r) => r[0].box[3] <= box[1] + 1 && r[0].box[3] >= box[1] - r[0].size * 2.5);
-  const hit = [below, above].find((r) => r && /^(그림|표|도표|사진|Fig\.?|Figure|Table)\s*[\dA-Z]/i.test(text(r)));
+  const hit = [below, above].find((r) => r && CAPTION.test(text(r)));
   return hit ? text(hit).slice(0, 40) : "";
 }
 
