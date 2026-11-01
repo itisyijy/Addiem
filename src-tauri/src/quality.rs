@@ -66,14 +66,7 @@ pub(crate) fn html_lines(html: &str) -> Vec<String> {
             (None, c) => out.push(c),
         }
     }
-    let out = out
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    out.lines().map(crate::table::flat).filter(|l| !l.is_empty()).collect()
+    render::decode_entities(&out).lines().map(crate::table::flat).filter(|l| !l.is_empty()).collect()
 }
 
 /// 목록 항목 표시로 시작하는가 (①, 1., 1), -, •, · 등)

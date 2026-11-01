@@ -402,14 +402,12 @@ pub fn strip_tags(html: &str) -> String {
             (None, c) => out.push(c),
         }
     }
-    let out = out
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    crate::table::flat(&out)
+    crate::table::flat(&decode_entities(&out))
+}
+
+/// strip_tags · quality::html_lines 가 태그를 뗀 뒤 푸는 엔티티
+pub(crate) fn decode_entities(s: &str) -> String {
+    s.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
 }
 
 #[cfg(test)]
