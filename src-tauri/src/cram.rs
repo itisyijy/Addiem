@@ -201,21 +201,20 @@ pub fn cram_answer(state: State<AppState>, card_id: i64, rating: u8, elapsed_ms:
     if !(1..=4).contains(&rating) {
         return Err("평가 값이 올바르지 않아요.".into());
     }
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let now = now_ms();
-    tx.execute(
-        "INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, kind)
-         SELECT id, ?2, ?3, ?4, interval_days, interval_days, state, 0, 'cram' FROM card WHERE id = ?1",
-        params![card_id, now, rating, elapsed_ms],
-    )
-    .map_err(err)?;
-    let log_id = tx.last_insert_rowid();
-    if let Some(m) = marks {
-        crate::recall::save_marks(&tx, card_id, log_id, &m, now)?;
-    }
-    tx.commit().map_err(err)?;
-    Ok(log_id)
+    state.write(|tx| {
+        let now = now_ms();
+        tx.execute(
+            "INSERT INTO review_log (card_id, reviewed_at, rating, elapsed_ms, prev_interval_days, next_interval_days, prev_state, fed_to_scheduler, kind)
+             SELECT id, ?2, ?3, ?4, interval_days, interval_days, state, 0, 'cram' FROM card WHERE id = ?1",
+            params![card_id, now, rating, elapsed_ms],
+        )
+        .map_err(err)?;
+        let log_id = tx.last_insert_rowid();
+        if let Some(m) = marks {
+            crate::recall::save_marks(tx, card_id, log_id, &m, now)?;
+        }
+        Ok(log_id)
+    })
 }
 
 /// 압축 회독 평가 되돌리기 (Ctrl+Z). 압축 회독 기록만 지운다 (지난번 표시는 그 전 값으로)

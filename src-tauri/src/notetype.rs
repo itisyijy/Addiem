@@ -5,7 +5,7 @@
 //! - 템플릿 ord 는 정체성: 다시 매기지 않고, 지운 번호도 다시 쓰지 않는다 (`next_ord`)
 
 use crate::commands::AppState;
-use crate::db::now_ms;
+use crate::db::{self, now_ms};
 use crate::{quality, render};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -140,12 +140,10 @@ pub(crate) fn load(con: &Connection, id: i64) -> Res<Nt> {
         .optional()
         .map_err(err)?
         .ok_or("노트 유형을 찾을 수 없어요.")?;
-    let mut st = con.prepare("SELECT ord, name, qfmt, afmt, deck_id, deck_name FROM card_template WHERE note_type_id = ?1 ORDER BY ord").map_err(err)?;
-    nt.templates = st
-        .query_map([id], |r| Ok(Tpl { ord: r.get(0)?, name: r.get(1)?, qfmt: r.get(2)?, afmt: r.get(3)?, deck: r.get(4)?, deck_name: r.get(5)? }))
-        .map_err(err)?
-        .collect::<Result<_, _>>()
-        .map_err(err)?;
+    nt.templates = db::rows(con, "SELECT ord, name, qfmt, afmt, deck_id, deck_name FROM card_template WHERE note_type_id = ?1 ORDER BY ord", [id], |r| {
+        Ok(Tpl { ord: r.get(0)?, name: r.get(1)?, qfmt: r.get(2)?, afmt: r.get(3)?, deck: r.get(4)?, deck_name: r.get(5)? })
+    })
+    .map_err(err)?;
     Ok(nt)
 }
 
@@ -309,10 +307,7 @@ pub(crate) struct Fronts(HashMap<i64, (bool, HashMap<u32, Vec<usize>>)>);
 
 impl Fronts {
     pub fn load(con: &Connection) -> Res<Fronts> {
-        let ids: Vec<i64> = {
-            let mut st = con.prepare("SELECT id FROM note_type").map_err(err)?;
-            st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-        };
+        let ids: Vec<i64> = db::rows(con, "SELECT id FROM note_type", [], |r| r.get(0)).map_err(err)?;
         let mut out = HashMap::new();
         for id in ids {
             let nt = load(con, id)?;
@@ -425,10 +420,7 @@ pub(crate) fn add_missing_cards_where(con: &Connection, nt: &Nt, note_id: i64, v
     if nt.cloze() {
         return Ok(0);
     }
-    let have: Vec<u32> = {
-        let mut st = con.prepare("SELECT template_ord FROM card WHERE note_id = ?1").map_err(err)?;
-        st.query_map([note_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-    };
+    let have: Vec<u32> = db::rows(con, "SELECT template_ord FROM card WHERE note_id = ?1", [note_id], |r| r.get(0)).map_err(err)?;
     let now = now_ms();
     let mut made = 0;
     for ord in card_ords(nt, values).into_iter().filter(|o| !have.contains(o) && keep(*o)) {
@@ -445,9 +437,10 @@ pub(crate) fn add_missing_cards_where(con: &Connection, nt: &Nt, note_id: i64, v
 
 /// 이 유형의 모든 노트 (id, 자리 순서 값)
 fn notes_of(con: &Connection, id: i64) -> Res<Vec<(i64, Vec<String>)>> {
-    let mut st = con.prepare("SELECT id, fields FROM note WHERE note_type_id = ?1 ORDER BY id").map_err(err)?;
-    let rows = st.query_map([id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?;
-    rows.map(|r| r.map(|(id, f)| (id, serde_json::from_str(&f).unwrap_or_default()))).collect::<Result<_, _>>().map_err(err)
+    db::rows(con, "SELECT id, fields FROM note WHERE note_type_id = ?1 ORDER BY id", [id], |r| {
+        Ok((r.get(0)?, serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default()))
+    })
+    .map_err(err)
 }
 
 pub(crate) fn fill_cards(con: &Connection, id: i64) -> Res<usize> {
@@ -771,13 +764,15 @@ pub(crate) fn hidden_slots(con: &Connection, nt: &Nt) -> Res<Vec<HiddenSlot>> {
         .collect())
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
 pub struct TemplateAdded {
     pub(crate) ord: u32,
     /// 기존 노트에 새로 생긴 카드 수
     pub(crate) cards: usize,
 }
 
+#[cfg(test)]
 /// 카드 종류 더하기. ord 는 지운 번호도 다시 쓰지 않는다. 기존 노트마다 앞면이 비지 않으면 카드를 만든다
 pub(crate) fn add_template(con: &Connection, id: i64, name: Option<&str>, qfmt: &str, afmt: &str) -> Res<TemplateAdded> {
     let nt = load(con, id)?;
@@ -888,45 +883,6 @@ pub(crate) fn save_css(con: &Connection, id: i64, css: &str) -> Res<()> {
     Ok(())
 }
 
-#[derive(Deserialize)]
-pub struct Draft {
-    pub(crate) ord: u32,
-    pub(crate) qfmt: String,
-}
-
-/// 저장 전 확인 "카드 N장의 앞면이 비어요": 초안 앞면(drafts)과 지울 필드(removed)로 지금은 앞면이 있는데 비게 되는 카드 수
-pub(crate) fn empty_front_count(con: &Connection, id: i64, drafts: &[Draft], removed: &[usize]) -> Res<i64> {
-    let nt = load(con, id)?;
-    let cloze = nt.cloze();
-    let qfmt = |ord: u32, draft: bool| -> Option<&str> {
-        let ord = if cloze { 0 } else { ord };
-        draft.then(|| drafts.iter().find(|d| d.ord == ord).map(|d| d.qfmt.as_str())).flatten().or_else(|| nt.template(ord).ok().map(|t| t.qfmt.as_str()))
-    };
-    let gone: Vec<&str> = removed.iter().filter_map(|s| nt.slots.get(*s)).map(String::as_str).collect();
-    let mut cards: HashMap<i64, Vec<u32>> = HashMap::new();
-    {
-        let mut st = con
-            .prepare("SELECT c.note_id, c.template_ord FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1")
-            .map_err(err)?;
-        for r in st.query_map([id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?))).map_err(err)? {
-            let (nid, ord) = r.map_err(err)?;
-            cards.entry(nid).or_default().push(ord);
-        }
-    }
-    let mut n = 0;
-    for (nid, values) in notes_of(con, id)? {
-        let before = nt.field_map(&values);
-        let mut after = before.clone();
-        after.retain(|k, _| !gone.contains(&k.as_str()));
-        for &ord in cards.get(&nid).into_iter().flatten() {
-            let (Some(q0), Some(q1)) = (qfmt(ord, false), qfmt(ord, true)) else { continue };
-            let lost = if cloze { cloze_front(q0, &before, ord) && !cloze_front(q1, &after, ord) } else { has_front(q0, &before) && !has_front(q1, &after) };
-            n += i64::from(lost);
-        }
-    }
-    Ok(n)
-}
-
 #[derive(Serialize, Debug)]
 pub struct Preview {
     front: String,
@@ -1013,18 +969,14 @@ pub struct Sample {
 /// 미리보기 카드 고르기 (디자인 NT5 "지금 덱의 카드"): 이 유형의 최근 노트
 /// first: 먼저 보일 노트 (카드 편집 E 의 [편집]으로 열면 그 카드의 노트, Q1-12)
 pub(crate) fn samples(con: &Connection, id: i64, limit: i64, first: Option<i64>) -> Res<Vec<Sample>> {
-    let mut st = con
-        .prepare(
-            "SELECT n.id, n.fields, coalesce((SELECT d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = n.id ORDER BY c.id LIMIT 1), '')
-             FROM note n WHERE n.note_type_id = ?1 ORDER BY n.id IS ?3 DESC, n.id DESC LIMIT ?2",
-        )
-        .map_err(err)?;
-    let rows = st
-        .query_map(params![id, limit, first], |r| {
-            Ok(Sample { note_id: r.get(0)?, slots: serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default(), deck: r.get(2)? })
-        })
-        .map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(
+        con,
+        "SELECT n.id, n.fields, coalesce((SELECT d.name FROM card c JOIN deck d ON d.id = c.deck_id WHERE c.note_id = n.id ORDER BY c.id LIMIT 1), '')
+         FROM note n WHERE n.note_type_id = ?1 ORDER BY n.id IS ?3 DESC, n.id DESC LIMIT ?2",
+        params![id, limit, first],
+        |r| Ok(Sample { note_id: r.get(0)?, slots: serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default(), deck: r.get(2)? }),
+    )
+    .map_err(err)
 }
 
 // ------------------------------------------------------------------ 편집기 저장 (한 트랜잭션, 먼저 dry-run 으로 확인 창의 수를 센다)
@@ -1171,10 +1123,7 @@ pub(crate) fn apply_edit(con: &Connection, id: i64, edit: &TypeEdit) -> Res<Save
         save_css(con, id, &css)?;
     }
     let after = live_fronts(con, &load(con, id)?)?;
-    let alive: BTreeSet<i64> = {
-        let mut st = con.prepare("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1").map_err(err)?;
-        st.query_map([id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-    };
+    let alive: BTreeSet<i64> = db::rows(con, "SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1", [id], |r| r.get(0)).map_err(err)?;
     let empty_fronts = before.iter().filter(|c| alive.contains(c) && !after.contains(c)).count() as i64;
     Ok(SaveImpact { empty_fronts, made, templates, fields })
 }
@@ -1678,7 +1627,7 @@ fn maker(con: &Connection, nt: &Nt) -> Option<(String, Option<String>)> {
         .query_row("SELECT r.hlc FROM sync_row r JOIN note_type nt ON nt.uid = r.uid WHERE r.table_name = 'note_type' AND nt.id = ?1", [nt.id], |r| r.get(0))
         .ok()?;
     let dev = hlc.splitn(3, '-').nth(2).unwrap_or_default().to_string();
-    let me: String = con.query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).ok()?;
+    let me = db::meta(con, "device_uid").ok()??;
     if dev == me {
         return None;
     }
@@ -1706,15 +1655,14 @@ fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
         user_made: nt.user_made,
         notes: count("SELECT count(*) FROM note WHERE note_type_id = ?1")?,
         cards: count("SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1")?,
-        decks: {
-            let mut st = con
-                .prepare(
-                    "SELECT d.name FROM card c JOIN note n ON n.id = c.note_id JOIN deck d ON d.id = c.deck_id
-                     WHERE n.note_type_id = ?1 GROUP BY d.id ORDER BY count(*) DESC, d.name",
-                )
-                .map_err(err)?;
-            st.query_map([nt.id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-        },
+        decks: db::rows(
+            con,
+            "SELECT d.name FROM card c JOIN note n ON n.id = c.note_id JOIN deck d ON d.id = c.deck_id
+             WHERE n.note_type_id = ?1 GROUP BY d.id ORDER BY count(*) DESC, d.name",
+            [nt.id],
+            |r| r.get(0),
+        )
+        .map_err(err)?,
         created_at: count("SELECT created_at FROM note_type WHERE id = ?1")?,
         made_here: maker.is_none(),
         made_by: maker.and_then(|(_, name)| name),
@@ -1722,10 +1670,7 @@ fn row(con: &Connection, nt: &Nt) -> Res<TypeRow> {
 }
 
 pub(crate) fn list(con: &Connection) -> Res<Vec<TypeRow>> {
-    let ids: Vec<i64> = {
-        let mut st = con.prepare("SELECT id FROM note_type ORDER BY native_kind IS NULL, id").map_err(err)?;
-        st.query_map([], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)?
-    };
+    let ids: Vec<i64> = db::rows(con, "SELECT id FROM note_type ORDER BY native_kind IS NULL, id", [], |r| r.get(0)).map_err(err)?;
     ids.into_iter().map(|id| row(con, &load(con, id)?)).collect()
 }
 
@@ -1774,9 +1719,10 @@ pub struct Detail {
 
 pub(crate) fn detail(con: &Connection, id: i64) -> Res<Detail> {
     let nt = load(con, id)?;
-    let counts: HashMap<u32, i64> = con
-        .prepare("SELECT c.template_ord, count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1 GROUP BY c.template_ord")
-        .and_then(|mut st| st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+    let counts: HashMap<u32, i64> =
+        db::rows(con, "SELECT c.template_ord, count(*) FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1 GROUP BY c.template_ord", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(err)?;
     let cards_of = |ord: u32| if nt.cloze() { counts.values().sum() } else { counts.get(&ord).copied().unwrap_or(0) };
     // 정한 덱 → (경로, 보관했나). 빈칸 유형은 카드 종류 덱을 쓰지 않아 보이지 않는다 (NT77)
@@ -1838,14 +1784,15 @@ pub(crate) const STALE: &str = "다른 기기에서 이 노트 유형이 바뀌�
 /// 그 덱(하위 덱 포함) 노트가 쓰는 유형, 많이 쓰는 것 먼저 (같으면 최근에 쓴 쪽). 디자인 NT11 [⋯] "이 덱이 쓰는 노트 유형 먼저",
 /// NT12 처음 열 유형 = 첫째. "마지막에 쓴 유형"은 화면이 이 기기에만 기억한다 (2단계)
 pub(crate) fn deck_types(con: &Connection, deck_id: i64) -> Res<Vec<i64>> {
-    let mut st = con
-        .prepare(
-            "WITH RECURSIVE d(id) AS (SELECT ?1 UNION ALL SELECT deck.id FROM deck JOIN d ON deck.parent_id = d.id)
-             SELECT n.note_type_id FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN (SELECT id FROM d)
-             GROUP BY n.note_type_id ORDER BY count(DISTINCT n.id) DESC, max(n.id) DESC",
-        )
-        .map_err(err)?;
-    st.query_map([deck_id], |r| r.get(0)).map_err(err)?.collect::<Result<_, _>>().map_err(err)
+    db::rows(
+        con,
+        "WITH RECURSIVE d(id) AS (SELECT ?1 UNION ALL SELECT deck.id FROM deck JOIN d ON deck.parent_id = d.id)
+         SELECT n.note_type_id FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN (SELECT id FROM d)
+         GROUP BY n.note_type_id ORDER BY count(DISTINCT n.id) DESC, max(n.id) DESC",
+        [deck_id],
+        |r| r.get(0),
+    )
+    .map_err(err)
 }
 
 // ------------------------------------------------------------------ 다른 유형으로 옮기기 (Anki Change Note Type, NT75 · K41)
@@ -1914,10 +1861,7 @@ fn move_source(con: &Connection, note_ids: &[i64]) -> Res<Nt> {
         return Err("옮길 노트를 골라 주세요.".into());
     }
     let list = note_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let types: Vec<i64> = con
-        .prepare(&format!("SELECT DISTINCT note_type_id FROM note WHERE id IN ({list})"))
-        .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
-        .map_err(err)?;
+    let types: Vec<i64> = db::rows(con, &format!("SELECT DISTINCT note_type_id FROM note WHERE id IN ({list})"), [], |r| r.get(0)).map_err(err)?;
     match types.as_slice() {
         [one] => load(con, *one),
         [] => Err("노트를 찾을 수 없어요.".into()),
@@ -1955,9 +1899,10 @@ pub(crate) fn change_plan(con: &Connection, note_ids: &[i64], to: Option<i64>) -
     movable(&from)?;
     movable(&target)?;
     let list = note_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let card_ords: Vec<(u32, usize)> = con
-        .prepare(&format!("SELECT template_ord, count(*) FROM card WHERE note_id IN ({list}) GROUP BY template_ord ORDER BY template_ord"))
-        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?.collect())
+    let card_ords: Vec<(u32, usize)> =
+        db::rows(con, &format!("SELECT template_ord, count(*) FROM card WHERE note_id IN ({list}) GROUP BY template_ord ORDER BY template_ord"), [], |r| {
+            Ok((r.get(0)?, r.get::<_, i64>(1)? as usize))
+        })
         .map_err(err)?;
     let (src, dst) = (from.visible(), target.visible());
     let mut fields: Vec<(usize, Option<usize>)> = src.iter().map(|(s, _)| (*s, None)).collect();
@@ -2110,10 +2055,9 @@ pub(crate) fn change_type(con: &Connection, req: &ChangeType) -> Res<ChangeImpac
     // 앞면이 비는 카드 (NT49): 옮긴 노트의 카드 중
     let fronts = Fronts::load(con)?;
     let list = req.note_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let rows: Vec<(u32, String)> = con
-        .prepare(&format!("SELECT c.template_ord, n.fields FROM card c JOIN note n ON n.id = c.note_id WHERE n.id IN ({list})"))
-        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-        .map_err(err)?;
+    let rows: Vec<(u32, String)> =
+        db::rows(con, &format!("SELECT c.template_ord, n.fields FROM card c JOIN note n ON n.id = c.note_id WHERE n.id IN ({list})"), [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(err)?;
     out.empty_fronts = rows.iter().filter(|(o, f)| fronts.empty(to.id, *o, f)).count();
     Ok(out)
 }
@@ -2167,51 +2111,6 @@ pub fn rename_note_type(state: State<AppState>, id: i64, name: String) -> Res<()
 #[tauri::command]
 pub fn delete_note_type(state: State<AppState>, id: i64) -> Res<()> {
     state.write(|c| delete_type(c, id))
-}
-
-#[tauri::command]
-pub fn add_note_field(state: State<AppState>, id: i64, name: String) -> Res<usize> {
-    state.write(|c| add_field(c, id, &name))
-}
-
-#[tauri::command]
-pub fn rename_note_field(state: State<AppState>, id: i64, slot: usize, name: String) -> Res<()> {
-    state.write(|c| rename_field(c, id, slot, &name))
-}
-
-#[tauri::command]
-pub fn reorder_note_fields(state: State<AppState>, id: i64, slots: Vec<usize>) -> Res<()> {
-    state.write(|c| reorder_fields(c, id, &slots))
-}
-
-#[tauri::command]
-pub fn delete_note_field(state: State<AppState>, id: i64, slot: usize) -> Res<()> {
-    state.write(|c| delete_field(c, id, slot))
-}
-
-#[tauri::command]
-pub fn add_card_template(state: State<AppState>, id: i64, name: Option<String>, qfmt: String, afmt: String) -> Res<TemplateAdded> {
-    state.write(|c| add_template(c, id, name.as_deref(), &qfmt, &afmt))
-}
-
-#[tauri::command]
-pub fn delete_card_template(state: State<AppState>, id: i64, ord: u32, dry_run: bool) -> Res<TemplateImpact> {
-    state.write(|c| delete_template(c, id, ord, dry_run))
-}
-
-#[tauri::command]
-pub fn save_card_template(state: State<AppState>, id: i64, ord: u32, name: Option<String>, qfmt: String, afmt: String) -> Res<usize> {
-    state.write(|c| save_template(c, id, ord, name.as_deref(), &qfmt, &afmt))
-}
-
-#[tauri::command]
-pub fn save_note_type_css(state: State<AppState>, id: i64, css: String) -> Res<()> {
-    state.write(|c| save_css(c, id, &css))
-}
-
-#[tauri::command]
-pub fn note_type_empty_fronts(state: State<AppState>, id: i64, drafts: Vec<Draft>, removed: Vec<usize>) -> Res<i64> {
-    empty_front_count(&*state.db.lock().map_err(err)?, id, &drafts, &removed)
 }
 
 #[tauri::command]
@@ -2994,22 +2893,6 @@ mod tests {
         con.execute("UPDATE card_template SET updated_at = 0", []).unwrap();
         save_template(&con, nt, 2, Some("뒤"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
         assert_eq!(q(&con, &format!("SELECT (updated_at > 0) || (SELECT updated_at > 0 FROM card_template WHERE note_type_id = {nt}) FROM note_type WHERE id = {nt}")), ["11"]);
-    }
-
-    #[test]
-    fn empty_front_count_before_saving() {
-        let (con, deck) = setup();
-        let nt = anki_clone(&con, "reversed", None);
-        note(&con, deck, nt, &["q1", "a1"]);
-        note(&con, deck, nt, &["q2", "a2"]);
-        let d = |ord, qfmt: &str| Draft { ord, qfmt: qfmt.into() };
-        assert_eq!(empty_front_count(&con, nt, &[], &[]).unwrap(), 0);
-        assert_eq!(empty_front_count(&con, nt, &[d(1, "고정 글자")], &[]).unwrap(), 2, "Card 2 앞면에서 Back 을 뺐다");
-        assert_eq!(empty_front_count(&con, nt, &[d(1, "{{Back}}")], &[1]).unwrap(), 2, "Back 을 지운다");
-        assert_eq!(empty_front_count(&con, nt, &[d(0, "{{Front}}{{Back}}"), d(1, "{{Front}}{{Back}}")], &[1]).unwrap(), 0);
-        let cz = anki_clone(&con, "cloze", None);
-        note(&con, deck, cz, &["{{c1::a}}", "{{c2::b}}"]);
-        assert_eq!(empty_front_count(&con, cz, &[d(0, "{{cloze:Back Extra}}")], &[]).unwrap(), 1, "c1 은 Back Extra 에 없다");
     }
 
     #[test]
