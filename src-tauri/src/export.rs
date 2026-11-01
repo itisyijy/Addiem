@@ -15,6 +15,7 @@ use crate::srs;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha1::{Digest, Sha1};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
@@ -119,8 +120,6 @@ pub struct ExportResult {
     path: String,
     /// 찾지 못한 미디어를 쓰는 카드 (C1-xr [카드 보기])
     missing_cards: Vec<i64>,
-    /// 이름이 있는 그림 가리기 칸 수 (C1-xr "칸 이름 N개는 Anki에서 보이지 않아요", M8)
-    occlusion_labels: usize,
     /// 카드 종류(템플릿)가 없어 뺀 카드 수. Anki 는 템플릿 없는 노트 유형이 든 패키지를 통째로 거부한다 (Q2-01 · Q2-02)
     skipped_cards: usize,
     /// 같은 guid 를 가진 두 번째 노트 (두 기기 업데이트로 생긴 두 벌, DU-06). Anki 가 하나로 합치지 않게 새 guid 로 내보냈다
@@ -236,16 +235,16 @@ fn preview(con: &Connection, deck_id: i64) -> Res<ExportPreview> {
 
 /// 고른 덱과 보관하지 않은 하위 덱
 fn scope(con: &Connection, deck_id: i64) -> Res<Vec<i64>> {
-    let mut st = con
-        .prepare(
-            "WITH RECURSIVE t(id) AS (
-                 SELECT id FROM deck WHERE id = ?1 AND archived_at IS NULL
-                 UNION ALL SELECT d.id FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
-             SELECT id FROM t",
-        )
-        .map_err(err)?;
-    let rows = st.query_map([deck_id], |r| r.get(0)).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(
+        con,
+        "WITH RECURSIVE t(id) AS (
+             SELECT id FROM deck WHERE id = ?1 AND archived_at IS NULL
+             UNION ALL SELECT d.id FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
+         SELECT id FROM t",
+        [deck_id],
+        |r| r.get(0),
+    )
+    .map_err(err)
 }
 
 // ------------------------------------------------------------------ C1-xc CSV
@@ -286,18 +285,16 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
     if cols.is_empty() {
         return Err("넣을 열을 하나 이상 골라 주세요.".into());
     }
-    let paths: HashMap<i64, String> = {
-        let mut st = con
-            .prepare(
-                "WITH RECURSIVE t(id, path) AS (
-                     SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
-                     UNION ALL SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
-                 SELECT id, path FROM t",
-            )
-            .map_err(err)?;
-        let rows = st.query_map([deck_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let paths: HashMap<i64, String> = db::rows(
+        con,
+        "WITH RECURSIVE t(id, path) AS (
+             SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
+             UNION ALL SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
+         SELECT id, path FROM t",
+        [deck_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)?;
     if paths.is_empty() {
         return Err("내보낼 덱을 찾지 못했어요.".into());
     }
@@ -362,7 +359,7 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
                 "front" => text(front.clone()),
                 "back" => text(back.clone()),
                 "deck" => paths.get(&r.get::<_, i64>(5).map_err(err)?).cloned().unwrap_or_default(),
-                "tags" => r.get::<_, String>(1).map_err(err)?.split_whitespace().collect::<Vec<_>>().join(" "),
+                "tags" => crate::table::flat(&r.get::<_, String>(1).map_err(err)?),
                 "importance" => level.map(|l| ["보충", "일반", "핵심"][l.clamp(0, 2) as usize].to_string()).unwrap_or_default(),
                 _ => due.filter(|_| state != "new").map(|d| db::date_from_day(db::study_day(d))).unwrap_or_default(),
             })
@@ -547,19 +544,17 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let now = now_ms();
 
     // 덱. 고른 덱이 맨 위 이름이다. 보관한 덱은 그 아래까지 뺀다
-    let decks: Vec<(i64, String, i64, i64, Option<i64>)> = {
-        let mut st = con
-            .prepare(
-                "WITH RECURSIVE t(id, path) AS (
-                     SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
-                     UNION ALL
-                     SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
-                 SELECT t.id, t.path, d.created_at, d.updated_at, d.anki_deck_id FROM t JOIN deck d ON d.id = t.id",
-            )
-            .map_err(err)?;
-        let rows = st.query_map([deck_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let decks: Vec<(i64, String, i64, i64, Option<i64>)> = db::rows(
+        con,
+        "WITH RECURSIVE t(id, path) AS (
+             SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
+             UNION ALL
+             SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
+         SELECT t.id, t.path, d.created_at, d.updated_at, d.anki_deck_id FROM t JOIN deck d ON d.id = t.id",
+        [deck_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .map_err(err)?;
     if decks.is_empty() {
         return Err("내보낼 덱을 찾지 못했어요.".into());
     }
@@ -576,65 +571,61 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let in_decks = deck_map.keys().map(i64::to_string).collect::<Vec<_>>().join(",");
 
     // 신규 카드 순서는 우리 큐와 같다 (commands::load_cards 의 position)
-    let mut cards: Vec<Card> = {
-        let mut st = con
-            .prepare(&format!(
-                "SELECT id, note_id, deck_id, template_ord, state, due_at, interval_days, stability, difficulty, srs_step,
-                        reps, lapses, created_at, updated_at, anki_card_id
-                 FROM card WHERE deck_id IN ({in_decks}) ORDER BY COALESCE(anki_card_id, id)"
-            ))
-            .map_err(err)?;
-        let rows = st
-            .query_map([], |r| {
-                Ok(Card {
-                    id: r.get(0)?,
-                    note_id: r.get(1)?,
-                    deck_id: r.get(2)?,
-                    ord: r.get(3)?,
-                    state: r.get(4)?,
-                    due_at: r.get(5)?,
-                    interval_days: r.get(6)?,
-                    stability: r.get(7)?,
-                    difficulty: r.get(8)?,
-                    step: r.get(9)?,
-                    reps: r.get(10)?,
-                    lapses: r.get(11)?,
-                    created_at: r.get(12)?,
-                    updated_at: r.get(13)?,
-                    anki_card_id: r.get(14)?,
-                })
+    let mut cards: Vec<Card> = db::rows(
+        con,
+        &format!(
+            "SELECT id, note_id, deck_id, template_ord, state, due_at, interval_days, stability, difficulty, srs_step,
+                    reps, lapses, created_at, updated_at, anki_card_id
+             FROM card WHERE deck_id IN ({in_decks}) ORDER BY COALESCE(anki_card_id, id)"
+        ),
+        [],
+        |r| {
+            Ok(Card {
+                id: r.get(0)?,
+                note_id: r.get(1)?,
+                deck_id: r.get(2)?,
+                ord: r.get(3)?,
+                state: r.get(4)?,
+                due_at: r.get(5)?,
+                interval_days: r.get(6)?,
+                stability: r.get(7)?,
+                difficulty: r.get(8)?,
+                step: r.get(9)?,
+                reps: r.get(10)?,
+                lapses: r.get(11)?,
+                created_at: r.get(12)?,
+                updated_at: r.get(13)?,
+                anki_card_id: r.get(14)?,
             })
-            .map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+        },
+    )
+    .map_err(err)?;
     if cards.is_empty() {
         return Err("내보낼 카드가 없어요.".into());
     }
-    let mut notes: Vec<Note> = {
-        let mut st = con
-            .prepare(&format!(
-                "SELECT id, note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid, exam_hits, exam_names FROM note
-                 WHERE id IN (SELECT note_id FROM card WHERE deck_id IN ({in_decks})) ORDER BY id"
-            ))
-            .map_err(err)?;
-        let rows = st
-            .query_map([], |r| {
-                Ok(Note {
-                    id: r.get(0)?,
-                    note_type_id: r.get(1)?,
-                    fields: r.get(2)?,
-                    tags: r.get(3)?,
-                    created_at: r.get(4)?,
-                    updated_at: r.get(5)?,
-                    anki_note_id: r.get(6)?,
-                    anki_guid: r.get(7)?,
-                    exam_hits: r.get(8)?,
-                    exam_names: r.get(9)?,
-                })
+    let mut notes: Vec<Note> = db::rows(
+        con,
+        &format!(
+            "SELECT id, note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid, exam_hits, exam_names FROM note
+             WHERE id IN (SELECT note_id FROM card WHERE deck_id IN ({in_decks})) ORDER BY id"
+        ),
+        [],
+        |r| {
+            Ok(Note {
+                id: r.get(0)?,
+                note_type_id: r.get(1)?,
+                fields: r.get(2)?,
+                tags: r.get(3)?,
+                created_at: r.get(4)?,
+                updated_at: r.get(5)?,
+                anki_note_id: r.get(6)?,
+                anki_guid: r.get(7)?,
+                exam_hits: r.get(8)?,
+                exam_names: r.get(9)?,
             })
-            .map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+        },
+    )
+    .map_err(err)?;
 
     let sources = source_tags(con)?;
     let root_did = deck_map[&deck_id];
@@ -673,7 +664,6 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     tx.execute_batch(SCHEMA_11).map_err(err)?;
 
     let mut media = BTreeSet::new();
-    let mut labels = 0;
     let mut note_ids: HashMap<i64, i64> = HashMap::new();
     let mut used = Ids::default();
     let total = notes.len() + cards.len();
@@ -688,9 +678,6 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         let stored: Vec<String> = serde_json::from_str(&n.fields).map_err(err)?;
         let mut flds: Vec<String> = m.slots.iter().map(|s| stored.get(*s).cloned().unwrap_or_default()).collect();
         flds.resize(m.nfields.max(1), String::new());
-        if m.io {
-            labels += crate::occlusion::label_count(&flds[0]);
-        }
         for f in &flds {
             media_refs(f, &mut media);
         }
@@ -793,7 +780,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     .map_err(err)?;
     tx.commit().map_err(err)?;
     origins.commit().map_err(err)?;
-    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, occlusion_labels: labels, skipped_cards, duplicate_guids, ..Default::default() };
+    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, skipped_cards, duplicate_guids, ..Default::default() };
     Ok((result, media))
 }
 
@@ -918,8 +905,6 @@ struct Model {
     json: Value,
     nfields: usize,
     sortf: usize,
-    /// Anki 그림 가리기 유형 (occlusion.rs). 칸 필드는 첫 필드다
-    io: bool,
     /// Anki 필드 순서대로 우리 자리 번호 (보이는 순서, 지운 자리는 없다)
     slots: Vec<usize>,
     /// 우리 템플릿 ord -> Anki ord (Anki 는 0 부터 빈틈없이 센다. 지운 ord 의 빈자리를 메운다). 빈칸 유형은 비어 있다 (카드 ord = 빈칸 번호)
@@ -957,9 +942,8 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut Ids, deck_map: &HashM
         v["id"] = json!(id);
         let nfields = v["flds"].as_array().map_or(1, Vec::len);
         let sortf = v["sortf"].as_u64().unwrap_or(0) as usize;
-        let io = crate::occlusion::is_template(&v["tmpls"].to_string());
         let templates = v["tmpls"].as_array().map_or(0, Vec::len);
-        return Ok(Model { id, json: v, nfields, sortf, io, slots: (0..nfields).collect(), ords: HashMap::new(), templates, cloze: true });
+        return Ok(Model { id, json: v, nfields, sortf, slots: (0..nfields).collect(), ords: HashMap::new(), templates, cloze: true });
     }
 
     let nt = crate::notetype::load(con, ntid)?;
@@ -1014,7 +998,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut Ids, deck_map: &HashM
             f["preventDeletion"] = json!(i < 4);
         }
     }
-    Ok(Model { id, json, nfields: fields.len(), sortf: 0, io, slots, ords, templates: tmpls.len(), cloze })
+    Ok(Model { id, json, nfields: fields.len(), sortf: 0, slots, ords, templates: tmpls.len(), cloze })
 }
 
 /// 앞면 템플릿이 쓰는 필드 번호. 구버전 Anki 가 카드를 만들지 판단하는 req 에 쓴다
@@ -1047,14 +1031,14 @@ pub(crate) fn media_refs(html: &str, out: &mut impl Extend<String>) {
 
 /// Anki 의 중복 검사 값(csum). 첫 필드 글자의 sha1 앞 4바이트
 fn checksum(field: &str) -> i64 {
-    sha1(strip_tags(field).as_bytes())[..4].iter().fold(0, |n, b| (n << 8) | i64::from(*b))
+    Sha1::digest(strip_tags(field).as_bytes())[..4].iter().fold(0, |n, b| (n << 8) | i64::from(*b))
 }
 
 /// Anki guid64 처럼 64비트 값을 base91 로 쓴다. 노트마다 고정이라 다시 내보내도 같다.
 /// 씨앗의 "neo-anki" 는 예전 이름이지만 바꾸지 않는다: 바꾸면 이미 내보낸 노트와 guid 가 달라져 Anki 에 두 벌이 된다
 fn guid_for(id: i64, created_at: i64) -> String {
     const TABLE: &[u8; 91] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&()*+,-./:;<=>?@[]^_`{|}~";
-    let mut n = sha1(format!("neo-anki:{id}:{created_at}").as_bytes())[..8].iter().fold(0u64, |n, b| (n << 8) | u64::from(*b));
+    let mut n = Sha1::digest(format!("neo-anki:{id}:{created_at}").as_bytes())[..8].iter().fold(0u64, |n, b| (n << 8) | u64::from(*b));
     let mut out = vec![];
     loop {
         out.push(TABLE[(n % 91) as usize]);
@@ -1065,45 +1049,6 @@ fn guid_for(id: i64, created_at: i64) -> String {
     }
     out.reverse();
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// SHA-1 (FIPS 180-1). csum 과 guid 에만 쓴다. 보안 용도가 아니다
-fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
-    let mut msg = data.to_vec();
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&(data.len() as u64 * 8).to_be_bytes());
-    for block in msg.chunks(64) {
-        let mut w = [0u32; 80];
-        for (wi, b) in w.iter_mut().zip(block.chunks(4)) {
-            *wi = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e] = h;
-        for (i, wi) in w.iter().enumerate() {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
-                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
-                _ => (b ^ c ^ d, 0xCA62_C1D6),
-            };
-            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
-            (e, d, c, b, a) = (d, c, b.rotate_left(30), a, t);
-        }
-        for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
-            *x = x.wrapping_add(y);
-        }
-    }
-    let mut out = [0u8; 20];
-    for (o, x) in out.chunks_mut(4).zip(h) {
-        o.copy_from_slice(&x.to_be_bytes());
-    }
-    out
 }
 
 // ------------------------------------------------------------------ zip
@@ -1168,21 +1113,12 @@ mod tests {
     }
 
     fn strings(con: &Connection, sql: &str) -> Vec<String> {
-        con.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
-    }
-
-    fn hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
+        db::rows(con, sql, [], |r| r.get(0)).unwrap()
     }
 
     #[test]
-    fn sha1_known_vectors() {
-        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
-        assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-        // 56바이트: 길이가 다음 블록으로 넘어가는 경계
-        assert_eq!(hex(&sha1(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
-        assert_eq!(hex(&sha1("The quick brown fox jumps over the lazy dog".as_bytes())), "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
-        assert_eq!(checksum("<b>abc</b>"), 0xa999_3e36, "csum 은 태그를 뗀 글자의 앞 8자리");
+    fn checksum_of_stripped_field() {
+        assert_eq!(checksum("<b>abc</b>"), 0xa999_3e36, "csum 은 태그를 뗀 글자의 sha1 앞 8자리");
     }
 
     #[test]
@@ -1679,7 +1615,7 @@ mod tests {
 
         let out = tmp.0.join("io.apkg");
         let r = serde_json::to_value(export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap()).unwrap();
-        assert_eq!((r["cards"].as_u64(), r["media"].as_u64(), r["occlusion_labels"].as_u64()), (Some(2), Some(1), Some(1)));
+        assert_eq!((r["cards"].as_u64(), r["media"].as_u64()), (Some(2), Some(1)));
         // Anki 26.9.2 가 내보낸 모델과 같은 표시 (rslib notetype/schema11.rs)
         let m = io_model(&out, &tmp.0);
         assert_eq!((m["type"].as_i64(), m["name"].as_str()), (Some(1), Some("Image Occlusion")), "빈칸 종류");
@@ -1846,14 +1782,14 @@ mod tests {
         assert_eq!(res["check_cards"].as_u64(), Some(0), "IO 스크립트를 '확인이 필요한 카드'로 세지 않는다");
         let con = a.db.lock().unwrap();
         let names = crate::commands::note_field_names(&con).unwrap();
-        let mut st = con
-            .prepare(
-                "SELECT n.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord FROM card c JOIN note n ON n.id = c.note_id
-                 JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id ORDER BY n.id, c.template_ord",
-            )
-            .unwrap();
-        let rows: Vec<(i64, String, i64, String, String, u32)> =
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        let rows: Vec<(i64, String, i64, String, String, u32)> = db::rows(
+            &con,
+            "SELECT n.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord FROM card c JOIN note n ON n.id = c.note_id
+             JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id ORDER BY n.id, c.template_ord",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap();
         assert!(!rows.is_empty());
         for (nid, fields, nt, q, a, ord) in rows {
             assert!(crate::occlusion::is_note(&con, nid).unwrap(), "{nt}");
@@ -1946,8 +1882,7 @@ mod tests {
         crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
         let bc = b.db.lock().unwrap();
         let rows = |c: &Connection| -> Vec<(String, ExamState)> {
-            let mut st = c.prepare("SELECT tags, exam_hits, exam_names FROM note ORDER BY fields").unwrap();
-            st.query_map([], |r| Ok((r.get(0)?, ExamState::of(0, r.get(1)?, r.get(2)?)))).unwrap().collect::<Result<_, _>>().unwrap()
+            db::rows(c, "SELECT tags, exam_hits, exam_names FROM note ORDER BY fields", [], |r| Ok((r.get(0)?, ExamState::of(0, r.get(1)?, r.get(2)?)))).unwrap()
         };
         let (before, after) = (rows(&con), rows(&bc));
         let tags: Vec<&str> = after.iter().map(|r| r.0.as_str()).collect();

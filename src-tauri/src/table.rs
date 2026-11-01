@@ -73,7 +73,7 @@ fn eun(word: &str) -> &'static str {
 }
 
 /// 한 줄로 (칸 안 줄바꿈 · 겹친 빈칸)
-fn flat(s: &str) -> String {
+pub(crate) fn flat(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

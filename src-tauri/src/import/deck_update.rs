@@ -18,7 +18,7 @@ use serde::Deserialize;
 /// ponytail: 모양만 다른 HTML 을 다 거르지는 못한다 (속성 순서 · div 감싸기). 못 거른 차이는 "내 것"으로 지켜진다 (위험 ①)
 fn norm(s: &str) -> String {
     let s = s.replace("&nbsp;", " ").replace("<br/>", "<br>").replace("<br />", "<br>");
-    let mut out = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = flat(&s);
     while let Some(t) = out.strip_suffix("<br>") {
         out = t.trim_end().to_string();
     }
@@ -29,10 +29,6 @@ fn norm(s: &str) -> String {
 pub(crate) fn h(s: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(norm(s).as_bytes()))[..16].to_string()
-}
-
-fn words(tags: &str) -> String {
-    tags.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// note.origin: 자리마다 넣은 값의 해시 ("" = 원본 없음, 빈 값으로 본다), 태그 글 (출처 태그는 뺀 것),
@@ -56,7 +52,7 @@ impl NoteOrigin {
 
 /// 넣은 값(자리 맞추기 · 미디어 이름 바꾸기 뒤)의 원본. 처음 가져올 때와 업데이트를 적용할 때 쓴다
 pub(crate) fn note_origin(fields: &[String], tags: &str) -> String {
-    serde_json::to_string(&NoteOrigin { f: fields.iter().map(|f| h(f)).collect(), t: words(tags), v: Some(fields.iter().cloned().map(Some).collect()) })
+    serde_json::to_string(&NoteOrigin { f: fields.iter().map(|f| h(f)).collect(), t: flat(tags), v: Some(fields.iter().cloned().map(Some).collect()) })
         .unwrap_or_default()
 }
 
@@ -278,8 +274,7 @@ pub struct ConflictNote {
     /// 첫 카드의 덱 경로 ("정보처리기사 › 데이터베이스")
     deck: String,
     fields: Vec<ConflictField>,
-    /// 같은 노트에서 충돌 없이 새 버전으로 바뀌는 필드 · 내 것으로 지키는 필드 (태그 포함)
-    auto_new: usize,
+    /// 같은 노트에서 충돌 없이 내 것으로 지키는 필드 수 (태그 포함)
     auto_mine: usize,
     /// 그 새 버전으로 바뀌는 필드 이름 ("태그" 포함)
     auto_new_fields: Vec<String>,
@@ -496,7 +491,7 @@ fn hint(con: &Connection, guids: &[&str], decks: &BTreeSet<i64>) -> Res<UpdateHi
 /// 이번 패키지 덱(Anki 덱 id)으로 가져온 우리 덱
 fn known_decks(con: &Connection, decks: &BTreeSet<i64>) -> Res<HashSet<i64>> {
     let list = decks.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    con.prepare(&format!("SELECT id FROM deck WHERE anki_deck_id IN ({list})")).and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)
+    db::rows(con, &format!("SELECT id FROM deck WHERE anki_deck_id IN ({list})"), [], |r| r.get(0)).map_err(err)
 }
 
 /// [새 노트만 더하기]가 넣지 않을 노트: 업데이트로 알아본 파일(file_hint 가 있다)이면 내가 지운 노트 (origin_gone, 업데이트와 같다 DU3).
@@ -505,12 +500,12 @@ pub(super) fn gone_guids(con: &Connection, pkg: &Package) -> Res<HashSet<String>
     if file_hint(con, pkg)?.is_none() {
         return Ok(HashSet::new());
     }
-    con.prepare("SELECT guid FROM origin_gone").and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)
+    db::rows(con, "SELECT guid FROM origin_gone", [], |r| r.get(0)).map_err(err)
 }
 
 /// inspect_anki (B2): 이미 있는 노트가 하나라도 있으면 [업데이트로 가져오기] 를 보일 근거
 pub(super) fn file_hint(con: &Connection, pkg: &Package) -> Res<Option<UpdateHint>> {
-    let guids: Vec<String> = pkg.col.prepare("SELECT guid FROM notes").and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)?;
+    let guids: Vec<String> = db::rows(&pkg.col, "SELECT guid FROM notes", [], |r| r.get(0)).map_err(err)?;
     let refs: Vec<&str> = guids.iter().map(String::as_str).collect();
     let decks: BTreeSet<i64> = card_deck_ids(pkg, |_| true)?;
     let mut hint = hint(con, &refs, &decks)?;
@@ -984,11 +979,10 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     let picked_note = |id: i64| chosen.as_ref().is_none_or(|c| c.notes.contains(&id));
     let picked_card = |id: i64| chosen.as_ref().is_none_or(|c| c.cards.contains(&id));
     let notes: Vec<PNote> = {
-        let mut st = pkg.col.prepare("SELECT id, guid, mid, mod, tags, flds FROM notes ORDER BY id").map_err(err)?;
-        let rows = st
-            .query_map([], |r| Ok(PNote { id: r.get(0)?, guid: r.get(1)?, mid: r.get(2)?, modified: r.get(3)?, tags: r.get(4)?, flds: r.get(5)? }))
-            .map_err(err)?;
-        let all: Vec<PNote> = rows.collect::<Result<_, _>>().map_err(err)?;
+        let all: Vec<PNote> = db::rows(&pkg.col, "SELECT id, guid, mid, mod, tags, flds FROM notes ORDER BY id", [], |r| {
+            Ok(PNote { id: r.get(0)?, guid: r.get(1)?, mid: r.get(2)?, modified: r.get(3)?, tags: r.get(4)?, flds: r.get(5)? })
+        })
+        .map_err(err)?;
         all.into_iter().filter(|n| picked_note(n.id)).collect()
     };
     let mut cards: HashMap<i64, Vec<PCard>> = HashMap::new();
@@ -1007,12 +1001,11 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     let file_name = req.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut s = UpdateSummary { file_name: file_name.clone(), ..Default::default() };
     s.reviews_skipped = {
-        let mut st = pkg.col.prepare("SELECT cid FROM revlog").map_err(err)?;
-        let cids = st.query_map([], |r| r.get::<_, i64>(0)).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
+        let cids: Vec<i64> = db::rows(&pkg.col, "SELECT cid FROM revlog", [], |r| r.get(0)).map_err(err)?;
         cids.into_iter().filter(|c| picked_card(*c)).count()
     };
     let deck_ids = card_deck_ids(&pkg, picked_card)?;
-    let all_guids: HashSet<String> = pkg.col.prepare("SELECT guid FROM notes").and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).map_err(err)?;
+    let all_guids: HashSet<String> = db::rows(&pkg.col, "SELECT guid FROM notes", [], |r| r.get(0)).map_err(err)?;
 
     let tx = con.transaction().map_err(err)?;
     let now = now_ms();
@@ -1081,10 +1074,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
 
     // 같은 guid 가 두 벌인 노트 (DU-06): 알린다. 고치는 것은 첫 번째 것 (ORDER BY id)
     {
-        let dups: Vec<String> = tx
-            .prepare("SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL GROUP BY anki_guid HAVING count(*) > 1")
-            .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
-            .map_err(err)?;
+        let dups: Vec<String> = db::rows(&tx, "SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL GROUP BY anki_guid HAVING count(*) > 1", [], |r| r.get(0)).map_err(err)?;
         let mut st = tx.prepare_cached("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = ?1 ORDER BY c.id").map_err(err)?;
         for g in dups.iter().filter(|g| all_guids.contains(*g)) {
             s.duplicate_notes += 1;
@@ -1206,10 +1196,7 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     // 새 카드 종류: 이 유형의 다른 노트(이번 파일에 없는 노트 포함)도 앞면이 비지 않으면 카드를 만든다 (NT22, 덱 · 중요도는 노트의 첫 카드)
     for tm in maps.values().filter(|m| !m.new_ords.is_empty()) {
         let nt = &nts[&tm.ntid];
-        let rows: Vec<(i64, String)> = tx
-            .prepare("SELECT id, fields FROM note WHERE note_type_id = ?1 ORDER BY id")
-            .and_then(|mut st| st.query_map([tm.ntid], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-            .map_err(err)?;
+        let rows: Vec<(i64, String)> = db::rows(&tx, "SELECT id, fields FROM note WHERE note_type_id = ?1 ORDER BY id", [tm.ntid], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
         let mut made = 0;
         for (nid, fields) in rows {
             let values: Vec<String> = serde_json::from_str(&fields).unwrap_or_default();
@@ -1224,13 +1211,16 @@ pub(crate) fn run(con: &mut Connection, data_dir: &Path, req: &Req, dry: bool, w
     // 새 버전에 없는 노트: 원본이 있고, 이번 패키지 덱의 우리 덱에 카드가 있는 노트 (DU11). 그대로 둔다
     if !deck_ids.is_empty() {
         let list = deck_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        let rows: Vec<(i64, String)> = tx
-            .prepare(&format!(
+        let rows: Vec<(i64, String)> = db::rows(
+            &tx,
+            &format!(
                 "SELECT DISTINCT n.id, n.anki_guid FROM note n JOIN card c ON c.note_id = n.id JOIN deck d ON d.id = c.deck_id
                  WHERE n.origin IS NOT NULL AND n.anki_guid IS NOT NULL AND d.anki_deck_id IN ({list}) ORDER BY n.id"
-            ))
-            .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-            .map_err(err)?;
+            ),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(err)?;
         let missing: Vec<i64> = rows.into_iter().filter(|(_, g)| !all_guids.contains(g)).map(|(id, _)| id).collect();
         s.missing_notes = missing.len();
         let mut st = tx.prepare_cached("SELECT id FROM card WHERE note_id = ?1 ORDER BY id").map_err(err)?;
@@ -1374,7 +1364,6 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
                 title,
                 deck,
                 fields: conflicts,
-                auto_new: new,
                 auto_mine: mine,
                 auto_new_fields: new_names,
                 edited_at: o.updated_at,
@@ -1392,7 +1381,7 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
 
     let fields_changed = fin != m;
     let fields_json = if fields_changed { serde_json::to_string(&fin).map_err(err)? } else { o.fields_raw.clone() };
-    let origin = serde_json::to_string(&NoteOrigin { f: of, t: words(tags), v: Some(ov) }).map_err(err)?;
+    let origin = serde_json::to_string(&NoteOrigin { f: of, t: flat(tags), v: Some(ov) }).map_err(err)?;
     if fields_changed || tags_changed || exam != o.exam || o.origin.as_deref() != Some(origin.as_str()) {
         tx.execute(
             "UPDATE note SET fields = ?2, tags = ?3, exam_hits = ?4, exam_names = ?5, origin = ?6, updated_at = ?7 WHERE id = ?1",
@@ -1556,10 +1545,8 @@ pub(crate) fn tidy_missing(con: &mut Connection, data_dir: &Path, card_ids: &[i6
         return Ok(TidySummary::default());
     }
     let ids = crate::commands::id_list(card_ids);
-    let notes: Vec<i64> = con
-        .prepare(&format!("SELECT DISTINCT n.id FROM note n JOIN card c ON c.note_id = n.id WHERE c.id IN ({ids}) AND n.origin IS NOT NULL ORDER BY n.id"))
-        .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
-        .map_err(err)?;
+    let notes: Vec<i64> =
+        db::rows(con, &format!("SELECT DISTINCT n.id FROM note n JOIN card c ON c.note_id = n.id WHERE c.id IN ({ids}) AND n.origin IS NOT NULL ORDER BY n.id"), [], |r| r.get(0)).map_err(err)?;
     let list = if notes.is_empty() { "-1".to_string() } else { crate::commands::id_list(&notes) };
     let n = |sql: &str| -> Res<usize> { con.query_row(&format!("SELECT count(*) FROM card c WHERE c.note_id IN ({list}) {sql}"), [], |r| r.get::<_, i64>(0)).map(|v| v as usize).map_err(err) };
     let mut s = TidySummary { notes: notes.len(), cards: n("")?, studied: n(&format!("AND {STUDIED}"))?, suspended: n("AND c.state = 'suspended'")?, backup: None, changed: vec![] };
@@ -1573,10 +1560,8 @@ pub(crate) fn tidy_missing(con: &mut Connection, data_dir: &Path, card_ids: &[i6
     }
     let tx = con.transaction().map_err(err)?;
     if action == "suspend" {
-        let changed: Vec<(i64, i64)> = tx
-            .prepare(&format!("SELECT id, note_id FROM card WHERE note_id IN ({list}) AND state <> 'suspended' ORDER BY id"))
-            .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-            .map_err(err)?;
+        let changed: Vec<(i64, i64)> =
+            db::rows(&tx, &format!("SELECT id, note_id FROM card WHERE note_id IN ({list}) AND state <> 'suspended' ORDER BY id"), [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
         tx.execute(&format!("UPDATE card SET state = 'suspended', updated_at = ?1 WHERE note_id IN ({list}) AND state <> 'suspended'"), [now]).map_err(err)?;
         s.notes = changed.iter().map(|c| c.1).collect::<std::collections::HashSet<_>>().len();
         s.cards = changed.len();
@@ -1620,8 +1605,8 @@ fn note_row(tx: &Connection, id: i64) -> Res<serde_json::Value> {
 fn type_row(tx: &Connection, id: i64) -> Res<serde_json::Value> {
     let (uid, fields, css, origin): (String, String, String, Option<String>) =
         tx.query_row("SELECT uid, fields, css, origin FROM note_type WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?;
-    let mut st = tx.prepare("SELECT ord, qfmt, afmt FROM card_template WHERE note_type_id = ?1 ORDER BY ord").map_err(err)?;
-    let templates: Vec<(u32, String, String)> = st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let templates: Vec<(u32, String, String)> =
+        db::rows(tx, "SELECT ord, qfmt, afmt FROM card_template WHERE note_type_id = ?1 ORDER BY ord", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
     Ok(serde_json::json!({ "uid": uid, "fields": fields, "css": css, "origin": origin, "templates": templates }))
 }
 
@@ -1723,9 +1708,10 @@ pub(crate) fn undo(con: &mut Connection, batch: i64, dry: bool) -> Res<UndoSumma
     if s.blocked.is_some() {
         return Ok(s);
     }
-    let rows: Vec<(String, String, Option<String>, Option<String>)> = tx
-        .prepare("SELECT kind, uid, before, after FROM update_journal WHERE batch_id = ?1 AND kind <> 'meta' ORDER BY kind, uid")
-        .and_then(|mut st| st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect())
+    let rows: Vec<(String, String, Option<String>, Option<String>)> =
+        db::rows(&tx, "SELECT kind, uid, before, after FROM update_journal WHERE batch_id = ?1 AND kind <> 'meta' ORDER BY kind, uid", [batch], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
         .map_err(err)?;
     let now = now_ms();
     let json = |x: &Option<String>| x.as_deref().and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()).unwrap_or_default();
@@ -1850,10 +1836,13 @@ pub struct Undoable {
 #[tauri::command(async)]
 pub fn undoable_updates(state: State<'_, AppState>) -> Res<Vec<Undoable>> {
     let mut con = state.db.lock().map_err(err)?;
-    let rows: Vec<(i64, Option<String>)> = con
-        .prepare("SELECT b.id, json_extract(j.after, '$.backup') FROM import_batch b JOIN update_journal j ON j.batch_id = b.id AND j.kind = 'meta' ORDER BY b.id DESC LIMIT 50")
-        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-        .map_err(err)?;
+    let rows: Vec<(i64, Option<String>)> = db::rows(
+        &con,
+        "SELECT b.id, json_extract(j.after, '$.backup') FROM import_batch b JOIN update_journal j ON j.batch_id = b.id AND j.kind = 'meta' ORDER BY b.id DESC LIMIT 50",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)?;
     let mut out = vec![];
     for (batch, backup) in rows {
         let s = undo(&mut con, batch, true)?;
@@ -2427,10 +2416,8 @@ mod tests {
         };
         testpkg::write(&p2, &[m()], &[(1, "D")], &[note(1, "g1", 20, &["Q", "A", "예문 있음"], &[(1, 0), (1, 1)]), note(2, "g2", 20, &["Q2", "A2", ""], &[(1, 0)])], &[]);
         update(&s, &p2, &Choices::default(), false);
-        let rows: Vec<String> = {
-            let con = s.db.lock().unwrap();
-            con.prepare("SELECT n.anki_guid || c.template_ord || ':' || c.deck_id FROM card c JOIN note n ON n.id = c.note_id ORDER BY 1").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
-        };
+        let rows: Vec<String> =
+            db::rows(&s.db.lock().unwrap(), "SELECT n.anki_guid || c.template_ord || ':' || c.deck_id FROM card c JOIN note n ON n.id = c.note_id ORDER BY 1", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, [format!("g10:{deck}"), format!("g11:{other}"), format!("g20:{deck}")]);
     }
 
@@ -2673,8 +2660,7 @@ mod tests {
         assert_eq!((r.new_notes, r.new_note_cards, r.media_new, r.media_renamed), (2, 2, 1, 1), "빈 DB 의 업데이트 = 가져오기");
         let origins = |s: &AppState| -> Vec<String> {
             let con = s.db.lock().unwrap();
-            let mut st = con.prepare("SELECT origin FROM (SELECT origin, anki_guid AS k FROM note UNION ALL SELECT origin, anki_model_id FROM note_type WHERE anki_model_id IS NOT NULL) ORDER BY k").unwrap();
-            st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+            db::rows(&con, "SELECT origin FROM (SELECT origin, anki_guid AS k FROM note UNION ALL SELECT origin, anki_model_id FROM note_type WHERE anki_model_id IS NOT NULL) ORDER BY k", [], |r| r.get(0)).unwrap()
         };
         assert_eq!(origins(&a), origins(&b), "같은 기준 (미디어 이름 바꾸기 뒤의 값)");
         assert_eq!(fields(&a, "g1"), fields(&b, "g1"));

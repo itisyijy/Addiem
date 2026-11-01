@@ -7,6 +7,7 @@
 //!   - 중요도 제안(N3 · B4): 하위 덱의 기출 비율이 덱 안 상위 25% 이고 기출 카드가 5장 이상이면 핵심 (suggest_all)
 
 use crate::commands::AppState;
+use crate::db;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -105,30 +106,26 @@ pub fn set(con: &Connection, target: &str, states: &[ExamState]) -> Res<()> {
 /// target "card" 는 카드의 노트에 단다 (자료 구간 표시를 연결된 카드에 퍼뜨릴 때, N3)
 #[tauri::command]
 pub fn mark_exam(state: State<AppState>, target: String, ids: Vec<i64>, exam: Option<String>) -> Res<usize> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let (target, ids) = if target == "card" { ("note".to_string(), notes_of(&tx, &ids)?) } else { (target, ids) };
-    let n = mark(&tx, &target, &ids, exam.as_deref())?;
-    suggest_all(&tx)?;
-    tx.commit().map_err(err)?;
-    Ok(n)
+    state.write(|tx| {
+        let (target, ids) = if target == "card" { ("note".to_string(), notes_of(tx, &ids)?) } else { (target, ids) };
+        let n = mark(tx, &target, &ids, exam.as_deref())?;
+        suggest_all(tx)?;
+        Ok(n)
+    })
 }
 
 /// 카드들의 노트 (한 번씩)
 fn notes_of(con: &Connection, card_ids: &[i64]) -> Res<Vec<i64>> {
     let list = card_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let mut st = con.prepare(&format!("SELECT DISTINCT note_id FROM card WHERE id IN ({}) ORDER BY note_id", if list.is_empty() { "-1" } else { &list })).map_err(err)?;
-    let rows = st.query_map([], |r| r.get(0)).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(con, &format!("SELECT DISTINCT note_id FROM card WHERE id IN ({}) ORDER BY note_id", if list.is_empty() { "-1" } else { &list }), [], |r| r.get(0)).map_err(err)
 }
 
 #[tauri::command]
 pub fn set_exam(state: State<AppState>, target: String, states: Vec<ExamState>) -> Res<()> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    set(&tx, &target, &states)?;
-    suggest_all(&tx)?;
-    tx.commit().map_err(err)
+    state.write(|tx| {
+        set(tx, &target, &states)?;
+        suggest_all(tx).map(|_| ())
+    })
 }
 
 // ------------------------------------------------------------------ 덱의 기출 (N1 · N2 시험 목록, N4 한 줄)
@@ -149,14 +146,16 @@ fn deck_exam(con: &Connection, deck_id: Option<i64>) -> Res<Vec<ExamRow>> {
         None => decks.iter().map(|d| d.id).collect(),
     };
     let ids = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let mut st = con
-        .prepare(&format!(
+    db::rows(
+        con,
+        &format!(
             "SELECT c.id, n.exam_hits, n.exam_names, c.state = 'new' FROM card c JOIN note n ON n.id = c.note_id
              WHERE c.deck_id IN ({ids}) AND n.exam_hits > 0 ORDER BY c.id"
-        ))
-        .map_err(err)?;
-    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, names_of(r.get(2)?), r.get(3)?))).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        ),
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, names_of(r.get(2)?), r.get(3)?)),
+    )
+    .map_err(err)
 }
 
 #[derive(Serialize)]
@@ -216,14 +215,16 @@ type DeckExam = (i64, i64, i64, i64);
 
 /// 덱마다 기출 카드 수. 기출 = IS_EXAM (노트 표시 · 기출 구간과 이은 카드). 2회 이상은 노트 표시 횟수
 fn deck_counts(con: &Connection, ids: &str) -> Res<Vec<DeckExam>> {
-    let mut st = con
-        .prepare(&format!(
+    db::rows(
+        con,
+        &format!(
             "SELECT c.deck_id, count(*), sum(CASE WHEN {IS_EXAM} THEN 1 ELSE 0 END), sum(CASE WHEN COALESCE(n.exam_hits, 0) >= 2 THEN 1 ELSE 0 END)
              FROM card c JOIN note n ON n.id = c.note_id WHERE c.deck_id IN ({ids}) GROUP BY c.deck_id ORDER BY c.deck_id"
-        ))
-        .map_err(err)?;
-    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+        ),
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .map_err(err)
 }
 
 /// 덱 안(카드가 직접 든 덱끼리) 기출 비율 상위 25% 이면서 기출 카드 5장 이상인 덱 → 근거 한 줄.
@@ -260,11 +261,13 @@ pub fn suggest_all(con: &Connection) -> Res<usize> {
     for root in decks.iter().filter(|d| d.parent_id.is_none()) {
         let ids = crate::commands::descendants(root.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let picks = picks(&deck_counts(con, &ids)?);
-        let mut st = con
-            .prepare(&format!("SELECT id, importance, importance_source, importance_reason FROM deck WHERE id IN ({ids}) AND importance_source IN ('default', 'material')"))
-            .map_err(err)?;
-        let rows: Vec<(i64, i64, String, Option<String>)> =
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+        let rows: Vec<(i64, i64, String, Option<String>)> = db::rows(
+            con,
+            &format!("SELECT id, importance, importance_source, importance_reason FROM deck WHERE id IN ({ids}) AND importance_source IN ('default', 'material')"),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(err)?;
         for (id, level, source, reason) in rows {
             let material: Vec<&str> = reason.as_deref().unwrap_or_default().lines().filter(|l| !l.is_empty() && !l.starts_with(REASON_HEAD)).collect();
             let want: (i64, &str, Option<String>) = match (picks.get(&id), source.as_str()) {
@@ -341,10 +344,7 @@ pub fn to_tags(tags: &str, hits: Option<i64>, names: Option<String>) -> String {
 /// 사용자가 고친 값(0 포함)은 덮지 않는다. 어느 기기든 같은 태그로 같은 값을 만들므로 동기화 변경 기록은 남기지 않는다
 /// (applying, 동기화 엔진의 apply 와 같은 방식). 호출하는 쪽이 트랜잭션 안에서 부른다: 실패하면 플래그도 함께 되돌아간다
 pub fn fill_from_tags(con: &Connection) -> rusqlite::Result<usize> {
-    let notes: Vec<(i64, String)> = {
-        let mut st = con.prepare("SELECT id, tags FROM note WHERE exam_hits IS NULL AND tags LIKE '%기출%'")?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?
-    };
+    let notes: Vec<(i64, String)> = db::rows(con, "SELECT id, tags FROM note WHERE exam_hits IS NULL AND tags LIKE '%기출%'", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
     let found: Vec<_> = notes.into_iter().filter_map(|(id, tags)| from_tags(&tags).map(|e| (id, e))).collect();
     if found.is_empty() {
         return Ok(0);
