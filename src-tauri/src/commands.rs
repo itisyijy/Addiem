@@ -1826,31 +1826,42 @@ pub struct TargetInfo {
     dday: i64,
     remaining_new: i64,
     days: i64,
+    /// 오늘 하루 신규 몫 (큐가 정한 수, 오늘 이미 넣은 것 포함) · 그 사유 (큐 메모, "남은 32장 ÷ 24일 = 하루 2장" · "오늘만 신규 5장으로 조정") (QA T3-24)
+    per_day: i64,
+    note: String,
 }
 
 #[tauri::command(async)]
 pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<QueueSummary> {
-    let con = state.db.lock().map_err(err)?;
+    queue_preview_in(&*state.db.lock().map_err(err)?, deck_ids, scale)
+}
+
+fn queue_preview_in(con: &Connection, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<QueueSummary> {
     let today = study_day(now_ms());
-    let (decks, plan) = plan_for(&con, deck_ids.as_deref(), scale, today)?;
+    let (decks, plan) = plan_for(con, deck_ids.as_deref(), scale, today)?;
     let n = |lvl: i64| plan.new.iter().filter(|c| c.importance == lvl).count();
     let wanted: Vec<i64> = match &deck_ids {
         Some(ids) => ids.iter().flat_map(|i| descendants(*i, &decks)).collect(),
         None => decks.iter().map(|d| d.id).collect(),
     };
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
-    let target = match decks
+    // 하위 덱은 신규를 나누는 예산 덱의 목표를 따른다 (QA T3-08)
+    let target = match wanted
         .iter()
-        .filter(|d| wanted.contains(&d.id))
+        .filter_map(|&id| by_id.get(&queue::budget_owner(id, &by_id)).copied())
         .filter_map(|d| d.target_day.map(|t| (d, t - today)))
         .filter(|(_, dd)| *dd >= 0)
         .min_by_key(|(_, dd)| *dd)
     {
         Some((d, dday)) => {
             let ids = descendants(d.id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-            let remaining_new = crate::notetype::new_left(&con, &ids)?;
+            let remaining_new = crate::notetype::new_left(con, &ids)?;
             let days = queue::learnable_days(today, d.target_day, d.include_target_day).unwrap_or(1).max(1);
-            Some(TargetInfo { name: d.name.clone(), dday, remaining_new, days })
+            let done: i64 = introduced_today(con, today)?.into_iter().filter(|(id, _)| queue::budget_owner(*id, &by_id) == d.id).map(|(_, k)| k).sum();
+            let per_day = plan.per_deck_new_target.get(&d.id).copied().unwrap_or(0) + done;
+            let prefix = format!("{}: ", d.name);
+            let note = plan.notes.iter().find_map(|x| x.strip_prefix(&prefix)).unwrap_or_default().to_string();
+            Some(TargetInfo { name: d.name.clone(), dday, remaining_new, days, per_day, note })
         }
         None => None,
     };
@@ -1884,7 +1895,7 @@ pub fn queue_preview(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
         notes: plan.notes.clone(),
         target,
         mixed_today,
-        again: again_count(&con, &plan, today)?,
+        again: again_count(con, &plan, today)?,
     })
 }
 
@@ -3861,6 +3872,25 @@ mod tests {
         }
         assert_eq!(super::deck_detail_in(&con, 1).unwrap().budget_unseen, 30);
         assert_eq!(super::deck_detail_in(&con, 3).unwrap().reason.as_deref(), Some("P: 남은 30장 ÷ 24일 = 하루 2장"));
+    }
+
+    #[test]
+    fn subdeck_summary_follows_the_budget_decks_target() {
+        // QA T3-08 · T3-24: 하위 덱 D1 의 목표는 예산 덱(P) 것. 하루 몫은 큐가 정한 수, 사유는 큐 메모 (오늘만 분량이면 계산식이 아니다)
+        let con = crate::db::open_in_memory().unwrap();
+        let (today, _) = mid_today();
+        con.execute("INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'P', 0, 0)", []).unwrap();
+        con.execute("INSERT INTO deck (id, name, parent_id, created_at, updated_at) VALUES (2, 'A', 1, 0, 0)", []).unwrap();
+        con.execute("INSERT INTO deck_config (deck_id, target_date, updated_at) VALUES (1, ?1, 0)", [crate::db::date_from_day(today + 24)]).unwrap();
+        for i in 0..32 {
+            let card = super::NewCard { deck_id: 2, kind: "basic".into(), front: format!("q{i}"), back: "a".into(), importance: None };
+            super::insert_note(&con, &card, "", None).unwrap();
+        }
+        let t = super::queue_preview_in(&con, Some(vec![2]), 1.0).unwrap().target.unwrap();
+        assert_eq!((t.name.as_str(), t.per_day, t.note.as_str()), ("P", 2, "남은 32장 ÷ 24일 = 하루 2장"));
+        con.execute("UPDATE deck_config SET today_new = 5, today_new_day = ?1", [crate::db::date_from_day(today)]).unwrap();
+        let t = super::queue_preview_in(&con, Some(vec![2]), 1.0).unwrap().target.unwrap();
+        assert_eq!((t.per_day, t.note.contains('÷')), (5, false));
     }
 
     #[test]

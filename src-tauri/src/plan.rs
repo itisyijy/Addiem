@@ -92,7 +92,8 @@ fn paused_on(id: i64, d: i64, by_id: &HashMap<i64, &Deck>) -> bool {
 
 /// today 부터 n 일 동안 날마다의 분량. 복습 = 예정된 것 + 밀린 것(하루 200장씩) + 이 계획의 신규가 다시 나오는 것.
 /// 신규 = 큐와 같은 산식(new_target_for_deck)을 날마다 남은 장수로 다시 돌린 것.
-/// shifts: (예산 덱, 날) → 당겨 맞추기. done_new: 예산 덱별 오늘 이미 넣은 신규 (큐처럼 오늘 몫에서 뺀다).
+/// 신규는 큐처럼 예산 덱 아래 전체를 큐 순서로 줄 세워 날마다 몫만큼 앞에서 꺼내고, 범위 안의 것만 센다 (하위 덱 계획, QA T3-08 · I134).
+/// shifts: (예산 덱, 날) → 당겨 맞추기. done_new: 덱별 오늘 이미 넣은 신규 (큐처럼 예산 덱 몫에서 뺀다, commands::introduced_today).
 /// backlog_done: 오늘 이미 본 밀린 복습 (하루 200장 상한에서 뺀다)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn project(
@@ -111,13 +112,12 @@ pub(crate) fn project(
     let mut rev: Vec<HashMap<i64, i64>> = vec![HashMap::new(); n];
     // 밀린 복습은 큐처럼 모든 덱에서 오래된 것부터 하루 200장 (상한은 함께 쓰고, 범위 안의 것만 센다)
     let mut backlog: Vec<(i64, i64, i64, i64, bool)> = vec![];
-    let mut remaining: HashMap<i64, i64> = HashMap::new();
+    // 예산 덱별 신규 줄 (범위 안인가). 범위 밖 카드도 몫을 먼저 가져간다
+    let mut lines: HashMap<i64, Vec<&Card>> = HashMap::new();
     for c in cards.iter().filter(|c| by_id.contains_key(&c.deck_id) && c.plays()) {
         let mine = scope.contains(&c.deck_id);
         if c.state == "new" {
-            if mine {
-                *remaining.entry(queue::budget_owner(c.deck_id, &by_id)).or_default() += 1;
-            }
+            lines.entry(queue::budget_owner(c.deck_id, &by_id)).or_default().push(c);
             continue;
         }
         let due = c.due_day.unwrap_or(today).max(c.buried_until.unwrap_or(i64::MIN));
@@ -127,8 +127,22 @@ pub(crate) fn project(
             *slot.entry(root(c.deck_id)).or_default() += 1;
         }
     }
-    let mut owners: Vec<i64> = remaining.keys().copied().collect();
+    lines.retain(|_, l| l.iter().any(|c| scope.contains(&c.deck_id)));
+    let mut owners: Vec<i64> = lines.keys().copied().collect();
     owners.sort();
+    for l in lines.values_mut() {
+        l.sort_by_key(|c| (-c.importance, !c.exam, c.position, c.id));
+    }
+    // 예산 덱별 줄에서 이미 꺼낸 수
+    let mut taken: HashMap<i64, usize> = HashMap::new();
+    let (mut done_owner, mut done_in): (HashMap<i64, i64>, HashMap<i64, i64>) = (HashMap::new(), HashMap::new());
+    for (&deck, &k) in done_new {
+        let owner = queue::budget_owner(deck, &by_id);
+        *done_owner.entry(owner).or_default() += k;
+        if scope.contains(&deck) {
+            *done_in.entry(owner).or_default() += k;
+        }
+    }
     backlog.sort();
     let mut next = 0;
     let mut out = vec![];
@@ -150,23 +164,27 @@ pub(crate) fn project(
         }
         for &owner in &owners {
             let deck = by_id[&owner];
-            let left = remaining[&owner];
+            let line = &lines[&owner];
+            let from = taken.get(&owner).copied().unwrap_or(0);
+            let left = (line.len() - from) as i64;
             if left == 0 || paused_on(owner, d, &by_id) {
                 continue;
             }
             // 오늘은 큐처럼: 하루 시작 기준으로 계산하고 이미 넣은 만큼 뺀다
-            let done = if i == 0 { done_new.get(&owner).copied().unwrap_or(0) } else { 0 };
+            let (done, done_mine) = if i == 0 { (done_owner.get(&owner).copied().unwrap_or(0), done_in.get(&owner).copied().unwrap_or(0)) } else { (0, 0) };
             let mut target = match deck.today_new {
                 Some(t) if i == 0 => t.min(left + done),
                 _ => queue::new_target_for_deck(deck, d, left + done).0,
             };
             target += shifts.get(&(owner, d)).copied().unwrap_or(0);
-            let k = (target - done).clamp(0, left);
-            day.share += target.clamp(0, left + done);
+            let all_k = (target - done).clamp(0, left);
+            taken.insert(owner, from + all_k as usize);
+            let k = line[from..from + all_k as usize].iter().filter(|c| scope.contains(&c.deck_id)).count() as i64;
+            // 범위 안의 몫: 오늘 이미 넣은 것 + 꺼낸 것 중 범위 안 (범위가 예산 덱 전체면 예산 덱 몫 그대로)
+            day.share += (done_mine + k).min(target.clamp(0, left + done));
             if k == 0 {
                 continue;
             }
-            remaining.insert(owner, left - k);
             day.new += k;
             *day.new_by_owner.entry(owner).or_default() += k;
             *day.by_root.entry(root(owner)).or_default() += k;
@@ -219,7 +237,7 @@ pub(crate) fn find_over(today: i64, days: &[DayLoad], cap: impl Fn(i64) -> Optio
 /// 오늘의 하루 신규 몫 (계획 그래프 · 큐와 같은 산식). 계획 화면의 시험 전 회독 줄이 쓴다 (QA T3-05)
 pub(crate) fn share_today(con: &Connection, today: i64, decks: &[Deck], scope: &HashSet<i64>) -> Res<i64> {
     let cards = commands::load_cards(con)?;
-    let days = project(today, 1, decks, &cards, scope, &read_shifts(con, today)?, &done_new_by_owner(con, today, decks)?, backlog_done(con, today)?);
+    let days = project(today, 1, decks, &cards, scope, &read_shifts(con, today)?, &commands::introduced_today(con, today)?, backlog_done(con, today)?);
     Ok(days[0].share)
 }
 
@@ -263,16 +281,6 @@ fn read_shifts(con: &Connection, today: i64) -> Res<HashMap<(i64, i64), i64>> {
         .filter_map(Result::ok)
         .filter_map(|(id, day, k)| db::day_from_date(&day).map(|d| ((id, d), k)));
     Ok(rows.collect())
-}
-
-/// 예산 덱별 오늘 이미 넣은 신규
-fn done_new_by_owner(con: &Connection, today: i64, decks: &[Deck]) -> Res<HashMap<i64, i64>> {
-    let by_id: HashMap<i64, &Deck> = decks.iter().map(|d| (d.id, d)).collect();
-    let mut out = HashMap::new();
-    for (deck, k) in commands::introduced_today(con, today)? {
-        *out.entry(queue::budget_owner(deck, &by_id)).or_default() += k;
-    }
-    Ok(out)
 }
 
 /// 오늘 이미 본 밀린 복습. 큐(commands::today_progress)와 같은 값이어야 오늘 막대가 큐와 맞는다 (그래서 kind 로 거르지 않는다)
@@ -403,7 +411,7 @@ pub fn study_plan(state: State<AppState>, deck_id: Option<i64>) -> Res<StudyPlan
     let future = last_exam.map_or(NO_TARGET_DAYS, |t| t - today + 1).clamp(1, MAX_FUTURE);
 
     let shifts = read_shifts(&con, today)?;
-    let (done_new, backlog_seen) = (done_new_by_owner(&con, today, &decks)?, backlog_done(&con, today)?);
+    let (done_new, backlog_seen) = (commands::introduced_today(&con, today)?, backlog_done(&con, today)?);
     let days = project(today, future, &decks, &cards, &scope, &shifts, &done_new, backlog_seen);
     let done = done_by_day(&con, &scope, today - PAST_DAYS)?;
     let exam_days: HashSet<i64> = exams.iter().filter_map(|e| db::day_from_date(&e.date)).collect();
@@ -655,7 +663,7 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
     let limit_on = |d: i64| -> Option<i64> { if by_time { cap_for(d, time) } else { avg.map(|a| (a * 1.5).round() as i64) } };
     let all: HashSet<i64> = decks.iter().map(|d| d.id).collect();
     let shifts = read_shifts(con, today)?;
-    let done_new = done_new_by_owner(con, today, decks)?;
+    let done_new = commands::introduced_today(con, today)?;
     let backlog_seen = backlog_done(con, today)?;
     let mut out = vec![];
     for w in roots.windows(2) {
@@ -869,6 +877,28 @@ mod tests {
         let none = HashMap::new();
         assert_eq!(project(T, 1, std::slice::from_ref(&d), &cards, &scope, &none, &HashMap::new(), 0)[0].share, 5, "오늘 막대는 오늘만 분량 그대로");
         assert_eq!(auto_share(T, &[d], &cards, &scope, &none, &HashMap::new(), 0), 2);
+    }
+
+    #[test]
+    fn subdeck_projection_takes_from_the_budget_decks_line() {
+        // QA T3-08: 예산 덱(1, 20장 ÷ 10일 = 하루 2장) 아래 하위 덱 2(일반 10장) · 3(핵심 10장). 몫은 핵심(3)이 먼저 가져간다
+        let decks = [
+            Deck { target_day: Some(T + 10), ..deck(1) },
+            Deck { parent_id: Some(1), ..deck(2) },
+            Deck { parent_id: Some(1), ..deck(3) },
+        ];
+        let mut cards = news(10, 2, 1);
+        cards.extend(news(10, 3, 100).into_iter().map(|c| Card { importance: 2, ..c }));
+        let none = HashMap::new();
+        let days = project(T, 10, &decks, &cards, &[2].into(), &none, &HashMap::new(), 0);
+        assert_eq!(days.iter().map(|x| x.new).collect::<Vec<_>>(), [0, 0, 0, 0, 0, 2, 2, 2, 2, 2]);
+        assert_eq!(days[0].new as usize, queue::build_queue(T, &decks, &cards, Some(&[2]), 1.0).new.len(), "큐와 같다");
+        let days = project(T, 1, &decks, &cards, &[3].into(), &none, &HashMap::new(), 0);
+        assert_eq!((days[0].new, days[0].share), (2, 2));
+        // 오늘 3 에서 1장 넣었으면 3 의 오늘 몫은 2장 그대로, 남은 1장
+        let done: HashMap<i64, i64> = [(3, 1)].into();
+        let days = project(T, 1, &decks, &news(10, 2, 1).into_iter().chain(news(9, 3, 100).into_iter().map(|c| Card { importance: 2, ..c })).collect::<Vec<_>>(), &[3].into(), &none, &done, 0);
+        assert_eq!((days[0].new, days[0].share), (1, 2));
     }
 
     #[test]

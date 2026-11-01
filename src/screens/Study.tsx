@@ -111,7 +111,7 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
   // 머리 문장은 순서 원칙만. 핵심 우선은 늘 적용되는 규칙이다. 목표일은 그 덱의 신규 수를 나눴을 때만 덧붙인다
   // (큐 사유가 "남은 N장 ÷ M일" 계산식이면 목표일이 수를 정한 것)
   const base = "복습을 먼저 비우고, 신규는 핵심부터 넣었어요.";
-  const split = !!t && q.notes.some((x) => x.startsWith(`${t.name}: `) && x.includes("÷"));
+  const split = !!t && t.note.includes("÷");
   // P9: 시험 전 회독(혼합)에서 본 오늘 예정 카드는 오늘의 학습에서 빠졌다
   const mixed = q.mixed_today > 0 ? ` 시험 전 회독에서 ${n(q.mixed_today)}장을 이미 봤어요.` : "";
   const reason =
@@ -122,13 +122,16 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
         : split
           ? `${base} ${t.name} 목표일까지 ${t.dday}일이라 하루 몫을 나눴어요.`
           : base) + mixed;
-  // 핵심 신규 캡션은 숫자와 맞게: 여러 덱에서 오면 그렇다고, 목표 계산식은 결과까지 (하루 N장)
-  const perDay = t ? Math.ceil(t.remaining_new / Math.max(1, t.days)) : 0;
+  // 핵심 신규 캡션은 숫자와 맞게: 여러 덱에서 오면 그렇다고, 하루 몫은 큐가 정한 수 그대로. 계산식은 큐가 나눴을 때만, 큐 메모 그대로
+  // (분량 조정은 이 화면의 선택이라 뺀다, QA T3-24)
+  const perDay = t?.per_day ?? 0;
   const coreDesc = !t
     ? "핵심으로 정한 카드부터"
     : q.new_decks > 1
       ? `덱 ${n(q.new_decks)}개에서 오늘 몫만큼 · 목표가 가장 가까운 ${t.name}${eul(t.name) === "을" ? "은" : "는"} 하루 ${n(perDay)}장`
-      : `${t.name} · 남은 ${n(t.remaining_new)}장 ÷ ${n(t.days)}일 = 하루 ${n(perDay)}장`;
+      : split
+        ? `${t.name} · ${t.note.split(" (사용자 조정")[0]}`
+        : `${t.name} · ${t.note.startsWith("오늘만") ? "오늘만" : "하루"} ${n(perDay)}장`;
   const reviewDesc = [
     `예정 ${n(Math.max(0, q.learning + q.review - q.again))}`,
     q.backlog > 0 && `밀린 ${n(q.backlog)}${q.backlog_deferred > 0 ? ` (나머지 ${n(q.backlog_deferred)}장은 차차)` : ""}`,
