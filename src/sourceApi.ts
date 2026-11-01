@@ -151,7 +151,6 @@ export type ModelStatus = {
   ready: boolean;
   downloading: boolean;
   bytes: number;
-  name: string;
   analyzing: AnalyzeProgress | null;
   failed: string | null;
   analyzed: Record<string, { suggested: number | null; error: string | null }>;

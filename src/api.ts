@@ -126,8 +126,6 @@ export type CardRow = {
   state: "new" | "learning" | "review" | "relearning" | "suspended";
   importance: Level;
   own_importance: boolean;
-  due_at: number | null;
-  lapses: number;
   buried: boolean;
   /** 접어둔 카드가 돌아오는 학습일 "2026-10-19" */
   buried_until: string | null;
@@ -461,7 +459,6 @@ export type UpdateConflict = {
   deck: string;
   /** base: 원본 글 (지난번에 받은 값, DU53). null 이면 "원본 글이 없어요" */
   fields: { slot: number; name: string; mine: string; new: string; base: string | null; take_new: boolean }[];
-  auto_new: number;
   auto_mine: number;
   auto_new_fields: string[];
   edited_at: number;
@@ -600,8 +597,6 @@ export type MvpMetrics = {
   plan_days: { day: string; planned: number; done: number }[];
   /** ① 일별 완료율 중앙값 0~1 */
   plan_median: number | null;
-  /** ① 목표일 덱의 계획이 처음 남은 날 ("판정 전 · N일 남음") */
-  first_plan_day: string | null;
   /** ② 판정 전 남은 날 계산용: 이 앱에서 처음 학습한 날 */
   first_session_day: string | null;
   /** ② 보류가 생긴 세션 (오래된 것부터 최근 20개). true = 끝까지 마침 */
@@ -627,7 +622,6 @@ export type ArchivedDeck = {
 export type AppInfo = {
   /** 학습 데이터를 열지 못한 이유 (S1-6). 있으면 지금은 빈 데이터다 */
   startup_error: string | null;
-  data_dir: string;
   backup_dir: string;
   last_backup: number | null;
   cutoff_hour: number;
