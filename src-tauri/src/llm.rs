@@ -330,7 +330,6 @@ pub struct Engine {
     stdin: ChildStdin,
     rx: mpsc::Receiver<String>,
     next: u64,
-    arch: String,
     pub log: Vec<Gen>,
 }
 
@@ -365,9 +364,8 @@ impl Engine {
                 }
             }
         });
-        let mut e = Engine { child, stdin, rx, next: 0, arch: String::new(), log: vec![] };
-        let v = e.call(json!({ "op": "load", "dir": model }), stop)?;
-        e.arch = v["arch"].as_str().unwrap_or_default().to_string();
+        let mut e = Engine { child, stdin, rx, next: 0, log: vec![] };
+        e.call(json!({ "op": "load", "dir": model }), stop)?;
         Ok(e)
     }
 
@@ -408,10 +406,6 @@ impl Engine {
     fn record(&mut self, v: &Value) {
         let n = |k: &str| v["gen"][k].as_u64().unwrap_or(0);
         self.log.push(Gen { prompt: n("prompt"), out: n("out"), ms: n("ms") });
-    }
-
-    fn qwen3(&self) -> bool {
-        self.arch == "qwen3"
     }
 
     /// 앞부분을 미리 읽어 둔다. 같은 앞부분으로 generate · choose 하면 그 뒤만 읽는다
@@ -497,22 +491,18 @@ fn clip(s: &str, n: usize) -> String {
 /// 모델 출력이 이어 쓸 첫머리 (JSON 문자열 배열로 붙잡는다)
 const PREFIX: &str = "[\"";
 
-/// ChatML 의 끝 (사용자 말 닫기 · 모델 차례). Qwen3 는 생각 모드를 끈 템플릿 (빈 think 블록)
-fn tail(qwen3: bool) -> String {
-    let think = if qwen3 { "<think>\n\n</think>\n\n" } else { "" };
-    format!("<|im_end|>\n<|im_start|>assistant\n{think}")
-}
+/// ChatML 의 끝 (사용자 말 닫기 · 모델 차례)
+const TAIL: &str = "<|im_end|>\n<|im_start|>assistant\n";
 
-fn extract_prompt(question: &str, model: &str, qwen3: bool) -> String {
+fn extract_prompt(question: &str, model: &str) -> String {
     format!(
         "<|im_start|>system\nYou turn a model answer into grading points. Output only a JSON array of Korean strings.<|im_end|>\n<|im_start|>user\n\
          List the 1-4 key relations a grader must check in the model answer (cause → effect, increase/decrease, comparison, order, condition). \
          Write each one briefly in Korean using the model answer's words, like \"A → B\". Keep every step of a process.\n\
          Example: model answer \"운동하면 근육이 산소를 더 써서 심박수가 오른다\" → [\"운동 → 근육의 산소 사용 증가\", \"산소 사용 증가 → 심박수 상승\"]\n\n\
-         질문: {}\n모범 답안: {}{}{PREFIX}",
+         질문: {}\n모범 답안: {}{TAIL}{PREFIX}",
         clip(question, 300),
-        clip(model, 600),
-        tail(qwen3)
+        clip(model, 600)
     )
 }
 
@@ -590,7 +580,7 @@ fn prepared(e: &mut Engine, question: &str, model: &str, stop: &dyn Fn() -> bool
     if let Some(p) = PREPARED.lock().map_err(err)?.get(&k) {
         return Ok(Some(p));
     }
-    let text = e.generate("", &extract_prompt(question, model, e.qwen3()), 160, stop)?;
+    let text = e.generate("", &extract_prompt(question, model), 160, stop)?;
     let Some(rels) = parse_relations(&format!("{PREFIX}{text}")) else { return Ok(None) };
     PREPARED.lock().map_err(err)?.put(k, rels.clone());
     Ok(Some(rels))
@@ -613,7 +603,7 @@ pub struct Detail {
 
 pub fn check_detail(e: &mut Engine, question: &str, model: &str, answer: &str, stop: &dyn Fn() -> bool) -> Res<Option<Detail>> {
     let Some(rels) = prepared(e, question, model, stop)? else { return Ok(None) };
-    let rest = format!("{}{}", clip(answer, 600), tail(e.qwen3()));
+    let rest = format!("{}{TAIL}", clip(answer, 600));
     let lp = e.choose(&judge_prefix(question, model, &rels), &rest, &slots(rels.len()), &options(), stop)?;
     let relations = rels.into_iter().zip(&lp).map(|(rel, l)| Relation { rel, verdict: VERDICTS[decide(l)].to_string() }).collect();
     Ok(Some(Detail { relations, lp }))
@@ -775,13 +765,12 @@ mod tests {
     }
 
     #[test]
-    fn prompts_turn_qwen3_thinking_off_and_clip() {
-        let p = extract_prompt("q", &"Z".repeat(2000), true);
-        assert!(p.ends_with(&format!("<|im_start|>assistant\n<think>\n\n</think>\n\n{PREFIX}")));
+    fn prompts_end_with_the_assistant_turn_and_clip() {
+        let p = extract_prompt("q", &"Z".repeat(2000));
+        assert!(p.ends_with(&format!("<|im_start|>assistant\n{PREFIX}")));
         assert_eq!(p.chars().filter(|&c| c == 'Z').count(), 600);
         let j = judge_prefix("q", "m", &["a → b".into(), "c → d".into()]);
         assert!(j.ends_with("1. a → b\n2. c → d\n학생 답:\n"), "답 앞까지가 앞부분");
-        assert!(!tail(false).contains("<think>"));
         assert_eq!(slots(3), ["1:", "\n2:", "\n3:"]);
     }
 
@@ -838,7 +827,7 @@ mod tests {
             (Ok(bin), Ok(dir)) => {
                 let t = Instant::now();
                 let e = Engine::start(Path::new(&bin), &[], Path::new(&dir), &|| false).unwrap();
-                println!("엔진 {bin} · 모델 {dir} ({}) 띄우고 불러오기 {} ms", e.arch, t.elapsed().as_millis());
+                println!("엔진 {bin} · 모델 {dir} 띄우고 불러오기 {} ms", t.elapsed().as_millis());
                 Some(e)
             }
             _ => None,
