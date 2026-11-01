@@ -16,7 +16,7 @@
 .modal .toasts { position: static; align-self: stretch; align-items: stretch; transform: none; }
 .modal .toast { max-width: none; }
 .modal .toast__text { flex: 1; } /* ✕ · [되돌리기]는 오른쪽 끝, 창 버튼과 같은 줄 끝 */
-.modal .toast:not(:last-child) { display: none; }
+.modal .toast:not(:last-child), .ioe .toast:not(:last-child) { display: none; } /* 그림 가리기 편집기도 최근 1개만 (QA G2-05) */
 .toast {
   pointer-events: auto;
   display: flex;

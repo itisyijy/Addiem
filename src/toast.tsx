@@ -1,7 +1,8 @@
 // 공통 토스트 (Figma S1 26:3850 의 3번). 화면 아래 가운데, D4 접어두기 토스트와 같은 모양.
 // 정보는 3초, 되돌리기는 5초 뒤 사라지고, 오류는 닫거나 다시 시도할 때까지 남는다.
 // 새 토스트가 앞의 되돌리기 · 오류를 덮지 않게 위로 쌓는다 (QA T1-12 · T8-14). 정보는 마지막 1개, 되돌리기 · 오류는 최근 2개까지
-// 겹침 창이 떠 있으면 맨 위 창 안, 버튼 줄 바로 위에 그린다 (I181). 창을 덮지 않고 ✕ · [되돌리기]가 창의 Tab 안에 든다
+// 겹침 창이 떠 있으면 맨 위 창 안, 버튼 줄 바로 위에 그린다 (I191). 창을 덮지 않고 ✕ · [되돌리기]가 창의 Tab 안에 든다.
+// 창이 화면보다 길면 토스트와 버튼 줄이 보이게 스크롤한다. 토스트가 사라지면 창이 짧아져 스크롤이 줄어 창이 들어가면 제목이 다시 보인다 (QA G5-02)
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Icon, type IconName } from "./ui";
@@ -74,6 +75,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       setSlot(null);
     };
   }, [top, shown]);
+  // 창 안에 토스트가 뜨면 토스트와 바로 아래 버튼 줄이 보이게 창을 스크롤한다 (작은 창에서 화면 아래로 밀리지 않게, QA G5-02)
+  useEffect(() => {
+    if (slot) [slot.firstElementChild, slot.nextElementSibling].forEach((e) => e?.scrollIntoView({ block: "nearest" }));
+  }, [slot, items]);
 
   const list = shown && (
     <div className="toasts">
