@@ -429,11 +429,8 @@ const SIMILAR_SEGMENT: f32 = 0.8;
 
 /// 이 카드에 연결된 구간: 직접 연결 > 자동 연결(유사도 순), 최대 3개
 pub(crate) fn linked_segments(con: &Connection, card_id: i64) -> Res<Vec<(i64, &'static str)>> {
-    let mut st = con
-        .prepare("SELECT segment_id, method FROM source_link WHERE card_id = ?1 AND method != 'rejected' ORDER BY method = 'manual' DESC, score DESC, created_at, uid, id LIMIT ?2")
-        .map_err(err)?;
-    let rows = st.query_map(params![card_id, MAX_CONTEXT as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?;
-    rows.map(|r| r.map(|(id, m)| (id, if m == "manual" { "manual" } else { "auto" })).map_err(err)).collect()
+    let sql = "SELECT segment_id, method FROM source_link WHERE card_id = ?1 AND method != 'rejected' ORDER BY method = 'manual' DESC, score DESC, created_at, uid, id LIMIT ?2";
+    crate::db::rows(con, sql, params![card_id, MAX_CONTEXT as i64], |r| Ok((r.get(0)?, if r.get::<_, String>(1)? == "manual" { "manual" } else { "auto" }))).map_err(err)
 }
 
 /// 카드 뿌리 덱에 붙은 자료의 구간과 query 의 유사도 (거르지 않음). 분석 모델이 없으면 Err (연결된 구간만 보낸다)
@@ -444,13 +441,10 @@ fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<(i64,
         let con = state.db.lock().map_err(err)?;
         let deck: i64 = con.query_row("SELECT deck_id FROM card WHERE id = ?1", [card_id], |r| r.get(0)).map_err(err)?;
         let ids = source::subtree(&con, root_of(&con, deck)?)?;
-        let mut st = con
-            .prepare(&format!(
-                "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready' AND s.signals <> 'heading'"
-            ))
-            .map_err(err)?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
+        let sql = format!(
+            "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready' AND s.signals <> 'heading'"
+        );
+        crate::db::rows(&con, &sql, [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?
     };
     let vecs = source::embed_cached(app, "segment", &items, |_| {})?;
     let q = model.embed(&[query.to_string()])?.remove(0);

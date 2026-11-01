@@ -141,8 +141,7 @@ pub fn init(con: &Connection) -> SRes<()> {
 
 /// 표의 열 (id · uid 빼고)
 fn raw_cols(con: &Connection, t: &str) -> SRes<Vec<String>> {
-    let mut st = con.prepare(&format!("SELECT name FROM pragma_table_info('{t}') WHERE name NOT IN ('id', 'uid')")).map_err(other)?;
-    st.query_map([], |r| r.get(0)).map_err(other)?.collect::<Result<_, _>>().map_err(other)
+    db::rows(con, &format!("SELECT name FROM pragma_table_info('{t}') WHERE name NOT IN ('id', 'uid')"), [], |r| r.get(0)).map_err(other)
 }
 
 pub fn meta(con: &Connection, key: &str) -> SRes<Option<String>> {
@@ -472,10 +471,11 @@ fn col_hlc(clock: &Clock, p: Option<&Pending>, c: &str) -> String {
 fn load_pending(con: &Connection) -> SRes<Vec<((String, String), Pending)>> {
     let me = device_uid(con)?;
     let last = hlc_last(con)?;
-    let mut st = con.prepare("SELECT table_name, uid, op, cols, at, floor FROM sync_outbox ORDER BY seq").map_err(other)?;
     type Row = (String, String, String, Option<String>, i64, Option<String>);
-    let rows: Vec<Row> =
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).map_err(other)?.collect::<Result<_, _>>().map_err(other)?;
+    let rows: Vec<Row> = db::rows(con, "SELECT table_name, uid, op, cols, at, floor FROM sync_outbox ORDER BY seq", [], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+    })
+    .map_err(other)?;
     let mut order: Vec<(String, String)> = vec![];
     let mut out: HashMap<(String, String), Pending> = HashMap::new();
     for (t, u, op, cols, at, floor) in rows {
@@ -675,10 +675,7 @@ fn lock(db: &Mutex<Connection>) -> SRes<std::sync::MutexGuard<'_, Connection>> {
 
 /// 동기화 전에 생긴 그림은 sha256 열이 비었거나 다른 해시다. 파일을 읽어 맞춘다 (그림 이름 = 내용 해시)
 fn fix_media_hashes(con: &mut Connection, media_dir: &Path) -> SRes<()> {
-    let rows: Vec<(i64, String)> = {
-        let mut st = con.prepare("SELECT id, filename FROM media WHERE length(sha256) <> 64").map_err(other)?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?.collect::<Result<_, _>>().map_err(other)?
-    };
+    let rows: Vec<(i64, String)> = db::rows(con, "SELECT id, filename FROM media WHERE length(sha256) <> 64", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
     if rows.is_empty() {
         return Ok(());
     }
@@ -1090,11 +1087,8 @@ fn release_anchors(tx: &Transaction, me: &str, generation: i64, devices: &[J]) -
 /// 이 기기에 없는 그림을 받는다. 데이터를 먼저 합치고 그림은 뒤에서 (K6-f).
 /// 받다 끊겨 Drive 것보다 작은 파일도 다시 받는다. 임시 이름(.<이름>.part)에 쓰고 바꿔, 끊겨도 잘린 파일이 제 이름으로 남지 않는다 (QA T5-04 Drive 쪽, K50)
 pub fn fetch_media(db: &Mutex<Connection>, cx: &Ctx, have_remote: &HashMap<String, u64>) -> SRes<usize> {
-    let rows: Vec<(String, String)> = {
-        let con = lock(db)?;
-        let mut st = con.prepare("SELECT filename, sha256 FROM media WHERE length(sha256) = 64").map_err(other)?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?.collect::<Result<_, _>>().map_err(other)?
-    };
+    let rows: Vec<(String, String)> =
+        db::rows(&*lock(db)?, "SELECT filename, sha256 FROM media WHERE length(sha256) = 64", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
     // Drive 파일 크기 - 잠근 파일의 머리 · nonce · 태그 = 그림 크기
     let overhead = if cx.key.is_some() { crypto::SEALED_EXTRA } else { 0 };
     let short = |name: &str, size: u64| std::fs::metadata(cx.media_dir.join(name)).map_or(true, |m| m.len() < size.saturating_sub(overhead));
@@ -1181,9 +1175,7 @@ fn fold(recs: Vec<Rec>, aliases: &HashMap<(String, String), String>) -> (HashMap
 }
 
 fn load_aliases(con: &Connection) -> SRes<HashMap<(String, String), String>> {
-    let mut st = con.prepare("SELECT table_name, from_uid, to_uid FROM sync_alias").map_err(other)?;
-    let rows = st.query_map([], |r| Ok(((r.get::<_, String>(0)?, r.get::<_, String>(1)?), r.get::<_, String>(2)?))).map_err(other)?;
-    rows.collect::<Result<_, _>>().map_err(other)
+    db::rows(con, "SELECT table_name, from_uid, to_uid FROM sync_alias", [], |r| Ok(((r.get::<_, String>(0)?, r.get::<_, String>(1)?), r.get::<_, String>(2)?))).map_err(other)
 }
 
 fn alias_of(aliases: &HashMap<(String, String), String>, table: &str, uid: &str) -> String {
@@ -2400,10 +2392,7 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
 fn enqueue_local(tx: &Transaction, tables: &[Table], remote: &HashSet<(String, String)>, won: &HashSet<(String, String)>) -> SRes<()> {
     let now = db::now_ms();
     for t in tables {
-        let uids: Vec<String> = {
-            let mut st = tx.prepare(&format!("SELECT uid FROM {} WHERE uid IS NOT NULL", t.name)).map_err(other)?;
-            st.query_map([], |r| r.get(0)).map_err(other)?.collect::<Result<_, _>>().map_err(other)?
-        };
+        let uids: Vec<String> = db::rows(tx, &format!("SELECT uid FROM {} WHERE uid IS NOT NULL", t.name), [], |r| r.get(0)).map_err(other)?;
         for u in uids {
             let key = (t.name.to_string(), u.clone());
             if !remote.contains(&key) || won.contains(&key) {
@@ -2440,10 +2429,7 @@ fn build_snapshot(con: &Connection, generation: i64, reason: &J, key: Option<&[u
     let seq = local_i64(con, "my_seq")?;
     let mut recs = vec![];
     for table in tables(con)? {
-        let ids: Vec<i64> = {
-            let mut st = con.prepare(&format!("SELECT rowid FROM {} WHERE uid IS NOT NULL", table.name)).map_err(other)?;
-            st.query_map([], |r| r.get(0)).map_err(other)?.collect::<Result<_, _>>().map_err(other)?
-        };
+        let ids: Vec<i64> = db::rows(con, &format!("SELECT rowid FROM {} WHERE uid IS NOT NULL", table.name), [], |r| r.get(0)).map_err(other)?;
         for id in ids {
             let Some((uid, r)) = export(con, &table, id)? else { continue };
             let c = load_clock(con, table.name, &uid)?.unwrap_or_else(|| Clock::implicit(&r, &me));
@@ -2451,18 +2437,16 @@ fn build_snapshot(con: &Connection, generation: i64, reason: &J, key: Option<&[u
             let b = (table.name == "note").then(|| c.col("fields").to_string());
             recs.push(Rec { t: table.name.into(), u: uid, op: "up".into(), h: c.base, r: Some(r), c: None, k, b });
         }
-        let mut st = con.prepare("SELECT uid, deleted FROM sync_row WHERE table_name = ?1 AND deleted IS NOT NULL").map_err(other)?;
-        let tombs: Vec<(String, String)> = st.query_map([table.name], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?.collect::<Result<_, _>>().map_err(other)?;
+        let tombs: Vec<(String, String)> =
+            db::rows(con, "SELECT uid, deleted FROM sync_row WHERE table_name = ?1 AND deleted IS NOT NULL", [table.name], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
         for (u, d) in tombs {
             if rowid_of(con, table.name, &u)?.is_none() {
                 recs.push(Rec { t: table.name.into(), u, op: "del".into(), h: d, r: None, c: None, k: None, b: None });
             }
         }
     }
-    let aliases: Vec<J> = {
-        let mut st = con.prepare("SELECT table_name, from_uid, to_uid FROM sync_alias").map_err(other)?;
-        st.query_map([], |r| Ok(json!([r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?]))).map_err(other)?.collect::<Result<_, _>>().map_err(other)?
-    };
+    let aliases: Vec<J> =
+        db::rows(con, "SELECT table_name, from_uid, to_uid FROM sync_alias", [], |r| Ok(json!([r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?]))).map_err(other)?;
     let mut covers = positions(con)?;
     covers.insert(me.clone(), seq);
     let c = counts(con)?;
