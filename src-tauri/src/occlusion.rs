@@ -20,12 +20,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 앱이 만드는 노트 유형 이름 (Anki 영문 기본 유형과 같다)
 pub const NATIVE: &str = "Image Occlusion";

@@ -16,12 +16,7 @@ use crate::{quality, rag, render, written};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 pub const LIST: &str = "Addiem 목록 회상";
 pub const CHOICE: &str = "Addiem 선택형";

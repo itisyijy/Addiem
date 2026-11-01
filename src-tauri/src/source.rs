@@ -14,12 +14,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 신호와 가중치 (post-mvp 5장). 하이라이트·밑줄·색은 사용자가 일부러 남긴 것이라 높고,
 /// 볼드는 원본 서식일 수 있어 낮다. 배열 순서가 곧 신뢰도 순이다 (I1 배지 순서).

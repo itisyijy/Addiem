@@ -16,12 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 받을 파일 하나: 저장 이름, 고정 리비전 주소, 바이트, SHA-256
 struct File {

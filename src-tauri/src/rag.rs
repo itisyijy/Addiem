@@ -12,12 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as J};
 use std::collections::HashMap;
 use tauri::{AppHandle, Manager, State};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 1구간 최대 글자. 넘으면 자르고 "…(잘림)" (미리보기에도 그대로)
 const CLIP: usize = 600;

@@ -9,12 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 신규 카드를 처음 본 뒤 다시 나오는 날 (Good 기준 FSRS 첫 간격의 근사).
 /// ponytail: 고정 근사다. 카드별 안정도로 내다보려면 날마다 srs 를 돌려야 하고, 계획 화면에는 이 정도면 충분하다

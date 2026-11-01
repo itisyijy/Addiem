@@ -10,12 +10,7 @@ use crate::{quality, render};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 앱이 만드는 서술형 노트 유형 (db.rs NATIVE_TYPES). 필드: 질문 · 모범 답안 · 채점 메모
 pub const NATIVE: &str = "서술형";

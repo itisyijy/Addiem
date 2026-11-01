@@ -24,12 +24,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use store::{DriveStore, FolderStore, SyncError, Store};
 use tauri::{AppHandle, Emitter, Manager, State};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 앱이 열려 있을 때 받기 주기
 const PERIOD: Duration = Duration::from_secs(30 * 60);

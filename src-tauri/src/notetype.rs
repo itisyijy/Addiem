@@ -11,12 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 카드 -> 그 카드를 그리는 템플릿 (별칭 c = 카드, t = card_template). 빈칸 유형은 템플릿 하나(ord 0)로 모든 빈칸 카드를 그린다.
 /// 앱 Cloze 도 앞면이 {{cloze: 라 이름을 보지 않는다
@@ -2144,14 +2139,6 @@ pub fn change_note_type(state: State<AppState>, req: ChangeType, dry_run: bool) 
 }
 
 /// 바꾸는 명령은 모두 한 트랜잭션
-fn write<T>(state: &State<AppState>, f: impl FnOnce(&Connection) -> Res<T>) -> Res<T> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let out = f(&tx)?;
-    tx.commit().map_err(err)?;
-    Ok(out)
-}
-
 #[tauri::command(async)]
 pub fn note_types(state: State<AppState>) -> Res<Vec<TypeRow>> {
     list(&*state.db.lock().map_err(err)?)
@@ -2169,57 +2156,57 @@ pub fn deck_note_types(state: State<AppState>, deck_id: i64) -> Res<Vec<i64>> {
 
 #[tauri::command]
 pub fn clone_note_type(state: State<AppState>, id: i64, name: Option<String>) -> Res<i64> {
-    write(&state, |c| clone_type(c, id, name.as_deref()))
+    state.write(|c| clone_type(c, id, name.as_deref()))
 }
 
 #[tauri::command]
 pub fn rename_note_type(state: State<AppState>, id: i64, name: String) -> Res<()> {
-    write(&state, |c| rename_type(c, id, &name))
+    state.write(|c| rename_type(c, id, &name))
 }
 
 #[tauri::command]
 pub fn delete_note_type(state: State<AppState>, id: i64) -> Res<()> {
-    write(&state, |c| delete_type(c, id))
+    state.write(|c| delete_type(c, id))
 }
 
 #[tauri::command]
 pub fn add_note_field(state: State<AppState>, id: i64, name: String) -> Res<usize> {
-    write(&state, |c| add_field(c, id, &name))
+    state.write(|c| add_field(c, id, &name))
 }
 
 #[tauri::command]
 pub fn rename_note_field(state: State<AppState>, id: i64, slot: usize, name: String) -> Res<()> {
-    write(&state, |c| rename_field(c, id, slot, &name))
+    state.write(|c| rename_field(c, id, slot, &name))
 }
 
 #[tauri::command]
 pub fn reorder_note_fields(state: State<AppState>, id: i64, slots: Vec<usize>) -> Res<()> {
-    write(&state, |c| reorder_fields(c, id, &slots))
+    state.write(|c| reorder_fields(c, id, &slots))
 }
 
 #[tauri::command]
 pub fn delete_note_field(state: State<AppState>, id: i64, slot: usize) -> Res<()> {
-    write(&state, |c| delete_field(c, id, slot))
+    state.write(|c| delete_field(c, id, slot))
 }
 
 #[tauri::command]
 pub fn add_card_template(state: State<AppState>, id: i64, name: Option<String>, qfmt: String, afmt: String) -> Res<TemplateAdded> {
-    write(&state, |c| add_template(c, id, name.as_deref(), &qfmt, &afmt))
+    state.write(|c| add_template(c, id, name.as_deref(), &qfmt, &afmt))
 }
 
 #[tauri::command]
 pub fn delete_card_template(state: State<AppState>, id: i64, ord: u32, dry_run: bool) -> Res<TemplateImpact> {
-    write(&state, |c| delete_template(c, id, ord, dry_run))
+    state.write(|c| delete_template(c, id, ord, dry_run))
 }
 
 #[tauri::command]
 pub fn save_card_template(state: State<AppState>, id: i64, ord: u32, name: Option<String>, qfmt: String, afmt: String) -> Res<usize> {
-    write(&state, |c| save_template(c, id, ord, name.as_deref(), &qfmt, &afmt))
+    state.write(|c| save_template(c, id, ord, name.as_deref(), &qfmt, &afmt))
 }
 
 #[tauri::command]
 pub fn save_note_type_css(state: State<AppState>, id: i64, css: String) -> Res<()> {
-    write(&state, |c| save_css(c, id, &css))
+    state.write(|c| save_css(c, id, &css))
 }
 
 #[tauri::command]
@@ -2272,7 +2259,7 @@ pub fn rename_field_refs(texts: Vec<String>, old: String, new: String) -> Vec<St
 
 #[tauri::command]
 pub fn add_typed_note(state: State<AppState>, note: TypedNote) -> Res<usize> {
-    write(&state, |c| add_note(c, &note))
+    state.write(|c| add_note(c, &note))
 }
 
 /// 쉬운 편집 구조. HTML 전용이면 Err(이유: "뒷면에 조건문 {{#예문}}")

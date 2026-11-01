@@ -13,12 +13,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 const SHAKY_DAYS: f64 = 7.0;
 const STABLE_DAYS: f64 = 30.0;
@@ -436,14 +431,14 @@ fn summary(con: &Connection, session_id: i64, since: i64, t: &queue::Deck, decks
     let (weak_ids, _) = weak_scope(t, decks);
     let all = items(con, &commands::descendants(t.id, decks), &weak_ids)?;
     let seen = round_seen(con, t)?;
-    let mut st = con
-        .prepare(
-            "SELECT c.deck_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id
-             WHERE r.session_id = ?1 AND r.reviewed_at >= ?2 AND r.rating = 1 GROUP BY c.deck_id ORDER BY 2 DESC, 1",
-        )
-        .map_err(err)?;
-    let again: Vec<(i64, i64)> =
-        st.query_map([session_id, since], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+    let again: Vec<(i64, i64)> = db::rows(
+        con,
+        "SELECT c.deck_id, count(*) FROM review_log r JOIN card c ON c.id = r.card_id
+         WHERE r.session_id = ?1 AND r.reviewed_at >= ?2 AND r.rating = 1 GROUP BY c.deck_id ORDER BY 2 DESC, 1",
+        [session_id, since],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)?;
     let total: i64 = again.iter().map(|a| a.1).sum();
     let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
     let depth = commands::path_of(t.id, &by_id).len();

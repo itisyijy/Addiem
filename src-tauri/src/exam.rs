@@ -11,12 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::State;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// 카드가 기출인가: 노트에 표시했거나, 기출로 표시한 자료 구간과 이어졌다 (끊은 자동 연결 제외).
 /// 별칭 c(card) · n(note) 가 있는 쿼리에 넣는다

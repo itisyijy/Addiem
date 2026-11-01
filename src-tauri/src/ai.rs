@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use ureq::http::{Method, Request};
+use crate::Res;
 
 const AUTHORIZE: &str = "https://auth.openai.com/api/accounts/authorize";
 const TOKEN: &str = "https://auth.openai.com/api/accounts/oauth/token";
@@ -67,8 +68,6 @@ const MIN_ITEMS: usize = 3;
 const MAX_ITEMS: usize = 60;
 const MAX_INPUT_CHARS: usize = 6000;
 const MAX_FRONT_CHARS: usize = 200;
-
-type Res<T> = Result<T, String>;
 
 // ---------------------------------------------------------------- 오류 (화면이 kind 로 고른다)
 

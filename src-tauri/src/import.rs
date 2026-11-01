@@ -20,14 +20,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
+use crate::{err, Res};
 
 pub(crate) mod deck_update;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
 
 const SEP: char = '\x1f'; // Anki 가 덱 계층과 노트 필드를 나누는 구분자
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];

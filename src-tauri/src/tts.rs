@@ -13,12 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 use unicode_normalization_alignments::UnicodeNormalization;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 /// Supertonic 3 이 읽는 언어 (예제의 AVAILABLE_LANGS 에서 "na" 를 뺐다)
 const LANGS: [&str; 31] = [

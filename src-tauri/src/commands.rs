@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
+use crate::{err, Res};
 
 pub struct AppState {
     pub db: Mutex<Connection>,
@@ -21,6 +22,17 @@ pub struct AppState {
     pub import_cancel: std::sync::atomic::AtomicBool,
     /// 시작할 때 학습 데이터를 열지 못한 이유 (S1-6). 있으면 지금 연결은 빈 메모리 DB 다
     pub startup_error: Mutex<Option<String>>,
+}
+
+impl AppState {
+    /// 잠그고 트랜잭션 하나 안에서 쓴다. f 가 실패하면 아무것도 남지 않는다
+    pub fn write<T>(&self, f: impl FnOnce(&Connection) -> Res<T>) -> Res<T> {
+        let mut con = self.db.lock().map_err(err)?;
+        let tx = con.transaction().map_err(err)?;
+        let out = f(&tx)?;
+        tx.commit().map_err(err)?;
+        Ok(out)
+    }
 }
 
 /// session_card_state 한 줄: again_count, is_buried, buried_at, buried_reason, shown_count
@@ -68,12 +80,6 @@ fn past_day(con: &Connection, session_id: i64, now: i64) -> Res<bool> {
     let day: Option<String> =
         con.query_row("SELECT study_day FROM study_session WHERE id = ?1", [session_id], |r| r.get(0)).optional().map_err(err)?;
     Ok(day.is_some_and(|d| d != db::date_from_day(study_day(now))))
-}
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
 }
 
 // ------------------------------------------------------------------ 공통 로딩

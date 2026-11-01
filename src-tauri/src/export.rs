@@ -22,12 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
 use zip::write::SimpleFileOptions;
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 const SEP: &str = "\x1f"; // Anki 가 노트 필드를 나누는 구분자
 

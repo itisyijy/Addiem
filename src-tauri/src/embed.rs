@@ -14,12 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
-
-type Res<T> = Result<T, String>;
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::{err, Res};
 
 const REPO: &str = "intfloat/multilingual-e5-small";
 /// 고정 리비전 (2026-04-02). 바꾸면 아래 크기와 해시를 함께 다시 적는다

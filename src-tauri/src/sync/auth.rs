@@ -276,45 +276,18 @@ pub fn save_secret(name: &str, value: &str) -> Result<(), String> {
 }
 
 pub fn load_secret(name: &str) -> Option<String> {
-    load_from(SERVICE, crate::legacy::OLD_ID, &secret_name(name))
-}
-
-/// 예전 이름(Neo-Anki) 서비스에 저장한 값이면 새 서비스로 옮긴다 (legacy.rs). 옮기지 못해도 값은 쓴다
-fn load_from(service: &str, old_service: &str, name: &str) -> Option<String> {
-    if let Ok(v) = keyring::Entry::new(service, name).and_then(|e| e.get_password()) {
-        return Some(v);
-    }
-    let old = keyring::Entry::new(old_service, name).ok()?;
-    let v = old.get_password().ok()?;
-    if keyring::Entry::new(service, name).and_then(|e| e.set_password(&v)).is_ok() {
-        let _ = old.delete_credential();
-    }
-    Some(v)
+    keyring::Entry::new(SERVICE, &secret_name(name)).and_then(|e| e.get_password()).ok()
 }
 
 pub fn delete_secret(name: &str) {
-    for service in [SERVICE, crate::legacy::OLD_ID] {
-        if let Ok(e) = keyring::Entry::new(service, &secret_name(name)) {
-            let _ = e.delete_credential();
-        }
+    if let Ok(e) = keyring::Entry::new(SERVICE, &secret_name(name)) {
+        let _ = e.delete_credential();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 시험용 서비스 이름만 쓴다 (실제 앱 키는 건드리지 않는다)
-    #[test]
-    fn old_service_secret_moves_on_first_read() {
-        let (new, old, name) = ("addiem-test-new", "addiem-test-old", format!("t-{}", crypto::random_hex(6)));
-        assert_eq!(load_from(new, old, &name), None);
-        keyring::Entry::new(old, &name).unwrap().set_password("rt").unwrap();
-        assert_eq!(load_from(new, old, &name).as_deref(), Some("rt"));
-        assert!(keyring::Entry::new(old, &name).unwrap().get_password().is_err(), "예전 것은 지운다");
-        assert_eq!(keyring::Entry::new(new, &name).unwrap().get_password().unwrap(), "rt");
-        keyring::Entry::new(new, &name).unwrap().delete_credential().unwrap();
-    }
 
     #[test]
     fn pkce_and_auth_url() {
