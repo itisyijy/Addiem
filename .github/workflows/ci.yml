@@ -30,6 +30,11 @@ jobs:
       # tauri::generate_context! 가 ../dist 를 읽으므로 cargo 보다 먼저 만든다
       - run: npm run build
 
+      # 손으로만 돌리던 참조 검사 (큐 규칙 · PDF 목차 · 그림 찾기). 한글 출력이 cp1252 콘솔에서 깨지지 않게 utf8 로
+      - run: python -X utf8 tools/queue_reference.py
+      - run: node tools/check_outline.mjs
+      - run: node tools/check_figures.mjs
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
