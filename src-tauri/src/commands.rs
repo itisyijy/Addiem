@@ -3295,16 +3295,8 @@ pub async fn wipe_all(state: State<'_, AppState>, sync: State<'_, crate::sync::S
 
 #[cfg(test)]
 mod tests {
-    use crate::db::{now_ms, study_day, study_day_end_ms};
+    use crate::db::{meta, now_ms, set_meta, study_day, study_day_end_ms};
     use rusqlite::{params, Connection};
-
-    fn marker(con: &Connection) -> String {
-        con.query_row("SELECT value FROM schema_meta WHERE key = 'marker'", [], |r| r.get(0)).unwrap_or_default()
-    }
-
-    fn set_marker(con: &Connection, v: &str) {
-        con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('marker', ?1)", [v]).unwrap();
-    }
 
     fn zip_with(path: &std::path::Path, entries: &[(&str, &[u8])]) {
         use std::io::Write;
@@ -3339,18 +3331,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("na-restore-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut con = crate::db::open(&dir.join("addiem.sqlite")).unwrap();
-        set_marker(&con, "backup");
+        set_meta(&con, "marker", Some("backup")).unwrap();
         let zip = super::write_backup_as(&con, &dir, "").unwrap();
-        set_marker(&con, "live");
+        set_meta(&con, "marker", Some("live")).unwrap();
 
         // 교체 중 실패 (임시 DB 가 사라짐): 원래 DB 가 제자리로 돌아오고 다시 열린다
         let missing = dir.join(".restore-missing.sqlite");
         assert!(super::swap_in_db(&mut con, &dir, &missing).unwrap_err().contains("되돌렸어요"));
-        assert_eq!(marker(&con), "live");
+        assert_eq!(meta(&con, "marker").unwrap().as_deref(), Some("live"));
 
         let staged = super::stage_restore(&zip, &dir, 0).unwrap();
         super::swap_in_db(&mut con, &dir, &staged.db).unwrap();
-        assert_eq!(marker(&con), "backup");
+        assert_eq!(meta(&con, "marker").unwrap().as_deref(), Some("backup"));
         assert!(leftovers(&dir).is_empty());
         let before = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with("addiem-before-restore-"));
         assert!(before, "지금 파일은 옆에 남긴다");

@@ -1627,7 +1627,7 @@ fn maker(con: &Connection, nt: &Nt) -> Option<(String, Option<String>)> {
         .query_row("SELECT r.hlc FROM sync_row r JOIN note_type nt ON nt.uid = r.uid WHERE r.table_name = 'note_type' AND nt.id = ?1", [nt.id], |r| r.get(0))
         .ok()?;
     let dev = hlc.splitn(3, '-').nth(2).unwrap_or_default().to_string();
-    let me: String = con.query_row("SELECT value FROM schema_meta WHERE key = 'device_uid'", [], |r| r.get(0)).ok()?;
+    let me = db::meta(con, "device_uid").ok()??;
     if dev == me {
         return None;
     }
