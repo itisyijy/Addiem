@@ -868,8 +868,10 @@ pub(crate) fn split_text(question: &str, answer: &[String], per_card: i64) -> Ve
         // 앞 카드들은 per 개씩, 남는 것은 마지막 카드로
         let end = if k + 1 == cards { items.len() } else { start + per };
         let range = if end - start == 1 { format!("{}번째", start + 1) } else { format!("{}–{}번째", start + 1, end) };
+        // 명령형 끝(…하라 · 하시오 · 하세요) 뒤에는 "?"를 붙이지 않는다 (QA T8-23)
+        let ask = if ["라", "시오", "세요"].iter().any(|e| base.ends_with(e)) { "" } else { "?" };
         parts.push(SplitPart {
-            front: if noun { format!("{base} 중 {range}{}?", if has_batchim(&range) { "은" } else { "는" }) } else { format!("{base}? ({range})") },
+            front: if noun { format!("{base} 중 {range}{}?", if has_batchim(&range) { "은" } else { "는" }) } else { format!("{base}{ask} ({range})") },
             back: items[start..end].iter().map(|i| strip_marker(i)).collect::<Vec<_>>().join("\n"),
         });
         start = end;
@@ -1050,7 +1052,7 @@ pub fn undo_change(state: State<AppState>, change_id: i64, force: Option<bool>) 
 #[derive(Serialize)]
 pub struct ChangeRow {
     id: i64,
-    /// split | rewrite
+    /// split | rewrite | draft
     kind: String,
     /// rewrite 만: format | ai | edit
     how: Option<String>,
@@ -1060,17 +1062,20 @@ pub struct ChangeRow {
     undone: bool,
 }
 
-/// G1 "최근 나눈 카드" · "최근 고친 카드"(7일) 30개 (R1 초안은 토스트의 [되돌리기]로만)
+/// G1 "최근 나눈 카드" · "최근 고친 카드"(7일) · "최근 만든 카드"(초안 · 그림 · 표, 7일) 30개 (R6, QA T7-11)
 #[tauri::command]
 pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow>> {
-    let con = state.db.lock().map_err(err)?;
-    let decks = commands::load_decks(&con)?;
+    recent_of(&*state.db.lock().map_err(err)?, deck_id)
+}
+
+fn recent_of(con: &Connection, deck_id: i64) -> Res<Vec<ChangeRow>> {
+    let decks = commands::load_decks(con)?;
     let ids = commands::descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     db::rows(
-        &con,
+        con,
         &format!(
             "SELECT id, kind, json_extract(payload, '$.how'), summary, card_id, created_at, undone_at IS NOT NULL FROM card_change
-             WHERE (kind = 'split' OR (kind = 'rewrite' AND created_at >= ?1)) AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
+             WHERE (kind = 'split' OR (kind IN ('rewrite', 'draft') AND created_at >= ?1)) AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
         ),
         [now_ms() - REWRITE_DAYS * DAY_MS],
         |r| Ok(ChangeRow { id: r.get(0)?, kind: r.get(1)?, how: r.get(2)?, summary: r.get(3)?, card_id: r.get(4)?, created_at: r.get(5)?, undone: r.get(6)? }),
@@ -1304,6 +1309,8 @@ mod tests {
         // 이름꼴이 아니면 물음 뒤에 범위를 붙이고, 물음표 뒤 안내 문장은 뗀다
         let p = split_text("항목과 키워드를 연결하면? 판단한 뒤 정답을 확인하세요.", &ten, 5);
         assert_eq!(p[1].front, "항목과 키워드를 연결하면? (6–10번째)");
+        // 명령형 끝에는 "?"를 붙이지 않는다 (QA T8-23)
+        assert_eq!(split_text("OSI 7계층을 순서대로 설명하라.", &ten, 3)[0].front, "OSI 7계층을 순서대로 설명하라 (1–3번째)");
     }
 
     #[test]
@@ -1345,6 +1352,24 @@ mod tests {
         assert_eq!(count(&con, &format!("SELECT count(*) FROM card WHERE id = {orig} AND state = 'review'")), 1);
         undo(&mut con, change).unwrap();
         assert!(apply_split(&mut con, orig, &[SplitPart { front: " ".into(), back: "".into() }], true).is_err());
+    }
+
+    #[test]
+    fn recent_lists_drafts_for_seven_days() {
+        // R6 · QA T7-11: 초안 · 그림 · 표에서 만든 카드도 "최근 만든 카드"로 7일 동안 (나누기는 기한 없이)
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let old = now_ms() - 8 * DAY_MS;
+        for (kind, at) in [("draft", now_ms()), ("draft", old), ("split", old)] {
+            con.execute(
+                "INSERT INTO card_change (kind, deck_id, summary, payload, created_at) VALUES (?1, ?2, 's', '{}', ?3)",
+                params![kind, deck, at],
+            )
+            .unwrap();
+        }
+        let kinds: Vec<String> = recent_of(&con, deck).unwrap().into_iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, ["draft", "split"]);
     }
 
     // ------------------------------------------------------------------ 8.2 질문과 답의 대응 · 서식 · 고쳐 쓰기

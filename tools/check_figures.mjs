@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
-import { captionOf, figuresOf, gridIn, layoutOf, suggestTables, tableCandidates } from "../src/figures.ts";
+import { CAPTION, captionOf, captionTag, figuresOf, gridIn, layoutOf, splitsRun, suggestTables, tableCandidates } from "../src/figures.ts";
 
 // ---------------------------------------------------------------- PDF 만들기 (Helvetica · 2×2 RGB 그림 하나)
 function pdf(pages) {
@@ -172,6 +172,17 @@ for (const i of [6, 7]) {
 assert.deepEqual(gridIn(L[2], [80, 150, 300, 185]), [["R2", "Explained variance"], ["RMSE", "Root mean squared error"]]);
 // 글자 없는 영역(그림) → 표로 만들 수 없다
 assert.deepEqual(gridIn(L[0], figs[0]), []);
+// 이름표 번호 (QA T6-12): 낱말 뒤 숫자 · 영문 한 자+숫자만, 끝 "." · "-" 는 뺀다
+for (const [t, tag] of [["Figure 1. Regression", "Figure 1"], ["Fig. 2 Residuals", "Fig. 2"], ["그림 3-6 회귀", "그림 3-6"], ["그림 A-1", "그림 A-1"], ["Figure S1", "Figure S1"], ["표 2- 결과", "표 2"]])
+  assert.equal(captionTag(t), tag, t);
+for (const t of ["Tablet computers are common", "Figures show the trend", "Table of contents", "표준 편차"]) assert.ok(!CAPTION.test(t), t);
+// 강조 구간 묶기 (QA T6-15, lecture.pdf 의 굵은 줄): 기준선 y · 크기로 pdf.ts 의 줄 상자를 만든다
+const ln = (text, y, size = 11) => ({ text, size, box: [72, y - size * 0.25, 300, y + size * 0.85] });
+assert.ok(splitsRun(ln("Network Lecture 3: TCP and UDP", 740, 20), ln("1. Transport Layer", 712, 14)), "제목 + H1 (크기)");
+assert.ok(splitsRun(ln("Table 1. Protocol comparison", 440), ln("Protocol Connection Reliable", 420)), "이름표 + 표 머리글 (간격)");
+assert.ok(splitsRun(ln("is the key idea.", 500), ln("Figure 2 shows it", 486)), "다음 줄이 이름표");
+assert.ok(splitsRun(ln("Transport Layer", 500), ln("2.1 Fast Retransmit", 486)), "다음 줄이 제목 번호");
+assert.ok(!splitsRun(ln("A two-line highlight that wraps", 500), ln("onto the next line of the paragraph.", 486)), "두 줄짜리 하이라이트는 한 구간");
 console.log("check_figures: 그림 · 괘선 표(선 · 칸 사각형 · 칠한 괘선) · 글자 표 · 2단 본문 · 목록 · 북탭 표 모두 통과");
 
 // ---------------------------------------------------------------- 측정: 덧붙인 PDF

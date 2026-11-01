@@ -50,6 +50,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   const seq = useRef(0);
   const inFlight = useRef(false); // 보내 놓고 아직 답을 받지 않은 요청
   const confirmBox = useRef<HTMLDivElement>(null);
+  const slotBox = useRef<HTMLDivElement>(null);
   const toast = useToast();
   /** 보내던 요청을 멈춘다. 끝까지 돌면 결과는 버려도 사용량은 줄어든다 */
   const cancel = () => {
@@ -93,6 +94,10 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
     if (phase === "confirm") confirmBox.current?.querySelector<HTMLButtonElement>(".btn--primary")?.focus({ preventScroll: true });
   }, [phase]);
   useKey("Escape", () => setPhase("idle"), phase === "confirm", { modal: true });
+  // 기다림 줄 · 결과는 비교 칸 아래라 화면 밖일 수 있다: 그 줄이 보이게 (QA T7-06)
+  useEffect(() => {
+    if (phase === "busy" || phase === "done") slotBox.current?.scrollIntoView({ block: "nearest" });
+  }, [phase]);
 
   // [취소] · 결과 전 평가: 화면은 바로 돌아오고, 결과는 버려도 이미 보낸 요청은 사용량에 들어간다고 알린다 (QA R-05 · T7-05)
   const stop = useCallback(() => {
@@ -192,7 +197,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
   );
 
   const slot = !on ? null : phase === "busy" ? (
-    <div className="grade grade--wait" role="status">
+    <div className="grade grade--wait" role="status" ref={slotBox}>
       <Spinner size={16} />
       <span className="t-label-m c-secondary">{slow ? `${SLOW} · 평가는 지금 해도 돼요` : "ChatGPT가 답을 보는 중… 평가는 지금 해도 돼요"}</span>
       <button type="button" className="ai-link t-label-s" onClick={stop}>
@@ -209,7 +214,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
       onReconnect={(reconsent) => setConnect({ start: "wait", reconsent })}
     />
   ) : phase === "done" && result ? (
-    <section className="grade" aria-label="ChatGPT 채점 보조">
+    <section className="grade" aria-label="ChatGPT 채점 보조" ref={slotBox}>
       <div className="grade__head">
         <span className="grade__title">
           <Icon name="sparkles" size={16} className="c-accent" />

@@ -9,7 +9,7 @@ import { n, useKey, useOverlayScope } from "../nav";
 import { useToast } from "../toast";
 import { Button, Icon } from "../ui";
 import { cropPage, cropSize, pageLayout } from "../pdf";
-import { boxOf, captionOf, figuresOf, gridIn, rectOf, suggestTables, type Layout } from "../figures";
+import { boxOf, captionOf, captionTag, figuresOf, gridIn, rectOf, suggestTables, type Layout } from "../figures";
 import { PdfPage } from "./Sources";
 import { clamp } from "./Occlusion";
 import { cellsOf, FigList, FigMenu, sameRect, useBulk, useFlows, type FigRow, type FigSource, type MenuEntry } from "./Figures";
@@ -121,10 +121,8 @@ export function pdfItems(scan: Scan | null, segs: Segment[], hidden: string[]): 
 
 /** 쪽 안 번호 ("그림 2" · "표 1"). 이름표가 없을 때만 쓴다 */
 const numberOf = (items: PdfItem[], it: PdfItem) => items.filter((x) => x.page === it.page && x.kind === it.kind).indexOf(it) + 1;
-/** 이름표 앞 번호 ("그림 3-6") */
-const CAPTION_NO = /^(그림|표|도표|사진|Fig\.?|Figure|Table)\s*[\dA-Z][\w.-]*/i;
 /** 쪽 위 이름표 · 목록 · 창 머리가 같은 이름을 쓴다: 이름표가 있으면 그 번호, 없으면 "그림 n" */
-const labelOf = (items: PdfItem[], it: PdfItem) => it.name.match(CAPTION_NO)?.[0] ?? `${it.kind === "figure" ? "그림" : "표"} ${numberOf(items, it)}`;
+const labelOf = (items: PdfItem[], it: PdfItem) => captionTag(it.name) ?? `${it.kind === "figure" ? "그림" : "표"} ${numberOf(items, it)}`;
 
 // 무시한 제안 · 목록에서 뺀 그림은 이 기기에만 둔다 (동기화하지 않는 작은 기록). 자료 id 가 키라 모든 데이터 삭제 때 같이 지운다 (QA T4-11)
 export const HIDDEN = "addiem.figures.hidden";
