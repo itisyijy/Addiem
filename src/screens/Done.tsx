@@ -60,6 +60,9 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
     setBusy(false);
   };
   useKey({ action: "undo" }, () => void undo(), s.undoable);
+  // Enter = 화면의 주 버튼 (접은 카드 [N일 뒤 다시 보기] · 남은 카드 [이어서 하기] · [홈으로]), Esc = 홈 (QA T2-07)
+  useKey("Enter", () => (folded ? void resolve(false) : finished ? home() : resume()));
+  useKey("Escape", home);
   // 남은 카드 중 오늘 이미 본 카드(학습 단계)는 학습한 카드에도 들어 있다. 두 칸의 합이 처음 분량과 맞게 따로 적는다 (QA T2-01).
   // 머리말 · 복습 칸 · 오른쪽 제목도 같은 수로: 다시 볼 카드는 "예정 복습"이나 "남은 N장"에 넣지 않는다 (QA V3-02 · V6-02)
   const unseen = remaining - s.remaining_seen;
@@ -159,7 +162,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
           <div className="done__actions">
             {finished ? (
               <>
-                <Button className="done__wide" icon="chevron-left" label="홈으로" onClick={home} />
+                <Button className="done__wide" icon="chevron-left" label="홈으로" shortcut="Enter" onClick={home} />
                 <p className="t-caption c-tertiary">
                   내일 {hourLabel(getCutoff())}
                   {getCutoff() === 0 ? "이" : "가"} 지나면 홈의 "오늘"에 올라와요
@@ -167,10 +170,17 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
               </>
             ) : (
               <>
-                <Button className="done__wide" icon="arrow-right" label={`이어서 하기 · ${n(remaining)}장`} onClick={resume} />
+                <Button className="done__wide" icon="arrow-right" label={`이어서 하기 · ${n(remaining)}장`} shortcut="Enter" onClick={resume} />
                 <Button className="done__wide" variant="ghost" icon="chevron-left" label="여기서 멈추고 홈으로" onClick={home} />
                 {/* "내일" 숫자는 못 본 신규가 산식으로 다시 나뉜 값이다 (이월 아님, 큐 명세 D5) */}
-                {s.remaining_new > 0 && <p className="t-caption c-tertiary">못 본 신규 {n(s.remaining_new)}장은 이월되지 않고 남은 날에 나뉘어 들어가요</p>}
+                {/* 목표일이 없으면 나눌 날이 없다. 내일 하루 몫(상한)에서 이어진다 (QA T3-25) */}
+                {s.remaining_new > 0 && (
+                  <p className="t-caption c-tertiary">
+                    {s.has_target
+                      ? `못 본 신규 ${n(s.remaining_new)}장은 이월되지 않고 남은 날에 나뉘어 들어가요`
+                      : `목표일이 없어 내일 하루 몫(상한 ${n(s.new_cap)}장)에서 이어서 나와요`}
+                  </p>
+                )}
               </>
             )}
           </div>
@@ -199,7 +209,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
             ))}
           </div>
           <div className="done__actions">
-            <Button className="done__wide" icon="arrow-right" label={`${BURY_DAYS}일 뒤 다시 보기`} onClick={() => resolve(false)} disabled={busy} />
+            <Button className="done__wide" icon="arrow-right" label={`${BURY_DAYS}일 뒤 다시 보기`} shortcut="Enter" onClick={() => resolve(false)} disabled={busy} />
             <p className="t-caption c-tertiary">{buryReturnDay()}부터 오늘의 학습에 다시 포함돼요</p>
             <Button
               className="done__wide"
@@ -209,6 +219,8 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
               onClick={() => resolve(true)}
               disabled={busy}
             />
+            {/* 막지 않는다. 다른 곳으로 가도 접은 카드는 N일 뒤로 넘어간다 (QA T2-08) */}
+            <p className="t-caption c-tertiary">다른 곳으로 가면 {BURY_DAYS}일 뒤에 다시 나와요</p>
             {error && <p className="t-body-s c-danger">{error}</p>}
           </div>
         </section>

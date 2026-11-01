@@ -2311,6 +2311,10 @@ pub struct SessionSummary {
     tomorrow_review: usize,
     tomorrow_new: usize,
     tomorrow_decks: Vec<TomorrowDeck>,
+    /// 남은 신규를 맡은 덱(예산 덱) 중 목표일이 있는 덱이 있다. 없으면 못 본 신규는 나눌 날 없이 내일 하루 몫에서 이어진다 (QA T3-25)
+    has_target: bool,
+    /// 목표일 없는 예산 덱들의 하루 신규 상한 합
+    new_cap: i64,
     /// 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다. 아무것도 평가하지 않은 학습이면 false (QA V3-01 · V3-16)
     undoable: bool,
 }
@@ -2383,6 +2387,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         .collect();
     tomorrow_decks.sort_by_key(|d| (d.dday.unwrap_or(i64::MAX), usize::MAX - (d.review + d.new)));
     let undoable = state.undo.lock().map_err(err)?.last().is_some_and(|u| u.session_id == session_id) && !past_day(&con, session_id, now)?;
+    let (has_target, new_cap) = new_owners_goal(&plan, &by_id);
     Ok(SessionSummary {
         studied,
         new_done,
@@ -2397,8 +2402,18 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         tomorrow_review: next.ordered().len() - next.new.len(),
         tomorrow_new: next.new.len(),
         tomorrow_decks,
+        has_target,
+        new_cap,
         undoable,
     })
+}
+
+/// 남은 신규를 맡은 예산 덱(명세 4.4)에 목표일이 있는지, 없는 덱들의 하루 상한 합 (D5 끝 문구, QA T3-25)
+fn new_owners_goal(plan: &queue::QueuePlan, by_id: &HashMap<i64, &queue::Deck>) -> (bool, i64) {
+    let owners: std::collections::HashSet<i64> = plan.new.iter().map(|c| queue::budget_owner(c.deck_id, by_id)).collect();
+    let decks = owners.iter().filter_map(|id| by_id.get(id));
+    let has_target = decks.clone().any(|d| d.target_day.is_some());
+    (has_target, decks.filter(|d| d.target_day.is_none()).map(|d| d.daily_new_limit.unwrap_or(queue::DEFAULT_NEW_LIMIT)).sum())
 }
 
 /// D5-c 내일 큐. 오늘만 정한 신규 분량 · 오늘 당겨 맞추기는 내일에 싣지 않고 내일 것을 싣는다 (QA T3-07)
@@ -3913,6 +3928,22 @@ mod tests {
         let (decks, _) = super::plan_for(&con, None, 1.0, today).unwrap();
         let buried = super::session_buried(&con, s, &decks).unwrap();
         assert_eq!(buried.iter().map(|b| (b.id, b.reason.as_str(), b.at)).collect::<Vec<_>>(), [(ids[0], "two_again", now)]);
+    }
+
+    #[test]
+    fn done_copy_knows_whether_new_cards_have_a_goal() {
+        // QA T3-25: 목표일 없는 덱의 못 본 신규는 "남은 날에 나뉘어"가 아니라 내일 하루 몫(상한)에서 이어진다
+        let con = crate::db::open_in_memory().unwrap();
+        deck_with_cards(&con, 3, Some(7));
+        let (today, _) = mid_today();
+        let goal = |con: &Connection| {
+            let (decks, plan) = super::plan_for(con, None, 1.0, today).unwrap();
+            assert!(!plan.new.is_empty());
+            super::new_owners_goal(&plan, &decks.iter().map(|d| (d.id, d)).collect())
+        };
+        assert_eq!(goal(&con), (false, 7));
+        con.execute("UPDATE deck_config SET target_date = ?1", [crate::db::date_from_day(today + 10)]).unwrap();
+        assert_eq!(goal(&con), (true, 0));
     }
 
     #[test]

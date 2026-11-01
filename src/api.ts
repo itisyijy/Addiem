@@ -348,6 +348,9 @@ export type SessionSummary = {
   tomorrow_review: number;
   tomorrow_new: number;
   tomorrow_decks: { name: string; review: number; new: number; dday: number | null }[];
+  /** 남은 신규를 맡은 덱에 목표일이 있다. 없으면 new_cap: 그 덱들의 하루 신규 상한 합 (QA T3-25) */
+  has_target: boolean;
+  new_cap: number;
   /** 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다 (평가 없던 학습 · 지난 학습일이면 false) */
   undoable: boolean;
 };

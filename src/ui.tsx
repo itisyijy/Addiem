@@ -328,7 +328,7 @@ export function TopNav({ onImport, onNewDeck, onSettings, onHome, sync }: {
 }) {
   return (
     <header className="topnav">
-      <button className="topnav__brand" onClick={onHome}>
+      <button className="topnav__brand" aria-label="홈" onClick={onHome}>
         <Logo />
         <Wordmark />
       </button>
