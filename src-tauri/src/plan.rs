@@ -614,10 +614,11 @@ pub struct ConflictDeck {
 #[derive(Serialize, Clone)]
 pub struct ConflictBar {
     date: String,
+    weekend: bool,
     a: i64,
     b: i64,
     other: i64,
-    /// 이날 넘는 기준선
+    /// 이날의 기준선 (평일 · 주말 상한이 다르면 날마다 다르다, QA G1-02). 없으면 0
     limit: i64,
 }
 
@@ -628,11 +629,8 @@ pub struct Conflict {
     b: ConflictDeck,
     peak_date: String,
     peak: i64,
-    /// 기준선: 쓸 수 있는 시간이면 그날(오늘, 없으면 처음 정해진 날)의 상한, 아니면 최근 30일 평균의 1.5배
-    limit: i64,
+    /// 기준선(막대마다 limit): 쓸 수 있는 시간이면 그날의 상한, 아니면 최근 30일 평균의 1.5배
     by_time: bool,
-    /// limit 이 주말 상한이다 ("평일 가능" · "주말 가능")
-    limit_weekend: bool,
     bars: Vec<ConflictBar>,
     /// 앞당겨 나누기: 최고 분량, b 의 하루 신규가 오늘 몇 장 늘어나는지
     spread_peak: i64,
@@ -704,16 +702,12 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
         let first = with("first");
         let peak = |v: &[DayLoad]| v.iter().map(DayLoad::total).max().unwrap_or(0);
         let b_new_today = |v: &[DayLoad]| v.first().map_or(0, |x| x.new_by_owner.get(&b.id).copied().unwrap_or(0));
-        let limit_day = (0..keep.len() as i64).map(|i| today + i).find(|&d| limit_on(d).is_some()).unwrap_or(today);
-        let limit = limit_on(limit_day).unwrap_or(0);
         out.push(Conflict {
             a: ConflictDeck { id: a.id, name: a.name.clone(), target: db::date_from_day(ta) },
             b: ConflictDeck { id: b.id, name: b.name.clone(), target: db::date_from_day(tb) },
             peak_date: db::date_from_day(today + peak_i as i64),
             peak: keep[peak_i].total(),
-            limit,
             by_time,
-            limit_weekend: by_time && is_weekend(limit_day),
             bars: keep
                 .iter()
                 .enumerate()
@@ -721,6 +715,7 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
                     let (ka, kb) = (x.by_root.get(&a.id).copied().unwrap_or(0), x.by_root.get(&b.id).copied().unwrap_or(0));
                     ConflictBar {
                         date: db::date_from_day(today + i as i64),
+                        weekend: is_weekend(today + i as i64),
                         a: ka,
                         b: kb,
                         other: x.total() - ka - kb,

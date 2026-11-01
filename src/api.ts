@@ -934,12 +934,9 @@ export type PlanConflict = {
   b: ConflictDeck;
   peak_date: string;
   peak: number;
-  limit: number;
-  /** 기준선이 쓸 수 있는 시간이면 true, 아니면 최근 30일 평균의 1.5배 */
+  /** 기준선(막대마다 limit, 없으면 0)이 쓸 수 있는 시간이면 true, 아니면 최근 30일 평균의 1.5배 */
   by_time: boolean;
-  /** limit 이 주말 상한이다 (오늘이 주말이면) */
-  limit_weekend: boolean;
-  bars: { date: string; a: number; b: number; other: number; limit: number }[];
+  bars: { date: string; weekend: boolean; a: number; b: number; other: number; limit: number }[];
   spread_peak: number;
   spread_extra: number;
   first_peak: number;

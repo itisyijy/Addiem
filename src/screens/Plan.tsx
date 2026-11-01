@@ -352,7 +352,6 @@ export function PlanConflictScreen({ back }: { back?: Route }) {
         : back.name === "deckSettings"
           ? "목표 및 학습 설정"
           : "돌아가기";
-  const limitLabel = c.by_time ? `${c.limit_weekend ? "주말" : "평일"} 가능 ${n(c.limit)}장` : `평소의 1.5배 · ${n(c.limit)}장`;
   const overRange = dayRuns(c.over_dates);
   const overWhat = c.by_time ? "쓸 수 있는 시간" : "평소의 1.5배";
   const options: { value: PlanMode; title: string; text: string; recommended?: boolean }[] = [
@@ -366,7 +365,7 @@ export function PlanConflictScreen({ back }: { back?: Route }) {
       value: "first",
       title: `${c.a.name} 신규 카드 먼저`,
       recommended: recommended === "first",
-      text: `${dayNum(c.a.target)}까지는 ${c.a.name}만 신규를 넣고, 그 뒤 ${n(c.first_days)}일에 ${c.b.name} 신규를 몰아요. 최고 분량 ${n(c.first_peak)}장.`,
+      text: `${dayNum(c.a.target)}까지는 ${c.a.name}만 신규를 넣고, 그 뒤 ${n(c.first_days)}일 동안 ${c.b.name} 신규를 몰아요. 최고 분량 ${n(c.first_peak)}장.`,
     },
     {
       value: "keep",
@@ -394,7 +393,7 @@ export function PlanConflictScreen({ back }: { back?: Route }) {
           {c.bars.some((b) => b.other > 0) && <span><i className="plan__key plan__key--done" />그 외</span>}
           <span className="c-tertiary">· 지금 계획대로면</span>
         </div>
-        <ConflictChart c={c} limitLabel={limitLabel} />
+        <ConflictChart c={c} />
       </section>
       <div className="plan__options" role="radiogroup" aria-label="나누는 방법">
         {options.map((o) => (
@@ -419,24 +418,32 @@ export function PlanConflictScreen({ back }: { back?: Route }) {
   );
 }
 
-/** 날짜별 쌓기 막대. 먼저 오는 시험 덱 chart/1 (아래), 늦은 덱 chart/2 (위), 그 외 회색 */
-function ConflictChart({ c, limitLabel }: { c: PlanConflict; limitLabel: string }) {
-  const max = Math.max(1, ...c.bars.map((b) => b.a + b.b + b.other), c.limit) * 1.12;
+/**
+ * 날짜별 쌓기 막대. 먼저 오는 시험 덱 chart/1 (아래), 늦은 덱 chart/2 (위), 그 외 회색.
+ * 기준선은 막대마다 그날 것 (평일 · 주말 상한이 다르면 계단이 된다, QA G1-02). 이름은 그 기준이 처음 나오는 칸에
+ */
+function ConflictChart({ c }: { c: PlanConflict }) {
+  const max = Math.max(1, ...c.bars.map((b) => Math.max(b.a + b.b + b.other, b.limit))) * 1.12;
   const H = 150;
   const h = (v: number) => Math.round((v / max) * H);
+  const capName = (b: PlanConflict["bars"][number]) => {
+    if (!c.by_time) return `평소의 1.5배 · ${n(b.limit)}장`;
+    const both = c.bars.some((x) => x.limit === b.limit && x.weekend !== b.weekend);
+    return `${both ? "평일 · 주말" : b.weekend ? "주말" : "평일"} 가능 ${n(b.limit)}장`;
+  };
   return (
     <div className="plan__chart plan__chart--conflict">
-      {c.limit > 0 && (
-        <div className="plan__cap" style={{ bottom: 40 + h(c.limit) }}>
-          <span className="t-caption c-warn">{limitLabel}</span>
-        </div>
-      )}
-      {c.bars.map((b) => {
+      {c.bars.map((b, i) => {
         const t = b.a + b.b + b.other;
-        const tip = `${dateWithDay(b.date)} · ${c.a.name} ${n(b.a)} · ${c.b.name} ${n(b.b)}${b.other ? ` · 그 외 ${n(b.other)}` : ""}`;
+        const tip = `${dateWithDay(b.date)} · ${c.a.name} ${n(b.a)} · ${c.b.name} ${n(b.b)}${b.other ? ` · 그 외 ${n(b.other)}` : ""}${b.limit > 0 ? ` · ${capName(b)}` : ""}`;
         return (
           <div key={b.date} className="plan__col" title={tip} role="img" aria-label={tip}>
             <div className="plan__area">
+              {b.limit > 0 && (
+                <div className="plan__cap" style={{ bottom: h(b.limit) }}>
+                  {c.bars.findIndex((x) => x.limit === b.limit) === i && <span className="t-caption c-warn">{capName(b)}</span>}
+                </div>
+              )}
               {b.limit > 0 && t > b.limit && <span className="plan__total t-label-s c-warn">{n(t)}</span>}
               <span className="plan__stack">
                 {b.b > 0 && <span className="plan__seg plan__seg--b" style={{ height: h(b.b) }} />}
