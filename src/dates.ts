@@ -1,4 +1,4 @@
-// 날짜 · 시각 · 남은 시간 글자. 여러 화면이 같이 쓴다 (node tools/check_dates.mjs).
+// 날짜 · 시각 · 남은 시간 · 크기 글자. 여러 화면이 같이 쓴다 (node tools/check_dates.mjs).
 // 날짜 문자열은 로컬 날짜 "2026-10-07" (toISOString 은 UTC 라 하루 어긋난다)
 export const WEEKDAY = "일월화수목금토";
 const DAY = 86_400_000;
@@ -50,3 +50,5 @@ export function eta(ratio: number, started: number) {
   const left = Math.max(1, Math.ceil((elapsed * (1 - ratio)) / ratio));
   return `약 ${left < 60 ? `${left}초` : `${Math.ceil(left / 60)}분`} 남음`;
 }
+/** 파일 크기. 0.1MB 미만은 KB (0.0MB 로 보이지 않게) */
+export const mb = (bytes: number) => (bytes < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`);

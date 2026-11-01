@@ -10,7 +10,7 @@ import { useToast } from "../toast";
 import { useFileDrop } from "../fileDrop";
 import { Modal } from "./NewDeck";
 import { UpdateChoice } from "./DeckUpdate";
-import { eta } from "../dates";
+import { eta, mb } from "../dates";
 import "../styles/import.css";
 
 // String.raw: JSON 문자열 안의 수식은 역슬래시를 두 번 쓴다 (\\( … \\)). 그대로 보여주고 그대로 붙여넣게
@@ -24,8 +24,6 @@ const EXAMPLE = String.raw`{ "deck": "정보처리기사",
   ]
 }`;
 
-/** 파일 크기. 0.1MB 미만은 KB (0.0MB 로 보이지 않게) */
-const mb = (bytes: number) => (bytes < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`);
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const JSON_FILE = /\.json$/i;
 /** 붙여넣기 · 파일 선택 · 끌어놓기가 같은 상한 (import.rs read_json_file · parse_json) */

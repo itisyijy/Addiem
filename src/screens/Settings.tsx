@@ -22,7 +22,7 @@ import { NoteTypesEntry } from "./NoteTypes";
 import { LAST_TYPE } from "./AddCard";
 import type { Undoable } from "../api";
 import { UndoConfirm } from "./DeckUpdate";
-import { md, monthDay, monthDayAt, stamp, WEEKDAY } from "../dates";
+import { mb, md, monthDay, monthDayAt, stamp, WEEKDAY } from "../dates";
 
 const HOURS = [0, 1, 2, 3, 4, 5, 6];
 const THEMES: [ThemePref, string][] = [
@@ -329,7 +329,6 @@ const BACKUP_KIND: Record<LocalBackup["kind"], string> = {
   cleanup: "노트 정리 전 자동 백업",
   other: "백업 폴더에 넣은 파일",
 };
-const size = (b: number) => (b < 0.1 * 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(1)}MB`);
 
 /**
  * 설정 › 이 기기 백업 [백업으로 복구] (DU16 의 되돌리기, DU42). 백업을 골라 DB 전체를 그때로 바꾼다.
@@ -392,7 +391,7 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
                 <span className="t-body-m-strong">{stamp(b.at, list.some((o) => o !== b && stamp(o.at) === stamp(b.at)))}</span>
                 <span className="t-caption c-tertiary">
                   {BACKUP_KIND[b.kind]}
-                  {b.kind === "other" && ` (${b.name})`} · {size(b.bytes)}
+                  {b.kind === "other" && ` (${b.name})`} · {mb(b.bytes)}
                 </span>
               </span>
             </label>
