@@ -11,11 +11,12 @@
   gap: 8px;
   pointer-events: none;
 }
-/* 겹침 창이 떠 있으면 왼쪽 아래 구석에 좁게, 가장 최근 1개만. 창 제목(위)과 오른쪽에 모인 창 버튼을 덮지 않는다.
-   260 + 16 은 1091 폭에서 520 폭 창(내보내기)의 왼쪽 끝 285 안쪽이다 (QA V4-03 · V9-03). 창을 닫으면 쌓인 것이 다시 보인다 */
-body:has(.scrim) .toasts { left: 16px; bottom: 16px; align-items: flex-start; transform: none; }
-body:has(.scrim) .toast { max-width: 260px; }
-body:has(.scrim) .toast:not(:last-child) { display: none; }
+/* 겹침 창이 떠 있으면 맨 위 창 안, 버튼 줄 바로 위에 창 내용 폭으로 가장 최근 1개만 (I181, Figma 348:25836).
+   어느 창 크기에서도 창을 덮지 않는다. 창이 넘치면 창 내용과 같이 스크롤된다. 창을 닫으면 쌓인 것이 다시 아래 가운데에 보인다 */
+.modal .toasts { position: static; align-self: stretch; align-items: stretch; transform: none; }
+.modal .toast { max-width: none; }
+.modal .toast__text { flex: 1; } /* ✕ · [되돌리기]는 오른쪽 끝, 창 버튼과 같은 줄 끝 */
+.modal .toast:not(:last-child) { display: none; }
 .toast {
   pointer-events: auto;
   display: flex;
