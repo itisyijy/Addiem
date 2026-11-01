@@ -220,6 +220,20 @@ for (const t of ["2019년이고 그 뒤로 두 번 고쳐졌다.", "2019 년이�
 for (const t of ["1. 전송 계층", "2.1 Fast Retransmit", "3.2.1 혼잡 제어", "2.1. 개요", "그림 3 회귀선", "표 2: 결과", "Figure 2 shows it", "Table 1."])
   assert.ok(splitsRun(ln("첫 줄은 굵은 글씨", 500), ln(t, 485)), `"${t}" 에서 나눈다`);
 assert.ok(!splitsRun(ln("그림 3에 정리되어 있다.", 500), ln("이어지는 둘째 줄", 485)), "본문 속 \"그림 3에\" 다음 줄은 이어진다");
+// 성긴 쪽 (QA V2-02): 보통 줄 간격이 문단 간격이 되어도 문장이 끝난 줄 뒤 1.6배 넘는 간격은 나눈다.
+// [기준선, 글, 같은 신호인 앞 줄과 한 구간인가 (없으면 신호가 달라 보지 않는다)]
+for (const [name, rows] of [
+  // V2 의 lecture-ko.pdf 3쪽: 굵은 줄 + "3.1 …" · 하이라이트 주석 둘 · 굵은 문단 둘 (1.5배 · 1.7배)
+  ["lecture-ko p.3", [[712, "재전송 타이머가 끝나기 전에 확인 응답이 오지 않으면"], [697, "3.1 재전송 규칙", false], [670, "송신 측은 보낸 세그먼트마다 순서 번호를 붙이고 수신 측은"], [655, "받은 순서 번호에 대한 확인 응답을 돌려준다.", true], [630, "확인 응답이 세 번 겹쳐 오면 타이머를 기다리지 않고 바로", false], [615, "2019 년 표준에서도 빠른 재전송을 쓴다.", true], [590, "빠른 재전송은 지연을 줄이고, 느린 시작은 손실 뒤 윈도를"], [573.5, "처음부터 다시 키운다.", true], [548, "혼잡 윈도는 손실이 나면 절반으로 줄고, 손실이 없으면", false], [529.3, "다시 천천히 늘어난다.", true]]],
+  // V2 의 para.pdf 2쪽: 보통 한 줄 셋 (25 간격) · 굵은 두 줄 문단 둘 · 보통 한 줄 둘
+  ["para p.2", [[710, "Plain single line one."], [685, "Plain single line two."], [660, "Plain single line three."], [635, "First bold paragraph starts on this line"], [620, "and ends here.", true], [595, "Second bold paragraph is a different idea", false], [580, "and ends here too.", true], [555, "Plain single line four."], [530, "Plain single line five."]]],
+  // 2줄 간격(2.0배) 문서의 두 줄짜리 하이라이트 둘
+  ["2.0x", [[700, "A two-line highlight that wraps"], [678, "onto the next line of the paragraph.", true], [656, "Another highlight starts on this line", false], [634, "and ends on the next one.", true]]],
+]) {
+  const page = [ln("3. 신뢰성 있는 전송", 740, 16), ...rows.map(([y, t]) => ln(t, y))];
+  const gap = lineGapOf(page);
+  rows.forEach(([, t, same], i) => same === undefined || assert.equal(!splitsRun(page[i], page[i + 1], gap), same, `${name}: "${t}" ${same ? "는 앞 줄과 한 구간" : "에서 나눈다"} (보통 줄 간격 ${gap})`));
+}
 console.log("check_figures: 그림 · 괘선 표(선 · 칸 사각형 · 칠한 괘선) · 글자 표 · 2단 본문 · 목록 · 북탭 표 모두 통과");
 
 // ---------------------------------------------------------------- 측정: 덧붙인 PDF
