@@ -1060,6 +1060,8 @@ pub struct ChangeRow {
     card_id: Option<i64>,
     created_at: i64,
     undone: bool,
+    /// 나누기 · 초안: 되돌리면 지워질 새 카드 중 복습했거나 만든 뒤 고친 카드 수. 0 이 아니면 화면이 먼저 묻는다 (QA G4-05)
+    studied: i64,
 }
 
 /// G1 "최근 나눈 카드" · "최근 고친 카드"(7일) · "최근 만든 카드"(초안 · 그림 · 표, 7일) 30개 (R6, QA T7-11)
@@ -1074,11 +1076,15 @@ fn recent_of(con: &Connection, deck_id: i64) -> Res<Vec<ChangeRow>> {
     db::rows(
         con,
         &format!(
-            "SELECT id, kind, json_extract(payload, '$.how'), summary, card_id, created_at, undone_at IS NOT NULL FROM card_change
+            "SELECT id, kind, json_extract(payload, '$.how'), summary, card_id, created_at, undone_at IS NOT NULL,
+               (SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id
+                WHERE c.note_id IN (SELECT value FROM json_each(card_change.payload, '$.new_notes'))
+                  AND (n.updated_at > n.created_at OR EXISTS (SELECT 1 FROM review_log r WHERE r.card_id = c.id)))
+             FROM card_change
              WHERE (kind = 'split' OR (kind IN ('rewrite', 'draft') AND created_at >= ?1)) AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
         ),
         [now_ms() - REWRITE_DAYS * DAY_MS],
-        |r| Ok(ChangeRow { id: r.get(0)?, kind: r.get(1)?, how: r.get(2)?, summary: r.get(3)?, card_id: r.get(4)?, created_at: r.get(5)?, undone: r.get(6)? }),
+        |r| Ok(ChangeRow { id: r.get(0)?, kind: r.get(1)?, how: r.get(2)?, summary: r.get(3)?, card_id: r.get(4)?, created_at: r.get(5)?, undone: r.get(6)?, studied: r.get(7)? }),
     )
     .map_err(err)
 }
@@ -1370,6 +1376,31 @@ mod tests {
         }
         let kinds: Vec<String> = recent_of(&con, deck).unwrap().into_iter().map(|c| c.kind).collect();
         assert_eq!(kinds, ["draft", "split"]);
+    }
+
+    #[test]
+    fn recent_counts_studied_new_cards() {
+        // QA G4-05: 되돌리면 지워질 새 카드 중 복습했거나 고친 카드 수. 화면은 0 이 아닐 때만 묻는다
+        let mut con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let card = NewCard { deck_id: deck, kind: "basic".into(), front: "Q?".into(), back: "① a<br>② b<br>③ c".into(), importance: None };
+        commands::insert_note(&con, &card, "", None).unwrap();
+        let orig: i64 = con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 1, 1)", [orig]).unwrap();
+        let parts: Vec<SplitPart> = (1..=3).map(|i| SplitPart { front: format!("Q {i}?"), back: "a".into() }).collect();
+        let change = apply_split(&mut con, orig, &parts, true).unwrap();
+        let studied = |con: &Connection| recent_of(con, deck).unwrap().into_iter().find(|c| c.id == change).unwrap().studied;
+        assert_eq!(studied(&con), 0, "원래 카드의 복습은 세지 않는다");
+        let new: Vec<(i64, i64)> = db::rows(&con, "SELECT id, note_id FROM card WHERE id != ?1 ORDER BY id", [orig], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 2, 3)", [new[0].0]).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 3, 3)", [new[0].0]).unwrap();
+        assert_eq!(studied(&con), 1, "복습한 카드 (기록 수가 아니라 카드 수)");
+        commands::save_note_fields_at(&con, new[1].1, &["Q 2 고침?".into(), "a".into()], now_ms() + 5).unwrap();
+        assert_eq!(studied(&con), 2, "만든 뒤 고친 카드");
+        // 고쳐 쓰기 기록은 new_notes 가 없어 0
+        con.execute("INSERT INTO card_change (kind, deck_id, summary, payload, created_at) VALUES ('rewrite', ?1, 's', '{}', ?2)", params![deck, now_ms()]).unwrap();
+        assert!(recent_of(&con, deck).unwrap().iter().filter(|c| c.kind == "rewrite").all(|c| c.studied == 0));
     }
 
     // ------------------------------------------------------------------ 8.2 질문과 답의 대응 · 서식 · 고쳐 쓰기

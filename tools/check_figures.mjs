@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
-import { CAPTION, captionOf, captionTag, figuresOf, gridIn, layoutOf, splitsRun, suggestTables, tableCandidates } from "../src/figures.ts";
+import { CAPTION, captionOf, captionTag, figuresOf, gridIn, layoutOf, lineGapOf, splitsRun, suggestTables, tableCandidates } from "../src/figures.ts";
 
 // ---------------------------------------------------------------- PDF 만들기 (Helvetica · 2×2 RGB 그림 하나)
 function pdf(pages) {
@@ -183,6 +183,43 @@ assert.ok(splitsRun(ln("Table 1. Protocol comparison", 440), ln("Protocol Connec
 assert.ok(splitsRun(ln("is the key idea.", 500), ln("Figure 2 shows it", 486)), "다음 줄이 이름표");
 assert.ok(splitsRun(ln("Transport Layer", 500), ln("2.1 Fast Retransmit", 486)), "다음 줄이 제목 번호");
 assert.ok(!splitsRun(ln("A two-line highlight that wraps", 500), ln("onto the next line of the paragraph.", 486)), "두 줄짜리 하이라이트는 한 구간");
+// 줄 간격 (QA G4-02, G4 의 spacing.pdf): 10 · 11pt 에 1.2 · 1.5 · 1.6 · 1.65 · 1.8 · 2.0배로 굵은 두 줄 + 보통 한 줄(16pt 아래), 묶음 사이 40.
+// 쪽의 보통 줄 간격과 견주어 두 줄짜리 굵은 글씨는 한 구간
+{
+  const lines = [];
+  const pairs = [];
+  let y = 750;
+  for (const size of [10, 11])
+    for (const k of [1.2, 1.5, 1.6, 1.65, 1.8, 2.0]) {
+      pairs.push([`${size}pt ${k}x`, lines.length]);
+      lines.push(ln(`[${size}pt ${k}x] first`, y, size), ln("second", y - size * k, size), ln("plain", y - size * k - 16, size));
+      y -= size * k + 40;
+    }
+  const gap = lineGapOf(lines);
+  for (const [name, i] of pairs) assert.ok(!splitsRun(lines[i], lines[i + 1], gap), `spacing.pdf ${name} 는 한 구간 (보통 줄 간격 ${gap})`);
+}
+// 고른 줄 간격 쪽: 두 줄은 한 구간, 빈 줄 하나 띄운 문단은 나눈다. 1.2배 + 문단 뒤 6pt 도 나눈다 (전과 같다)
+for (const size of [10, 11])
+  for (const k of [1.0, 1.2, 1.5, 1.6, 1.65, 2.0]) {
+    const page = Array.from({ length: 12 }, (_, i) => ln(`line ${i}`, 700 - i * size * k, size));
+    const gap = lineGapOf(page);
+    assert.ok(Math.abs(gap - size * k) < 0.01, `보통 줄 간격 ${size}pt ${k}x`);
+    assert.ok(!splitsRun(page[4], page[5], gap), `${size}pt ${k}x 두 줄은 한 구간`);
+    assert.ok(splitsRun(page[4], ln("next paragraph", 700 - 4 * size * k - 2 * size * k, size), gap), `${size}pt ${k}x 빈 줄 띈 문단은 나눈다`);
+  }
+{
+  const page = Array.from({ length: 12 }, (_, i) => ln(`line ${i}`, 700 - i * 13.2));
+  assert.ok(splitsRun(page[4], ln("next paragraph", 700 - 4 * 13.2 - 19.2), lineGapOf(page)), "1.2배 + 문단 뒤 6pt");
+}
+// 이름표 다음 표 머리글이 붙어 있어도 나눈다 (QA G4-03)
+assert.ok(splitsRun(ln("Table 1. Protocol comparison", 440), ln("Protocol Connection Reliable", 427)), "이름표 + 붙은 표 머리글");
+assert.ok(splitsRun(ln("그림 3-4 회귀선", 440), ln("다음 문단의 굵은 글씨", 427)), "이름표 다음 줄");
+// 숫자로 시작하는 둘째 줄 (QA G4-04): 제목 번호("1." · "2.1 제목") · 이름표("그림 3 …" · "표 2: …")만 나눈다
+for (const t of ["2019년이고 그 뒤로 두 번 고쳐졌다.", "2019 년이고 그 뒤로 두 번 고쳐졌다.", "2 배씩 늘어난다.", "2배씩 늘어난다.", "1500 바이트이다.", "3.5 ms 정도이다.", "그림 3에 정리되어 있다.", "표 2와 같다."])
+  assert.ok(!splitsRun(ln("첫 줄은 굵은 글씨", 500), ln(t, 485)), `"${t}" 는 이어진 줄`);
+for (const t of ["1. 전송 계층", "2.1 Fast Retransmit", "3.2.1 혼잡 제어", "2.1. 개요", "그림 3 회귀선", "표 2: 결과", "Figure 2 shows it", "Table 1."])
+  assert.ok(splitsRun(ln("첫 줄은 굵은 글씨", 500), ln(t, 485)), `"${t}" 에서 나눈다`);
+assert.ok(!splitsRun(ln("그림 3에 정리되어 있다.", 500), ln("이어지는 둘째 줄", 485)), "본문 속 \"그림 3에\" 다음 줄은 이어진다");
 console.log("check_figures: 그림 · 괘선 표(선 · 칸 사각형 · 칠한 괘선) · 글자 표 · 2단 본문 · 목록 · 북탭 표 모두 통과");
 
 // ---------------------------------------------------------------- 측정: 덧붙인 PDF

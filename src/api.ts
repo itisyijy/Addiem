@@ -809,8 +809,9 @@ export type SplitProposal = {
   sent: Sent[];
   evidence: Sent[];
 };
-/** kind rewrite 는 7일 안의 것만. how: format 서식 고치기 · ai AI로 확인한 뒤 · edit 직접 */
-export type CardChange = { id: number; kind: "split" | "rewrite" | "draft"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean };
+/** kind rewrite 는 7일 안의 것만. how: format 서식 고치기 · ai AI로 확인한 뒤 · edit 직접.
+ * studied: 나누기 · 초안을 되돌리면 지워질 새 카드 중 복습했거나 만든 뒤 고친 카드 수 (QA G4-05) */
+export type CardChange = { id: number; kind: "split" | "rewrite" | "draft"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean; studied: number };
 /** 8.2 고쳐 쓰기 전후 (글자, 줄바꿈으로 줄을 나눈다. **…** 는 굵게). locked: 그림 · 소리 · 서식이 있어 덮을 수 없는 칸 [질문, 답] */
 export type Rewrite = {
   card_id: number;

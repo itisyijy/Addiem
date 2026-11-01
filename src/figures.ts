@@ -342,13 +342,30 @@ export const suggestTables = (lay: Layout) => tableCandidates(lay).filter((c) =>
 export const CAPTION = /^(그림|표|도표|사진|Figure|Fig\.?|Table)\s*(?:\d|[A-Z](?=[-.]?\d))[\w.-]*/i;
 /** 이름표의 번호 부분 ("Figure 1. 회귀" → "Figure 1"), 없으면 undefined */
 export const captionTag = (text: string) => text.match(CAPTION)?.[0].replace(/[.-]+$/, "");
-/** 강조 구간 묶기 (QA T6-15): 같은 신호로 이어진 두 줄(a 다음 b)이 다른 덩어리인가.
- * 글자 크기가 10% 넘게 바뀜 · 기준선 간격이 크기의 1.6배 넘음 · b 가 이름표나 제목 번호("1." · "2.1")로 시작. box 는 pdf 좌표, 아래는 기준선 − 0.25×크기 */
-export const splitsRun = (a: { text: string; size: number; box: number[] }, b: { text: string; size: number; box: number[] }) =>
+type Run = { text: string; size: number; box: number[] };
+/** 기준선 (box 는 pdf 좌표, 아래는 기준선 − 0.25×크기) */
+const base = (l: Run) => l.box[1] + l.size * 0.25;
+/** 이름표로 시작하는 줄: 번호 뒤가 끝 · 띄어쓰기 · ":" ("그림 3에 정리되어 있다" 는 본문, QA G4-04) */
+const CAPTION_LINE = new RegExp(String.raw`${CAPTION.source}(?![\w.-])(?=$|[\s:])`, "i");
+/** 쪽의 보통 줄 간격: 이어진 두 줄(크기 10% 안)의 기준선 간격 중앙값 (크기의 0.5~3배만, 같은 줄 · 단 넘김은 뺀다). 없으면 0 */
+export const lineGapOf = (lines: Run[]) =>
+  median(
+    lines.flatMap((b, i) => {
+      const a = lines[i - 1];
+      const g = a ? Math.abs(base(a) - base(b)) : 0;
+      return a && Math.abs(b.size - a.size) <= a.size * 0.1 && g > a.size * 0.5 && g <= a.size * 3 ? [g] : [];
+    }),
+  );
+/** 강조 구간 묶기 (QA T6-15 · G4-02~04): 같은 신호로 이어진 두 줄(a 다음 b)이 다른 덩어리인가.
+ * 글자 크기가 10% 넘게 바뀜 · 기준선 간격이 크기의 1.6배와 쪽의 보통 줄 간격(gap, lineGapOf)의 1.4배 중 큰 것보다 넓음
+ * (줄 간격 160% · 1.5줄 · 2줄 문서의 두 줄짜리 강조는 한 구간) · a 나 b 가 이름표 · b 가 제목 번호("1." · "2.1 제목", "3.5 ms" 는 아님)
+ * ponytail: 제목 번호는 점 · 뒤 글자로만 본다 ("1.5 배" 처럼 한글 단위가 오면 나눈다). 더 틀리면 글꼴 · 들여쓰기도 본다 */
+export const splitsRun = (a: Run, b: Run, gap = 0) =>
   Math.abs(b.size - a.size) > a.size * 0.1 ||
-  Math.abs(a.box[1] + a.size * 0.25 - (b.box[1] + b.size * 0.25)) > a.size * 1.6 ||
-  CAPTION.test(b.text) ||
-  /^\d+(\.\d+)*\.?\s/.test(b.text);
+  Math.abs(base(a) - base(b)) > Math.max(a.size * 1.6, gap * 1.4) + 0.1 ||
+  CAPTION_LINE.test(a.text) ||
+  CAPTION_LINE.test(b.text) ||
+  /^(\d+\.)+\s|^\d+(\.\d+)+\s+[^a-z\s]/.test(b.text);
 
 /** 그림 · 표 이름표: 바로 아래(없으면 위) 줄이 "그림 3-4 …" · "표 2 …" · "Figure 1 …" 처럼 시작하면 그 글 (40자) */
 export function captionOf(lay: Layout, box: Box): string {

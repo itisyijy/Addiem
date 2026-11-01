@@ -132,6 +132,8 @@ export function Quality({ deckId }: { deckId: number }) {
   const [viewing, setViewing] = useState<CardChange | null>(null);
   // 고친 뒤 또 고친 카드를 되돌리기 전에 묻는다 (CQ2 "그 뒤에 고친 내용이 있어요")
   const [forceUndo, setForceUndo] = useState<number | null>(null);
+  // 나누기 · 초안 되돌리기가 공부한 새 카드까지 지울 때 먼저 묻는다 (QA G4-05)
+  const [studiedUndo, setStudiedUndo] = useState<CardChange | null>(null);
   const [error, setError] = useState<string>();
 
   const load = useCallback(
@@ -147,7 +149,7 @@ export function Quality({ deckId }: { deckId: number }) {
     load();
   }, [deckId, load]);
   const back = useCallback(() => nav({ name: "deck", deckId }), [nav, deckId]);
-  useKey("Escape", back, splitting === null && rewriting === null && viewing === null && forceUndo === null);
+  useKey("Escape", back, splitting === null && rewriting === null && viewing === null && forceUndo === null && studiedUndo === null);
   const { keep, undo, done: splitDone } = useSplitActions(load);
 
   /** 고쳐 쓰기 되돌리기. 그 뒤에 또 고쳤으면 확인을 받고 force 로 (확인 없이 덮는 길은 없다) */
@@ -226,6 +228,12 @@ export function Quality({ deckId }: { deckId: number }) {
       () => (load(), toast({ title: "카드 만들기를 되돌렸어요" })),
       (e) => toast({ title: "되돌리지 못했어요", text: errorText(e), tone: "error" }),
     );
+  /** 최근 나눈 · 만든 카드의 [되돌리기]. 새 카드를 복습했거나 고쳤으면 확인 창부터 */
+  const undoMade = (c: CardChange, confirmed = false) => {
+    if (c.studied > 0 && !confirmed) return setStudiedUndo(c);
+    setStudiedUndo(null);
+    return c.kind === "split" ? undo(c.id) : undoDraft(c.id);
+  };
   const fixInfo = (current === "all" || current === "mismatch" || current === "format") && list.some((c) => has(c, "mismatch", "format"));
 
   return (
@@ -321,7 +329,7 @@ export function Quality({ deckId }: { deckId: number }) {
               <div key={c.id} className="quality__row quality__row--change">
                 <span className="t-body-m">{c.summary}</span>
                 <span className="t-caption c-tertiary">{new Date(c.created_at).toLocaleString("ko-KR", { month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-                <Button variant="ghost" size="M" icon="rotate" label="되돌리기" onClick={() => undo(c.id)} />
+                <Button variant="ghost" size="M" icon="rotate" label="되돌리기" onClick={() => undoMade(c)} />
               </div>
             ))}
           </div>
@@ -337,7 +345,7 @@ export function Quality({ deckId }: { deckId: number }) {
               <div key={c.id} className="quality__row quality__row--change">
                 <span className="t-body-m">{c.summary}</span>
                 <span className="t-caption c-tertiary">{new Date(c.created_at).toLocaleString("ko-KR", { month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-                <Button variant="ghost" size="M" icon="rotate" label="되돌리기" onClick={() => undoDraft(c.id)} />
+                <Button variant="ghost" size="M" icon="rotate" label="되돌리기" onClick={() => undoMade(c)} />
               </div>
             ))}
           </div>
@@ -378,6 +386,15 @@ export function Quality({ deckId }: { deckId: number }) {
           <div className="modal__actions">
             <Button variant="ghost" size="M" label="그대로 두기" shortcut="Esc" onClick={() => setForceUndo(null)} />
             <Button variant="danger" size="M" icon="rotate" label="되돌리기" onClick={() => undoRewrite(forceUndo, true)} />
+          </div>
+        </Modal>
+      )}
+      {studiedUndo !== null && (
+        <Modal title={`공부한 카드 ${n(studiedUndo.studied)}장도 함께 지워져요`} onClose={() => setStudiedUndo(null)} variant="confirm" icon="rotate">
+          <p className="t-body-m c-secondary">되돌리면 {studiedUndo.kind === "split" ? "나눠서" : "자료에서"} 만든 카드를 모두 지워요. 복습 기록은 학습 통계에만 남아요.</p>
+          <div className="modal__actions">
+            <Button variant="ghost" size="M" label="그대로 두기" shortcut="Esc" onClick={() => setStudiedUndo(null)} />
+            <Button variant="danger" size="M" icon="rotate" label="되돌리기" onClick={() => undoMade(studiedUndo, true)} />
           </div>
         </Modal>
       )}
