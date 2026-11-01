@@ -73,7 +73,7 @@ pub(crate) fn html_lines(html: &str) -> Vec<String> {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&amp;", "&");
-    out.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|l| !l.is_empty()).collect()
+    out.lines().map(crate::table::flat).filter(|l| !l.is_empty()).collect()
 }
 
 /// 목록 항목 표시로 시작하는가 (①, 1., 1), -, •, · 등)
@@ -594,7 +594,7 @@ fn has_media(html: &str) -> bool {
 
 /// 고쳐 쓰기 화면의 글자: 줄마다 띄어쓰기를 하나로, 빈 줄은 뺀다 (html_lines 와 같은 모양)
 pub(crate) fn tidy(text: &str) -> String {
-    text.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+    text.lines().map(crate::table::flat).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 /// 필드 → 고쳐 쓰기 화면의 글자 (태그 · [sound:] 를 뺀 줄들)

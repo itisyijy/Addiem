@@ -361,7 +361,7 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
                 "front" => text(front.clone()),
                 "back" => text(back.clone()),
                 "deck" => paths.get(&r.get::<_, i64>(5).map_err(err)?).cloned().unwrap_or_default(),
-                "tags" => r.get::<_, String>(1).map_err(err)?.split_whitespace().collect::<Vec<_>>().join(" "),
+                "tags" => crate::table::flat(&r.get::<_, String>(1).map_err(err)?),
                 "importance" => level.map(|l| ["보충", "일반", "핵심"][l.clamp(0, 2) as usize].to_string()).unwrap_or_default(),
                 _ => due.filter(|_| state != "new").map(|d| db::date_from_day(db::study_day(d))).unwrap_or_default(),
             })

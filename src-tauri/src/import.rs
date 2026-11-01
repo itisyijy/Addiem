@@ -9,6 +9,7 @@
 //! 중요도는 하위 덱 단위다. 태그는 카드가 아니라 덱의 제안으로 모은다 (B4 에서 확정)
 
 use crate::commands::{insert_note, media_dir, mime_of, safe_media_name, AppState, NewCard};
+use crate::table::flat;
 use crate::db::{self, now_ms};
 use crate::{recall, srs};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -429,7 +430,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
 
         let tags = match o.get("tags") {
             Some(Value::Array(a)) => a.iter().map(|t| t.as_str().map(String::from).unwrap_or_else(|| t.to_string())).collect::<Vec<_>>().join(" "),
-            Some(Value::String(s)) => s.split_whitespace().collect::<Vec<_>>().join(" "),
+            Some(Value::String(s)) => flat(s),
             _ => String::new(),
         };
         let importance = match o.get("importance") {

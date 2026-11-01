@@ -18,7 +18,7 @@ use serde::Deserialize;
 /// ponytail: 모양만 다른 HTML 을 다 거르지는 못한다 (속성 순서 · div 감싸기). 못 거른 차이는 "내 것"으로 지켜진다 (위험 ①)
 fn norm(s: &str) -> String {
     let s = s.replace("&nbsp;", " ").replace("<br/>", "<br>").replace("<br />", "<br>");
-    let mut out = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = flat(&s);
     while let Some(t) = out.strip_suffix("<br>") {
         out = t.trim_end().to_string();
     }
@@ -29,10 +29,6 @@ fn norm(s: &str) -> String {
 pub(crate) fn h(s: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(norm(s).as_bytes()))[..16].to_string()
-}
-
-fn words(tags: &str) -> String {
-    tags.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// note.origin: 자리마다 넣은 값의 해시 ("" = 원본 없음, 빈 값으로 본다), 태그 글 (출처 태그는 뺀 것),
@@ -56,7 +52,7 @@ impl NoteOrigin {
 
 /// 넣은 값(자리 맞추기 · 미디어 이름 바꾸기 뒤)의 원본. 처음 가져올 때와 업데이트를 적용할 때 쓴다
 pub(crate) fn note_origin(fields: &[String], tags: &str) -> String {
-    serde_json::to_string(&NoteOrigin { f: fields.iter().map(|f| h(f)).collect(), t: words(tags), v: Some(fields.iter().cloned().map(Some).collect()) })
+    serde_json::to_string(&NoteOrigin { f: fields.iter().map(|f| h(f)).collect(), t: flat(tags), v: Some(fields.iter().cloned().map(Some).collect()) })
         .unwrap_or_default()
 }
 
@@ -1387,7 +1383,7 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
 
     let fields_changed = fin != m;
     let fields_json = if fields_changed { serde_json::to_string(&fin).map_err(err)? } else { o.fields_raw.clone() };
-    let origin = serde_json::to_string(&NoteOrigin { f: of, t: words(tags), v: Some(ov) }).map_err(err)?;
+    let origin = serde_json::to_string(&NoteOrigin { f: of, t: flat(tags), v: Some(ov) }).map_err(err)?;
     if fields_changed || tags_changed || exam != o.exam || o.origin.as_deref() != Some(origin.as_str()) {
         tx.execute(
             "UPDATE note SET fields = ?2, tags = ?3, exam_hits = ?4, exam_names = ?5, origin = ?6, updated_at = ?7 WHERE id = ?1",

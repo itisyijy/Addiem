@@ -269,7 +269,7 @@ pub fn source_save_pdf(state: State<AppState>, material_id: i64, pages: i64, seg
 
 /// 제목 구간의 글: 단계만큼 "#" + 띄어쓰기 + 제목 ("## 3.2 요약"). 새 열 없이 단계를 담는다 (OT2). PDF 는 화면(outline.ts headingText)이 같게 쓴다
 fn heading_text(level: usize, title: &str) -> String {
-    format!("{} {}", "#".repeat(level.clamp(1, 6)), title.split_whitespace().collect::<Vec<_>>().join(" "))
+    format!("{} {}", "#".repeat(level.clamp(1, 6)), crate::table::flat(title))
 }
 
 /// "## 3.2 요약" → (2, "3.2 요약"). 표시가 없으면 1단계 그대로
@@ -1031,7 +1031,7 @@ fn parse_slide(xml: &str) -> Vec<Para> {
             Event::End(e) => match e.local_name().as_ref() {
                 "p" => {
                     if let Some(mut p) = cur.take() {
-                        p.text = p.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        p.text = crate::table::flat(&p.text);
                         if !p.text.is_empty() {
                             if has_star(&p.text) {
                                 p.signals.push("star");
