@@ -532,7 +532,7 @@ fn study_session_of_the_other_device_is_not_resumed() {
     let env = Env::new();
     let (a, b, card) = pair(&env);
     let day = "2026-10-20";
-    let sb = crate::commands::open_session(&b.con(), day, None, 5_000).unwrap();
+    let sb = crate::commands::open_session(&b.con(), day, None, None, 5_000).unwrap();
     b.review(&env.fsrs, card, 3, 6_000);
     {
         let con = b.con();
@@ -544,15 +544,15 @@ fn study_session_of_the_other_device_is_not_resumed() {
     env.sync(&a);
     let b_uid = b.uid("study_session", sb);
     assert!(a.id("study_session", &b_uid).is_some(), "B 세션을 받았다");
-    let sa = crate::commands::open_session(&a.con(), day, None, 8_000).unwrap();
+    let sa = crate::commands::open_session(&a.con(), day, None, None, 8_000).unwrap();
     assert_ne!(a.uid("study_session", sa), b_uid, "다른 기기의 세션은 이어 쓰지 않고 새로 연다");
     assert_eq!(a.n("SELECT count(*) FROM study_session WHERE end_reason = 'user_exit'"), 1, "B 세션의 끝난 이유를 덮지 않는다");
     // B 는 자기 세션을 이어 쓰고, 아무도 답하지 않은 A 의 새 세션도 A 가 다시 열면 이어 쓴다
-    assert_eq!(crate::commands::open_session(&b.con(), day, None, 9_000).unwrap(), sb);
+    assert_eq!(crate::commands::open_session(&b.con(), day, None, None, 9_000).unwrap(), sb);
     a.con().execute("UPDATE study_session SET ended_at = 8500, end_reason = 'user_exit' WHERE id = ?1", [sa]).unwrap();
-    assert_eq!(crate::commands::open_session(&a.con(), day, None, 9_000).unwrap(), sa);
+    assert_eq!(crate::commands::open_session(&a.con(), day, None, None, 9_000).unwrap(), sa);
     // 혼합 학습(mix) 세션은 보통 학습과 따로
-    assert_ne!(crate::commands::open_session(&a.con(), day, Some("mix"), 9_500).unwrap(), sa);
+    assert_ne!(crate::commands::open_session(&a.con(), day, Some("mix"), None, 9_500).unwrap(), sa);
 }
 
 #[test]

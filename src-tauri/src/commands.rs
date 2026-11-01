@@ -1987,7 +1987,8 @@ pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
     let now = now_ms();
     let today = study_day(now);
     let (decks, plan) = plan_for(&con, deck_ids.as_deref(), scale, today)?;
-    let session_id = open_session(&con, &db::date_from_day(today), None, now)?;
+    let scope = deck_ids.map(|ids| ids.iter().flat_map(|i| descendants(*i, &decks)).collect::<Vec<_>>());
+    let session_id = open_session(&con, &db::date_from_day(today), None, scope.as_deref(), now)?;
     forget_undo(&state)?;
     let buried = session_buried(&con, session_id, &decks)?;
     Ok(SessionStart { session_id, card_ids: plan.ordered().iter().map(|c| c.id).collect(), buried })
@@ -1996,15 +1997,25 @@ pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: 
 /// 학습 세션을 연다 (D2 보통 학습 mode NULL · P1 혼합 'mix'). 같은 학습일에 중간에 그만둔 같은 종류의 세션이 있으면 이어 쓴다:
 /// Again 횟수와 접어둔 카드가 이어진다 (큐 명세 6.3). 끝까지 마친 세션은 이어 쓰지 않는다.
 /// 이 기기에서 답한 세션만 이어 쓴다 (K44, drive-sync.md 5.4 "세션은 기기별로 따로"): 세션 안 카드 상태(session_card_state)는
-/// 이 기기에만 있어 동기화로 받은 다른 기기의 세션에는 없다. 아무도 답하지 않은 세션은 섞일 것이 없어 이어 쓴다
-pub(crate) fn open_session(con: &Connection, day: &str, mode: Option<&str>, now: i64) -> Res<i64> {
+/// 이 기기에만 있어 동기화로 받은 다른 기기의 세션에는 없다. 아무도 답하지 않은 세션은 섞일 것이 없어 이어 쓴다.
+/// scope(덱 범위, None 이면 모든 덱) 밖의 카드를 본 세션은 이어 쓰지 않는다: 다른 덱에서 접은 카드가 이 학습의 칩 · 끝 화면에 섞인다 (QA G2-01).
+/// 카드를 본 세션을 빈 세션보다 먼저 고른다 (다른 덱을 열었다 바로 닫은 빈 세션이 접은 카드를 가리지 않게)
+pub(crate) fn open_session(con: &Connection, day: &str, mode: Option<&str>, scope: Option<&[i64]>, now: i64) -> Res<i64> {
+    let outside = scope.map_or(String::new(), |ids| {
+        format!(
+            " AND NOT EXISTS (SELECT 1 FROM session_card_state x JOIN card c ON c.id = x.card_id WHERE x.session_id = s.id AND c.deck_id NOT IN ({}))",
+            id_list(ids)
+        )
+    });
     let resumed: Option<i64> = con
         .query_row(
-            "SELECT s.id FROM study_session s
-             WHERE s.study_day = ?1 AND s.mode IS ?2 AND s.end_reason IN ('user_exit','app_exit')
-               AND (EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id)
-                    OR NOT EXISTS (SELECT 1 FROM review_log r WHERE r.session_id = s.id))
-             ORDER BY s.started_at DESC LIMIT 1",
+            &format!(
+                "SELECT s.id FROM study_session s
+                 WHERE s.study_day = ?1 AND s.mode IS ?2 AND s.end_reason IN ('user_exit','app_exit')
+                   AND (EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id)
+                        OR NOT EXISTS (SELECT 1 FROM review_log r WHERE r.session_id = s.id)){outside}
+                 ORDER BY EXISTS (SELECT 1 FROM session_card_state x WHERE x.session_id = s.id) DESC, s.started_at DESC LIMIT 1"
+            ),
             params![day, mode],
             |r| r.get(0),
         )
@@ -4161,15 +4172,42 @@ mod tests {
         let ids = deck_with_cards(&con, 2, None);
         let (today, now) = mid_today();
         let day = crate::db::date_from_day(today);
-        let s = super::open_session(&con, &day, None, now).unwrap();
+        let s = super::open_session(&con, &day, None, None, now).unwrap();
         for _ in 0..2 {
             super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 1, 1000, None, now).unwrap();
         }
         con.execute("UPDATE study_session SET ended_at = ?2, end_reason = 'user_exit' WHERE id = ?1", params![s, now]).unwrap();
-        assert_eq!(super::open_session(&con, &day, None, now + 1).unwrap(), s);
+        assert_eq!(super::open_session(&con, &day, None, None, now + 1).unwrap(), s);
         let (decks, _) = super::plan_for(&con, None, 1.0, today).unwrap();
         let buried = super::session_buried(&con, s, &decks).unwrap();
         assert_eq!(buried.iter().map(|b| (b.id, b.reason.as_str(), b.at)).collect::<Vec<_>>(), [(ids[0], "two_again", now)]);
+    }
+
+    #[test]
+    fn resumed_session_stays_in_its_decks() {
+        // QA G2-01: QA2 에서 접고 그만둔 뒤 QA 를 학습하면 QA2 세션을 이어 쓰지 않는다 (접은 카드가 섞이지 않게).
+        // QA2 를 다시 학습하면 이어 쓴다 (T2-18). 그사이 QA 를 열었다 바로 닫은 빈 세션이 있어도
+        let mut con = crate::db::open_in_memory().unwrap();
+        deck_with_cards(&con, 1, None);
+        let ids = deck_with_cards(&con, 1, None);
+        let deck_of = |id: i64| -> Vec<i64> { vec![con.query_row("SELECT deck_id FROM card WHERE id = ?1", [id], |r| r.get(0)).unwrap()] };
+        let (qa, qa2) = (deck_of(ids[0]), deck_of(ids[1]));
+        let (today, now) = mid_today();
+        let day = crate::db::date_from_day(today);
+        let exit = |con: &Connection, s: i64| {
+            con.execute("UPDATE study_session SET ended_at = ?2, end_reason = 'user_exit' WHERE id = ?1", params![s, now]).unwrap();
+        };
+        let s = super::open_session(&con, &day, None, Some(&qa2), now).unwrap();
+        for _ in 0..2 {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[1], 1, 1000, None, now).unwrap();
+        }
+        exit(&con, s);
+        let other = super::open_session(&con, &day, None, Some(&qa), now + 1).unwrap();
+        assert_ne!(other, s);
+        exit(&con, other);
+        assert_eq!(super::open_session(&con, &day, None, Some(&qa2), now + 2).unwrap(), s);
+        let (decks, _) = super::plan_for(&con, None, 1.0, today).unwrap();
+        assert_eq!(super::session_buried(&con, s, &decks).unwrap().iter().map(|b| b.id).collect::<Vec<_>>(), [ids[1]]);
     }
 
     #[test]

@@ -1010,7 +1010,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
               <div className="fold__pop" role="dialog" aria-label="접어둔 카드">
                 <div className="fold__head">
                   <p className="t-title-s">접어둔 카드 {n(folded.length)}장</p>
-                  <p className="t-caption c-tertiary">나머지를 끝내면 마지막에 묶어서 다시 보여드려요</p>
+                  <p className="t-caption c-tertiary">{cram || mix ? "나머지를 끝내면 마지막에 묶어서 다시 보여드려요" : "학습을 마치면 다시 볼지 물어볼게요"}</p>
                 </div>
                 <div className="fold__list">
                   {folded.map((f, i) => (
