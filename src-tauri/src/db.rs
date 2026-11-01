@@ -35,6 +35,8 @@ pub fn file(dir: &Path) -> std::path::PathBuf {
 /// 하루 경계. 기본은 새벽 4시 이전을 전날로 친다 (study-queue-spec 2장). E1 에서 바꾼다.
 /// schema_meta.day_cutoff_hour 가 정본이고, 여기에는 열 때 읽어 둔다
 static DAY_CUTOFF_HOUR: AtomicI64 = AtomicI64::new(4);
+/// 고를 수 있는 하루 시작 시각: 자정 ~ 새벽 6시 (I20, E1 화면과 같다)
+pub const CUTOFF_HOURS: std::ops::RangeInclusive<i64> = 0..=6;
 
 pub fn cutoff_hour() -> i64 {
     DAY_CUTOFF_HOUR.load(Ordering::Relaxed)
@@ -68,6 +70,9 @@ fn migrate(con: &Connection) -> rusqlite::Result<()> {
         ("deck", "weak", "INTEGER NOT NULL DEFAULT 0"),
         ("deck", "weak_dismissed_until", "TEXT"),
         ("deck", "weak_recovery_shown", "INTEGER NOT NULL DEFAULT 0"),
+        // 약함으로 확정한 시각 (ms). "요즘 괜찮아요"는 이 뒤의 평가만 본다 (QA T3-23). NULL 이면 최근 14일 그대로 (옛 앱 · 옛 기록).
+        // 동기화 표의 NULL 허용 열이라 옛 앱은 모르는 열로 건너뛴다
+        ("deck", "weak_since", "INTEGER"),
         // G1 [그대로 두기]: 이 시각까지 점검 목록에 다시 올리지 않는다
         ("card", "quality_hidden_until", "INTEGER"),
         // H1 "실제 속도에 맞춰 다시 나누기"를 끄면 정해 둔 하루 몫. NULL 이면 매일 다시 나눈다
@@ -180,7 +185,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         "UPDATE study_session SET ended_at = started_at, end_reason = 'app_exit' WHERE ended_at IS NULL",
         [],
     )?;
-    if let Some(h) = meta(&con, "day_cutoff_hour")?.and_then(|h| h.parse::<i64>().ok()).filter(|h| (0..=12).contains(h)) {
+    if let Some(h) = meta(&con, "day_cutoff_hour")?.and_then(|h| h.parse::<i64>().ok()).filter(|h| CUTOFF_HOURS.contains(h)) {
         DAY_CUTOFF_HOUR.store(h, Ordering::Relaxed);
     }
     Ok(con)
@@ -391,6 +396,12 @@ pub fn date_from_day(day: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cutoff_hour_is_midnight_to_six() {
+        // QA T2-14 · I20: 화면은 0 ~ 6시만 고른다. 7시 이후는 저장도 읽기도 하지 않는다
+        assert!(CUTOFF_HOURS.contains(&0) && CUTOFF_HOURS.contains(&6) && !CUTOFF_HOURS.contains(&7) && !CUTOFF_HOURS.contains(&-1));
+    }
 
     #[test]
     fn sync_groundwork() {

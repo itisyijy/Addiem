@@ -191,7 +191,8 @@ export type QueueSummary = {
   deck_count: number;
   new_decks: number;
   notes: string[];
-  target: { name: string; dday: number; remaining_new: number; days: number } | null;
+  /** per_day: 오늘 하루 신규 몫 (큐가 정한 수) · note: 그 사유 (큐 메모, 계산식이면 "÷" 가 있다) */
+  target: { name: string; dday: number; remaining_new: number; days: number; per_day: number; note: string } | null;
   /** 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수 (D1 머리 문장, P9) */
   mixed_today: number;
   /** learning · review · backlog 중 오늘 이미 평가해 다시 볼 카드 (홈 · 덱 상세의 "다시 볼", QA V9-04) */
@@ -932,6 +933,8 @@ export type PlanConflict = {
   limit: number;
   /** 기준선이 쓸 수 있는 시간이면 true, 아니면 최근 30일 평균의 1.5배 */
   by_time: boolean;
+  /** limit 이 주말 상한이다 (오늘이 주말이면) */
+  limit_weekend: boolean;
   bars: { date: string; a: number; b: number; other: number; limit: number }[];
   spread_peak: number;
   spread_extra: number;
