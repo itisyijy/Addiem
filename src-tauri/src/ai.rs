@@ -15,7 +15,7 @@ use crate::commands::AppState;
 use crate::quality::{self, SplitPart, SplitProposal};
 use crate::rag;
 use crate::sync::{auth, crypto, store};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Value as J, json};
 use std::io::BufRead;
@@ -699,16 +699,11 @@ impl AiState {
 }
 
 fn get_meta(con: &Connection, key: &str) -> Option<String> {
-    con.query_row("SELECT value FROM schema_meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
+    crate::db::meta(con, key).ok().flatten()
 }
 
 fn set_meta(con: &Connection, key: &str, value: Option<&str>) -> Result<(), AiError> {
-    match value {
-        Some(v) => con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, ?2)", [key, v]),
-        None => con.execute("DELETE FROM schema_meta WHERE key = ?1", [key]),
-    }
-    .map(|_| ())
-    .map_err(|e| AiError::Other(e.to_string()))
+    crate::db::set_meta(con, key, value).map_err(|e| AiError::Other(e.to_string()))
 }
 
 pub(crate) fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Result<T, AiError>) -> Result<T, AiError> {

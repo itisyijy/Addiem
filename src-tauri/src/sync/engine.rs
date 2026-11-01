@@ -146,7 +146,7 @@ fn raw_cols(con: &Connection, t: &str) -> SRes<Vec<String>> {
 }
 
 pub fn meta(con: &Connection, key: &str) -> SRes<Option<String>> {
-    con.query_row("SELECT value FROM schema_meta WHERE key = ?1", [key], |r| r.get(0)).optional().map_err(other)
+    db::meta(con, key).map_err(other)
 }
 
 pub fn device_uid(con: &Connection) -> SRes<String> {
@@ -228,7 +228,7 @@ fn bump_hlc_last(con: &Connection, h: &str) -> SRes<()> {
     let last = hlc_last(con)?;
     if h > last.as_str() {
         con.execute("UPDATE sync_outbox SET floor = ?1 WHERE floor IS NULL", [&last]).map_err(other)?;
-        con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('hlc_last', ?1)", [h]).map_err(other)?;
+        db::set_meta(con, "hlc_last", Some(h)).map_err(other)?;
     }
     Ok(())
 }
@@ -2764,7 +2764,7 @@ pub fn adopt_restored(current: &Connection, restored: &Connection) -> SRes<()> {
         .map_err(other)?;
     for k in ["device_uid", "device_name", "hlc_last"] {
         if let Some(v) = meta(current, k)? {
-            restored.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, ?2)", [k, &v]).map_err(other)?;
+            db::set_meta(restored, k, Some(&v)).map_err(other)?;
         }
     }
     let mut st = current.prepare("SELECT key, value FROM sync_local").map_err(other)?;

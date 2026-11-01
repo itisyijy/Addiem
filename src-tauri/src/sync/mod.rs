@@ -898,7 +898,7 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
     let save_settings = || {
         sh.with_db(|c| {
             if let Some(n) = o.device_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-                c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [n]).map_err(store::other)?;
+                crate::db::set_meta(c, "device_name", Some(n)).map_err(store::other)?;
             }
             engine::set_local(c, "account", &account)?;
             // 고르는 창 · 다시 시작은 백업 설정을 보내지 않는다: 사용자가 끈 백업을 "매일"로 되돌리지 않는다. 처음 연결이면 매일
@@ -1065,7 +1065,7 @@ pub fn sync_settings(state: State<SyncState>, opts: SettingsOpts) -> Res<()> {
         .0
         .with_db(|c| {
             if let Some(n) = opts.device_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-                c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('device_name', ?1)", [n]).map_err(store::other)?;
+                crate::db::set_meta(c, "device_name", Some(n)).map_err(store::other)?;
             }
             if let Some(b) = opts.backup.as_deref().filter(|b| ["daily", "weekly", "off"].contains(b)) {
                 engine::set_local(c, "backup", b)?;
