@@ -453,19 +453,26 @@ fn refresh(sh: &Arc<Shared>) {
             });
         }
         let since = now - 30 * crate::db::DAY_MS;
-        let conflicts = c.query_row("SELECT count(*), coalesce(max(id), 0) FROM sync_conflict WHERE seen = 0 AND at > ?1", [since], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0, 0));
-        Ok((
-            conn,
+        // 새 K7 기록이 생기면 번호(conflict_seq)가 커진다. 화면은 이 번호가 커질 때 토스트를 한 번 띄운다
+        let (conflicts, conflict_seq) =
+            c.query_row("SELECT count(*), coalesce(max(id), 0) FROM sync_conflict WHERE seen = 0 AND at > ?1", [since], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0, 0));
+        let (pending, pending_reviews, pending_notes) = pending_counts(c);
+        Ok(Status {
+            connected: conn,
             enabled,
-            engine::local(c, "account")?,
-            engine::local(c, "backup")?.unwrap_or_else(|| "daily".into()),
-            engine::local(c, "lock")?.as_deref() == Some("1"),
+            account: engine::local(c, "account")?,
+            backup: engine::local(c, "backup")?.unwrap_or_else(|| "daily".into()),
+            lock: engine::local(c, "lock")?.as_deref() == Some("1"),
             last_sync,
-            pending_counts(c),
+            pending,
+            pending_reviews,
+            pending_notes,
             devices,
-            my_name,
+            device_name: my_name,
             conflicts,
-        ))
+            conflict_seq,
+            ..Default::default()
+        })
     });
     let configured = sh.configured();
     let folder = sh.folder.is_some();
@@ -476,24 +483,13 @@ fn refresh(sh: &Arc<Shared>) {
         s.folder = folder;
         s.studying = studying;
         s.closing = closing;
-        if let Ok((conn, enabled, account, backup, lock, last_sync, (pending, reviews, notes), devices, name, (cn, cmax))) = read {
-            s.connected = conn;
-            s.enabled = enabled;
-            s.account = account;
-            s.backup = backup;
-            s.lock = lock;
-            s.last_sync = last_sync;
-            s.pending = pending;
-            s.pending_reviews = reviews;
-            s.pending_notes = notes;
-            s.devices = devices;
-            s.device_name = name;
-            s.conflicts = cn;
-            // 새 K7 기록이 생기면 번호가 커진다. 화면은 이 번호가 커질 때 토스트를 한 번 띄운다
-            s.conflict_seq = cmax;
-            if !conn {
+        if let Ok(r) = read {
+            (s.connected, s.enabled, s.account, s.backup, s.lock, s.last_sync) = (r.connected, r.enabled, r.account, r.backup, r.lock, r.last_sync);
+            (s.pending, s.pending_reviews, s.pending_notes) = (r.pending, r.pending_reviews, r.pending_notes);
+            (s.devices, s.device_name, s.conflicts, s.conflict_seq) = (r.devices, r.device_name, r.conflicts, r.conflict_seq);
+            if !r.connected {
                 s.state = "off".into();
-            } else if !enabled && s.state != "choice" && s.state != "gone" {
+            } else if !r.enabled && s.state != "choice" && s.state != "gone" {
                 s.state = "paused".into();
             } else if s.state.is_empty() || s.state == "off" || s.state == "paused" {
                 s.state = "idle".into();
