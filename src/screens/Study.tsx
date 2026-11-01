@@ -1796,7 +1796,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
                   <span className="edit__importance-label">
                     <span className="t-label-m">중요도</span>
                     <span className="t-caption c-tertiary">
-                      {target ? `하위 덱 기본값 ${LEVEL_LABEL[target.importance]} · ` : ""}
+                      {target ? `${target.id === rootId ? "덱" : "하위 덱"} 기본값 ${LEVEL_LABEL[target.importance]} · ` : ""}
                       {/* 중요도는 노트 단위라 앞뒤 둘 다는 두 장이 같이 바뀐다 (C3-r) */}
                       {reversed ? "앞뒤 두 장을 같이 바꿔요" : "이 카드만 바꿔요"}
                     </span>
