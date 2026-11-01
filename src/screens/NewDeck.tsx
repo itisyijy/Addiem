@@ -2,7 +2,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type DeckDetail, type Level } from "../api";
 import { Button, Icon, Input, LEVEL_LABEL, type IconName } from "../ui";
-import { useModalScope, useNav } from "../nav";
+import { useNav, useOverlayScope } from "../nav";
 import { composing } from "../keys";
 
 /** 창 안의 [취소] 버튼이 X · Esc · 바깥 클릭과 같은 닫기(고친 것이 있으면 묻기)를 쓰게 */
@@ -29,7 +29,7 @@ export function Modal({ title, sub, onClose, children, wide, variant, icon = "al
   /** 고친 것이 있다. 바깥 클릭 · X · Esc · useModalClose 로 닫을 때 버릴지 먼저 묻는다 (QA T1-02 · T1-14 · T8-05) */
   dirty?: boolean;
 }) {
-  useModalScope();
+  useOverlayScope();
   const box = useRef<HTMLDivElement>(null);
   const [asking, setAsking] = useState(false);
   const close = () => (dirty ? setAsking(true) : onClose());
@@ -99,7 +99,7 @@ const openBoxes: HTMLElement[] = [];
 
 /**
  * Tab 이 모달 밖으로 나가지 않게 한다. onEscape 가 있으면 맨 위 창만 Esc 를 받는다 (창 위에 뜬 확인 창의 Esc 가 아래 창까지 닫지 않게).
- * 닫힌 뒤 연 버튼으로 초점을 돌려주는 것은 useModalScope (nav.tsx)
+ * 닫힌 뒤 연 버튼으로 초점을 돌려주는 것은 useOverlayScope (nav.tsx)
  */
 export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>, onEscape?: () => void) {
   const esc = useRef(onEscape);

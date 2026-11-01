@@ -106,7 +106,6 @@ function commit(next: Overrides) {
 
 export const getKeys = (id: ActionId) => map.get()[id];
 export const isChanged = (id: ActionId) => id in overrides;
-export const keymap = () => map.get();
 
 /** 동작의 키를 바꾼다. 기본값과 같으면 바꾼 목록에서 뺀다 */
 export function setKeys(id: ActionId, keys: string[]) {

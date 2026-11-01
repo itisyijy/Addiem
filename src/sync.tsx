@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { Badge, Button, Checkbox, Icon, Input, Segment, Spinner, Toggle, type IconName } from "./ui";
 import { useToast } from "./toast";
-import { n, useKey, useModalScope, useNav, useMenu } from "./nav";
+import { n, useKey, useNav, useMenu, useOverlayScope } from "./nav";
 import { plainEnter } from "./keys";
 import { useFocusTrap } from "./screens/NewDeck";
 import { store } from "./store";
@@ -152,7 +152,7 @@ function line(s: SyncStatus): { title: string; icon: IconName; tone: "ok" | "pla
 
 /** 머리 없는 창 (K2 · K6-f · K8 · K9 · K10 · ai.tsx 의 L2 · L3). 초점을 가두고 Esc 로 닫는다 */
 export function Sheet({ label, onClose, className = "", children }: { label: string; onClose: () => void; className?: string; children: ReactNode }) {
-  useModalScope();
+  useOverlayScope();
   useKey("Escape", onClose, true, { modal: true });
   const box = useRef<HTMLDivElement>(null);
   useFocusTrap(box);

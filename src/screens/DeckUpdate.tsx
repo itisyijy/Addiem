@@ -102,7 +102,7 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
     : [];
   const go = () => {
     if (mode === "add") return onAdd();
-    if (summary) nav({ name: "deckUpdate", path, info, summary, pulled: pull === "done" });
+    if (summary) nav({ name: "deckUpdate", path, summary });
   };
   useKey("Enter", go, mode === "add" || ready);
 
@@ -250,7 +250,7 @@ function conflictPicks(conflicts: UpdateSummary["conflicts"]) {
 
 type Step = "summary" | "conflicts" | "looks" | "apply";
 
-export function DeckUpdate({ path, info, summary: first }: { path: string; info: AnkiPreview; summary: UpdateSummary; pulled: boolean }) {
+export function DeckUpdate({ path, summary: first }: { path: string; summary: UpdateSummary }) {
   const nav = useNav();
   const [summary, setSummary] = useState(() => labeled(first));
   const [step, setStep] = useState<Step>("summary");
@@ -294,7 +294,7 @@ export function DeckUpdate({ path, info, summary: first }: { path: string; info:
       />
     );
   if (step === "looks") return <LookCompare summary={summary} looks={looks} onPick={setLooks} onBack={() => back()} />;
-  if (step === "apply") return <ApplyProgress path={path} info={info} summary={summary} choices={choices} onBack={() => setStep("summary")} />;
+  if (step === "apply") return <ApplyProgress path={path} summary={summary} choices={choices} onBack={() => setStep("summary")} />;
   return (
     <UpdateSummaryView
       s={summary}
@@ -1146,7 +1146,7 @@ const STEPS = [
 ] as const;
 const NO_BACKUP = "적용 전 백업을 만들지 못해";
 
-function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: string; info: AnkiPreview; summary: UpdateSummary; choices: UpdateChoices; onBack: () => void }) {
+function ApplyProgress({ path, summary: s, choices, onBack }: { path: string; summary: UpdateSummary; choices: UpdateChoices; onBack: () => void }) {
   const nav = useNav();
   const [prog, setProg] = useState<UpdateProgress | null>(null);
   const [backupAt, setBackupAt] = useState<number | null>(null);
@@ -1183,7 +1183,7 @@ function ApplyProgress({ path, info, summary: s, choices, onBack }: { path: stri
     api.applyUpdate(path, choices).then(
       (result) => {
         lockNav(false);
-        if (mounted.current) nav({ name: "updateResult", summary: result, info });
+        if (mounted.current) nav({ name: "updateResult", summary: result });
       },
       (e) => {
         lockNav(false);
@@ -1340,7 +1340,7 @@ function report(s: UpdateSummary) {
   return lines.join("\n");
 }
 
-export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary; info: AnkiPreview }) {
+export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary }) {
   const nav = useNav();
   const sync = useSyncStatus();
   const [undoing, setUndoing] = useState(false);
