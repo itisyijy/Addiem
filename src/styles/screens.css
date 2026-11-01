@@ -84,6 +84,7 @@
 .home__gap { height: 28px; }
 .home__count { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
 .home__count-num { font: 300 168px/172px var(--font-sans); letter-spacing: -0.06em; }
+.home__today > .t-display-l { position: relative; } /* 고대비(forced colors)에서 큰 숫자의 글자 뒤판이 제목을 덮지 않게 위에 그린다 (QA T8-21) */
 .home__mix { display: flex; flex-direction: column; gap: 10px; padding-top: 20px; }
 .home__bar { display: flex; gap: 3px; width: 420px; height: 8px; border-radius: 999px; overflow: hidden; }
 .home__bar-review { background: var(--text-primary); } /* 데이터 표시는 text/primary (다크에서 밝게) */

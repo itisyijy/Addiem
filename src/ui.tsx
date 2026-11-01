@@ -352,10 +352,14 @@ export function Backdrop() {
   useEffect(() => {
     const onChange = () => setHidden(document.hidden);
     document.addEventListener("visibilitychange", onChange);
-    const win = getCurrentWindow();
-    const unlisten = win.onResized(() => { win.isMinimized().then(setMinimized, () => {}); });
+    // 최소화는 크기 0 으로 온다. 되살릴 때 크기 이벤트가 안 오는 때가 있어(tao) 창에 손이 닿으면 푼다 (QA T9-06)
+    const unlisten = getCurrentWindow().onResized(({ payload }) => setMinimized(payload.width === 0));
+    const wake = () => setMinimized(false);
+    const wakes = ["pointermove", "keydown", "focus"] as const;
+    for (const w of wakes) window.addEventListener(w, wake);
     return () => {
       document.removeEventListener("visibilitychange", onChange);
+      for (const w of wakes) window.removeEventListener(w, wake);
       unlisten.then((f) => f(), () => {});
     };
   }, []);
