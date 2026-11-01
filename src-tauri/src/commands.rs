@@ -214,11 +214,16 @@ pub(crate) fn descendants(root: i64, decks: &[queue::Deck]) -> Vec<i64> {
 }
 
 fn plan_for(con: &Connection, deck_ids: Option<&[i64]>, scale: f64, day: i64) -> Res<(Vec<queue::Deck>, queue::QueuePlan)> {
+    plan_with_cards(con, deck_ids, scale, day).map(|(decks, _, plan)| (decks, plan))
+}
+
+/// plan_for 에 읽은 카드까지 (덱 상세가 카드 수를 다시 읽지 않게, QA V7-03)
+fn plan_with_cards(con: &Connection, deck_ids: Option<&[i64]>, scale: f64, day: i64) -> Res<(Vec<queue::Deck>, Vec<queue::Card>, queue::QueuePlan)> {
     let decks = load_decks(con)?;
     let cards = load_cards(con)?;
     let done = if day == study_day(now_ms()) { today_progress(con, day)? } else { queue::Today::default() };
     let plan = queue::build_queue_with_progress(day, &decks, &cards, deck_ids, scale, &done);
-    Ok((decks, plan))
+    Ok((decks, cards, plan))
 }
 
 /// 오늘(학습일) 평가한 카드. 남은 카드 중 이 카드는 학습 단계로 다시 나오는 것이라 "다시 볼 카드"로 따로 센다 (QA T2-01 · V6-02).
@@ -724,8 +729,15 @@ pub fn deck_detail(state: State<AppState>, deck_id: i64) -> Res<DeckDetail> {
 
 fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
     let today = study_day(now_ms());
-    let (decks, plan) = plan_for(con, Some(&[deck_id]), 1.0, today)?;
+    let (decks, cards, plan) = plan_with_cards(con, Some(&[deck_id]), 1.0, today)?;
     let ids = descendants(deck_id, &decks);
+    // 덱별 (학습에 나오는 신규, 앞면이 빈 신규). notetype::new_left 와 같은 셈을 읽은 카드에서 한 번만 (QA V7-03)
+    let mut new_by_deck: HashMap<i64, (i64, i64)> = HashMap::new();
+    for c in cards.iter().filter(|c| c.state == "new") {
+        let e = new_by_deck.entry(c.deck_id).or_default();
+        if c.front_empty { e.1 += 1 } else { e.0 += 1 }
+    }
+    let new_of = |decks: &[i64]| decks.iter().filter_map(|d| new_by_deck.get(d)).fold((0, 0), |a, x| (a.0 + x.0, a.1 + x.1));
     let id_list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let q = |sql: &str| -> Res<i64> {
         con.query_row(&sql.replace("$IDS", &id_list), [], |r| r.get(0)).map_err(err)
@@ -737,9 +749,12 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
 
     let total = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS)")?;
     // 앞면이 빈 카드(NT49)는 학습에 나오지 않는다: 남은 신규 · 하루 몫에서 빼고, 큰 카드가 "오늘 0장"인 이유로 보인다 (Q1-01)
-    let empties = crate::notetype::front_empty_cards(con, &id_list)?;
-    let empty_new = empties.iter().filter(|(_, s)| s == "new").count() as i64;
-    let unseen = q("SELECT count(*) FROM card WHERE deck_id IN ($IDS) AND state = 'new'")? - empty_new;
+    let mut empties: Vec<i64> = {
+        let scope: std::collections::HashSet<i64> = ids.iter().copied().collect();
+        cards.iter().filter(|c| c.front_empty && c.state != "suspended" && scope.contains(&c.deck_id)).map(|c| c.id).collect()
+    };
+    empties.sort_unstable();
+    let (unseen, empty_new) = new_of(&ids);
     let buried = still_buried(today);
     let hard = q(&format!("SELECT count(*) FROM card c WHERE deck_id IN ($IDS) AND {buried}"))?;
     let hard_auto = q(&format!("SELECT count(*) FROM card c WHERE deck_id IN ($IDS) AND {buried} AND buried_reason = 'two_again'"))?;
@@ -755,7 +770,7 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
     let owner = by_id.get(&queue::budget_owner(deck_id, &by_id)).copied().unwrap_or(me);
     // 예산 덱 아래에서 자기 설정을 가진 하위 덱은 따로 센다 (큐와 같다, QA T3-08)
     let owned = descendants(owner.id, &decks).into_iter().filter(|d| queue::budget_owner(*d, &by_id) == owner.id);
-    let owner_unseen = crate::notetype::new_left(con, &owned.map(|i| i.to_string()).collect::<Vec<_>>().join(","))?;
+    let owner_unseen = new_of(&owned.collect::<Vec<_>>()).0;
     let (per_day, why) = queue::new_target_for_deck(owner, today, owner_unseen);
     let finish_days = (per_day > 0 && owner_unseen > 0).then(|| (owner_unseen + per_day - 1) / per_day);
     let learnable = queue::learnable_days(today, owner.target_day, owner.include_target_day);
@@ -798,7 +813,7 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
         let sub = descendants(id, &decks);
         let sub_ids = sub.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let cards: i64 = con.query_row(&format!("SELECT count(*) FROM card WHERE deck_id IN ({sub_ids})"), [], |r| r.get(0)).map_err(err)?;
-        let unseen = crate::notetype::new_left(con, &sub_ids)?;
+        let unseen = new_of(&sub).0;
         let (importance, importance_source, weak, dismissed, recovery_shown, weak_since): (i64, String, bool, Option<String>, bool, Option<i64>) = con
             .query_row(
                 "SELECT importance, importance_source, weak, weak_dismissed_until, weak_recovery_shown, weak_since FROM deck WHERE id = ?1",
@@ -885,7 +900,7 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
         today_new_override: me.today_new,
         // 학습을 시작한 카드 = 신규가 아닌 카드 (앞면이 빈 신규도 아직 시작하지 않았다)
         seen_pct: if total > 0 { (total - unseen - empty_new) * 100 / total } else { 0 },
-        front_empty: empties.into_iter().map(|(id, _)| id).collect(),
+        front_empty: empties,
         unseen_empty: empty_new,
         core_total,
         core_seen,
@@ -3980,6 +3995,27 @@ mod tests {
         assert!(!recovered(&con), "확정 전 기록만 있다");
         log(2, now, 3, 20);
         assert!(recovered(&con));
+    }
+
+    #[test]
+    fn deck_detail_counts_new_cards_like_new_left() {
+        // QA V7-03: 덱 상세의 남은 신규 · 앞면이 빈 신규 · 하위 덱 남은 수는 읽은 카드에서 센다. SQL 셈(new_left)과 같다
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, 'P', 0, 0)", []).unwrap();
+        con.execute("INSERT INTO deck (id, name, parent_id, created_at, updated_at) VALUES (2, 'A', 1, 0, 0)", []).unwrap();
+        for (deck_id, k) in [(1, 2), (2, 3)] {
+            for i in 0..k {
+                let card = super::NewCard { deck_id, kind: "basic".into(), front: format!("q{deck_id}-{i}"), back: "a".into(), importance: None };
+                super::insert_note(&con, &card, "", None).unwrap();
+            }
+        }
+        let empty: i64 = con.query_row("SELECT id FROM card WHERE deck_id = 2 ORDER BY id LIMIT 1", [], |r| r.get(0)).unwrap();
+        con.execute("UPDATE note SET fields = '[\"\",\"a\"]' WHERE id = (SELECT note_id FROM card WHERE id = ?1)", [empty]).unwrap();
+        con.execute("UPDATE card SET state = 'review' WHERE deck_id = 1 AND id = (SELECT min(id) FROM card WHERE deck_id = 1)", []).unwrap();
+        let d = super::deck_detail_in(&con, 1).unwrap();
+        let left = |ids: &str| crate::notetype::new_left(&con, ids).unwrap();
+        assert_eq!((d.unseen, d.unseen_empty, d.front_empty.clone(), d.budget_unseen), (left("1,2"), 1, vec![empty], left("1,2")));
+        assert_eq!((d.unseen, d.tree[0].unseen), (3, left("2")));
     }
 
     #[test]
