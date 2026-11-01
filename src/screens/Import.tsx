@@ -8,6 +8,7 @@ import { Badge, Button, Icon, Spinner, StatTile, Toggle, type IconName } from ".
 import { eul, lockNav, n, useKey, useNav } from "../nav";
 import { useToast } from "../toast";
 import { useFileDrop } from "../fileDrop";
+import { baseName } from "../cardHtml";
 import { Modal } from "./NewDeck";
 import { UpdateChoice } from "./DeckUpdate";
 import { eta, mb } from "../dates";
@@ -24,7 +25,6 @@ const EXAMPLE = String.raw`{ "deck": "정보처리기사",
   ]
 }`;
 
-const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const JSON_FILE = /\.json$/i;
 /** 붙여넣기 · 파일 선택 · 끌어놓기가 같은 상한 (import.rs read_json_file · parse_json) */
 const MAX_TEXT = 20 * 1024 * 1024;

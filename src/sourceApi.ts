@@ -1,7 +1,8 @@
 // I 원자료 명령 (src-tauri/src/source.rs · embed.rs). 필드 이름은 Rust 와 같다
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import type { ExamState } from "./api";
+import { store } from "./store";
 
 // ---------------------------------------------------------------- R 자료 근거 AI (src-tauri/src/rag.rs)
 
@@ -203,23 +204,15 @@ export const topSignal = (s: { signals: Signal[] }) => SIGNAL_ORDER.find((x) => 
 export const mb = (bytes: number) => `${Math.round(bytes / 1e6 / 10) * 10}MB`;
 
 // 모델이 있는지 여러 화면이 같이 본다 (중요도 칩의 출처 태그 · 배너). 받거나 지우면 refreshModel()
-let model: ModelStatus | null = null;
-const subs = new Set<() => void>();
+const model = store<ModelStatus | null>(null);
 export function refreshModel() {
-  return sourceApi.modelStatus().then((s) => {
-    model = s;
-    subs.forEach((f) => f());
-    return s;
-  });
+  return sourceApi.modelStatus().then((s) => (model.set(s), s));
 }
 /** fresh: 열 때마다 다시 읽는다 (받기 · 분석 상태를 보이는 칸). 다시 들어온 화면이 받는 중인데 받기 전 모양이었다 (QA V5-01) */
 export function useModel(fresh = false): ModelStatus | null {
-  const s = useSyncExternalStore(
-    (f) => (subs.add(f), () => subs.delete(f)),
-    () => model,
-  );
+  const s = model.use();
   useEffect(() => {
-    if (fresh || !model) refreshModel().catch(() => {});
+    if (fresh || !model.get()) refreshModel().catch(() => {});
   }, [fresh]);
   return s;
 }

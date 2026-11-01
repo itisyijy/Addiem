@@ -307,16 +307,24 @@ export function plainText(html: string): string {
   return (tpl.content.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-/** 이미지 파일을 저장하고 편집기에 넣을 <img> 를 만든다 */
-export async function imageTag(file: File): Promise<string> {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
+/** data URL 그림을 미디어 폴더에. 파일 이름은 save_media 가 내용으로 정한다 */
+export const storeDataUrl = (url: string, name = "figure.png") => invoke<string>("save_media", { name, dataBase64: url.split(",")[1] ?? "" });
+
+/** 그림을 미디어 폴더에 저장한다. name: 미디어 파일 이름, url: 화면에 그릴 data URL */
+export async function saveImage(blob: Blob, fileName: string): Promise<{ name: string; url: string }> {
+  const url = await new Promise<string>((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(String(r.result));
     r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
+    r.readAsDataURL(blob);
   });
-  const name = await invoke<string>("save_media", { name: file.name || "image.png", dataBase64: dataUrl.split(",")[1] ?? "" });
-  return `<img src="${dataUrl}" data-media="${name}" alt="">`;
+  return { name: await storeDataUrl(url, fileName), url };
+}
+
+/** 이미지 파일을 저장하고 편집기에 넣을 <img> 를 만든다 */
+export async function imageTag(file: File): Promise<string> {
+  const { name, url } = await saveImage(file, file.name || "image.png");
+  return `<img src="${url}" data-media="${name}" alt="">`;
 }
 
 /** 탐색기에서 끌어 놓은 그림 파일(경로)을 저장한다. name: 미디어 파일 이름, url: 화면에 그릴 data URL */

@@ -9,6 +9,7 @@ import { errorText, stoppedDownload } from "../api";
 import { useToast } from "../toast";
 import { Badge, Button, Icon, Spinner, type IconName } from "../ui";
 import { Modal } from "./NewDeck";
+import { store } from "../store";
 import { llm, written as writtenApi, type Concept, type LlmStatus, type Relation } from "../written";
 
 const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)}GB`;
@@ -16,29 +17,19 @@ const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)}GB`;
 const amount = (bytes: number) => (bytes < 1e8 ? `${Math.round(bytes / 1e6)}MB` : gb(bytes));
 
 // 상태는 설정 칸과 학습 화면이 같이 본다. 받거나 지우면 refreshLlm()
-let status: LlmStatus | null = null;
-const subs = new Set<() => void>();
+const status = store<LlmStatus | null>(null);
 export function refreshLlm() {
   return llm.status().then(
-    (s) => {
-      status = s;
-      subs.forEach((f) => f());
-      return s;
-    },
+    (s) => (status.set(s), s),
     () => null,
   );
 }
 export function useLlm() {
-  const [, tick] = useState(0);
+  const s = status.use();
   useEffect(() => {
-    const f = () => tick((x) => x + 1);
-    subs.add(f);
     refreshLlm();
-    return () => {
-      subs.delete(f);
-    };
   }, []);
-  return status;
+  return s;
 }
 
 /** 이 PC 에서 쓸 수 있는가 (CPU AVX2 · 엔진 파일) */

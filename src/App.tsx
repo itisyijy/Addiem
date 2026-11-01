@@ -122,7 +122,7 @@ function Screen({ route, visit }: { route: Route; visit: number }) {
     case "deckUpdate":
       return <DeckUpdate {...route} />;
     case "updateResult":
-      return <UpdateResultScreen summary={route.summary} info={route.info} />;
+      return <UpdateResultScreen summary={route.summary} />;
     case "updateUndone":
       return <UndoResultScreen undo={route.undo} />;
     case "importJson":

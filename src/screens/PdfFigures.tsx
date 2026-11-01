@@ -4,13 +4,15 @@
 // 스캔본(글자 없음)도 쪽을 그려 끌어서 잡은 영역으로 그림 카드만 만든다 (IT10)
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { errorText } from "../api";
+import { storeDataUrl } from "../cardHtml";
 import { n, useKey, useOverlayScope } from "../nav";
 import { useToast } from "../toast";
 import { Button, Icon } from "../ui";
 import { cropPage, cropSize, pageLayout } from "../pdf";
 import { boxOf, captionOf, figuresOf, gridIn, rectOf, suggestTables, type Layout } from "../figures";
 import { PdfPage } from "./Sources";
-import { cellsOf, FigList, FigMenu, sameRect, storeDataUrl, useBulk, useFlows, type FigRow, type FigSource, type MenuEntry } from "./Figures";
+import { clamp } from "./Occlusion";
+import { cellsOf, FigList, FigMenu, sameRect, useBulk, useFlows, type FigRow, type FigSource, type MenuEntry } from "./Figures";
 import { isRegion, sourceApi, type Material, type Rect, type Segment } from "../sourceApi";
 
 // ---------------------------------------------------------------- 문서 전체 읽기 · 찾은 것
@@ -156,7 +158,6 @@ const PAGE_W = 540;
 const HOW = "글자 위치로 칸을 나눴어요 · 틀린 칸은 눌러 고쳐요";
 const round = (r: Rect) => r.map((v) => Math.round(v * 1e4) / 1e4) as Rect;
 const pos = (r: Rect) => ({ left: `${r[0] * 100}%`, top: `${r[1] * 100}%`, width: `${r[2] * 100}%`, height: `${r[3] * 100}%` });
-const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
 type Sel = { key: string; page: number; menu: boolean };
 
