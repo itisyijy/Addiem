@@ -78,7 +78,7 @@ impl DayLoad {
 }
 
 /// d 날에 이 덱이(조상 포함) 쉬고 있는가
-fn paused_on(id: i64, d: i64, by_id: &HashMap<i64, &Deck>) -> bool {
+pub(crate) fn paused_on(id: i64, d: i64, by_id: &HashMap<i64, &Deck>) -> bool {
     let mut cur = by_id.get(&id).copied();
     for _ in 0..64 {
         let Some(x) = cur else { return false };
@@ -614,10 +614,11 @@ pub struct ConflictDeck {
 #[derive(Serialize, Clone)]
 pub struct ConflictBar {
     date: String,
+    weekend: bool,
     a: i64,
     b: i64,
     other: i64,
-    /// 이날 넘는 기준선
+    /// 이날의 기준선 (평일 · 주말 상한이 다르면 날마다 다르다, QA G1-02). 없으면 0
     limit: i64,
 }
 
@@ -628,11 +629,8 @@ pub struct Conflict {
     b: ConflictDeck,
     peak_date: String,
     peak: i64,
-    /// 기준선: 쓸 수 있는 시간이면 그날(오늘, 없으면 처음 정해진 날)의 상한, 아니면 최근 30일 평균의 1.5배
-    limit: i64,
+    /// 기준선(막대마다 limit): 쓸 수 있는 시간이면 그날의 상한, 아니면 최근 30일 평균의 1.5배
     by_time: bool,
-    /// limit 이 주말 상한이다 ("평일 가능" · "주말 가능")
-    limit_weekend: bool,
     bars: Vec<ConflictBar>,
     /// 앞당겨 나누기: 최고 분량, b 의 하루 신규가 오늘 몇 장 늘어나는지
     spread_peak: i64,
@@ -655,7 +653,8 @@ fn avg30(con: &Connection, today: i64, decks: &[Deck]) -> Res<Option<f64>> {
 }
 
 fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], time: &Time, include_resolved: bool) -> Res<Vec<Conflict>> {
-    let mut roots: Vec<&Deck> = decks.iter().filter(|d| d.parent_id.is_none() && d.target_day.is_some_and(|t| t >= today)).collect();
+    // 쉬는 덱은 겹치는 시험으로 보지 않는다 (QA G1-08)
+    let mut roots: Vec<&Deck> = decks.iter().filter(|d| d.parent_id.is_none() && !d.paused && d.target_day.is_some_and(|t| t >= today)).collect();
     if roots.len() < 2 {
         return Ok(vec![]);
     }
@@ -703,16 +702,12 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
         let first = with("first");
         let peak = |v: &[DayLoad]| v.iter().map(DayLoad::total).max().unwrap_or(0);
         let b_new_today = |v: &[DayLoad]| v.first().map_or(0, |x| x.new_by_owner.get(&b.id).copied().unwrap_or(0));
-        let limit_day = (0..keep.len() as i64).map(|i| today + i).find(|&d| limit_on(d).is_some()).unwrap_or(today);
-        let limit = limit_on(limit_day).unwrap_or(0);
         out.push(Conflict {
             a: ConflictDeck { id: a.id, name: a.name.clone(), target: db::date_from_day(ta) },
             b: ConflictDeck { id: b.id, name: b.name.clone(), target: db::date_from_day(tb) },
             peak_date: db::date_from_day(today + peak_i as i64),
             peak: keep[peak_i].total(),
-            limit,
             by_time,
-            limit_weekend: by_time && is_weekend(limit_day),
             bars: keep
                 .iter()
                 .enumerate()
@@ -720,6 +715,7 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
                     let (ka, kb) = (x.by_root.get(&a.id).copied().unwrap_or(0), x.by_root.get(&b.id).copied().unwrap_or(0));
                     ConflictBar {
                         date: db::date_from_day(today + i as i64),
+                        weekend: is_weekend(today + i as i64),
                         a: ka,
                         b: kb,
                         other: x.total() - ka - kb,
@@ -747,7 +743,7 @@ pub fn plan_conflict(state: State<AppState>, include_resolved: Option<bool>) -> 
     // 충돌 판단은 이미 고른 조정을 빼고 해야 하므로 load_decks 의 조정 위에서 b 만 되돌려 계산한다
     let decks = commands::load_decks(&con)?;
     // 다가오는 목표일을 가진 최상위 덱이 둘 없으면 카드를 읽지 않는다 (홈이 뜰 때마다 부른다, QA V7-07. find_conflicts 와 같은 조건)
-    if decks.iter().filter(|d| d.parent_id.is_none() && d.target_day.is_some_and(|t| t >= today)).count() < 2 {
+    if decks.iter().filter(|d| d.parent_id.is_none() && !d.paused && d.target_day.is_some_and(|t| t >= today)).count() < 2 {
         return Ok(None);
     }
     let cards = commands::load_cards(&con)?;
@@ -942,6 +938,20 @@ mod tests {
         assert_eq!(find_over(T, &days, |_| Some(100)), Some((T + 1, None, 0, 1)));
         // 시간을 넣지 않았으면 안내도 없다
         assert_eq!(find_over(T, &days, |_| None), None);
+    }
+
+    #[test]
+    fn paused_deck_is_not_a_conflict() {
+        // QA G1-08: 쉬는 덱은 H2 겹치는 시험에 들지 않는다
+        let con = db::open_in_memory().unwrap();
+        let today = study_day(now_ms());
+        let decks = [Deck { target_day: Some(today + 3), ..deck(1) }, Deck { target_day: Some(today + 5), ..deck(2) }];
+        let mut cards = news(60, 1, 1);
+        cards.extend(news(60, 2, 100));
+        let time = Time { weekday_min: Some(1), weekend_min: Some(1), sec_per_card: 10.0, measured: false };
+        assert_eq!(find_conflicts(&con, today, &decks, &cards, &time, true).unwrap().len(), 1);
+        let paused = [decks[0].clone(), Deck { paused: true, ..decks[1].clone() }];
+        assert!(find_conflicts(&con, today, &paused, &cards, &time, true).unwrap().is_empty());
     }
 
     #[test]

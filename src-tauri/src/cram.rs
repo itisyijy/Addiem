@@ -44,17 +44,22 @@ impl Item {
     }
 }
 
-/// 목표일이 오늘 ~ 3일 뒤인 덱 중 가장 가까운 것. deck_ids 가 있으면 그 덱과 위아래로 이어진 덱만
-fn target<'a>(decks: &'a [queue::Deck], deck_ids: Option<&[i64]>, today: i64) -> Option<&'a queue::Deck> {
-    decks
+/// 목표일이 오늘 ~ 14일 뒤이고 쉬지 않는 덱, 가까운 순. deck_ids 가 있으면 그 덱과 위아래로 이어진 덱만.
+/// 배운 카드가 있는지는 cram_plan_in 이 앞에서부터 본다 (가까운 덱이 비었다고 다른 덱 입구를 숨기지 않는다, QA G1-01)
+fn targets<'a>(decks: &'a [queue::Deck], deck_ids: Option<&[i64]>, today: i64) -> Vec<&'a queue::Deck> {
+    let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
+    let mut v: Vec<&queue::Deck> = decks
         .iter()
         .filter(|d| d.target_day.is_some_and(|t| (0..=OPEN_DAYS).contains(&(t - today))))
+        .filter(|d| !crate::plan::paused_on(d.id, today, &by_id))
         .filter(|d| {
             deck_ids.is_none_or(|ids| {
                 ids.iter().any(|&i| commands::descendants(d.id, decks).contains(&i) || commands::descendants(i, decks).contains(&d.id))
             })
         })
-        .min_by_key(|d| (d.target_day, d.parent_id.is_some()))
+        .collect();
+    v.sort_by_key(|d| (d.target_day, d.parent_id.is_some()));
+    v
 }
 
 /// 범위 안에서 한 번이라도 본 카드 (신규 · 보류 상태 제외). 순서: 핵심 먼저, 안정도 낮은 것 먼저
@@ -151,7 +156,7 @@ pub struct CramPlan {
     new_per_day: i64,
 }
 
-/// H3 압축 회독을 열 수 있으면 그 계획. 목표일이 14일보다 멀거나 지났으면, 배운 카드가 없으면 없다 (입구 · 계획 줄을 숨긴다, QA T3-18)
+/// H3 압축 회독을 열 수 있으면 그 계획. 목표일이 14일보다 멀거나 지났으면, 쉬는 덱이면, 배운 카드가 없으면 없다 (입구 · 계획 줄을 숨긴다, QA T3-18 · G1-08)
 #[tauri::command(async)]
 pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Option<CramPlan>> {
     cram_plan_in(&*state.db.lock().map_err(err)?, deck_ids)
@@ -160,12 +165,16 @@ pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Opti
 fn cram_plan_in(con: &Connection, deck_ids: Option<Vec<i64>>) -> Res<Option<CramPlan>> {
     let today = study_day(now_ms());
     let decks = commands::load_decks(con)?;
-    let Some(t) = target(&decks, deck_ids.as_deref(), today) else { return Ok(None) };
-    let (weak_ids, weak_names) = weak_scope(t, &decks);
-    let all = items(con, &commands::descendants(t.id, &decks), &weak_ids)?;
-    if all.is_empty() {
-        return Ok(None);
+    let mut found = None;
+    for t in targets(&decks, deck_ids.as_deref(), today) {
+        let (weak_ids, weak_names) = weak_scope(t, &decks);
+        let all = items(con, &commands::descendants(t.id, &decks), &weak_ids)?;
+        if !all.is_empty() {
+            found = Some((t, weak_names, all));
+            break;
+        }
     }
+    let Some((t, weak_names, all)) = found else { return Ok(None) };
     let count = |f: &dyn Fn(&Item) -> bool| all.iter().filter(|i| f(i)).count();
     let seen = round_seen(con, t)?;
     let fed = id_set(con, "SELECT card_id FROM review_log WHERE fed_to_scheduler = 1 AND kind IS NULL AND reviewed_at >= ?1", [commands::today_start_ms(today)])?;
@@ -346,7 +355,7 @@ pub fn mix_start(state: State<AppState>, deck_id: i64, every: usize, size: usize
     let decks = commands::load_decks(&con)?;
     let t = decks.iter().find(|d| d.id == deck_id).ok_or("덱을 찾을 수 없어요.")?;
     let (cards, due_today) = build_mix(&con, t, &decks, every.clamp(1, 4), size.clamp(1, 500), now)?;
-    let session_id = commands::open_session(&con, &db::date_from_day(study_day(now)), Some("mix"), now)?;
+    let session_id = commands::open_session(&con, &db::date_from_day(study_day(now)), Some("mix"), Some(&commands::descendants(deck_id, &decks)), now)?;
     commands::forget_undo(&state)?;
     Ok(MixStart { session_id, cards, due_today })
 }
@@ -475,6 +484,22 @@ mod tests {
         assert!(cram_plan_in(&con, Some(vec![1])).unwrap().is_none());
         con.execute("UPDATE card SET state = 'review', stability = 3", []).unwrap();
         assert!(cram_plan_in(&con, Some(vec![1])).unwrap().is_some());
+
+        // QA G1-01 · G1-08: 목표일이 더 가까운 덱이 배운 카드가 없거나 쉬고 있어도 다른 덱의 입구는 그대로
+        con.execute_batch(&format!(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (2, '가까운 시험', 0, 0);
+             INSERT INTO deck_config (deck_id, target_date, updated_at) VALUES (2, '{}', 0);
+             INSERT INTO note (id, note_type_id, fields, created_at, updated_at) VALUES (2, 1, '[\"q\",\"a\"]', 0, 0);
+             INSERT INTO card (id, note_id, deck_id, template_ord, state, created_at, updated_at) VALUES (2, 2, 2, 0, 'new', 0, 0);",
+            db::date_from_day(study_day(now_ms()) + 1)
+        ))
+        .unwrap();
+        let deck = |con: &Connection| cram_plan_in(con, None).unwrap().map(|p| p.deck_id);
+        assert_eq!(deck(&con), Some(1), "가까운 덱에 배운 카드가 없다");
+        con.execute("UPDATE card SET state = 'review', stability = 3 WHERE id = 2", []).unwrap();
+        assert_eq!(deck(&con), Some(2));
+        con.execute("UPDATE deck_config SET paused = 1 WHERE deck_id = 2", []).unwrap();
+        assert_eq!(deck(&con), Some(1), "가까운 덱이 쉬고 있다");
     }
 
     #[test]
@@ -510,9 +535,9 @@ mod tests {
         con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (4, ?1, 1)", [now - DAY_MS]).unwrap();
 
         let decks = commands::load_decks(&con).unwrap();
-        let t = target(&decks, Some(&[2]), today).expect("하위 덱에서 들어와도 위의 시험 덱");
-        assert_eq!(t.id, 1);
-        assert!(target(&decks, Some(&[3]), today).is_none(), "목표일 없는 덱");
+        let t = targets(&decks, Some(&[2]), today)[0];
+        assert_eq!(t.id, 1, "하위 덱에서 들어와도 위의 시험 덱");
+        assert!(targets(&decks, Some(&[3]), today).is_empty(), "목표일 없는 덱");
         let (weak, names) = weak_scope(t, &decks);
         assert_eq!(names, ["4장"]);
         let all = items(&con, &commands::descendants(1, &decks), &weak).unwrap();
@@ -524,7 +549,7 @@ mod tests {
 
         // 목표일이 14일보다 멀면 열지 않는다
         con.execute("UPDATE deck_config SET target_date = ?1", [db::date_from_day(today + 15)]).unwrap();
-        assert!(target(&commands::load_decks(&con).unwrap(), None, today).is_none());
+        assert!(targets(&commands::load_decks(&con).unwrap(), None, today).is_empty());
     }
 
     #[test]
