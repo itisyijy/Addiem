@@ -134,8 +134,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
       page(PAGE, last)
         .then((l) => {
           if (g !== gen.current) return;
-          shown.current = rows.length + l.rows.length;
-          setList((p) => p && { ...l, rows: [...p.rows, ...l.rows] });
+          // 옛 관찰자가 같은 쪽을 한 번 더 받을 수 있다: 목록 끝이 그대로 last 일 때만 붙인다
+          setList((p) => {
+            if (!p || p.rows[p.rows.length - 1]?.id !== last) return p;
+            shown.current = p.rows.length + l.rows.length;
+            return { ...l, rows: [...p.rows, ...l.rows] };
+          });
         }, (e) => setError(errorText(e)))
         .finally(() => (loadingMore.current = false));
     });
