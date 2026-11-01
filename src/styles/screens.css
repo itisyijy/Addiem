@@ -79,6 +79,8 @@
   justify-content: space-between;
   align-items: start;
   padding: 128px 72px 48px;
+  max-width: 1280px; /* 큰 창에서 두 칸이 양 끝으로 벌어지지 않게 가운데로 (QA T8-20, 1280 이하는 그대로) */
+  margin-inline: auto;
 }
 .home__today { display: flex; flex-direction: column; align-items: flex-start; margin-top: 12px; }
 .home__gap { height: 28px; }
