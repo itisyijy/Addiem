@@ -6,31 +6,24 @@
 //! 모델이 없거나 · 이 PC 에서 쓸 수 없거나 · 엔진이 멈춰도 핵심어 검사와 평가는 그대로다. 결과는 비교 화면에 참고로만 보인다 (추천은 핵심어만, 디자인 J4)
 
 use crate::commands::AppState;
+use crate::dl::File;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use crate::{err, Res};
-
-/// 받을 파일 하나: 저장 이름, 고정 리비전 주소, 바이트, SHA-256
-struct File {
-    name: &'static str,
-    url: &'static str,
-    size: u64,
-    sha: &'static str,
-}
 
 /// 모델 폴더 (data_dir/models/DIR). 모델을 바꾸면 폴더 이름도 바꾼다 (옛 파일과 섞이지 않게)
 const DIR: &str = "qwen2.5-1.5b-instruct-q4km";
 /// Qwen2.5-1.5B-Instruct Q4_K_M (Qwen 팀 공식 GGUF) · tokenizer.json (원본 저장소). 리비전을 고정했다. 바꾸면 크기와 해시를 함께 다시 적는다.
 /// 사용자 결정 (2026-10-20): 기존 1.5B 를 기본으로 둔다 (0.6B 로 줄이는 것은 정확도 비교 없이 정하지 않는다)
-const FILES: [File; 2] = [
+static MODEL: crate::dl::Model = crate::dl::Model::new(&[
     File {
         name: "model.gguf",
         url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -43,7 +36,7 @@ const FILES: [File; 2] = [
         size: 7_031_645,
         sha: "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
     },
-];
+]);
 /// 받기 확인 창 · 설정 줄에 그대로 보인다 (모델 목록 값)
 const NAME: &str = "Qwen2.5-1.5B-Instruct (4비트)";
 const SHORT: &str = "1.5B 모델 (4비트)";
@@ -52,10 +45,6 @@ const SOURCE: &str = "Hugging Face · Qwen/Qwen2.5-1.5B-Instruct-GGUF (Qwen 팀 
 /// 받은 뒤에도 남겨 둘 여유 (임시 파일 · 다른 기능)
 const MARGIN: u64 = 200_000_000;
 
-static DOWNLOADING: AtomicBool = AtomicBool::new(false);
-static CANCEL: AtomicBool = AtomicBool::new(false);
-/// 마지막 받기가 실패하거나 멈춘 까닭 (crate::dl::keep_failure)
-static FAILED: Mutex<Option<String>> = Mutex::new(None);
 /// 확인 차례 · 미리 하기 차례. 새 확인 · 멈추기 · 지우기 · 떠나기가 올리면 돌던 일이 멈춘다 (미리 하기는 비교를 눌러도 이어서 쓴다)
 static JOB: AtomicU64 = AtomicU64::new(0);
 static PREP: AtomicU64 = AtomicU64::new(0);
@@ -69,14 +58,9 @@ fn model_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("models").join(DIR)
 }
 
-/// 받은 파일이 모두 있는가. 해시는 받을 때 확인했으므로 여기서는 크기만 본다
-fn installed(dir: &Path) -> bool {
-    FILES.iter().all(|f| dir.join(f.name).metadata().is_ok_and(|m| m.len() == f.size))
-}
-
 /// 모델을 받았는가
 pub fn ready(data_dir: &Path) -> bool {
-    installed(&model_dir(data_dir))
+    MODEL.installed(&model_dir(data_dir))
 }
 
 /// 그 폴더가 있는 드라이브의 남은 공간. 폴더가 아직 없으면 있는 윗 폴더에서 잰다
@@ -122,25 +106,11 @@ pub fn cpu_ok() -> bool {
 const ENGINE_SIZE: &str = env!("ADDIEM_LLM_SIZE");
 const ENGINE_SHA: &str = env!("ADDIEM_LLM_SHA");
 
-fn sha256_file(path: &Path) -> Res<String> {
-    let mut f = std::fs::File::open(path).map_err(err)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = f.read(&mut buf).map_err(err)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", h.finalize()))
-}
-
 /// 띄워도 되는 엔진 파일인가: 빌드 때 잰 크기 · SHA-256 과 같다 (바꿔치기 막기)
 fn trusted(path: &Path) -> bool {
     !ENGINE_SHA.is_empty()
         && path.metadata().is_ok_and(|m| m.len().to_string() == ENGINE_SIZE)
-        && sha256_file(path).is_ok_and(|h| h == ENGINE_SHA)
+        && crate::dl::sha256_file(path).is_ok_and(|h| h == ENGINE_SHA)
 }
 
 /// 엔진 실행 파일: 앱 리소스 폴더의 절대 경로만. 디버그 빌드는 ADDIEM_LLM_BIN 으로 바꿀 수 있다 (측정 · 캡처)
@@ -181,25 +151,14 @@ pub struct LlmStatus {
     failed: Option<String>,
 }
 
-/// 받는 중에 앱이 닫혀 남은 .part 를 지운다 (받는 중이 아닐 때만. 그동안 새 받기가 시작되지 않게 깃발을 잠깐 쥔다)
-fn clean_parts(dir: &Path) {
-    if DOWNLOADING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return;
-    }
-    for f in &FILES {
-        let _ = std::fs::remove_file(dir.join(format!("{}.part", f.name)));
-    }
-    DOWNLOADING.store(false, Ordering::SeqCst);
-}
-
 #[tauri::command]
 pub fn llm_status(app: AppHandle) -> LlmStatus {
     let dir = model_dir(&app.state::<AppState>().data_dir);
-    clean_parts(&dir);
-    let bytes = FILES.iter().map(|f| f.size).sum();
+    MODEL.clean_parts(&dir);
+    let bytes = MODEL.bytes();
     LlmStatus {
-        ready: installed(&dir),
-        downloading: DOWNLOADING.load(Ordering::SeqCst),
+        ready: MODEL.installed(&dir),
+        downloading: MODEL.downloading(),
         bytes,
         free: free_bytes(&dir),
         need: bytes + MARGIN,
@@ -211,14 +170,8 @@ pub fn llm_status(app: AppHandle) -> LlmStatus {
         engine: engine_bin(&app).is_some(),
         off: OFF.load(Ordering::SeqCst),
         last_ms: Some(LAST_MS.load(Ordering::SeqCst)).filter(|&m| m > 0),
-        failed: crate::dl::failure(&FAILED),
+        failed: MODEL.failure(),
     }
-}
-
-#[derive(Serialize, Clone)]
-struct DownloadProgress {
-    done: u64,
-    total: u64,
 }
 
 /// [내려받기]. "llm-progress" 이벤트로 진행을 알린다. 이 PC 에서 쓸 수 없거나 공간이 모자라면 시작하지 않고, 멈추거나 실패하면 받던 파일만 지운다
@@ -227,24 +180,13 @@ pub async fn llm_download(app: AppHandle) -> Res<()> {
     if !cpu_ok() {
         return Err("이 PC의 CPU가 빠른 계산(AVX2)을 지원하지 않아 쓸 수 없어요.".into());
     }
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("이미 내려받고 있어요.".into());
-    }
-    CANCEL.store(false, Ordering::SeqCst);
     let dir = model_dir(&app.state::<AppState>().data_dir);
-    let a = app.clone();
-    let res = tauri::async_runtime::spawn_blocking(move || download(&a, &dir)).await.map_err(err).and_then(|r| r);
-    // 까닭은 null 이벤트 전에 남긴다 (이벤트를 받은 화면이 상태를 다시 읽는다)
-    let res = crate::dl::keep_failure(&FAILED, res);
-    DOWNLOADING.store(false, Ordering::SeqCst);
-    // 어떻게 끝나든(다 받음 · 실패 · 멈춤) null: 받기를 시작하지 않은 화면(설정에 다시 들어옴)도 막대를 지우고 상태를 다시 읽는다 (QA T7-04)
-    let _ = app.emit("llm-progress", None::<DownloadProgress>);
-    res
+    MODEL.download(app, "llm-progress", move |p| download(&dir, p)).await
 }
 
 #[tauri::command]
 pub fn llm_cancel() {
-    CANCEL.store(true, Ordering::SeqCst);
+    MODEL.cancel();
 }
 
 /// 돌던 확인을 멈추고 엔진을 끝낸다 (메모리를 돌려준다). 엔진이 일하는 중이면 그 요청이 멈출 때까지 기다리므로 백그라운드에서
@@ -256,7 +198,7 @@ async fn unload() -> Res<()> {
 /// 모델 지우기. 돌던 확인은 멈춘다
 #[tauri::command]
 pub async fn llm_delete(app: AppHandle) -> Res<()> {
-    if DOWNLOADING.load(Ordering::SeqCst) {
+    if MODEL.downloading() {
         return Err("내려받기가 끝난 뒤에 지울 수 있어요.".into());
     }
     unload().await?;
@@ -277,30 +219,13 @@ fn url_of(f: &File) -> String {
     f.url.to_string()
 }
 
-fn download(app: &AppHandle, dir: &Path) -> Res<()> {
-    std::fs::create_dir_all(dir).map_err(err)?;
-    let total: u64 = FILES.iter().map(|f| f.size).sum();
+fn download(dir: &Path, progress: &dyn Fn(u64, u64)) -> Res<()> {
     // 이미 다 받은 파일은 다시 받지 않으니 남은 것만 센다
-    let left: u64 = FILES.iter().filter(|f| !dir.join(f.name).metadata().is_ok_and(|m| m.len() == f.size)).map(|f| f.size).sum();
+    let left: u64 = MODEL.files.iter().filter(|f| !dir.join(f.name).metadata().is_ok_and(|m| m.len() == f.size)).map(|f| f.size).sum();
     if free_bytes(dir).is_some_and(|free| free < left + MARGIN) {
         return Err(format!("저장 공간이 모자라요. {}GB 이상 비운 뒤 다시 해 주세요.", gb(left + MARGIN)));
     }
-    let mut done = 0;
-    for f in &FILES {
-        let path = dir.join(f.name);
-        if path.metadata().is_ok_and(|m| m.len() == f.size) && sha256_file(&path)? == f.sha {
-            done += f.size;
-            continue;
-        }
-        let part = dir.join(format!("{}.part", f.name));
-        crate::dl::fetch(&url_of(f), f.size, f.sha, &part, &|| CANCEL.load(Ordering::SeqCst), |got| {
-            let _ = app.emit("llm-progress", DownloadProgress { done: done + got, total });
-        })?;
-        std::fs::rename(&part, &path).map_err(err)?;
-        done += f.size;
-    }
-    let _ = app.emit("llm-progress", DownloadProgress { done: total, total });
-    Ok(())
+    MODEL.fetch_all(dir, url_of, progress)
 }
 
 /// "1.3" (GB, 소수 한 자리)
@@ -653,7 +578,7 @@ fn usable(bin: Option<&Path>, data_dir: &Path) -> Res<PathBuf> {
         return Err("이 PC의 CPU가 빠른 계산(AVX2)을 지원하지 않아 개념 관계 확인을 쓸 수 없어요.".into());
     }
     let bin = bin.ok_or("이 설치에는 개념 관계 확인 엔진이 없어요.")?;
-    if !installed(&model_dir(data_dir)) {
+    if !MODEL.installed(&model_dir(data_dir)) {
         return Err("개념 관계 확인 모델이 없어요.".into());
     }
     if OFF.load(Ordering::SeqCst) {
