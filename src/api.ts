@@ -332,7 +332,8 @@ export type CardKindHint = "cloze" | "choice" | "list" | "occlusion";
 
 /** day_rollover: 학습 중 하루 경계를 넘어 세션이 닫혔다. 평가는 남지 않았다 (큐 명세 8장) */
 export type AnswerResult = { action: "next" | "again_later" | "buried" | "day_rollover"; due_in_ms: number | null };
-export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[] };
+/** at: 접은 시각 (ms) */
+export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[]; at: number };
 export type SessionSummary = {
   studied: number;
   new_done: number;
@@ -348,6 +349,9 @@ export type SessionSummary = {
   tomorrow_review: number;
   tomorrow_new: number;
   tomorrow_decks: { name: string; review: number; new: number; dday: number | null }[];
+  /** 남은 신규를 맡은 덱에 목표일이 있다. 없으면 new_cap: 그 덱들의 하루 신규 상한 합 (QA T3-25) */
+  has_target: boolean;
+  new_cap: number;
   /** 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다 (평가 없던 학습 · 지난 학습일이면 false) */
   undoable: boolean;
 };
@@ -676,7 +680,7 @@ export const api = {
   confirmImportance: (deckIds: number[]) => invoke<void>("confirm_importance", { deckIds }),
   queuePreview: (deckIds: number[] | null, scale: number) => invoke<QueueSummary>("queue_preview", { deckIds, scale }),
   startSession: (deckIds: number[] | null, scale: number) =>
-    invoke<{ session_id: number; card_ids: number[] }>("start_session", { deckIds, scale }),
+    invoke<{ session_id: number; card_ids: number[]; buried: BuriedCard[] }>("start_session", { deckIds, scale }),
   cardView: (cardId: number) => invoke<CardView>("card_view", { cardId }),
   /** marks: Q 목록 · 선택형의 빠뜨린 항목 · 고른 보기. 평가가 남을 때만 "지난번"으로 저장된다 */
   answer: (sessionId: number, cardId: number, rating: 1 | 2 | 3 | 4, elapsedMs: number, marks: number[] | null) =>

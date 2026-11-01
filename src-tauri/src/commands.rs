@@ -1945,17 +1945,20 @@ fn again_count(con: &Connection, plan: &queue::QueuePlan, today: i64) -> Res<usi
 pub struct SessionStart {
     session_id: i64,
     card_ids: Vec<i64>,
+    /// 이어 쓴 세션에서 앞서 접어둔 카드 (학습 화면의 접어둔 카드 칩, QA T2-18)
+    buried: Vec<BuriedCard>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<SessionStart> {
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
     let today = study_day(now);
-    let (_, plan) = plan_for(&con, deck_ids.as_deref(), scale, today)?;
+    let (decks, plan) = plan_for(&con, deck_ids.as_deref(), scale, today)?;
     let session_id = open_session(&con, &db::date_from_day(today), None, now)?;
     forget_undo(&state)?;
-    Ok(SessionStart { session_id, card_ids: plan.ordered().iter().map(|c| c.id).collect() })
+    let buried = session_buried(&con, session_id, &decks)?;
+    Ok(SessionStart { session_id, card_ids: plan.ordered().iter().map(|c| c.id).collect(), buried })
 }
 
 /// 학습 세션을 연다 (D2 보통 학습 mode NULL · P1 혼합 'mix'). 같은 학습일에 중간에 그만둔 같은 종류의 세션이 있으면 이어 쓴다:
@@ -2294,6 +2297,42 @@ pub struct BuriedCard {
     reason: String,
     importance: i64,
     deck_path: Vec<String>,
+    /// 접은 시각 (ms)
+    at: i64,
+}
+
+/// 세션에서 접은 카드 중 아직 접혀 있는 것 (D5 · 이어 쓴 학습 화면). 카드 목록에서 이미 푼 카드는 뺀다 (QA T2-03)
+fn session_buried(con: &Connection, session_id: i64, decks: &[queue::Deck]) -> Res<Vec<BuriedCard>> {
+    let names = note_field_names(con)?;
+    let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
+    db::rows(
+        con,
+        &format!(
+            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, s.buried_reason, c.eff_importance, c.deck_id, coalesce(s.buried_at, 0)
+             FROM session_card_state s JOIN card_effective c ON c.id = s.card_id JOIN note n ON n.id = c.note_id
+             JOIN note_type nt ON nt.id = n.note_type_id
+             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
+             WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL ORDER BY s.buried_at"
+        ),
+        [session_id],
+        |r| {
+            let fields: String = r.get(1)?;
+            let nt: i64 = r.get(2)?;
+            let q: Option<String> = r.get(3)?;
+            let a: Option<String> = r.get(4)?;
+            let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
+            let special = names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
+            Ok(BuriedCard {
+                id: r.get(0)?,
+                question: render::strip_tags(special.as_ref().map_or(rendered.front.as_str(), |s| s.question())),
+                reason: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                importance: r.get(7)?,
+                deck_path: path_of(r.get(8)?, &by_id),
+                at: r.get(9)?,
+            })
+        },
+    )
+    .map_err(err)
 }
 
 /// D5. 학습량은 이 세션이 아니라 오늘(학습일) 기준이다. 화면 문구가 "오늘 학습한 카드" 다
@@ -2314,6 +2353,10 @@ pub struct SessionSummary {
     tomorrow_review: usize,
     tomorrow_new: usize,
     tomorrow_decks: Vec<TomorrowDeck>,
+    /// 남은 신규를 맡은 덱(예산 덱) 중 목표일이 있는 덱이 있다. 없으면 못 본 신규는 나눌 날 없이 내일 하루 몫에서 이어진다 (QA T3-25)
+    has_target: bool,
+    /// 목표일 없는 예산 덱들의 하루 신규 상한 합
+    new_cap: i64,
     /// 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다. 아무것도 평가하지 않은 학습이면 false (QA V3-01 · V3-16)
     undoable: bool,
 }
@@ -2327,7 +2370,7 @@ pub struct TomorrowDeck {
     dday: Option<i64>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<SessionSummary> {
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
@@ -2360,35 +2403,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
     let again = one("coalesce(sum(r.rating = 1), 0)")?;
     let started: i64 = con.query_row("SELECT started_at FROM study_session WHERE id = ?1", [session_id], |r| r.get(0)).map_err(err)?;
 
-    let names = note_field_names(&con)?;
-    let by_id: HashMap<i64, &queue::Deck> = decks.iter().map(|d| (d.id, d)).collect();
-    let buried: Vec<_> = db::rows(
-        &con,
-        &format!(
-            "SELECT c.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord, s.buried_reason, c.eff_importance, c.deck_id
-             FROM session_card_state s JOIN card_effective c ON c.id = s.card_id JOIN note n ON n.id = c.note_id
-             JOIN note_type nt ON nt.id = n.note_type_id
-             LEFT JOIN card_template t ON t.note_type_id = n.note_type_id AND {TEMPLATE_OF_CARD}
-             WHERE s.session_id = ?1 AND s.is_buried = 1 AND c.buried_until IS NOT NULL ORDER BY s.buried_at"
-        ),
-        [session_id],
-        |r| {
-            let fields: String = r.get(1)?;
-            let nt: i64 = r.get(2)?;
-            let q: Option<String> = r.get(3)?;
-            let a: Option<String> = r.get(4)?;
-            let rendered = render_fields(&names, nt, &fields, q.as_deref(), a.as_deref(), r.get(5)?);
-            let special = names.get(&nt).and_then(|(name, n)| crate::recall::special(name, n, &fields));
-            Ok(BuriedCard {
-                id: r.get(0)?,
-                question: render::strip_tags(special.as_ref().map_or(rendered.front.as_str(), |s| s.question())),
-                reason: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                importance: r.get(7)?,
-                deck_path: path_of(r.get(8)?, &by_id),
-            })
-        },
-    )
-    .map_err(err)?;
+    let buried = session_buried(&con, session_id, &decks)?;
 
     // D5-c "내일 예정". 모든 덱, 최상위 덱별. 목표일이 가까운 덱부터
     let next = tomorrow_plan(&con, &decks, today)?;
@@ -2408,6 +2423,7 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         .collect();
     tomorrow_decks.sort_by_key(|d| (d.dday.unwrap_or(i64::MAX), usize::MAX - (d.review + d.new)));
     let undoable = state.undo.lock().map_err(err)?.last().is_some_and(|u| u.session_id == session_id) && !past_day(&con, session_id, now)?;
+    let (has_target, new_cap) = new_owners_goal(&plan, &by_id);
     Ok(SessionSummary {
         studied,
         new_done,
@@ -2422,8 +2438,18 @@ pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, 
         tomorrow_review: next.ordered().len() - next.new.len(),
         tomorrow_new: next.new.len(),
         tomorrow_decks,
+        has_target,
+        new_cap,
         undoable,
     })
+}
+
+/// 남은 신규를 맡은 예산 덱(명세 4.4)에 목표일이 있는지, 없는 덱들의 하루 상한 합 (D5 끝 문구, QA T3-25)
+fn new_owners_goal(plan: &queue::QueuePlan, by_id: &HashMap<i64, &queue::Deck>) -> (bool, i64) {
+    let owners: std::collections::HashSet<i64> = plan.new.iter().map(|c| queue::budget_owner(c.deck_id, by_id)).collect();
+    let decks = owners.iter().filter_map(|id| by_id.get(id));
+    let has_target = decks.clone().any(|d| d.target_day.is_some());
+    (has_target, decks.filter(|d| d.target_day.is_none()).map(|d| d.daily_new_limit.unwrap_or(queue::DEFAULT_NEW_LIMIT)).sum())
 }
 
 /// D5-c 내일 큐. 오늘만 정한 신규 분량 · 오늘 당겨 맞추기는 내일에 싣지 않고 내일 것을 싣는다 (QA T3-07)
@@ -2444,7 +2470,8 @@ pub fn resolve_buried(state: State<AppState>, session_id: i64, today: bool) -> R
     resolve_buried_in(&con, session_id, today)
 }
 
-/// 세션에서 접은 카드 중 아직 접혀 있는 것만 (카드 목록에서 이미 푼 카드는 뺀다, QA T2-03)
+/// 세션에서 접은 카드 중 아직 접혀 있는 것만 (카드 목록에서 이미 푼 카드는 뺀다, QA T2-03).
+/// 다음 학습으로 넘겨도 세션에서는 답한 것으로 둔다. 같은 날 이어 쓴 세션의 끝 화면이 같은 카드를 또 묻지 않게 (카드는 N일 뒤까지 접힌 채)
 fn resolve_buried_in(con: &Connection, session_id: i64, today: bool) -> Res<Vec<i64>> {
     let ids: Vec<i64> = db::rows(
         con,
@@ -2462,6 +2489,9 @@ fn resolve_buried_in(con: &Connection, session_id: i64, today: bool) -> Res<Vec<
         }
         Ok(ids)
     } else {
+        for id in &ids {
+            con.execute("UPDATE session_card_state SET is_buried = 0 WHERE session_id = ?1 AND card_id = ?2", params![session_id, id]).map_err(err)?;
+        }
         Ok(vec![])
     }
 }
@@ -4030,6 +4060,58 @@ mod tests {
         }
         con.execute("UPDATE card SET buried_until = NULL, buried_reason = NULL WHERE id = ?1", [ids[0]]).unwrap();
         assert_eq!(super::resolve_buried_in(&con, s, true).unwrap(), [ids[1]]);
+    }
+
+    #[test]
+    fn resumed_session_brings_its_folded_cards() {
+        // QA T2-18: 그만둔 학습을 같은 날 다시 시작하면 앞서 접은 카드가 학습 화면 칩에 다시 보인다
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 2, None);
+        let (today, now) = mid_today();
+        let day = crate::db::date_from_day(today);
+        let s = super::open_session(&con, &day, None, now).unwrap();
+        for _ in 0..2 {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 1, 1000, None, now).unwrap();
+        }
+        con.execute("UPDATE study_session SET ended_at = ?2, end_reason = 'user_exit' WHERE id = ?1", params![s, now]).unwrap();
+        assert_eq!(super::open_session(&con, &day, None, now + 1).unwrap(), s);
+        let (decks, _) = super::plan_for(&con, None, 1.0, today).unwrap();
+        let buried = super::session_buried(&con, s, &decks).unwrap();
+        assert_eq!(buried.iter().map(|b| (b.id, b.reason.as_str(), b.at)).collect::<Vec<_>>(), [(ids[0], "two_again", now)]);
+    }
+
+    #[test]
+    fn done_copy_knows_whether_new_cards_have_a_goal() {
+        // QA T3-25: 목표일 없는 덱의 못 본 신규는 "남은 날에 나뉘어"가 아니라 내일 하루 몫(상한)에서 이어진다
+        let con = crate::db::open_in_memory().unwrap();
+        deck_with_cards(&con, 3, Some(7));
+        let (today, _) = mid_today();
+        let goal = |con: &Connection| {
+            let (decks, plan) = super::plan_for(con, None, 1.0, today).unwrap();
+            assert!(!plan.new.is_empty());
+            super::new_owners_goal(&plan, &decks.iter().map(|d| (d.id, d)).collect())
+        };
+        assert_eq!(goal(&con), (false, 7));
+        con.execute("UPDATE deck_config SET target_date = ?1", [crate::db::date_from_day(today + 10)]).unwrap();
+        assert_eq!(goal(&con), (true, 0));
+    }
+
+    #[test]
+    fn folds_sent_to_later_are_not_asked_again() {
+        // 디자인 확인 중 발견: [3일 뒤 다시 보기] 뒤 같은 날 이어 쓴 세션을 다시 멈추면 끝 화면이 같은 카드를 또 물었다
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 2, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        for _ in 0..2 {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 1, 1000, None, now).unwrap();
+        }
+        let (decks, _) = super::plan_for(&con, None, 1.0, today).unwrap();
+        assert_eq!(super::session_buried(&con, s, &decks).unwrap().len(), 1);
+        assert_eq!(super::resolve_buried_in(&con, s, false).unwrap(), Vec::<i64>::new());
+        assert!(super::session_buried(&con, s, &decks).unwrap().is_empty());
+        let until: Option<i64> = con.query_row("SELECT buried_until FROM card WHERE id = ?1", [ids[0]], |r| r.get(0)).unwrap();
+        assert!(until.is_some(), "카드는 N일 뒤까지 접힌 채");
     }
 
     #[test]
