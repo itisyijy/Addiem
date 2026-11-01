@@ -580,7 +580,7 @@ fn delete_deck_rows(tx: &Connection, deck_id: i64) -> Res<()> {
 
 // ------------------------------------------------------------------ C1. 덱 상세
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Subdeck {
     id: i64,
     name: String,
@@ -609,12 +609,6 @@ pub struct Subdeck {
     weak_suggested: bool,
     /// 확정했는데 요즘 덱 평균 아래로 내려옴 ("요즘 괜찮아요 · 해제할까요?" 한 번만)
     weak_recovered: bool,
-}
-
-impl Subdeck {
-    fn shallow(s: &Subdeck) -> Subdeck {
-        Subdeck { name: s.name.clone(), importance_source: s.importance_source.clone(), ..*s }
-    }
 }
 
 /// 하위 덱 목표가 상위 덱에서 온다 (C1-t "상위 덱 목표 D-12를 따라요")
@@ -889,7 +883,7 @@ fn deck_detail_in(con: &Connection, deck_id: i64) -> Res<DeckDetail> {
         importance: [imp(2)?, imp(1)?, imp(0)?],
         own_importance: con.query_row("SELECT importance FROM deck WHERE id = ?1", [deck_id], |r| r.get(0)).map_err(err)?,
         unconfirmed,
-        subdecks: tree.iter().filter(|s| s.depth == 1).map(Subdeck::shallow).collect(),
+        subdecks: tree.iter().filter(|s| s.depth == 1).cloned().collect(),
         tree,
         target_from,
         again_avg,
