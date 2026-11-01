@@ -681,7 +681,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
           return (
             <div
               key={c.id}
-              className={`cards__row ${on ? "is-selected" : ""} ${rowMenu === c.id ? "is-menu" : ""}`}
+              className={`cards__row ${on ? "is-selected" : ""} ${rowMenu === c.id || impMenu === c.id ? "is-menu" : ""}`}
               onDoubleClick={(e) => {
                 if (selecting) return;
                 // 행은 초점을 받지 않는다. 늘 보이는 ⋯ 를 연 곳으로 삼아 닫은 뒤 초점이 body 로 빠지지 않게 (QA V4-08 ④ · V9-07)
