@@ -456,11 +456,6 @@ pub fn save_occlusion(state: State<AppState>, note: OcclusionInput) -> Res<i64> 
     state.write(|tx| save(tx, &note))
 }
 
-/// 이름이 있는 칸 수 (C1-xr "칸 이름 N개는 Anki에서 보이지 않아요")
-pub fn label_count(field: &str) -> usize {
-    parse(field).0.iter().filter(|s| !clean_label(&s.label).is_empty()).count()
-}
-
 /// CSV 한 줄 (C1-xc): 앞면 "질문 (그림 파일)", 뒷면 칸마다 "번호 · 이름"(이름 없으면 번호). 겹침 HTML 은 표에서 쓸모가 없다
 pub fn csv_cells(fields: &[String]) -> (String, String) {
     let get = |i: usize| fields.get(i).map_or("", String::as_str);
@@ -540,7 +535,6 @@ mod tests {
         assert_eq!(one, "{{c4::image-occlusion:rect:left=.0000:top=.1:width=.2:height=.1:label=a\\:b\\\\cxy}}<br>");
         let (back, hide) = parse(&one);
         assert_eq!((back[0].label.as_str(), hide), ("a:b\\cxy", false));
-        assert_eq!(label_count(&one), 1);
     }
 
     fn fields(occlusion: &str) -> HashMap<String, String> {

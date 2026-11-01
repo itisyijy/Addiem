@@ -120,8 +120,6 @@ pub struct ExportResult {
     path: String,
     /// 찾지 못한 미디어를 쓰는 카드 (C1-xr [카드 보기])
     missing_cards: Vec<i64>,
-    /// 이름이 있는 그림 가리기 칸 수 (C1-xr "칸 이름 N개는 Anki에서 보이지 않아요", M8)
-    occlusion_labels: usize,
     /// 카드 종류(템플릿)가 없어 뺀 카드 수. Anki 는 템플릿 없는 노트 유형이 든 패키지를 통째로 거부한다 (Q2-01 · Q2-02)
     skipped_cards: usize,
     /// 같은 guid 를 가진 두 번째 노트 (두 기기 업데이트로 생긴 두 벌, DU-06). Anki 가 하나로 합치지 않게 새 guid 로 내보냈다
@@ -666,7 +664,6 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     tx.execute_batch(SCHEMA_11).map_err(err)?;
 
     let mut media = BTreeSet::new();
-    let mut labels = 0;
     let mut note_ids: HashMap<i64, i64> = HashMap::new();
     let mut used = Ids::default();
     let total = notes.len() + cards.len();
@@ -681,9 +678,6 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
         let stored: Vec<String> = serde_json::from_str(&n.fields).map_err(err)?;
         let mut flds: Vec<String> = m.slots.iter().map(|s| stored.get(*s).cloned().unwrap_or_default()).collect();
         flds.resize(m.nfields.max(1), String::new());
-        if m.io {
-            labels += crate::occlusion::label_count(&flds[0]);
-        }
         for f in &flds {
             media_refs(f, &mut media);
         }
@@ -786,7 +780,7 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     .map_err(err)?;
     tx.commit().map_err(err)?;
     origins.commit().map_err(err)?;
-    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, occlusion_labels: labels, skipped_cards, duplicate_guids, ..Default::default() };
+    let result = ExportResult { notes: notes.len(), cards: cards.len(), reviews, skipped_cards, duplicate_guids, ..Default::default() };
     Ok((result, media))
 }
 
@@ -911,8 +905,6 @@ struct Model {
     json: Value,
     nfields: usize,
     sortf: usize,
-    /// Anki 그림 가리기 유형 (occlusion.rs). 칸 필드는 첫 필드다
-    io: bool,
     /// Anki 필드 순서대로 우리 자리 번호 (보이는 순서, 지운 자리는 없다)
     slots: Vec<usize>,
     /// 우리 템플릿 ord -> Anki ord (Anki 는 0 부터 빈틈없이 센다. 지운 ord 의 빈자리를 메운다). 빈칸 유형은 비어 있다 (카드 ord = 빈칸 번호)
@@ -950,9 +942,8 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut Ids, deck_map: &HashM
         v["id"] = json!(id);
         let nfields = v["flds"].as_array().map_or(1, Vec::len);
         let sortf = v["sortf"].as_u64().unwrap_or(0) as usize;
-        let io = crate::occlusion::is_template(&v["tmpls"].to_string());
         let templates = v["tmpls"].as_array().map_or(0, Vec::len);
-        return Ok(Model { id, json: v, nfields, sortf, io, slots: (0..nfields).collect(), ords: HashMap::new(), templates, cloze: true });
+        return Ok(Model { id, json: v, nfields, sortf, slots: (0..nfields).collect(), ords: HashMap::new(), templates, cloze: true });
     }
 
     let nt = crate::notetype::load(con, ntid)?;
@@ -1007,7 +998,7 @@ fn model(con: &Connection, ntid: i64, did: i64, used: &mut Ids, deck_map: &HashM
             f["preventDeletion"] = json!(i < 4);
         }
     }
-    Ok(Model { id, json, nfields: fields.len(), sortf: 0, io, slots, ords, templates: tmpls.len(), cloze })
+    Ok(Model { id, json, nfields: fields.len(), sortf: 0, slots, ords, templates: tmpls.len(), cloze })
 }
 
 /// 앞면 템플릿이 쓰는 필드 번호. 구버전 Anki 가 카드를 만들지 판단하는 req 에 쓴다
@@ -1624,7 +1615,7 @@ mod tests {
 
         let out = tmp.0.join("io.apkg");
         let r = serde_json::to_value(export(&con, &a.data_dir, root, &out, false, &QUIET).unwrap()).unwrap();
-        assert_eq!((r["cards"].as_u64(), r["media"].as_u64(), r["occlusion_labels"].as_u64()), (Some(2), Some(1), Some(1)));
+        assert_eq!((r["cards"].as_u64(), r["media"].as_u64()), (Some(2), Some(1)));
         // Anki 26.9.2 가 내보낸 모델과 같은 표시 (rslib notetype/schema11.rs)
         let m = io_model(&out, &tmp.0);
         assert_eq!((m["type"].as_i64(), m["name"].as_str()), (Some(1), Some("Image Occlusion")), "빈칸 종류");

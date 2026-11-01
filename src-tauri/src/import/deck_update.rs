@@ -274,8 +274,7 @@ pub struct ConflictNote {
     /// 첫 카드의 덱 경로 ("정보처리기사 › 데이터베이스")
     deck: String,
     fields: Vec<ConflictField>,
-    /// 같은 노트에서 충돌 없이 새 버전으로 바뀌는 필드 · 내 것으로 지키는 필드 (태그 포함)
-    auto_new: usize,
+    /// 같은 노트에서 충돌 없이 내 것으로 지키는 필드 수 (태그 포함)
     auto_mine: usize,
     /// 그 새 버전으로 바뀌는 필드 이름 ("태그" 포함)
     auto_new_fields: Vec<String>,
@@ -1365,7 +1364,6 @@ fn update_note(tx: &Connection, nt: &Nt, names: &[String], fronts: &notetype::Fr
                 title,
                 deck,
                 fields: conflicts,
-                auto_new: new,
                 auto_mine: mine,
                 auto_new_fields: new_names,
                 edited_at: o.updated_at,
