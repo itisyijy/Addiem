@@ -272,20 +272,22 @@ fn has_cloze(s: &str) -> bool {
 /// 목록 · 선택형 (Q10). 여기서는 키 모양만 보고, 내용은 앱의 저장 검증(recall::list_fields · choice_fields) 그대로
 fn json_recall(nt: &str, o: &serde_json::Map<String, Value>) -> Result<Vec<String>, (&'static str, String)> {
     let missing = |key: &str| ("missing_field", format!("{key} 키가 없어요"));
+    // 조사는 키를 읽는 소리로 (question 이 · items 가)
+    let ga = |key: &str| if crate::table::final_consonant(key) { "이" } else { "가" };
     let text = |key: &str| match o.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(("bad_field", format!("{key} 가 문자열이 아니에요"))),
+        Some(_) => Err(("bad_field", format!("{key} {} 문자열이 아니에요", ga(key)))),
     };
     let flag = |key: &str| match o.get(key) {
         None | Some(Value::Null) => Ok(true),
         Some(Value::Bool(b)) => Ok(*b),
-        Some(_) => Err(("bad_field", format!("{key} 는 true 또는 false 예요"))),
+        Some(_) => Err(("bad_field", format!("{key} {} true 또는 false 예요", if crate::table::final_consonant(key) { "은" } else { "는" }))),
     };
     let strings = |key: &str| match o.get(key) {
         None | Some(Value::Null) => Err(missing(key)),
         Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(String::from).ok_or(("bad_field", format!("{key} 에 문자열이 아닌 값이 있어요")))).collect(),
-        Some(_) => Err(("bad_field", format!("{key} 가 배열이 아니에요"))),
+        Some(_) => Err(("bad_field", format!("{key} {} 배열이 아니에요", ga(key)))),
     };
     let question = text("question")?.ok_or_else(|| missing("question"))?;
     let extra = text("extra")?.unwrap_or_default();
@@ -2240,6 +2242,9 @@ mod tests {
         let f = &parse_json(r#"[{"question":"q","options":["a","","b","c"],"answer":["a","b"]}]"#).0[0].fields;
         assert_eq!(f[7], "1,2", "빈 보기를 당겨도 correct 와 같다");
         assert!(parse_json(r#"[{"question":"q","options":["a","b"],"answer":"c"}]"#).1[0].detail.contains("'c'"), "어느 글자인지 알린다");
+        // 조사는 키를 읽는 소리로 (QA T4-19)
+        assert_eq!(parse_json(r#"[{"question":5,"items":["a","b"]}]"#).1[0].detail, "question 이 문자열이 아니에요");
+        assert_eq!(parse_json(r#"[{"question":"q","items":"a b"}]"#).1[0].detail, "items 가 배열이 아니에요");
 
         // 잘못된 항목은 그것만 건너뛰고 번호와 이유를 알린다
         for (card, kind) in [
