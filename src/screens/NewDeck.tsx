@@ -165,6 +165,10 @@ export function DiscardModal({ title, text, keep, discard, onKeep, onDiscard }: 
 
 const LEVELS: Level[] = [2, 1, 0];
 
+/** 덱 이름 100자는 Rust(deck_name)처럼 글자로 센다. maxLength 는 UTF-16 단위라 이모지 이름이 50자에서 멈춘다 (G3-07).
+ *  넘치면 뒤를 자른다: 예전에 가져온 100자 넘는 이름도 고치는 순간 100자로 줄어 저장된다 */
+export const fitDeckName = (v: string) => [...v].slice(0, 100).join("");
+
 /**
  * parentId 가 있으면 C1-s 하위 덱 만들기. 넣을 곳은 그 덱이 기본이고 더 깊은 하위 덱도 고를 수 있다.
  * onCreated 가 없으면 만든 덱으로 간다
@@ -240,12 +244,11 @@ export function NewDeckModal({ parentId = null, onClose, onCreated }: {
           label={isSub ? "이름" : "덱 이름"}
           placeholder={isSub ? undefined : "예: 정보처리기사 실기"}
           value={name}
-          maxLength={100}
           autoFocus
           error={error}
           helper={isSub ? "같은 곳에 같은 이름은 만들 수 없어요" : "목표일과 학습 설정은 나중에 덱 안에서 정할 수 있어요."}
           onChange={(e) => {
-            setName(e.target.value);
+            setName(fitDeckName(e.target.value));
             setError(undefined);
           }}
         />
