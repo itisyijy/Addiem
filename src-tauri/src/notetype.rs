@@ -756,7 +756,7 @@ pub(crate) fn hidden_slots(con: &Connection, nt: &Nt) -> Res<Vec<HiddenSlot>> {
             slot,
             name: anki.iter().find(|(_, s)| *s == Some(slot)).map(|(n, _)| n.clone()),
             notes: notes.iter().filter(|(_, v)| v.get(slot).is_some_and(|x| !blank_field(x))).count() as i64,
-            sample: notes.iter().filter_map(|(_, v)| v.get(slot)).map(|x| render::strip_tags(x)).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ")).find(|t| !t.is_empty()).map(|t| {
+            sample: notes.iter().filter_map(|(_, v)| v.get(slot)).map(|x| crate::table::flat(&render::strip_tags(x))).find(|t| !t.is_empty()).map(|t| {
                 let cut: String = t.chars().take(20).collect();
                 if cut.len() < t.len() { format!("{cut}…") } else { cut }
             }),
