@@ -337,21 +337,9 @@ pub fn build_queue_with_progress(
     plan
 }
 
-pub enum RatingAction {
-    Continue,
-    Bury,
-}
-
-/// 같은 세션에서 두 번째 Again 이면 보류. 2회차는 스케줄러에 넘기지 않는다 (명세 6.3)
-pub fn on_rating(session_again_count: i64, rating: u8) -> (RatingAction, bool) {
-    if rating != 1 {
-        return (RatingAction::Continue, true);
-    }
-    if session_again_count + 1 >= 2 {
-        (RatingAction::Bury, false)
-    } else {
-        (RatingAction::Continue, true)
-    }
+/// 같은 세션에서 두 번째 Again 이면 보류. 보류한 평가는 스케줄러에 넘기지 않는다 (명세 6.3)
+pub fn buries(session_again_count: i64, rating: u8) -> bool {
+    rating == 1 && session_again_count + 1 >= 2
 }
 
 /// "다음 학습으로" 의 복귀일. "오늘 다시" 는 기한을 비운다 (commands::resolve_buried)
@@ -572,9 +560,9 @@ mod tests {
 
     #[test]
     fn scenario2_bury() {
-        assert!(matches!(on_rating(0, 1), (RatingAction::Continue, true)));
-        assert!(matches!(on_rating(1, 1), (RatingAction::Bury, false)));
-        assert!(matches!(on_rating(1, 3), (RatingAction::Continue, true)));
+        assert!(!buries(0, 1), "1회차 Again은 정상 진행");
+        assert!(buries(1, 1), "2회차 Again은 보류, 스케줄러에 안 넘김");
+        assert!(!buries(1, 3), "Good이면 카운트와 무관");
         assert_eq!(bury_until(T), T + BURY_RETURN_DAYS);
         let mut c = cards(&[("review", 1, Some(0)), ("review", 1, Some(0))], 1, 1);
         c[0].buried_until = Some(T + 2);

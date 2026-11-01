@@ -1,7 +1,7 @@
 //! 화면이 부르는 명령. 화면 하나 = 명령 하나를 기본으로 한다.
 
 use crate::db::{self, now_ms, study_day, study_day_end_ms};
-use crate::queue::{self, RatingAction};
+use crate::queue;
 use crate::notetype::{self, IS_CLOZE, TEMPLATE_OF_CARD};
 use crate::render;
 use crate::srs::{self, SrsState};
@@ -2088,9 +2088,9 @@ fn answer_at(
     let again_count: i64 = tx
         .query_row("SELECT again_count FROM session_card_state WHERE session_id = ?1 AND card_id = ?2", params![session_id, card_id], |r| r.get(0))
         .map_err(err)?;
-    let (action, feed) = queue::on_rating(again_count, rating);
+    let bury = queue::buries(again_count, rating);
     // P9 혼합 회독: 그 카드의 오늘 첫 일정 반영 평가(또는 학습 단계를 잇는 평가)만 일정에 반영한다
-    let feed = feed && crate::cram::mix_feeds(&tx, session_id, card_id, &prev.state, today)?;
+    let feed = !bury && crate::cram::mix_feeds(&tx, session_id, card_id, &prev.state, today)?;
     tx.execute(
         "UPDATE session_card_state SET shown_count = shown_count + 1, again_count = again_count + ?3 WHERE session_id = ?1 AND card_id = ?2",
         params![session_id, card_id, (rating == 1) as i64],
@@ -2125,8 +2125,8 @@ fn answer_at(
         crate::recall::save_marks(&tx, card_id, log_id, m, now)?;
     }
 
-    let result = match (action, next) {
-        (RatingAction::Bury, _) => {
+    let result = match (bury, next) {
+        (true, _) => {
             let until = study_day_end_ms(queue::bury_until(today) - 1) + 1;
             tx.execute(
                 "UPDATE session_card_state SET is_buried = 1, buried_at = ?3, buried_reason = 'two_again' WHERE session_id = ?1 AND card_id = ?2",
@@ -2137,7 +2137,7 @@ fn answer_at(
                 .map_err(err)?;
             AnswerResult { action: "buried".into(), due_in_ms: None }
         }
-        (RatingAction::Continue, Some(n)) => {
+        (false, Some(n)) => {
             tx.execute(
                 "UPDATE card SET state = ?2, srs_step = ?3, stability = ?4, difficulty = ?5, due_at = ?6, interval_days = ?7,
                         last_reviewed_at = ?8, reps = ?9, lapses = ?10, buried_until = NULL, buried_reason = NULL, updated_at = ?8
@@ -2152,7 +2152,7 @@ fn answer_at(
                 AnswerResult { action: "next".into(), due_in_ms: Some(due - now) }
             }
         }
-        (RatingAction::Continue, None) => AnswerResult { action: "next".into(), due_in_ms: None },
+        (false, None) => AnswerResult { action: "next".into(), due_in_ms: None },
     };
     tx.commit().map_err(err)?;
     Ok((result, Some(undo)))
