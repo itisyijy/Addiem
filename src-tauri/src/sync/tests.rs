@@ -2047,6 +2047,65 @@ fn same_template_edited_on_both_devices_keeps_the_losing_version() {
 }
 
 #[test]
+fn type_edit_loser_that_pushed_first_also_keeps_the_record() {
+    // T5-14 · K39: A 가 먼저 고쳐 올리고 B 가 A 것을 모르고 나중에 고쳤다. 받는 B 만이 아니라 진 A 에도 진 쪽 기록이 남는다 (K7 처럼 바탕 HLC bk).
+    // bk 가 없는 변경(v0.1.1 기기)이면 예전처럼 A 에는 남지 않고 결과는 같다
+    use crate::notetype as nt;
+    for old_peer in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (id, _) = user_type(&env, &a, &b);
+        let ty = a.uid("note_type", id);
+        let b_id = b.id("note_type", &ty).unwrap();
+        let edit = |d: &Dev, id: i64, at: i64, who: &str| {
+            d.at(at, || {
+                nt::rename_field(&d.con(), id, 1, &format!("뒷{who}")).unwrap();
+                let afmt = nt::load(&d.con(), id).unwrap().templates[0].afmt.clone();
+                nt::save_template(&d.con(), id, 0, None, &format!("{who} 앞면 {{{{Front}}}}"), &afmt).unwrap();
+            })
+        };
+        let t = db::now_ms();
+        edit(&a, id, t + 1000, "A");
+        env.sync(&a);
+        edit(&b, b_id, t + 2000, "B");
+        env.sync(&b);
+        if old_peer {
+            // 예전 앱이 쓴 변경 파일처럼 bk 를 뺀다
+            for path in env.files(&format!("changes/{}/", b.me())) {
+                use std::io::Write;
+                let (header, recs) = engine::decode(env.store.get(&path).unwrap(), None).unwrap();
+                let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                writeln!(gz, "{header}").unwrap();
+                for mut r in recs {
+                    r.bk = None;
+                    writeln!(gz, "{}", serde_json::to_string(&r).unwrap()).unwrap();
+                }
+                env.store.put(&path, &gz.finish().unwrap()).unwrap();
+            }
+        }
+        env.sync(&a);
+        assert_eq!(a.dump(), b.dump(), "old_peer={old_peer}");
+        let kept = |d: &Dev, what: &str, win: &str, lose: &str| {
+            d.con()
+                .query_row("SELECT count(*) FROM sync_type_conflict WHERE type_uid = ?1 AND what = ?2 AND winner = ?3 AND loser = ?4", params![ty, what, win, lose], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        let front = "카드 종류 'Card 1' 앞면";
+        assert_eq!(kept(&b, front, "B 앞면 {{Front}}", "A 앞면 {{Front}}"), 1, "받은 B (예전처럼)");
+        assert_eq!(kept(&b, "필드 이름", "뒷B", "뒷A"), 1);
+        let want = if old_peer { 0 } else { 1 };
+        assert_eq!(kept(&a, front, "B 앞면 {{Front}}", "A 앞면 {{Front}}"), want, "먼저 올린 진 A (old_peer={old_peer})");
+        assert_eq!(kept(&a, "필드 이름", "뒷B", "뒷A"), want, "old_peer={old_peer}");
+        // 한 번 더 돌아도 기록이 늘지 않는다 (A 는 B 값을 받아 안다)
+        let count = || a.n("SELECT count(*) FROM sync_type_conflict") + b.n("SELECT count(*) FROM sync_type_conflict");
+        let before = count();
+        env.sync(&b);
+        env.sync(&a);
+        assert_eq!(count(), before);
+    }
+}
+
+#[test]
 fn card_type_deleted_while_a_card_is_recreated_and_a_cloze_re_added_elsewhere() {
     // K37 · K40 섞임: A 가 사용자 유형의 카드 종류 하나를 지우는 사이, B 는 (1) 그 카드 종류의 카드 한 장을 지운 뒤 노트를 고쳐 다시 만들고(같은 노트 · ord 의 새 카드),
     // (2) 빈칸 노트의 c2 를 지웠다 다시 넣었다. B 의 새 카드는 A 의 지우기를 모르고 나중에 만든 것이라 남고 그 카드 종류를 붙잡는다(K37). 옛 카드와 합치지 않는다(K40).
