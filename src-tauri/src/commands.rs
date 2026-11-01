@@ -562,10 +562,7 @@ pub fn unarchive_deck(state: State<AppState>, deck_id: i64) -> Res<i64> {
 /// 덱과 하위 덱, 그 안의 카드를 지운다. 복습 기록은 남는다 (schema: ON DELETE SET NULL)
 #[tauri::command]
 pub fn delete_deck(state: State<AppState>, deck_id: i64) -> Res<()> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    delete_deck_rows(&tx, deck_id)?;
-    tx.commit().map_err(err)
+    state.write(|c| delete_deck_rows(c, deck_id))
 }
 
 fn delete_deck_rows(tx: &Connection, deck_id: i64) -> Res<()> {
@@ -1029,22 +1026,21 @@ pub fn note_edit(state: State<AppState>, note_id: i64) -> Res<NoteEdit> {
 /// 빈칸 노트면 빈칸 번호에 맞춰 카드를 만들거나 지운다 (지운 카드의 기록은 review_log 에 남는다)
 #[tauri::command]
 pub fn update_note(state: State<AppState>, note_id: i64, values: Vec<String>, slots: Option<Vec<usize>>) -> Res<()> {
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let (ntid, stored): (i64, String) =
-        tx.query_row("SELECT note_type_id, fields FROM note WHERE id = ?1", [note_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-    let nt = notetype::load(&tx, ntid)?;
-    let slots = slots.unwrap_or_else(|| nt.visible().into_iter().map(|(s, _)| s).collect());
-    if slots.len() != values.len() || slots.iter().any(|s| *s >= nt.slots.len()) {
-        return Err("필드 수가 노트 유형과 달라요.".into());
-    }
-    let mut full: Vec<String> = serde_json::from_str(&stored).map_err(err)?;
-    full.resize(nt.slots.len(), String::new());
-    for (s, v) in slots.iter().zip(values) {
-        full[*s] = v;
-    }
-    save_note_fields(&tx, note_id, &full)?;
-    tx.commit().map_err(err)
+    state.write(|tx| {
+        let (ntid, stored): (i64, String) =
+            tx.query_row("SELECT note_type_id, fields FROM note WHERE id = ?1", [note_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+        let nt = notetype::load(tx, ntid)?;
+        let slots = slots.unwrap_or_else(|| nt.visible().into_iter().map(|(s, _)| s).collect());
+        if slots.len() != values.len() || slots.iter().any(|s| *s >= nt.slots.len()) {
+            return Err("필드 수가 노트 유형과 달라요.".into());
+        }
+        let mut full: Vec<String> = serde_json::from_str(&stored).map_err(err)?;
+        full.resize(nt.slots.len(), String::new());
+        for (s, v) in slots.iter().zip(values) {
+            full[*s] = v;
+        }
+        save_note_fields(tx, note_id, &full)
+    })
 }
 
 /// update_note 의 본문. values 는 자리 순서 (짧으면 빈 값으로 채운다). 그림 가리기 저장(occlusion::save) · 목록 · 선택형 편집도 같은 길로 카드를 맞춘다.
@@ -1502,17 +1498,17 @@ pub fn delete_cards(state: State<AppState>, card_ids: Vec<i64>) -> Res<()> {
     if card_ids.is_empty() {
         return Ok(());
     }
-    let mut con = state.db.lock().map_err(err)?;
-    let tx = con.transaction().map_err(err)?;
-    let ids = id_list(&card_ids);
-    let notes: Vec<i64> = db::rows(&tx, &format!("SELECT DISTINCT note_id FROM card WHERE id IN ({ids})"), [], |r| r.get(0)).map_err(err)?;
-    tx.execute(&format!("DELETE FROM card WHERE id IN ({ids})"), []).map_err(err)?;
-    tx.execute(
-        &format!("DELETE FROM note WHERE id IN ({}) AND NOT EXISTS (SELECT 1 FROM card WHERE note_id = note.id)", id_list(&notes)),
-        [],
-    )
-    .map_err(err)?;
-    tx.commit().map_err(err)
+    state.write(|tx| {
+        let ids = id_list(&card_ids);
+        let notes: Vec<i64> = db::rows(tx, &format!("SELECT DISTINCT note_id FROM card WHERE id IN ({ids})"), [], |r| r.get(0)).map_err(err)?;
+        tx.execute(&format!("DELETE FROM card WHERE id IN ({ids})"), []).map_err(err)?;
+        tx.execute(
+            &format!("DELETE FROM note WHERE id IN ({}) AND NOT EXISTS (SELECT 1 FROM card WHERE note_id = note.id)", id_list(&notes)),
+            [],
+        )
+        .map_err(err)?;
+        Ok(())
+    })
 }
 
 /// 노트 유형 id -> (이름, 자리별 필드 이름). 지운 자리는 "" (notetype.rs). 전에는 이름 키라 같은 이름의 가져온 유형과 앱 유형이 서로 덮였다
