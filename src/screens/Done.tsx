@@ -1,5 +1,5 @@
 // D5 학습 완료 / D5-b 중간에 그만둔 경우 / D5-c 접어둔 카드 없음 / D5-d 중간에 그만둠 + 접어둔 카드 없음
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorText, type SessionSummary } from "../api";
 import { Badge, Button, Icon, Importance, StatTile } from "../ui";
 import { getCutoff, hourLabel, n, useKey, useNav } from "../nav";
@@ -33,8 +33,21 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
   const foldedWhy =
     userFolded === 0 ? "두 번 기억나지 않아 자동으로 접어둔 카드예요." : userFolded === s.buried.length ? "직접 접어둔 카드예요." : "자동으로 또는 직접 접어둔 카드예요.";
 
+  // 접은 카드를 고르지 않고 떠나면 [N일 뒤 다시 보기]와 같다 (QA T2-08). 백엔드에도 답해 두어 같은 날 이어 쓴 세션의 끝 화면이 또 묻지 않게.
+  // 되돌리기 · 오늘 다시 보기로 학습에 들어가면 묻지 않은 것이다. StrictMode 의 가짜 언마운트에는 답하지 않는다 (다시 마운트되면 alive)
+  const decided = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      setTimeout(() => !alive.current && !decided.current && folded && api.resolveBuried(sessionId, false).catch(() => {}));
+    };
+  }, [sessionId, folded]);
+
   const resolve = async (today: boolean) => {
     if (busy) return;
+    decided.current = true;
     setBusy(true);
     try {
       const ids = await api.resolveBuried(sessionId, today);
@@ -52,7 +65,10 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
     setBusy(true);
     try {
       const id = await api.undoLast(sessionId);
-      if (id !== null) return nav({ name: "study", deckIds, scale, cardIds: [id], sessionId });
+      if (id !== null) {
+        decided.current = true;
+        return nav({ name: "study", deckIds, scale, cardIds: [id], sessionId });
+      }
       toast({ title: "더 이전 평가는 되돌릴 수 없어요", icon: "info" });
     } catch (e) {
       setError(errorText(e));

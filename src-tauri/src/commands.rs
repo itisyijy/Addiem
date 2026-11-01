@@ -2434,7 +2434,8 @@ pub fn resolve_buried(state: State<AppState>, session_id: i64, today: bool) -> R
     resolve_buried_in(&con, session_id, today)
 }
 
-/// 세션에서 접은 카드 중 아직 접혀 있는 것만 (카드 목록에서 이미 푼 카드는 뺀다, QA T2-03)
+/// 세션에서 접은 카드 중 아직 접혀 있는 것만 (카드 목록에서 이미 푼 카드는 뺀다, QA T2-03).
+/// 다음 학습으로 넘겨도 세션에서는 답한 것으로 둔다. 같은 날 이어 쓴 세션의 끝 화면이 같은 카드를 또 묻지 않게 (카드는 N일 뒤까지 접힌 채)
 fn resolve_buried_in(con: &Connection, session_id: i64, today: bool) -> Res<Vec<i64>> {
     let ids: Vec<i64> = db::rows(
         con,
@@ -2452,6 +2453,9 @@ fn resolve_buried_in(con: &Connection, session_id: i64, today: bool) -> Res<Vec<
         }
         Ok(ids)
     } else {
+        for id in &ids {
+            con.execute("UPDATE session_card_state SET is_buried = 0 WHERE session_id = ?1 AND card_id = ?2", params![session_id, id]).map_err(err)?;
+        }
         Ok(vec![])
     }
 }
@@ -3944,6 +3948,24 @@ mod tests {
         assert_eq!(goal(&con), (false, 7));
         con.execute("UPDATE deck_config SET target_date = ?1", [crate::db::date_from_day(today + 10)]).unwrap();
         assert_eq!(goal(&con), (true, 0));
+    }
+
+    #[test]
+    fn folds_sent_to_later_are_not_asked_again() {
+        // 디자인 확인 중 발견: [3일 뒤 다시 보기] 뒤 같은 날 이어 쓴 세션을 다시 멈추면 끝 화면이 같은 카드를 또 물었다
+        let mut con = crate::db::open_in_memory().unwrap();
+        let ids = deck_with_cards(&con, 2, None);
+        let (today, now) = mid_today();
+        let s = session(&con, today);
+        for _ in 0..2 {
+            super::answer_at(&mut con, &fsrs::FSRS::default(), s, ids[0], 1, 1000, None, now).unwrap();
+        }
+        let (decks, _) = super::plan_for(&con, None, 1.0, today).unwrap();
+        assert_eq!(super::session_buried(&con, s, &decks).unwrap().len(), 1);
+        assert_eq!(super::resolve_buried_in(&con, s, false).unwrap(), Vec::<i64>::new());
+        assert!(super::session_buried(&con, s, &decks).unwrap().is_empty());
+        let until: Option<i64> = con.query_row("SELECT buried_until FROM card WHERE id = ?1", [ids[0]], |r| r.get(0)).unwrap();
+        assert!(until.is_some(), "카드는 N일 뒤까지 접힌 채");
     }
 
     #[test]
