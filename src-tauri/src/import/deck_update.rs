@@ -2268,7 +2268,7 @@ mod tests {
             let con = s.db.lock().unwrap();
             notetype::rename_field(&con, ntid, 0, "질문").unwrap();
             notetype::delete_field(&con, ntid, 3).unwrap();
-            notetype::delete_template(&con, ntid, 1, false).unwrap();
+            notetype::delete_template(&con, ntid, 1).unwrap();
             notetype::save_template(&con, ntid, 0, None, "{{질문}}", "{{FrontSide}}<hr id=answer>{{Back}}<br>{{Extra}}").unwrap();
         }
         // 만든 사람이: Back → Answer, Extra 와 Card 3 를 없애고, Card 1 뒷면 · CSS 를 바꾸고, Note 값을 고쳤다

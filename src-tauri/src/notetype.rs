@@ -828,8 +828,8 @@ pub struct TemplateImpact {
     pub(crate) notes: i64,
 }
 
-/// 카드 종류 지우기. dry_run 이면 세기만 한다. 마지막 하나는 지울 수 없다
-pub(crate) fn delete_template(con: &Connection, id: i64, ord: u32, dry_run: bool) -> Res<TemplateImpact> {
+/// 카드 종류 지우기. 마지막 하나는 지울 수 없다
+pub(crate) fn delete_template(con: &Connection, id: i64, ord: u32) -> Res<TemplateImpact> {
     let nt = load(con, id)?;
     nt.editable()?;
     nt.template(ord)?;
@@ -847,9 +847,6 @@ pub(crate) fn delete_template(con: &Connection, id: i64, ord: u32, dry_run: bool
                AND NOT EXISTS (SELECT 1 FROM card WHERE note_id = n.id AND template_ord <> ?2)",
         )?,
     };
-    if dry_run {
-        return Ok(impact);
-    }
     con.execute(&format!("DELETE FROM card WHERE id IN ({cards})"), params![id, ord]).map_err(err)?;
     con.execute("DELETE FROM note WHERE note_type_id = ?1 AND NOT EXISTS (SELECT 1 FROM card WHERE note_id = note.id)", [id]).map_err(err)?;
     con.execute("DELETE FROM card_template WHERE note_type_id = ?1 AND ord = ?2", params![id, ord]).map_err(err)?;
@@ -1106,7 +1103,7 @@ pub(crate) fn apply_edit(con: &Connection, id: i64, edit: &TypeEdit) -> Res<Save
     }
     let mut templates = vec![];
     for t in nt.templates.iter().filter(|t| !edit.templates.iter().any(|e| e.ord == Some(t.ord))) {
-        templates.push(RemovedTemplate { name: t.name.clone(), impact: delete_template(con, id, t.ord, false)? });
+        templates.push(RemovedTemplate { name: t.name.clone(), impact: delete_template(con, id, t.ord)? });
     }
     let mut fields = vec![];
     for (slot, name) in nt.visible().into_iter().filter(|(s, _)| !order.contains(s)) {
@@ -2855,13 +2852,10 @@ mod tests {
         crate::commands::save_note_fields(&con, first, &s(&["q1", "a1", "e1"])).unwrap();
         crate::commands::save_note_fields(&con, first, &s(&["q1", "a1", ""])).unwrap();
         assert_eq!(q(&con, "SELECT count(*) || '' FROM card WHERE template_ord = 1"), ["2"]);
-        // 지우기 dry-run: 카드 · 기록 수. 기록은 card_id 없이 남는다 (A4)
+        // 지우기: 카드 · 기록 수. 기록은 card_id 없이 남는다 (A4)
         let c1: i64 = con.query_row("SELECT min(id) FROM card WHERE template_ord = 1", [], |r| r.get(0)).unwrap();
         con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 1, 3)", [c1]).unwrap();
-        let impact = delete_template(&con, nt, 1, true).unwrap();
-        assert_eq!(impact, TemplateImpact { cards: 2, reviews: 1, notes: 0 });
-        assert_eq!(q(&con, "SELECT count(*) || '' FROM card"), ["4"], "dry-run 은 지우지 않는다");
-        assert_eq!(delete_template(&con, nt, 1, false).unwrap(), impact);
+        assert_eq!(delete_template(&con, nt, 1).unwrap(), TemplateImpact { cards: 2, reviews: 1, notes: 0 });
         assert_eq!(q(&con, "SELECT count(*) || '' FROM card"), ["2"]);
         assert_eq!(q(&con, "SELECT count(*) || '' FROM review_log WHERE card_id IS NULL"), ["1"]);
         // 지운 번호는 다시 쓰지 않는다
@@ -2869,8 +2863,8 @@ mod tests {
         assert_eq!(q(&con, &format!("SELECT group_concat(ord) FROM card_template WHERE note_type_id = {nt}")), ["0,2"]);
         assert!(add_template(&con, nt, Some("뒤집기"), "{{Back}}", "").is_err(), "이름이 겹친다");
         // 지우면 카드가 없어지는 노트도 같이 지운다 (지금은 둘 다 ord 2 카드가 있다)
-        assert_eq!(delete_template(&con, nt, 0, false).unwrap().notes, 0);
-        assert!(delete_template(&con, nt, 2, true).is_err(), "마지막 하나");
+        assert_eq!(delete_template(&con, nt, 0).unwrap().notes, 0);
+        assert!(delete_template(&con, nt, 2).is_err(), "마지막 하나");
         assert_eq!(q(&con, "SELECT count(*) || '' FROM note"), ["2"]);
         // 저장 검사
         for (qf, af, want) in [
@@ -2947,7 +2941,7 @@ mod tests {
         reorder_fields(&con, nt, &[2, 0, 1]).unwrap();
         add_template(&con, nt, Some("거꾸로"), "{{Back}}", "{{FrontSide}}").unwrap();
         add_template(&con, nt, Some("덧붙임"), "{{Extra}}", "{{FrontSide}}").unwrap();
-        delete_template(&con, nt, 1, false).unwrap();
+        delete_template(&con, nt, 1).unwrap();
         let t = load(&con, nt).unwrap();
         // 내보낸 순서(보이는 순서) 그대로 돌아오면 자리로, Anki 에서 이름을 바꾼 필드는 같은 위치로
         assert_eq!(incoming_slots(&t, &s(&["Extra", "Front", "Back"])), [Some(2), Some(0), Some(1)]);
@@ -3026,7 +3020,7 @@ mod tests {
             con.execute("INSERT INTO card_template (note_type_id, ord, name, qfmt, afmt) VALUES (?1, ?2, ?3, ?4, '')", params![nt, ord, name, q]).unwrap();
         }
         add_template(&con, nt, Some("예문 → 단어"), "{{뜻}}!", "").unwrap();
-        delete_template(&con, nt, 1, false).unwrap();
+        delete_template(&con, nt, 1).unwrap();
         delete_field(&con, nt, 2).unwrap();
         let t = load(&con, nt).unwrap();
         // Q2-08: 이 앱에서 지운 "뜻 → 단어"(Anki ord 1)는 같은 순번의 "예문 → 단어"에 붙지 않고 빠진다

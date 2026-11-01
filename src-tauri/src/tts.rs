@@ -181,7 +181,7 @@ fn preprocess(text: &str, lang: &str) -> String {
             t = t.replace(&q.repeat(2), q);
         }
     }
-    let mut t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut t = crate::table::flat(&t);
     let ends = ".!?;:,'\"\u{201C}\u{201D}\u{2018}\u{2019})]}…。」』】〉》›»";
     if t.chars().last().is_some_and(|c| !ends.contains(c)) {
         t.push('.');

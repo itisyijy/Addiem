@@ -1401,7 +1401,7 @@ mod tests {
         nt::reorder_fields(&con, id, &[2, 0, 1, 3]).unwrap();
         nt::add_template(&con, id, Some("거꾸로"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
         nt::add_template(&con, id, Some("예문"), "{{예문}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
-        nt::delete_template(&con, id, 1, false).unwrap();
+        nt::delete_template(&con, id, 1).unwrap();
         nt::save_css(&con, id, ".card { color: red; }").unwrap();
         let typed = |v: [&str; 4]| nt::TypedNote { deck_id: root, note_type_id: id, values: v.map(String::from).to_vec(), importance: None };
         assert_eq!(nt::add_note(&con, &typed(["He ate an apple.", "apple", "사과", "비밀 메모"])).unwrap(), 2);
@@ -1571,9 +1571,9 @@ mod tests {
         let out = tmp.0.join("w.apkg");
         export(&con, &a.data_dir, root, &out, true, &QUIET).unwrap();
         // 이 앱에서 "뜻 → 단어"와 "메모" 필드를 지우고 (메모를 쓰는 카드 종류도), 노트를 지운 뒤 다시 가져온다
-        nt::delete_template(&con, id, rev, false).unwrap();
+        nt::delete_template(&con, id, rev).unwrap();
         let memo = nt::load(&con, id).unwrap().templates.iter().find(|t| t.name == "메모 → 단어").unwrap().ord;
-        nt::delete_template(&con, id, memo, false).unwrap();
+        nt::delete_template(&con, id, memo).unwrap();
         nt::delete_field(&con, id, 2).unwrap();
         con.execute("DELETE FROM note", []).unwrap();
         con.execute("DELETE FROM review_log", []).unwrap();
