@@ -628,9 +628,11 @@ pub struct Conflict {
     b: ConflictDeck,
     peak_date: String,
     peak: i64,
-    /// 기준선: 쓸 수 있는 시간이면 평일 상한, 아니면 최근 30일 평균의 1.5배
+    /// 기준선: 쓸 수 있는 시간이면 그날(오늘, 없으면 처음 정해진 날)의 상한, 아니면 최근 30일 평균의 1.5배
     limit: i64,
     by_time: bool,
+    /// limit 이 주말 상한이다 ("평일 가능" · "주말 가능")
+    limit_weekend: bool,
     bars: Vec<ConflictBar>,
     /// 앞당겨 나누기: 최고 분량, b 의 하루 신규가 오늘 몇 장 늘어나는지
     spread_peak: i64,
@@ -701,7 +703,8 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
         let first = with("first");
         let peak = |v: &[DayLoad]| v.iter().map(DayLoad::total).max().unwrap_or(0);
         let b_new_today = |v: &[DayLoad]| v.first().map_or(0, |x| x.new_by_owner.get(&b.id).copied().unwrap_or(0));
-        let limit = limit_on(today).or_else(|| (0..keep.len()).find_map(|i| limit_on(today + i as i64))).unwrap_or(0);
+        let limit_day = (0..keep.len() as i64).map(|i| today + i).find(|&d| limit_on(d).is_some()).unwrap_or(today);
+        let limit = limit_on(limit_day).unwrap_or(0);
         out.push(Conflict {
             a: ConflictDeck { id: a.id, name: a.name.clone(), target: db::date_from_day(ta) },
             b: ConflictDeck { id: b.id, name: b.name.clone(), target: db::date_from_day(tb) },
@@ -709,6 +712,7 @@ fn find_conflicts(con: &Connection, today: i64, decks: &[Deck], cards: &[Card], 
             peak: keep[peak_i].total(),
             limit,
             by_time,
+            limit_weekend: by_time && is_weekend(limit_day),
             bars: keep
                 .iter()
                 .enumerate()

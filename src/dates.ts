@@ -19,6 +19,18 @@ export const addDays = (s: string, days: number) => {
 export const md = (s: string) => `${+s.slice(5, 7)}/${+s.slice(8, 10)}`;
 /** "10월 7일" */
 export const monthDay = (s: string) => `${+s.slice(5, 7)}월 ${+s.slice(8, 10)}일`;
+/** 날짜 목록(오름차순)을 이어진 날끼리 묶는다: "2–6 · 9일", 달이 바뀌면 "10월 30일–11월 2일 · 11월 5일" (H2 넘는 날, QA T3-22) */
+export const dayRuns = (dates: string[]) => {
+  const runs: string[][] = [];
+  for (const d of dates) {
+    const last = runs[runs.length - 1];
+    if (last && addDays(last[last.length - 1], 1) === d) last.push(d);
+    else runs.push([d]);
+  }
+  const oneMonth = dates.every((d) => d.slice(0, 7) === dates[0].slice(0, 7));
+  const day = (d: string) => (oneMonth ? String(+d.slice(8, 10)) : monthDay(d));
+  return runs.map((r) => (r.length > 1 ? `${day(r[0])}–${day(r[r.length - 1])}` : day(r[0]))).join(" · ") + (oneMonth ? "일" : "");
+};
 /** 시각(ms)의 "10월 7일" */
 export const monthDayAt = (ms: number) => monthDay(iso(new Date(ms)));
 /** "10월 18일 (토)" */
