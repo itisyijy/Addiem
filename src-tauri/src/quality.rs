@@ -1081,6 +1081,7 @@ fn recent_of(con: &Connection, deck_id: i64) -> Res<Vec<ChangeRow>> {
             "SELECT id, kind, json_extract(payload, '$.how'), summary, card_id, created_at, undone_at IS NOT NULL,
                (SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id
                 WHERE c.note_id IN (SELECT value FROM json_each(card_change.payload, '$.new_notes'))
+                  AND n.created_at <= card_change.created_at + 60000
                   AND (n.updated_at > n.created_at OR EXISTS (SELECT 1 FROM review_log r WHERE r.card_id = c.id)))
              FROM card_change
              WHERE (kind = 'split' OR (kind IN ('rewrite', 'draft') AND created_at >= ?1)) AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
@@ -1400,6 +1401,11 @@ mod tests {
         assert_eq!(studied(&con), 1, "복습한 카드 (기록 수가 아니라 카드 수)");
         commands::save_note_fields_at(&con, new[1].1, &["Q 2 고침?".into(), "a".into()], now_ms() + 5).unwrap();
         assert_eq!(studied(&con), 2, "만든 뒤 고친 카드");
+        // 변경보다 나중에 만든 노트(지운 뒤 같은 id 로 다시 만든 노트)는 되돌려도 지우지 않으니 세지 않는다 (undo_at 과 같은 조건, QA V2-03)
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 4, 3)", [new[2].0]).unwrap();
+        assert_eq!(studied(&con), 3);
+        con.execute("UPDATE note SET created_at = created_at + 120000, updated_at = updated_at + 120000 WHERE id = ?1", [new[2].1]).unwrap();
+        assert_eq!(studied(&con), 2, "변경 뒤에 만든 노트");
         // 고쳐 쓰기 기록은 new_notes 가 없어 0
         con.execute("INSERT INTO card_change (kind, deck_id, summary, payload, created_at) VALUES ('rewrite', ?1, 's', '{}', ?2)", params![deck, now_ms()]).unwrap();
         assert!(recent_of(&con, deck).unwrap().iter().filter(|c| c.kind == "rewrite").all(|c| c.studied == 0));
