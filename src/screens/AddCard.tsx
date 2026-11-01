@@ -321,6 +321,7 @@ export function AddCard({ deckId }: { deckId: number }) {
     setGen((g) => g + 1);
     setKind(k);
     setTyped(k === "typed" ? t : null);
+    setError(undefined); // 앞 유형의 저장 오류("그림을 넣어 주세요." 등)를 남기지 않는다 (G5-03)
     if (isRecall(k) && filled(values[1] ?? "")) setExtraOpen(true);
     const id = typeIdOf(k, t);
     if (id !== undefined) rememberType(deckId, id);
