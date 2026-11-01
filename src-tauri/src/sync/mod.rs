@@ -573,8 +573,9 @@ pub fn sync_status(state: State<SyncState>) -> Status {
     state.0.status.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
-/// 학습 화면에 들어가면 true, 나오면 false. 나올 때(학습을 마칠 때) 받기 -> 올리기
-#[tauri::command]
+/// 학습 화면에 들어가면 true, 나오면 false. 나올 때(학습을 마칠 때) 받기 -> 올리기.
+/// async: start_session 이 DB 를 잡은 동안 refresh 가 기다리며 창을 멈추게 하지 않는다 (QA P-01)
+#[tauri::command(async)]
 pub fn sync_pause(state: State<SyncState>, paused: bool) {
     let was = state.0.paused.swap(paused, Ordering::Relaxed);
     if was && !paused {
