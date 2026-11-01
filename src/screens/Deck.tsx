@@ -242,7 +242,7 @@ function reasonText(d: DeckDetail, adjust: Adjust) {
     return `오늘 이 덱 신규는 0장이에요 · ${d.target_from ? `「${d.target_from.name}」` : "상위 덱"} 하루 신규 ${n(d.per_day)}장을 다른 하위 덱이 먼저 써요`;
   // 상위 덱 목표를 따르는 하위 덱은 이 덱 설정으로 계산할 수 없다. 상위 덱 상세와 같은 지금 남은 수로 백엔드가 만든 문장을 쓴다 (QA V3-04)
   if (!d.target_date && d.target_from && d.reason) return d.reason;
-  if (!d.target_date || d.learnable_days === null) return `목표일 없음 · 하루 신규 상한 ${n(d.per_day)}장대로`;
+  if (!d.target_date || d.learnable_days === null) return `목표일 없음 · 하루 신규 ${n(d.per_day)}장 (상한 ${n(d.daily_new_limit ?? 20)}장)`;
   // 당일 학습을 끈 목표일 당일은 "지났어요"가 아니다 (QA T3-03). 수는 이 덱 예산이 나눌 신규만 (자기 설정을 가진 하위 덱은 따로, QA T3-08)
   if (d.learnable_days === 0) return `오늘이 목표일이에요 · 남은 신규 ${n(d.budget_unseen)}장을 오늘 모두 올렸어요`;
   if (d.learnable_days < 0) return `목표일이 지났어요 · 남은 신규 ${n(d.budget_unseen)}장을 모두 올렸어요`;
