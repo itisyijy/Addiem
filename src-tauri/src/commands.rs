@@ -228,10 +228,10 @@ fn plan_with_cards(con: &Connection, deck_ids: Option<&[i64]>, scale: f64, day: 
 
 /// 오늘(학습일) 평가한 카드. 남은 카드 중 이 카드는 학습 단계로 다시 나오는 것이라 "다시 볼 카드"로 따로 센다 (QA T2-01 · V6-02).
 /// 홈 · 덱 상세 · 끝 화면의 "오늘 완료"도 이 수다. 가져온 Anki 복습도 센다 (kind IS NULL, QA T2-17 · T3-20 · V6-10).
-/// ids: 덱 id 목록 ("1,2,3"), None 이면 모든 덱
+/// ids: 덱 id 목록 ("1,2,3"), None 이면 모든 덱. 지운 카드의 기록(card_id NULL)은 뺀다 (QA G4-01)
 fn seen_today(con: &Connection, today: i64, ids: Option<&str>) -> Res<std::collections::HashSet<i64>> {
     let scope = ids.map_or(String::new(), |ids| format!(" AND card_id IN (SELECT id FROM card WHERE deck_id IN ({ids}))"));
-    db::rows(con, &format!("SELECT DISTINCT card_id FROM review_log WHERE reviewed_at >= ?1 AND kind IS NULL{scope}"), [today_start_ms(today)], |r| r.get(0))
+    db::rows(con, &format!("SELECT DISTINCT card_id FROM review_log WHERE reviewed_at >= ?1 AND kind IS NULL AND card_id IS NOT NULL{scope}"), [today_start_ms(today)], |r| r.get(0))
         .map_err(err)
 }
 
@@ -4002,6 +4002,10 @@ mod tests {
         let list = super::card_list(&con, None, "", None, None, None, None, None, None, true).unwrap();
         let folded: Vec<i64> = list.rows.iter().filter(|r| r.buried).map(|r| r.id).collect();
         assert_eq!(folded, vec![ids[2]]);
+        // QA G4-01: 오늘 평가한 카드를 지워도(기록의 card_id 가 NULL) 홈 · 덱 상세가 열린다
+        con.execute("DELETE FROM card WHERE id = ?1", [ids[0]]).unwrap();
+        assert_eq!(con.query_row("SELECT count(*) FROM review_log WHERE card_id IS NULL", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(super::home_in(&con).unwrap().done_today, 0);
     }
 
     #[test]
