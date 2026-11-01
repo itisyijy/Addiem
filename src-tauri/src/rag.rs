@@ -258,7 +258,12 @@ fn default_deck(con: &Connection, sent: &[Sent]) -> Res<i64> {
 
 pub(crate) fn root_of(con: &Connection, deck_id: i64) -> Res<i64> {
     let decks = commands::load_decks(con)?;
-    Ok(commands::root_of(deck_id, &decks.iter().map(|d| (d.id, d)).collect()))
+    let parent: HashMap<i64, Option<i64>> = decks.iter().map(|d| (d.id, d.parent_id)).collect();
+    let mut id = deck_id;
+    while let Some(Some(p)) = parent.get(&id) {
+        id = *p;
+    }
+    Ok(id)
 }
 
 /// R1-b [초안 만들기]. amount: few | normal | many (구간마다 1 / 1–2 / 1–3장). 아무것도 바꾸지 않는다
