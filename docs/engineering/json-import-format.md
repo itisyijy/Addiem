@@ -3,7 +3,7 @@
 ## 문서 상태
 
 - 버전: v1
-- 상태: **확정.** 참조 구현이 `tools/import_reference.py` 에 있다
+- 상태: **확정.** 구현은 `src-tauri/src/import.rs` 다
 - 관련: [MVP 범위 6.4.1](../product/mvp-scope.md), [데이터 모델](data-model.md)
 
 MVP 구현 순서상 **가장 먼저 만드는 가져오기 경로**다. 이게 되면 실사용이 시작된다.
@@ -158,9 +158,3 @@ MVP 6.4의 "조용히 삭제하거나 변환하지 않는다" 원칙을 따른�
 ## 사용
 
 앱에서는 `가져오기 → JSON` 에 붙여넣거나 파일을 고른다. 가져오기 전에 몇 장이 들어가고 무엇을 건너뛰는지 먼저 보여준다. 구현은 `src-tauri/src/import.rs` 다.
-
-참조 구현(빈칸 카드, 목록 · 선택형, 덱 단위 태그 제안은 없다):
-
-```bash
-python tools/import_reference.py cards.json out.sqlite
-```

@@ -4,7 +4,7 @@
 
 - 버전: v0.2
 - 상태: **결정 완료.** 정본은 [`db/schema.sql`](../../db/schema.sql) 이다
-- 검증: 실제 컬렉션 4,694장 / 복습기록 7,745건을 **손실 0**으로 적재 (`tools/import_reference.py`)
+- 검증: 실제 컬렉션 4,694장 / 복습기록 7,745건을 **손실 0**으로 적재 (스파이크의 `tools/import_reference.py`, v0.1.2 에서 뺐다, git `0a85e2e` 에 있다)
 - 선행 문서: [ADR 0001](../adr/0001-tech-stack.md), 후속 문서: [학습 큐 명세](study-queue-spec.md)
 
 > **스키마 파일이 정본이다.** 이 문서는 왜 그렇게 생겼는지를 설명한다.
@@ -152,7 +152,7 @@ media                                  파일명으로 카드 HTML에서 참조
 
 ## 7. Anki 매핑
 
-전체 매핑과 함정은 [스파이크 1 보고서](spike-01-apkg-parsing.md)에 있고, 실행 가능한 형태는 `tools/import_reference.py` 다.
+전체 매핑과 함정은 [스파이크 1 보고서](spike-01-apkg-parsing.md)에 있고, 실행 가능한 형태는 `src-tauri/src/import.rs` 다.
 
 요약하면 이렇다.
 
