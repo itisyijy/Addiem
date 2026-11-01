@@ -10,6 +10,7 @@ import { addDays, md } from "../dates";
 import { dateLabel, n, useKey, useNav } from "../nav";
 import { DriveLoadLink, useSyncStatus } from "../sync";
 import { RESTORED_KEY } from "./Settings";
+import { lastAdded } from "./AddCard";
 
 // 백업으로 복구한 뒤 다시 불러왔으면 그 백업의 시각 (페이지를 불러올 때 한 번 읽고 지운다, DU49)
 let restored = (() => {
@@ -166,6 +167,13 @@ function ActiveHome({ data, reload }: { data: HomeData; reload: () => void }) {
 function DoneHome({ data, reload }: { data: HomeData; reload: () => void }) {
   const nav = useNav();
   const firstDeck = data.decks[0]?.id ?? data.idle_decks[0]?.id;
+  // 마지막으로 카드를 넣은 덱으로 연다. 그 최상위 덱이 지워졌거나 보관됐으면, 하위 덱만 지워졌으면 최상위 덱으로 (QA T1-17)
+  const addCard = async () => {
+    const last = lastAdded();
+    const alive = last && [...data.decks, ...data.idle_decks].some((d) => d.id === last.root);
+    const deckId = alive ? await api.deckDetail(last.deck).then((d) => d.id, () => last.root) : firstDeck!;
+    nav({ name: "addCard", deckId });
+  };
   return (
     <main className="home">
       <section className="home__today">
@@ -179,7 +187,7 @@ function DoneHome({ data, reload }: { data: HomeData; reload: () => void }) {
         </p>
         <div className="home__actions">
           {firstDeck !== undefined && (
-            <Button variant="secondary" icon="plus" label="카드 추가" onClick={() => nav({ name: "addCard", deckId: firstDeck })} />
+            <Button variant="secondary" icon="plus" label="카드 추가" onClick={addCard} />
           )}
           {data.buried > 0 && firstDeck !== undefined && (
             <Button
