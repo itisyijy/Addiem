@@ -1907,7 +1907,7 @@ pub struct SessionStart {
     buried: Vec<BuriedCard>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_session(state: State<AppState>, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<SessionStart> {
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
@@ -2328,7 +2328,7 @@ pub struct TomorrowDeck {
     dday: Option<i64>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn finish_session(state: State<AppState>, session_id: i64, completed: bool, deck_ids: Option<Vec<i64>>, scale: f64) -> Res<SessionSummary> {
     let con = state.db.lock().map_err(err)?;
     let now = now_ms();
