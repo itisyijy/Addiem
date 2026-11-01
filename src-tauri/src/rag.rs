@@ -28,12 +28,6 @@ const SIMILAR_CARD: f32 = source::AUTO_LINK;
 /// 0.86 이면 없는 문장 14개 중 10개를 짚고 있는 문장은 짚지 않는다. ponytail: 숫자 · 용어만 바뀐 문장은 유사도로 못 잡는다
 const UNGROUNDED: f32 = 0.86;
 
-fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Res<T>) -> Result<T, AiError> {
-    let st = app.state::<AppState>();
-    let con = st.db.lock().map_err(|_| AiError::Other("데이터베이스를 잠그지 못했어요".into()))?;
-    f(&con).map_err(AiError::Other)
-}
-
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
@@ -104,6 +98,18 @@ pub(crate) fn segments_input(sent: &[Sent]) -> String {
 pub(crate) fn segment_at(sent: &[Sent], n: &J) -> Option<i64> {
     let i = n.as_u64().filter(|&i| i >= 1)? as usize;
     sent.get(i - 1).map(|s| s.id)
+}
+
+/// 응답이 인용한 구간 번호들 → 근거 칩 구간 (처음 나온 순서, 한 번씩). 보내지 않은 번호가 하나라도 있으면 None
+pub(crate) fn cited<'a>(sent: &[Sent], ns: impl IntoIterator<Item = &'a J>) -> Option<Vec<Sent>> {
+    let mut out: Vec<Sent> = vec![];
+    for n in ns {
+        let id = segment_at(sent, n)?;
+        if !out.iter().any(|s| s.id == id) {
+            out.extend(sent.iter().find(|s| s.id == id).cloned());
+        }
+    }
+    Some(out)
 }
 
 /// R3 성격별로 묶기에 함께 보낼 구간: 이 카드에 연결된 것 최대 3개 (직접 > 자동). 아무것도 보내지 않는다
@@ -252,25 +258,20 @@ fn default_deck(con: &Connection, sent: &[Sent]) -> Res<i64> {
 
 pub(crate) fn root_of(con: &Connection, deck_id: i64) -> Res<i64> {
     let decks = commands::load_decks(con)?;
-    let parent: HashMap<i64, Option<i64>> = decks.iter().map(|d| (d.id, d.parent_id)).collect();
-    let mut id = deck_id;
-    while let Some(Some(p)) = parent.get(&id) {
-        id = *p;
-    }
-    Ok(id)
+    Ok(commands::root_of(deck_id, &decks.iter().map(|d| (d.id, d)).collect()))
 }
 
 /// R1-b [초안 만들기]. amount: few | normal | many (구간마다 1 / 1–2 / 1–3장). 아무것도 바꾸지 않는다
 #[tauri::command]
 pub async fn rag_draft(app: AppHandle, segment_ids: Vec<i64>, amount: String, cloze: bool) -> Result<Draft, AiError> {
-    tauri::async_runtime::spawn_blocking(move || draft_blocking(&app, &segment_ids, &amount, cloze)).await.map_err(|e| AiError::Other(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || draft_blocking(&app, &segment_ids, &amount, cloze)).await?
 }
 
 fn draft_blocking(app: &AppHandle, ids: &[i64], amount: &str, cloze: bool) -> Result<Draft, AiError> {
     if ids.is_empty() || ids.len() > MAX_SEGMENTS {
         return Err(AiError::Other(format!("구간은 1–{MAX_SEGMENTS}개 고를 수 있어요.")));
     }
-    let (sent, deck_id, root) = with_db(app, |c| {
+    let (sent, deck_id, root) = ai::with_db(app, |c| {
         let sent = sent_of(c, &ids.iter().map(|id| (*id, "picked")).collect::<Vec<_>>())?;
         let deck = default_deck(c, &sent)?;
         Ok((sent, deck, root_of(c, deck)?))
@@ -428,11 +429,8 @@ const SIMILAR_SEGMENT: f32 = 0.8;
 
 /// 이 카드에 연결된 구간: 직접 연결 > 자동 연결(유사도 순), 최대 3개
 pub(crate) fn linked_segments(con: &Connection, card_id: i64) -> Res<Vec<(i64, &'static str)>> {
-    let mut st = con
-        .prepare("SELECT segment_id, method FROM source_link WHERE card_id = ?1 AND method != 'rejected' ORDER BY method = 'manual' DESC, score DESC, created_at, uid, id LIMIT ?2")
-        .map_err(err)?;
-    let rows = st.query_map(params![card_id, MAX_CONTEXT as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?;
-    rows.map(|r| r.map(|(id, m)| (id, if m == "manual" { "manual" } else { "auto" })).map_err(err)).collect()
+    let sql = "SELECT segment_id, method FROM source_link WHERE card_id = ?1 AND method != 'rejected' ORDER BY method = 'manual' DESC, score DESC, created_at, uid, id LIMIT ?2";
+    crate::db::rows(con, sql, params![card_id, MAX_CONTEXT as i64], |r| Ok((r.get(0)?, if r.get::<_, String>(1)? == "manual" { "manual" } else { "auto" }))).map_err(err)
 }
 
 /// 카드 뿌리 덱에 붙은 자료의 구간과 query 의 유사도 (거르지 않음). 분석 모델이 없으면 Err (연결된 구간만 보낸다)
@@ -443,13 +441,10 @@ fn similar_segments(app: &AppHandle, card_id: i64, query: &str) -> Res<Vec<(i64,
         let con = state.db.lock().map_err(err)?;
         let deck: i64 = con.query_row("SELECT deck_id FROM card WHERE id = ?1", [card_id], |r| r.get(0)).map_err(err)?;
         let ids = source::subtree(&con, root_of(&con, deck)?)?;
-        let mut st = con
-            .prepare(&format!(
-                "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready' AND s.signals <> 'heading'"
-            ))
-            .map_err(err)?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
+        let sql = format!(
+            "SELECT s.id, s.text FROM source_segment s JOIN source_material m ON m.id = s.material_id WHERE m.deck_id IN ({ids}) AND m.status = 'ready' AND s.signals <> 'heading'"
+        );
+        crate::db::rows(&con, &sql, [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?
     };
     let vecs = source::embed_cached(app, "segment", &items, |_| {})?;
     let q = model.embed(&[query.to_string()])?.remove(0);
@@ -487,18 +482,17 @@ pub struct GradeScope {
 #[tauri::command]
 pub async fn rag_grade_scope(app: AppHandle, card_id: i64, answer: String) -> Result<GradeScope, AiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (question, model, mine, linked) = with_db(&app, |c| {
+        let (question, model, mine, linked) = ai::with_db(&app, |c| {
             let (q, model, mine) = grade_texts(c, card_id, &answer)?;
             Ok((q, model, mine, linked_segments(c, card_id)?))
         })?;
         // 모델이 없으면 비슷한 구간 없이 보낸다. 연결이 3개면 재지 않는다
         let hits = if linked.len() < MAX_CONTEXT { similar_segments(&app, card_id, &format!("{question} {model}")).unwrap_or_default() } else { vec![] };
         let picks = grade_picks(linked, hits);
-        let segments = with_db(&app, |c| sent_of(c, &picks))?;
+        let segments = ai::with_db(&app, |c| Ok(sent_of(c, &picks)?))?;
         Ok(GradeScope { question, mine, model, segments })
     })
-    .await
-    .map_err(|e| AiError::Other(e.to_string()))?
+    .await?
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -584,7 +578,7 @@ pub async fn rag_grade(app: AppHandle, card_id: i64, answer: String, segment_ids
         if segment_ids.len() > MAX_CONTEXT {
             return Err(AiError::Other(format!("자료 구간은 {MAX_CONTEXT}개까지 보낼 수 있어요.")));
         }
-        let (question, model, mine, sent) = with_db(&app, |c| {
+        let (question, model, mine, sent) = ai::with_db(&app, |c| {
             let (q, model, mine) = grade_texts(c, card_id, &answer)?;
             let linked = linked_segments(c, card_id)?;
             let how = |id: i64| linked.iter().find(|l| l.0 == id).map_or("similar", |l| l.1);
@@ -596,8 +590,7 @@ pub async fn rag_grade(app: AppHandle, card_id: i64, answer: String, segment_ids
         let (right, missing, rating) = parse_grade(&text, &sent)?;
         Ok(Grade { right, missing, rating, sent })
     })
-    .await
-    .map_err(|e| AiError::Other(e.to_string()))?
+    .await?
 }
 
 #[cfg(test)]

@@ -38,10 +38,6 @@ pub const STALE_MS: i64 = 90 * db::DAY_MS;
 /// 카드의 FSRS 상태 열 (두 기기에서 복습하면 다시 계산하는 열)
 const SRS_COLS: [&str; 9] = ["state", "srs_step", "stability", "difficulty", "due_at", "interval_days", "last_reviewed_at", "reps", "lapses"];
 
-fn dbe(e: rusqlite::Error) -> SyncError {
-    other(e)
-}
-
 // ---------------------------------------------------------------- HLC
 
 /// (물리 시각 ms, 카운터, 기기). 문자열 비교가 곧 크기 비교다
@@ -96,13 +92,13 @@ pub fn ensure_tables(con: &Connection) -> SRes<()> {
              id INTEGER PRIMARY KEY, type_uid TEXT NOT NULL, what TEXT NOT NULL, at INTEGER NOT NULL,
              winner_device TEXT, winner TEXT, loser_device TEXT, loser TEXT, seen INTEGER NOT NULL DEFAULT 0);",
     )
-    .map_err(dbe)?;
+    .map_err(other)?;
     // 변경 기록의 바뀐 열 목록, 고친 순간에 받아 둔 가장 큰 HLC (K28. 비어 있으면 지금의 hlc_last 가 그 값이다: bump_hlc_last 가 올리기 전에 채운다).
     // K7 기록의 버전마다 노트 유형 (K41: 다른 유형으로 옮기는 사이 고친 내용은 옛 유형 자리 배열이다. NULL = 이 기능 전 기록)
     for (table, col) in [("sync_outbox", "cols"), ("sync_outbox", "floor"), ("sync_conflict", "winner_type"), ("sync_conflict", "loser_type")] {
-        let has: i64 = con.query_row(&format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get(0)).map_err(dbe)?;
+        let has: i64 = con.query_row(&format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get(0)).map_err(other)?;
         if has == 0 {
-            con.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT")).map_err(dbe)?;
+            con.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT")).map_err(other)?;
         }
     }
     Ok(())
@@ -130,7 +126,7 @@ pub fn init(con: &Connection) -> SRes<()> {
              CREATE TRIGGER {t}_sync_update AFTER UPDATE ON {t} WHEN OLD.uid IS NOT NULL AND {on}
              BEGIN INSERT INTO sync_outbox (table_name, uid, op, at, cols) VALUES ('{t}', NEW.uid, 'update', {now}, {changed}); END;"
         ))
-        .map_err(dbe)?;
+        .map_err(other)?;
     }
     let srs = SRS_COLS.join(", ");
     let old = SRS_COLS.iter().map(|c| format!("OLD.{c}")).collect::<Vec<_>>().join(", ");
@@ -139,18 +135,17 @@ pub fn init(con: &Connection) -> SRes<()> {
          BEGIN INSERT OR IGNORE INTO sync_anchor (card_id, srs)
                VALUES (OLD.id, json_array({old}, (SELECT coalesce(max(id), 0) FROM review_log WHERE card_id = OLD.id))); END;"
     ))
-    .map_err(dbe)?;
+    .map_err(other)?;
     Ok(())
 }
 
 /// 표의 열 (id · uid 빼고)
 fn raw_cols(con: &Connection, t: &str) -> SRes<Vec<String>> {
-    let mut st = con.prepare(&format!("SELECT name FROM pragma_table_info('{t}') WHERE name NOT IN ('id', 'uid')")).map_err(dbe)?;
-    st.query_map([], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)
+    db::rows(con, &format!("SELECT name FROM pragma_table_info('{t}') WHERE name NOT IN ('id', 'uid')"), [], |r| r.get(0)).map_err(other)
 }
 
 pub fn meta(con: &Connection, key: &str) -> SRes<Option<String>> {
-    con.query_row("SELECT value FROM schema_meta WHERE key = ?1", [key], |r| r.get(0)).optional().map_err(dbe)
+    db::meta(con, key).map_err(other)
 }
 
 pub fn device_uid(con: &Connection) -> SRes<String> {
@@ -158,11 +153,11 @@ pub fn device_uid(con: &Connection) -> SRes<String> {
 }
 
 pub fn local(con: &Connection, key: &str) -> SRes<Option<String>> {
-    con.query_row("SELECT value FROM sync_local WHERE key = ?1", [key], |r| r.get(0)).optional().map_err(dbe)
+    con.query_row("SELECT value FROM sync_local WHERE key = ?1", [key], |r| r.get(0)).optional().map_err(other)
 }
 
 pub fn set_local(con: &Connection, key: &str, value: &str) -> SRes<()> {
-    con.execute("INSERT OR REPLACE INTO sync_local (key, value) VALUES (?1, ?2)", [key, value]).map(|_| ()).map_err(dbe)
+    con.execute("INSERT OR REPLACE INTO sync_local (key, value) VALUES (?1, ?2)", [key, value]).map(|_| ()).map_err(other)
 }
 
 fn local_i64(con: &Connection, key: &str) -> SRes<i64> {
@@ -203,10 +198,10 @@ pub fn check_copy(con: &Connection, fingerprint: &str) -> SRes<bool> {
     if known.is_none_or(|f| f == fingerprint) {
         return Ok(false);
     }
-    con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [new_device_uid()]).map_err(dbe)?;
+    con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [new_device_uid()]).map_err(other)?;
     set_local(con, "my_seq", "0")?;
     // 원래 기기가 만든 Drive 백업 · 올린 기록은 이 기기 것이 아니다
-    con.execute("DELETE FROM sync_local WHERE key IN ('my_backups', 'last_push')", []).map_err(dbe)?;
+    con.execute("DELETE FROM sync_local WHERE key IN ('my_backups', 'last_push')", []).map_err(other)?;
     Ok(true)
 }
 
@@ -231,15 +226,15 @@ fn hlc_last(con: &Connection) -> SRes<String> {
 fn bump_hlc_last(con: &Connection, h: &str) -> SRes<()> {
     let last = hlc_last(con)?;
     if h > last.as_str() {
-        con.execute("UPDATE sync_outbox SET floor = ?1 WHERE floor IS NULL", [&last]).map_err(dbe)?;
-        con.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('hlc_last', ?1)", [h]).map_err(dbe)?;
+        con.execute("UPDATE sync_outbox SET floor = ?1 WHERE floor IS NULL", [&last]).map_err(other)?;
+        db::set_meta(con, "hlc_last", Some(h)).map_err(other)?;
     }
     Ok(())
 }
 
 /// 받은 변경을 적용하는 동안: 트리거가 쌓지 않는다. 트랜잭션 안에서만 켠다 (실패하면 함께 되돌아가 늘 꺼진다)
 fn applying(tx: &Transaction, on: bool) -> SRes<()> {
-    tx.execute("UPDATE sync_flags SET applying = ?1", [on as i64]).map(|_| ()).map_err(dbe)
+    tx.execute("UPDATE sync_flags SET applying = ?1", [on as i64]).map(|_| ()).map_err(other)
 }
 
 // ---------------------------------------------------------------- 표 정보
@@ -256,9 +251,9 @@ pub struct Table {
 }
 
 fn rows<T: rusqlite::types::FromSql>(con: &Connection, sql: &str) -> SRes<Vec<Vec<T>>> {
-    let mut st = con.prepare(sql).map_err(dbe)?;
+    let mut st = con.prepare(sql).map_err(other)?;
     let n = st.column_count();
-    st.query_map([], |r| (0..n).map(|i| r.get(i)).collect()).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)
+    st.query_map([], |r| (0..n).map(|i| r.get(i)).collect()).map_err(other)?.collect::<Result<_, _>>().map_err(other)
 }
 
 /// 동기화 대상 표 (db::SYNC_TABLES, 다른 기능이 더해도 따라간다). 외래 키 순서 (부모 먼저). 지울 때는 거꾸로
@@ -335,7 +330,7 @@ pub(crate) fn export(con: &Connection, t: &Table, rowid: i64) -> SRes<Option<(St
     let list = t.cols.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
     let row = con
         .prepare_cached(&format!("SELECT uid, {list} FROM {} WHERE rowid = ?1", t.name))
-        .map_err(dbe)?
+        .map_err(other)?
         .query_row([rowid], |r| {
             let uid: Option<String> = r.get(0)?;
             let mut m = Map::new();
@@ -345,17 +340,17 @@ pub(crate) fn export(con: &Connection, t: &Table, rowid: i64) -> SRes<Option<(St
             Ok((uid, m))
         })
         .optional()
-        .map_err(dbe)?;
+        .map_err(other)?;
     let Some((Some(uid), mut m)) = row else { return Ok(None) };
     for (col, (target, _)) in &t.fks {
         if let Some(J::Number(n)) = m.get(col) {
             let id = n.as_i64().unwrap_or(0);
             let fk: Option<String> = con
                 .prepare_cached(&format!("SELECT uid FROM {target} WHERE rowid = ?1"))
-                .map_err(dbe)?
+                .map_err(other)?
                 .query_row([id], |r| r.get(0))
                 .optional()
-                .map_err(dbe)?
+                .map_err(other)?
                 .flatten();
             m.insert(col.clone(), fk.map(J::String).unwrap_or(J::Null));
         }
@@ -364,7 +359,7 @@ pub(crate) fn export(con: &Connection, t: &Table, rowid: i64) -> SRes<Option<(St
 }
 
 fn rowid_of(con: &Connection, table: &str, uid: &str) -> SRes<Option<i64>> {
-    con.prepare_cached(&format!("SELECT rowid FROM {table} WHERE uid = ?1")).map_err(dbe)?.query_row([uid], |r| r.get(0)).optional().map_err(dbe)
+    con.prepare_cached(&format!("SELECT rowid FROM {table} WHERE uid = ?1")).map_err(other)?.query_row([uid], |r| r.get(0)).optional().map_err(other)
 }
 
 // ---------------------------------------------------------------- 행 HLC
@@ -403,29 +398,29 @@ fn save_implicit(con: &Connection) -> SRes<()> {
             &format!("INSERT OR IGNORE INTO sync_row (table_name, uid, hlc) SELECT '{t}', uid, printf('%013d-00000000-%s', max(0, {phys}), ?1) FROM {t} WHERE uid IS NOT NULL"),
             [&me],
         )
-        .map_err(dbe)?;
+        .map_err(other)?;
     }
     set_local(con, "implicit_saved", "1")
 }
 
 fn load_clock(con: &Connection, table: &str, uid: &str) -> SRes<Option<Clock>> {
     con.prepare_cached("SELECT hlc, cols, deleted FROM sync_row WHERE table_name = ?1 AND uid = ?2")
-        .map_err(dbe)?
+        .map_err(other)?
         .query_row([table, uid], |r| {
             let cols: Option<String> = r.get(1)?;
             Ok(Clock { base: r.get(0)?, cols: cols.and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_default(), deleted: r.get(2)? })
         })
         .optional()
-        .map_err(dbe)
+        .map_err(other)
 }
 
 fn save_clock(con: &Connection, table: &str, uid: &str, c: &Clock) -> SRes<()> {
     let cols = (!c.cols.is_empty()).then(|| serde_json::to_string(&c.cols).unwrap_or_default());
     con.prepare_cached("INSERT OR REPLACE INTO sync_row (table_name, uid, hlc, cols, deleted) VALUES (?1, ?2, ?3, ?4, ?5)")
-        .map_err(dbe)?
+        .map_err(other)?
         .execute(params![table, uid, c.base, cols, c.deleted])
         .map(|_| ())
-        .map_err(dbe)
+        .map_err(other)
 }
 
 /// 아직 올리지 않은 이 기기 변경 (sync_outbox). 행마다 열 -> 고친 순간의 HLC (K28)
@@ -476,10 +471,11 @@ fn col_hlc(clock: &Clock, p: Option<&Pending>, c: &str) -> String {
 fn load_pending(con: &Connection) -> SRes<Vec<((String, String), Pending)>> {
     let me = device_uid(con)?;
     let last = hlc_last(con)?;
-    let mut st = con.prepare("SELECT table_name, uid, op, cols, at, floor FROM sync_outbox ORDER BY seq").map_err(dbe)?;
     type Row = (String, String, String, Option<String>, i64, Option<String>);
-    let rows: Vec<Row> =
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+    let rows: Vec<Row> = db::rows(con, "SELECT table_name, uid, op, cols, at, floor FROM sync_outbox ORDER BY seq", [], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+    })
+    .map_err(other)?;
     let mut order: Vec<(String, String)> = vec![];
     let mut out: HashMap<(String, String), Pending> = HashMap::new();
     for (t, u, op, cols, at, floor) in rows {
@@ -679,22 +675,19 @@ fn lock(db: &Mutex<Connection>) -> SRes<std::sync::MutexGuard<'_, Connection>> {
 
 /// 동기화 전에 생긴 그림은 sha256 열이 비었거나 다른 해시다. 파일을 읽어 맞춘다 (그림 이름 = 내용 해시)
 fn fix_media_hashes(con: &mut Connection, media_dir: &Path) -> SRes<()> {
-    let rows: Vec<(i64, String)> = {
-        let mut st = con.prepare("SELECT id, filename FROM media WHERE length(sha256) <> 64").map_err(dbe)?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
-    };
+    let rows: Vec<(i64, String)> = db::rows(con, "SELECT id, filename FROM media WHERE length(sha256) <> 64", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
     if rows.is_empty() {
         return Ok(());
     }
-    let tx = con.transaction().map_err(dbe)?;
+    let tx = con.transaction().map_err(other)?;
     applying(&tx, true)?;
     for (id, name) in rows.into_iter().filter(|(_, n)| safe_media_name(n).is_ok()) {
         if let Ok(bytes) = std::fs::read(media_dir.join(&name)) {
-            tx.execute("UPDATE media SET sha256 = ?2 WHERE id = ?1", params![id, crypto::hex(&crypto::sha256(&bytes))]).map_err(dbe)?;
+            tx.execute("UPDATE media SET sha256 = ?2 WHERE id = ?1", params![id, crypto::hex(&crypto::sha256(&bytes))]).map_err(other)?;
         }
     }
     applying(&tx, false)?;
-    tx.commit().map_err(dbe)
+    tx.commit().map_err(other)
 }
 
 // ---------------------------------------------------------------- 올리기 (5.2)
@@ -724,7 +717,7 @@ pub struct Batch {
 pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
     init(con)?;
     fix_media_hashes(con, &cx.media_dir)?;
-    let max_outbox: Option<i64> = con.query_row("SELECT max(seq) FROM sync_outbox", [], |r| r.get(0)).map_err(dbe)?;
+    let max_outbox: Option<i64> = con.query_row("SELECT max(seq) FROM sync_outbox", [], |r| r.get(0)).map_err(other)?;
     let Some(max_outbox) = max_outbox else { return Ok(None) };
     let me = device_uid(con)?;
     let tables = tables(con)?;
@@ -786,7 +779,7 @@ pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
 /// 올리기에 성공한 뒤: 행 HLC 를 남기고, 올린 변경을 지우고, 받은 위치에 이 기기 번호를 적는다
 pub fn finish_push(con: &mut Connection, b: &Batch) -> SRes<()> {
     let me = device_uid(con)?;
-    let tx = con.transaction().map_err(dbe)?;
+    let tx = con.transaction().map_err(other)?;
     for p in &b.rows {
         let mut c = load_clock(&tx, &p.t, &p.u)?.unwrap_or_default();
         if let Some(d) = &p.deleted {
@@ -816,18 +809,18 @@ pub fn finish_push(con: &mut Connection, b: &Batch) -> SRes<()> {
         if p.t == "card" {
             // 앵커는 다른 기기가 이 번호를 받았다고 알 때까지 둔다 (K27). 그 사이 엇갈려 온 기록도 이 앵커부터 다시 돌린다
             tx.execute("UPDATE sync_anchor SET srs = json_set(srs, '$[10]', ?2) WHERE card_id = (SELECT id FROM card WHERE uid = ?1)", params![p.u, b.seq])
-                .map_err(dbe)?;
+                .map_err(other)?;
         }
     }
-    tx.execute("DELETE FROM sync_outbox WHERE seq <= ?1", [b.max_outbox]).map_err(dbe)?;
+    tx.execute("DELETE FROM sync_outbox WHERE seq <= ?1", [b.max_outbox]).map_err(other)?;
     // 지운 흔적은 sync_row.deleted 에 HLC 로 남았다. 트리거가 따로 쌓는 sync_tombstone 은 비워 DB 를 작게
-    tx.execute("DELETE FROM sync_tombstone", []).map_err(dbe)?;
+    tx.execute("DELETE FROM sync_tombstone", []).map_err(other)?;
     bump_hlc_last(&tx, &b.hlc)?;
     let mut pos = positions(&tx)?;
     pos.insert(me, b.seq);
     set_local(&tx, "pos", &serde_json::to_string(&pos).map_err(other)?)?;
     set_local(&tx, "last_push", &json!({ "at": db::now_ms(), "reviews": b.reviews }).to_string())?;
-    tx.commit().map_err(dbe)
+    tx.commit().map_err(other)
 }
 
 /// 그림은 Drive 에 없을 때만 올린다 (sha256 이름이라 같은 그림은 한 번)
@@ -852,7 +845,7 @@ pub fn push(db: &Mutex<Connection>, cx: &Ctx) -> SRes<bool> {
         let con = lock(db)?;
         ensure_tables(&con)?;
         // 올릴 것이 없다. 또는 이 기기 백업으로 되돌렸다: 받기가 Drive 와 다시 맞춘 뒤에 올린다 (mark_restored)
-        let empty: bool = con.query_row("SELECT NOT EXISTS (SELECT 1 FROM sync_outbox)", [], |r| r.get(0)).map_err(dbe)?;
+        let empty: bool = con.query_row("SELECT NOT EXISTS (SELECT 1 FROM sync_outbox)", [], |r| r.get(0)).map_err(other)?;
         if empty || local(&con, "restored")?.is_some() {
             return Ok(false);
         }
@@ -1032,7 +1025,7 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
     let devices = read_devices(cx.store, &r);
     let report = {
         let mut con = lock(db)?;
-        let tx = con.transaction().map_err(dbe)?;
+        let tx = con.transaction().map_err(other)?;
         applying(&tx, true)?;
         add_aliases(&tx, &aliases)?;
         let report = apply(&tx, recs, Mode::Sync, cx.fsrs, "")?;
@@ -1046,13 +1039,13 @@ pub fn pull(db: &Mutex<Connection>, cx: &Ctx) -> SRes<Pulled> {
             let seq = local_i64(&tx, "my_seq")?.max(pushed_top(&r, &devices, &me));
             set_local(&tx, "my_seq", &seq.to_string())?;
             pos.insert(me.clone(), seq);
-            tx.execute("DELETE FROM sync_local WHERE key = 'restored'", []).map_err(dbe)?;
+            tx.execute("DELETE FROM sync_local WHERE key = 'restored'", []).map_err(other)?;
         }
         set_local(&tx, "pos", &serde_json::to_string(&pos).map_err(other)?)?;
         set_local(&tx, "devices", &serde_json::to_string(&devices).map_err(other)?)?;
         release_anchors(&tx, &me, generation, &devices)?;
         applying(&tx, false)?;
-        tx.commit().map_err(dbe)?;
+        tx.commit().map_err(other)?;
         report
     };
     fetch_media(db, cx, &r.media)?;
@@ -1088,17 +1081,14 @@ fn release_anchors(tx: &Transaction, me: &str, generation: i64, devices: &[J]) -
         [seen],
     )
     .map(|_| ())
-    .map_err(dbe)
+    .map_err(other)
 }
 
 /// 이 기기에 없는 그림을 받는다. 데이터를 먼저 합치고 그림은 뒤에서 (K6-f).
 /// 받다 끊겨 Drive 것보다 작은 파일도 다시 받는다. 임시 이름(.<이름>.part)에 쓰고 바꿔, 끊겨도 잘린 파일이 제 이름으로 남지 않는다 (QA T5-04 Drive 쪽, K50)
 pub fn fetch_media(db: &Mutex<Connection>, cx: &Ctx, have_remote: &HashMap<String, u64>) -> SRes<usize> {
-    let rows: Vec<(String, String)> = {
-        let con = lock(db)?;
-        let mut st = con.prepare("SELECT filename, sha256 FROM media WHERE length(sha256) = 64").map_err(dbe)?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
-    };
+    let rows: Vec<(String, String)> =
+        db::rows(&*lock(db)?, "SELECT filename, sha256 FROM media WHERE length(sha256) = 64", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
     // Drive 파일 크기 - 잠근 파일의 머리 · nonce · 태그 = 그림 크기
     let overhead = if cx.key.is_some() { crypto::SEALED_EXTRA } else { 0 };
     let short = |name: &str, size: u64| std::fs::metadata(cx.media_dir.join(name)).map_or(true, |m| m.len() < size.saturating_sub(overhead));
@@ -1185,9 +1175,7 @@ fn fold(recs: Vec<Rec>, aliases: &HashMap<(String, String), String>) -> (HashMap
 }
 
 fn load_aliases(con: &Connection) -> SRes<HashMap<(String, String), String>> {
-    let mut st = con.prepare("SELECT table_name, from_uid, to_uid FROM sync_alias").map_err(dbe)?;
-    let rows = st.query_map([], |r| Ok(((r.get::<_, String>(0)?, r.get::<_, String>(1)?), r.get::<_, String>(2)?))).map_err(dbe)?;
-    rows.collect::<Result<_, _>>().map_err(dbe)
+    db::rows(con, "SELECT table_name, from_uid, to_uid FROM sync_alias", [], |r| Ok(((r.get::<_, String>(0)?, r.get::<_, String>(1)?), r.get::<_, String>(2)?))).map_err(other)
 }
 
 fn alias_of(aliases: &HashMap<(String, String), String>, table: &str, uid: &str) -> String {
@@ -1204,7 +1192,7 @@ fn alias_of(aliases: &HashMap<(String, String), String>, table: &str, uid: &str)
 fn add_aliases(con: &Connection, list: &[J]) -> SRes<()> {
     for a in list {
         if let (Some(t), Some(f), Some(to)) = (a[0].as_str(), a[1].as_str(), a[2].as_str()) {
-            con.execute("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES (?1, ?2, ?3)", [t, f, to]).map_err(dbe)?;
+            con.execute("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES (?1, ?2, ?3)", [t, f, to]).map_err(other)?;
         }
     }
     Ok(())
@@ -1243,10 +1231,10 @@ fn natural_match(con: &Connection, table: &Table, vals: &HashMap<String, Value>,
         let cond = key.iter().enumerate().map(|(i, c)| format!("\"{c}\" IS ?{}", i + 1)).collect::<Vec<_>>().join(" AND ");
         let found = con
             .prepare_cached(&format!("SELECT rowid, uid FROM {} WHERE {cond} AND uid IS NOT NULL", table.name))
-            .map_err(dbe)?
+            .map_err(other)?
             .query_row(rusqlite::params_from_iter(key.iter().map(|c| v(c))), |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))
             .optional()
-            .map_err(dbe)?;
+            .map_err(other)?;
         if found.is_some() {
             return Ok(found);
         }
@@ -1257,7 +1245,7 @@ fn natural_match(con: &Connection, table: &Table, vals: &HashMap<String, Value>,
 /// 이 기기 행의 uid 를 바꾼다 (더 작은 uid 로 합칠 때). 흔적 · 올릴 변경 · 별칭도 따라간다
 fn rename_uid(con: &Connection, t: &str, old: &str, new: &str) -> SRes<()> {
     // 처음 합칠 때는 행마다 부른다: 문장을 매번 다시 만들지 않는다
-    let run = |sql: &str, args: &[&str]| con.prepare_cached(sql).and_then(|mut st| st.execute(rusqlite::params_from_iter(args))).map_err(dbe);
+    let run = |sql: &str, args: &[&str]| con.prepare_cached(sql).and_then(|mut st| st.execute(rusqlite::params_from_iter(args))).map_err(other);
     run(&format!("UPDATE {t} SET uid = ?2 WHERE uid = ?1"), &[old, new])?;
     run("DELETE FROM sync_row WHERE table_name = ?1 AND uid = ?2", &[t, new])?;
     run("UPDATE sync_row SET uid = ?3 WHERE table_name = ?1 AND uid = ?2", &[t, old, new])?;
@@ -1529,7 +1517,7 @@ impl Applier<'_> {
                 self.aliases.insert((t.into(), local_uid.clone()), uid.clone());
                 uid.clone()
             } else {
-                self.tx.execute("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES (?1, ?2, ?3)", [t, &uid, &local_uid]).map_err(dbe)?;
+                self.tx.execute("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES (?1, ?2, ?3)", [t, &uid, &local_uid]).map_err(other)?;
                 self.aliases.insert((t.into(), uid.clone()), local_uid.clone());
                 local_uid.clone()
             };
@@ -1580,7 +1568,7 @@ impl Applier<'_> {
 
     /// K41 다른 유형으로 옮긴 노트(유형 열이 바뀌었다)인데 그 유형(빈칸 유형 아님)에 이 번호의 카드 종류가 없다
     fn orphan_in_moved(&self, note: i64, ord: i64) -> SRes<bool> {
-        let Some(uid) = self.tx.query_row("SELECT uid FROM note WHERE id = ?1", [note], |r| r.get::<_, Option<String>>(0)).optional().map_err(dbe)?.flatten() else {
+        let Some(uid) = self.tx.query_row("SELECT uid FROM note WHERE id = ?1", [note], |r| r.get::<_, Option<String>>(0)).optional().map_err(other)?.flatten() else {
             return Ok(false);
         };
         let moved = self.pend("note", &uid).is_some_and(|p| p.col("note_type_id").is_some())
@@ -1594,7 +1582,7 @@ impl Applier<'_> {
                 params![note, ord],
                 |r| r.get(0),
             )
-            .map_err(dbe)
+            .map_err(other)
     }
 
     /// K41 같은 노트에서 그 번호를 차지한 다른 카드를 음수 번호로 비켜 둔다. 비켰으면 true
@@ -1608,9 +1596,9 @@ impl Applier<'_> {
                 |r| r.get(0),
             )
             .optional()
-            .map_err(dbe)?;
+            .map_err(other)?;
         let Some(other) = other else { return Ok(false) };
-        self.tx.execute("UPDATE card SET template_ord = -1 - rowid WHERE rowid = ?1", [other]).map_err(dbe)?;
+        self.tx.execute("UPDATE card SET template_ord = -1 - rowid WHERE rowid = ?1", [other]).map_err(super::store::other)?;
         self.displaced.push(other);
         Ok(true)
     }
@@ -1620,7 +1608,7 @@ impl Applier<'_> {
     fn settle_retyped(&mut self) -> SRes<()> {
         let mut notes: BTreeSet<i64> = std::mem::take(&mut self.retyped).into_iter().collect();
         for c in std::mem::take(&mut self.displaced) {
-            if let Some(n) = self.tx.query_row("SELECT note_id FROM card WHERE rowid = ?1", [c], |r| r.get::<_, i64>(0)).optional().map_err(dbe)? {
+            if let Some(n) = self.tx.query_row("SELECT note_id FROM card WHERE rowid = ?1", [c], |r| r.get::<_, i64>(0)).optional().map_err(other)? {
                 notes.insert(n);
             }
         }
@@ -1637,7 +1625,7 @@ impl Applier<'_> {
                        AND NOT EXISTS (SELECT 1 FROM note x JOIN card_template t ON t.note_type_id = x.note_type_id WHERE x.id = ?1 AND t.ord = card.template_ord)))",
                     [n],
                 )
-                .map_err(dbe)?;
+                .map_err(other)?;
             self.report.skipped += gone;
         }
         applying(self.tx, true)
@@ -1656,7 +1644,7 @@ impl Applier<'_> {
 
     /// 같은 날 같은 덱의 계획이 두 기기에 있으면 먼저 만든 쪽 (그날 처음 계산한 계획)
     fn daily_plan(&mut self, table: &Table, uid: &str, rowid: i64, local_uid: &str, vals: &HashMap<String, Value>, h: &str) -> SRes<Step> {
-        let local_created: i64 = self.tx.query_row("SELECT created_at FROM daily_plan WHERE rowid = ?1", [rowid], |r| r.get(0)).map_err(dbe)?;
+        let local_created: i64 = self.tx.query_row("SELECT created_at FROM daily_plan WHERE rowid = ?1", [rowid], |r| r.get(0)).map_err(other)?;
         let incoming = match vals.get("created_at") {
             Some(Value::Integer(i)) => *i,
             _ => i64::MAX,
@@ -1664,12 +1652,12 @@ impl Applier<'_> {
         if (incoming, uid) < (local_created, local_uid) {
             rename_uid(self.tx, table.name, local_uid, uid)?;
             for (c, v) in vals {
-                self.tx.execute(&format!("UPDATE daily_plan SET \"{c}\" = ?2 WHERE rowid = ?1"), params![rowid, v]).map_err(dbe)?;
+                self.tx.execute(&format!("UPDATE daily_plan SET \"{c}\" = ?2 WHERE rowid = ?1"), params![rowid, v]).map_err(other)?;
             }
             save_clock(self.tx, table.name, uid, &Clock { base: h.to_string(), ..Default::default() })?;
             self.report.applied += 1;
         } else {
-            self.tx.execute("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES ('daily_plan', ?1, ?2)", [uid, local_uid]).map_err(dbe)?;
+            self.tx.execute("INSERT OR REPLACE INTO sync_alias (table_name, from_uid, to_uid) VALUES ('daily_plan', ?1, ?2)", [uid, local_uid]).map_err(other)?;
         }
         Ok(Step::Done)
     }
@@ -1703,7 +1691,7 @@ impl Applier<'_> {
                 && let Some((v, _)) = f.cols.get("card_id")
                 && let Some(Some(card)) = resolve_fk(self.tx, &self.aliases, "card", v)?
             {
-                self.tx.execute("UPDATE review_log SET card_id = ?2 WHERE rowid = ?1", params![rowid, card]).map_err(dbe)?;
+                self.tx.execute("UPDATE review_log SET card_id = ?2 WHERE rowid = ?1", params![rowid, card]).map_err(other)?;
             }
         } else {
             let mut sets: Vec<(String, J, String)> = vec![];
@@ -1922,7 +1910,7 @@ impl Applier<'_> {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![note_uid, db::now_ms(), wd, wa, wf, ld, la, lf, ty(wt), ty(lt)],
             )
-            .map_err(dbe)?;
+            .map_err(other)?;
         self.report.conflicts += 1;
         Ok(())
     }
@@ -1944,7 +1932,7 @@ impl Applier<'_> {
                 "INSERT INTO sync_type_conflict (type_uid, what, at, winner_device, winner, loser_device, loser) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![type_uid, what, db::now_ms(), dev(win.1), win.0, dev(lose.1), lose.0],
             )
-            .map_err(dbe)?;
+            .map_err(other)?;
         Ok(())
     }
 
@@ -1977,7 +1965,7 @@ impl Applier<'_> {
                     "UPDATE note_type SET fields = ?2, field_ids = ?3 WHERE rowid = ?1",
                     params![rowid, serde_json::to_string(&m.names).map_err(other)?, ids_value(&m.ids)],
                 )
-                .map_err(dbe)?;
+                .map_err(other)?;
             if local_change {
                 applying(self.tx, true)?;
             }
@@ -2011,8 +1999,8 @@ impl Applier<'_> {
         for (ty, from, to, id) in moves {
             let (dev, born) = (hlc_device(&id), hlc_ms(&id));
             let notes: Vec<(i64, String, String)> = {
-                let mut st = self.tx.prepare_cached("SELECT id, uid, fields FROM note WHERE note_type_id = ?1 AND uid IS NOT NULL").map_err(dbe)?;
-                st.query_map([ty], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
+                let mut st = self.tx.prepare_cached("SELECT id, uid, fields FROM note WHERE note_type_id = ?1 AND uid IS NOT NULL").map_err(other)?;
+                st.query_map([ty], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(other)?.collect::<Result<_, _>>().map_err(other)?
             };
             for (nid, nuid, fields) in notes {
                 let clock = load_clock(self.tx, "note", &nuid)?.unwrap_or_default();
@@ -2023,7 +2011,7 @@ impl Applier<'_> {
                 }
                 v.resize(v.len().max(to + 1), String::new());
                 v[to] = std::mem::take(&mut v[from]);
-                self.tx.execute("UPDATE note SET fields = ?2 WHERE id = ?1", params![nid, serde_json::to_string(&v).map_err(other)?]).map_err(dbe)?;
+                self.tx.execute("UPDATE note SET fields = ?2 WHERE id = ?1", params![nid, serde_json::to_string(&v).map_err(other)?]).map_err(other)?;
             }
         }
         applying(self.tx, true)
@@ -2052,8 +2040,8 @@ impl Applier<'_> {
         }
         let mut want: BTreeMap<i64, BTreeSet<u32>> = BTreeMap::new();
         let rows = |sql: &str, id: i64| -> SRes<Vec<(i64, String, u32, String)>> {
-            let mut st = self.tx.prepare_cached(sql).map_err(dbe)?;
-            st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)
+            let mut st = self.tx.prepare_cached(sql).map_err(other)?;
+            st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(other)?.collect::<Result<_, _>>().map_err(other)
         };
         // 받은 카드 종류 T × 이 기기가 정한 노트 N: T 를 쓴 기기가 N 을 몰랐다 (N 이 아직 올리지 않은 것이거나 T 보다 나중)
         for t in &tpls {
@@ -2091,7 +2079,7 @@ impl Applier<'_> {
         applying(self.tx, false)?;
         let mut types: HashMap<i64, crate::notetype::Nt> = HashMap::new();
         for (nid, ords) in want {
-            let (ty, fields): (i64, String) = self.tx.query_row("SELECT note_type_id, fields FROM note WHERE id = ?1", [nid], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?;
+            let (ty, fields): (i64, String) = self.tx.query_row("SELECT note_type_id, fields FROM note WHERE id = ?1", [nid], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
             let nt = match types.entry(ty) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => e.insert(crate::notetype::load(self.tx, ty).map_err(other)?),
@@ -2105,7 +2093,7 @@ impl Applier<'_> {
     /// 두 기기 이상에서 복습한 카드: 마지막 공통 시점(앵커)부터 합친 기록을 시간 순으로 FSRS 에 다시 돌린다
     fn recompute(&mut self, fsrs: &fsrs::FSRS) -> SRes<()> {
         for card in std::mem::take(&mut self.new_logs) {
-            let anchor: Option<String> = self.tx.query_row("SELECT srs FROM sync_anchor WHERE card_id = ?1", [card], |r| r.get(0)).optional().map_err(dbe)?;
+            let anchor: Option<String> = self.tx.query_row("SELECT srs FROM sync_anchor WHERE card_id = ?1", [card], |r| r.get(0)).optional().map_err(other)?;
             // 앵커가 없으면 이 기기의 복습은 다른 기기가 모두 받았다: 받은 상태가 그대로 맞다
             let Some(anchor) = anchor.and_then(|a| serde_json::from_str::<Vec<J>>(&a).ok()) else { continue };
             let mut s = srs_of(|c| SRS_COLS.iter().position(|x| *x == c).and_then(|i| anchor.get(i)));
@@ -2143,7 +2131,7 @@ impl Applier<'_> {
             self.report.recomputed += 1;
             self.write_srs(card, &s)?;
             // 쓰면서 트리거가 남긴 앵커는 다시 계산하기 전 상태라 틀린 공통 시점이다. 이 결과를 올리면 다른 기기와 같은 출발점이다
-            self.tx.execute("DELETE FROM sync_anchor WHERE card_id = ?1", [card]).map_err(dbe)?;
+            self.tx.execute("DELETE FROM sync_anchor WHERE card_id = ?1", [card]).map_err(other)?;
         }
         Ok(())
     }
@@ -2153,11 +2141,11 @@ impl Applier<'_> {
         let mut st = self
             .tx
             .prepare_cached("SELECT uid, id, reviewed_at, rating FROM review_log WHERE card_id = ?1 AND fed_to_scheduler = 1 ORDER BY reviewed_at, uid")
-            .map_err(dbe)?;
+            .map_err(other)?;
         st.query_map([card], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get(1)?, r.get(2)?, r.get(3)?)))
-            .map_err(dbe)?
+            .map_err(other)?
             .collect::<Result<_, _>>()
-            .map_err(dbe)
+            .map_err(other)
     }
 
     /// 다시 계산한 상태가 다르면 이 기기의 변경으로 올린다 (트리거가 바뀐 열만 쌓는다): 복습하지 않은 기기도 같은 상태가 되게
@@ -2172,7 +2160,7 @@ impl Applier<'_> {
                         last_reviewed_at = ?8, reps = ?9, lapses = ?10 WHERE id = ?1",
                 params![card, s.state, s.step, s.stability, s.difficulty, s.due_at, s.interval_days, s.last_reviewed_at, s.reps, s.lapses],
             )
-            .map_err(dbe)?;
+            .map_err(other)?;
         applying(self.tx, true)
     }
 
@@ -2203,13 +2191,13 @@ impl Applier<'_> {
                 let Some(rowid) = rowid_of(self.tx, t, u)? else { continue };
                 let mut by = vec![];
                 for (child, col, _) in holds.iter().filter(|(_, _, p)| p == t) {
-                    let mut st = self.tx.prepare_cached(&format!("SELECT uid FROM {child} WHERE \"{col}\" = ?1 AND uid IS NOT NULL")).map_err(dbe)?;
-                    let uids: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+                    let mut st = self.tx.prepare_cached(&format!("SELECT uid FROM {child} WHERE \"{col}\" = ?1 AND uid IS NOT NULL")).map_err(other)?;
+                    let uids: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(other)?.collect::<Result<_, _>>().map_err(other)?;
                     by.extend(uids.into_iter().map(|cu| (*child, cu)).filter(|k| !cand.contains_key(k)));
                 }
                 if *t == "card_template" {
-                    let mut st = self.tx.prepare_cached(CARDS_OF_TEMPLATE).map_err(dbe)?;
-                    let uids: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+                    let mut st = self.tx.prepare_cached(CARDS_OF_TEMPLATE).map_err(other)?;
+                    let uids: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(other)?.collect::<Result<_, _>>().map_err(other)?;
                     by.extend(uids.into_iter().map(|cu| ("card", cu)).filter(|k| !cand.contains_key(k)));
                 }
                 let mut follows = false;
@@ -2219,7 +2207,7 @@ impl Applier<'_> {
                         .tx
                         .query_row(&format!("SELECT uid FROM {parent} WHERE id = (SELECT \"{col}\" FROM {child} WHERE uid = ?1)"), [u], |r| r.get(0))
                         .optional()
-                        .map_err(dbe)?;
+                        .map_err(other)?;
                     follows |= pu.is_some_and(|pu| kept.contains(&(parent, pu)));
                 }
                 if !by.is_empty() || follows {
@@ -2259,14 +2247,14 @@ impl Applier<'_> {
             self.tx
                 .execute("INSERT INTO sync_outbox (table_name, uid, op, at, cols, floor) VALUES (?1, ?2, 'insert', ?3, ?4, ?5)", params![t, u, at, cols, floor])
                 .map(|_| ())
-                .map_err(dbe)
+                .map_err(other)
         };
         for (t, u, d) in &self.refused[self.revived..] {
             let Some(rowid) = rowid_of(self.tx, t, u)? else { continue };
             put(t, u, REVIVE, 0, Some(d))?;
             if *t == "card" {
-                let mut st = self.tx.prepare_cached("SELECT uid FROM review_log WHERE card_id = ?1 AND uid IS NOT NULL").map_err(dbe)?;
-                let logs: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+                let mut st = self.tx.prepare_cached("SELECT uid FROM review_log WHERE card_id = ?1 AND uid IS NOT NULL").map_err(other)?;
+                let logs: Vec<String> = st.query_map([rowid], |r| r.get(0)).map_err(other)?.collect::<Result<_, _>>().map_err(other)?;
                 for l in logs {
                     put("review_log", &l, RESEND, now, None)?;
                 }
@@ -2404,15 +2392,12 @@ pub fn apply(tx: &Transaction, recs: Vec<Rec>, mode: Mode, fsrs: &fsrs::FSRS, sr
 fn enqueue_local(tx: &Transaction, tables: &[Table], remote: &HashSet<(String, String)>, won: &HashSet<(String, String)>) -> SRes<()> {
     let now = db::now_ms();
     for t in tables {
-        let uids: Vec<String> = {
-            let mut st = tx.prepare(&format!("SELECT uid FROM {} WHERE uid IS NOT NULL", t.name)).map_err(dbe)?;
-            st.query_map([], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
-        };
+        let uids: Vec<String> = db::rows(tx, &format!("SELECT uid FROM {} WHERE uid IS NOT NULL", t.name), [], |r| r.get(0)).map_err(other)?;
         for u in uids {
             let key = (t.name.to_string(), u.clone());
             if !remote.contains(&key) || won.contains(&key) {
                 tx.execute("INSERT INTO sync_outbox (table_name, uid, op, at, cols) VALUES (?1, ?2, 'insert', ?3, ?4)", params![t.name, u, now, RESEND])
-                    .map_err(dbe)?;
+                    .map_err(other)?;
             }
         }
     }
@@ -2429,7 +2414,7 @@ pub struct Counts {
 }
 
 pub fn counts(con: &Connection) -> SRes<Counts> {
-    let n = |sql: &str| con.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(dbe);
+    let n = |sql: &str| con.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(other);
     Ok(Counts {
         decks: n("SELECT count(*) FROM deck WHERE parent_id IS NULL AND archived_at IS NULL")?,
         cards: n("SELECT count(*) FROM card")?,
@@ -2444,10 +2429,7 @@ fn build_snapshot(con: &Connection, generation: i64, reason: &J, key: Option<&[u
     let seq = local_i64(con, "my_seq")?;
     let mut recs = vec![];
     for table in tables(con)? {
-        let ids: Vec<i64> = {
-            let mut st = con.prepare(&format!("SELECT rowid FROM {} WHERE uid IS NOT NULL", table.name)).map_err(dbe)?;
-            st.query_map([], |r| r.get(0)).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
-        };
+        let ids: Vec<i64> = db::rows(con, &format!("SELECT rowid FROM {} WHERE uid IS NOT NULL", table.name), [], |r| r.get(0)).map_err(other)?;
         for id in ids {
             let Some((uid, r)) = export(con, &table, id)? else { continue };
             let c = load_clock(con, table.name, &uid)?.unwrap_or_else(|| Clock::implicit(&r, &me));
@@ -2455,18 +2437,16 @@ fn build_snapshot(con: &Connection, generation: i64, reason: &J, key: Option<&[u
             let b = (table.name == "note").then(|| c.col("fields").to_string());
             recs.push(Rec { t: table.name.into(), u: uid, op: "up".into(), h: c.base, r: Some(r), c: None, k, b });
         }
-        let mut st = con.prepare("SELECT uid, deleted FROM sync_row WHERE table_name = ?1 AND deleted IS NOT NULL").map_err(dbe)?;
-        let tombs: Vec<(String, String)> = st.query_map([table.name], |r| Ok((r.get(0)?, r.get(1)?))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?;
+        let tombs: Vec<(String, String)> =
+            db::rows(con, "SELECT uid, deleted FROM sync_row WHERE table_name = ?1 AND deleted IS NOT NULL", [table.name], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
         for (u, d) in tombs {
             if rowid_of(con, table.name, &u)?.is_none() {
                 recs.push(Rec { t: table.name.into(), u, op: "del".into(), h: d, r: None, c: None, k: None, b: None });
             }
         }
     }
-    let aliases: Vec<J> = {
-        let mut st = con.prepare("SELECT table_name, from_uid, to_uid FROM sync_alias").map_err(dbe)?;
-        st.query_map([], |r| Ok(json!([r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?]))).map_err(dbe)?.collect::<Result<_, _>>().map_err(dbe)?
-    };
+    let aliases: Vec<J> =
+        db::rows(con, "SELECT table_name, from_uid, to_uid FROM sync_alias", [], |r| Ok(json!([r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?]))).map_err(other)?;
     let mut covers = positions(con)?;
     covers.insert(me.clone(), seq);
     let c = counts(con)?;
@@ -2484,12 +2464,12 @@ pub fn write_snapshot(db: &Mutex<Connection>, cx: &Ctx, generation: i64, reason:
         let mut con = lock(db)?;
         init(&con)?;
         fix_media_hashes(&mut con, &cx.media_dir)?;
-        let upto: i64 = con.query_row("SELECT coalesce(max(seq), 0) FROM sync_outbox", [], |r| r.get(0)).map_err(dbe)?;
+        let upto: i64 = con.query_row("SELECT coalesce(max(seq), 0) FROM sync_outbox", [], |r| r.get(0)).map_err(other)?;
         let (path, data) = build_snapshot(&con, generation, &reason, cx.key())?;
         let media: Vec<(String, PathBuf)> = {
-            let mut st = con.prepare("SELECT filename, sha256 FROM media WHERE length(sha256) = 64").map_err(dbe)?;
+            let mut st = con.prepare("SELECT filename, sha256 FROM media WHERE length(sha256) = 64").map_err(other)?;
             st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                .map_err(dbe)?
+                .map_err(other)?
                 .filter_map(Result::ok)
                 .filter(|(name, _)| safe_media_name(name).is_ok())
                 .map(|(name, sha)| (media_path(&sha, &name, cx.key()), cx.media_dir.join(&name)))
@@ -2525,15 +2505,15 @@ const LOCAL_REFS: [&str; 6] = ["session_card_state", "card_change", "embedding_c
 
 fn clear_synced(tx: &Transaction) -> SRes<()> {
     for t in LOCAL_REFS {
-        let exists: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [t], |r| r.get(0)).map_err(dbe)?;
+        let exists: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [t], |r| r.get(0)).map_err(other)?;
         if exists {
-            tx.execute(&format!("DELETE FROM {t}"), []).map_err(dbe)?;
+            tx.execute(&format!("DELETE FROM {t}"), []).map_err(other)?;
         }
     }
     for t in tables(tx)?.iter().rev() {
-        tx.execute(&format!("DELETE FROM {}", t.name), []).map_err(dbe)?;
+        tx.execute(&format!("DELETE FROM {}", t.name), []).map_err(other)?;
     }
-    tx.execute_batch("DELETE FROM sync_row; DELETE FROM sync_alias; DELETE FROM sync_anchor; DELETE FROM sync_outbox; DELETE FROM sync_tombstone;").map_err(dbe)
+    tx.execute_batch("DELETE FROM sync_row; DELETE FROM sync_alias; DELETE FROM sync_anchor; DELETE FROM sync_outbox; DELETE FROM sync_tombstone;").map_err(other)
 }
 
 /// 처음 합류. 바꾸거나 합치기 전의 이 기기 백업은 부르는 쪽(mod.rs)이 먼저 만든다
@@ -2546,13 +2526,13 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
     {
         let con = lock(db)?;
         init(&con)?;
-        con.execute("UPDATE sync_flags SET enabled = 1, applying = 0", []).map_err(dbe)?;
+        con.execute("UPDATE sync_flags SET enabled = 1, applying = 0", []).map_err(other)?;
         // 데이터 폴더를 다른 컴퓨터로 복사하면 기기 id 도 따라온다. 아직 합류하지 않았는데 Drive 에 같은 id 의 기기나 변경 파일이 있으면
         // 이 기기는 복사본이거나 연결을 끊었던 기기다: 새 id 를 쓴다 (같은 id 둘이 서로의 변경 파일을 덮지 않게.
         // [연결 끊기]는 Drive 의 기기 파일을 지우므로 변경 파일도 본다, Q2-09)
         let me = device_uid(&con)?;
         if gen_of(&con)? == 0 && (r.devices.contains(&format!("devices/{me}.json")) || r.changes.contains_key(&me)) {
-            con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [new_device_uid()]).map_err(dbe)?;
+            con.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'device_uid'", [new_device_uid()]).map_err(other)?;
             set_local(&con, "my_seq", "0")?;
         }
     }
@@ -2569,16 +2549,16 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
             // 다른 기기의 지난 세대 파일은 머리의 세대를 보고 건너뛰므로 받은 위치는 그대로 둔다
             let upto = write_snapshot(db, cx, generation, reason)?;
             let mut con = lock(db)?;
-            let tx = con.transaction().map_err(dbe)?;
+            let tx = con.transaction().map_err(other)?;
             // 스냅샷에 들어간 변경은 다시 올리지 않는다
-            tx.execute("DELETE FROM sync_outbox WHERE seq <= ?1", [upto]).map_err(dbe)?;
-            tx.execute("DELETE FROM sync_anchor", []).map_err(dbe)?;
+            tx.execute("DELETE FROM sync_outbox WHERE seq <= ?1", [upto]).map_err(other)?;
+            tx.execute("DELETE FROM sync_anchor", []).map_err(other)?;
             let me = device_uid(&tx)?;
             let mut pos = positions(&tx)?;
             pos.insert(me, local_i64(&tx, "my_seq")?);
             set_local(&tx, "gen", &generation.to_string())?;
             set_local(&tx, "pos", &serde_json::to_string(&pos).map_err(other)?)?;
-            tx.commit().map_err(dbe)?;
+            tx.commit().map_err(other)?;
             Ok(Report::default())
         }
         Join::Take | Join::Merge => {
@@ -2609,7 +2589,7 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
             let devices = read_devices(cx.store, &r);
             let report = {
                 let mut con = lock(db)?;
-                let tx = con.transaction().map_err(dbe)?;
+                let tx = con.transaction().map_err(other)?;
                 applying(&tx, true)?;
                 if how == Join::Take {
                     clear_synced(&tx)?;
@@ -2625,9 +2605,9 @@ pub fn join(db: &Mutex<Connection>, cx: &Ctx, how: Join, reason: J) -> SRes<Repo
                 applying(&tx, false)?;
                 if how == Join::Take {
                     // 스냅샷이 옛 앱에서 왔으면 빠진 기본 노트 유형을 채운다 (이것은 올릴 변경이다)
-                    db::seed_note_types(&tx).map_err(dbe)?;
+                    db::seed_note_types(&tx).map_err(other)?;
                 }
-                tx.commit().map_err(dbe)?;
+                tx.commit().map_err(other)?;
                 report
             };
             fetch_media(db, cx, &r.media)?;
@@ -2745,7 +2725,7 @@ pub fn backup_zip(con: &Connection, tmp_dir: &Path) -> SRes<Vec<u8>> {
     std::fs::create_dir_all(tmp_dir).map_err(other)?;
     let copy = tmp_dir.join(format!(".drive-backup-{}.sqlite", crypto::random_hex(6)));
     let _ = std::fs::remove_file(&copy);
-    con.execute("VACUUM INTO ?1", [copy.to_string_lossy()]).map_err(dbe)?;
+    con.execute("VACUUM INTO ?1", [copy.to_string_lossy()]).map_err(other)?;
     let result = (|| -> SRes<Vec<u8>> {
         let mut out = std::io::Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(&mut out);
@@ -2765,15 +2745,15 @@ pub fn adopt_restored(current: &Connection, restored: &Connection) -> SRes<()> {
     init(restored)?;
     restored
         .execute_batch("DELETE FROM sync_local; DELETE FROM sync_outbox; DELETE FROM sync_tombstone; DELETE FROM sync_anchor; UPDATE sync_flags SET enabled = 1, applying = 0;")
-        .map_err(dbe)?;
+        .map_err(other)?;
     for k in ["device_uid", "device_name", "hlc_last"] {
         if let Some(v) = meta(current, k)? {
-            restored.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, ?2)", [k, &v]).map_err(dbe)?;
+            db::set_meta(restored, k, Some(&v)).map_err(other)?;
         }
     }
-    let mut st = current.prepare("SELECT key, value FROM sync_local").map_err(dbe)?;
-    for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(dbe)? {
-        let (k, v) = row.map_err(dbe)?;
+    let mut st = current.prepare("SELECT key, value FROM sync_local").map_err(other)?;
+    for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(other)? {
+        let (k, v) = row.map_err(other)?;
         set_local(restored, &k, &v)?;
     }
     Ok(())

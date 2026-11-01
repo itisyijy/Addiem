@@ -1,8 +1,8 @@
-//! 모델 읽기 · 생성 · 고르기 (candle 0.11 quantized_qwen3 · quantized_qwen2, CPU). 프롬프트는 본체가 만든다
+//! 모델 읽기 · 생성 · 고르기 (candle 0.11 quantized_qwen2, CPU). 프롬프트는 본체가 만든다
 
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
-use candle_transformers::models::{quantized_qwen2, quantized_qwen3};
+use candle_transformers::models::quantized_qwen2::ModelWeights;
 use std::path::Path;
 use std::time::Instant;
 
@@ -16,11 +16,6 @@ pub const STOPPED: &str = "cancelled";
 /// 입력을 이만큼씩 읽고 사이사이 멈춤을 본다 (candle CPU 양자화 행렬곱은 토큰마다 따로 돌아 묶어도 빨라지지 않는다)
 const CHUNK: usize = 16;
 
-enum Weights {
-    Qwen3(quantized_qwen3::ModelWeights),
-    Qwen2(quantized_qwen2::ModelWeights),
-}
-
 /// 한 번의 기록: 새로 읽은 토큰 · 쓴 토큰 · 걸린 시간
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Gen {
@@ -30,7 +25,7 @@ pub struct Gen {
 }
 
 pub struct Llm {
-    w: Weights,
+    w: ModelWeights,
     tok: tokenizers::Tokenizer,
     eos: Vec<u32>,
     /// 모델 안(KV 캐시)에 읽혀 있는 토큰. 앞이 같은 입력은 그 뒤만 읽는다 (답을 쓰는 동안 앞부분을 미리 읽어 둔다)
@@ -38,32 +33,17 @@ pub struct Llm {
 }
 
 impl Llm {
-    /// GGUF(qwen2 · qwen3) 와 tokenizer.json 이 든 폴더에서 읽는다
+    /// GGUF(qwen2) 와 tokenizer.json 이 든 폴더에서 읽는다
     pub fn load(dir: &Path) -> Res<Llm> {
         fn broken<E: std::fmt::Display>(e: E) -> String {
             format!("모델 파일을 읽지 못했어요. 모델을 지우고 다시 내려받아 주세요. ({e})")
         }
         let mut f = std::fs::File::open(dir.join("model.gguf")).map_err(broken)?;
-        let mut ct = gguf_file::Content::read(&mut f).map_err(broken)?;
-        let arch = ct.metadata.get("general.architecture").and_then(|v| v.to_string().ok()).cloned().unwrap_or_default();
-        // candle 의 qwen3 는 general.dtype 이 없으면 RoPE 표를 f16 으로 만든다 (위치 수백부터 각도가 0.25 넘게 어긋난다). 계산은 f32 로
-        ct.metadata.insert("general.dtype".into(), gguf_file::Value::U32(0));
-        let dev = Device::Cpu;
-        let w = match arch.as_str() {
-            "qwen3" => Weights::Qwen3(quantized_qwen3::ModelWeights::from_gguf(ct, &mut f, &dev).map_err(broken)?),
-            "qwen2" => Weights::Qwen2(quantized_qwen2::ModelWeights::from_gguf(ct, &mut f, &dev).map_err(broken)?),
-            a => return Err(broken(format!("모르는 모델 구조 {a}"))),
-        };
+        let ct = gguf_file::Content::read(&mut f).map_err(broken)?;
+        let w = ModelWeights::from_gguf(ct, &mut f, &Device::Cpu).map_err(broken)?;
         let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(broken)?;
         let eos = ["<|im_end|>", "<|endoftext|>"].iter().filter_map(|t| tok.token_to_id(t)).collect();
         Ok(Llm { w, tok, eos, seen: vec![] })
-    }
-
-    pub fn arch(&self) -> &'static str {
-        match self.w {
-            Weights::Qwen3(_) => "qwen3",
-            Weights::Qwen2(_) => "qwen2",
-        }
     }
 
     fn encode(&self, text: &str) -> Res<Vec<u32>> {
@@ -71,10 +51,7 @@ impl Llm {
     }
 
     fn reset(&mut self) {
-        match &mut self.w {
-            Weights::Qwen3(m) => m.clear_kv_cache(),
-            Weights::Qwen2(m) => m.clear_kv_cache(),
-        }
+        self.w.clear_kv_cache();
         self.seen.clear();
     }
 
@@ -82,11 +59,7 @@ impl Llm {
     fn step(&mut self, ids: &[u32]) -> Res<Tensor> {
         let pos = self.seen.len();
         let x = Tensor::new(ids, &Device::Cpu).and_then(|t| t.unsqueeze(0)).map_err(err)?;
-        let res = match &mut self.w {
-            Weights::Qwen3(m) => m.forward(&x, pos),
-            Weights::Qwen2(m) => m.forward(&x, pos),
-        };
-        match res {
+        match self.w.forward(&x, pos) {
             Ok(l) => {
                 self.seen.extend_from_slice(ids);
                 Ok(l)

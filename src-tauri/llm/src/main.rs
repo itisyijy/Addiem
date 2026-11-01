@@ -64,10 +64,8 @@ fn handle(llm: &mut Option<Llm>, req: &Value, stop: &dyn Fn() -> bool) -> Res<Va
         "load" => {
             let t = Instant::now();
             *llm = None; // 앞 모델의 메모리를 먼저 놓는다
-            let m = Llm::load(Path::new(s("dir")?))?;
-            let arch = m.arch();
-            *llm = Some(m);
-            Ok(json!({ "arch": arch, "ms": t.elapsed().as_millis() as u64 }))
+            *llm = Some(Llm::load(Path::new(s("dir")?))?);
+            Ok(json!({ "ms": t.elapsed().as_millis() as u64 }))
         }
         "stats" => Ok(json!({ "peak_mb": peak_mb(), "avx2": cfg!(target_feature = "avx2") })),
         op => {

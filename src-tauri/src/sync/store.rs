@@ -181,7 +181,7 @@ fn url(base: &str, params: &[(&str, &str)]) -> String {
     url::Url::parse_with_params(base, params).map(String::from).unwrap_or_else(|_| base.into())
 }
 
-fn req(method: Method, uri: &str, token: &str) -> ureq::http::request::Builder {
+pub(crate) fn req(method: Method, uri: &str, token: &str) -> ureq::http::request::Builder {
     Request::builder().method(method).uri(uri).header("Authorization", format!("Bearer {token}"))
 }
 
