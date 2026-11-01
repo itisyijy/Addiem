@@ -118,6 +118,13 @@ function openerOf(el: Element | null) {
   return at;
 }
 
+/**
+ * 키보드로 옮긴(:focus-visible) 초점. 초점이 들어올 때 잰다: keydown 때는 Chromium 이 이미 :focus-visible 로 바꿔 둬서
+ * 마우스로 누른 버튼도 참이 된다
+ */
+let keyFocus: EventTarget | null = null;
+window.addEventListener("focusin", (e) => (keyFocus = e.target instanceof Element && e.target.matches(":focus-visible") ? e.target : null), true);
+
 /** 바꿀 수 있는 동작 (keys.ts). KeyboardEvent.code 로 맞춘다. 평가처럼 키가 여럿이면 handler 의 index 로 몇 번째인지 */
 export type KeySpec = string | string[] | { action: ActionId };
 
@@ -146,9 +153,11 @@ export function useKey(
         t && ((t.tagName === "INPUT" && (t as HTMLInputElement).type !== "checkbox") || t.tagName === "TEXTAREA" || t.isContentEditable);
       if (typing && !(modal && e.key === "Escape")) return;
       // Enter·Space 는 키보드로 초점을 옮긴 버튼·메뉴 항목이 먼저 받는다 (덱 상세에서 버튼에 초점을 두고 Enter 를 누르면 학습이 시작되던 문제).
+      // 마우스로 누른 버튼 · 체크박스(:focus-visible 아님)에 남은 초점은 화면 키를 가져가지 않는다. 체크박스는 Enter 로 바뀌지 않으니 Enter 는 늘 화면 것 (QA T2-11 · V3-08 · V6-07).
       // 글자 · 숫자 단축키는 버튼에 초점이 있어도 동작한다 (마우스로 [답 보기]를 누른 뒤에도 1–4 가 되게)
       const control = "button, a[href], select, summary, input[type=checkbox], [role=button], [role=menuitem], [role=option], [role=checkbox], [role=switch], [role=radio], [role=tab]";
-      if ((e.key === "Enter" || e.key === " ") && t?.closest(control)) return;
+      const box = e.key === "Enter" && t?.matches("input[type=checkbox]");
+      if ((e.key === "Enter" || e.key === " ") && !box && t && t === keyFocus && t.closest(control)) return;
       let index: number;
       if (spec.startsWith("@")) {
         index = matchAction(spec.slice(1) as ActionId, e);
