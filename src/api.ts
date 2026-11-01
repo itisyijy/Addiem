@@ -806,7 +806,7 @@ export type SplitProposal = {
   evidence: Sent[];
 };
 /** kind rewrite 는 7일 안의 것만. how: format 서식 고치기 · ai AI로 확인한 뒤 · edit 직접 */
-export type CardChange = { id: number; kind: "split" | "rewrite"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean };
+export type CardChange = { id: number; kind: "split" | "rewrite" | "draft"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean };
 /** 8.2 고쳐 쓰기 전후 (글자, 줄바꿈으로 줄을 나눈다. **…** 는 굵게). locked: 그림 · 소리 · 서식이 있어 덮을 수 없는 칸 [질문, 답] */
 export type Rewrite = {
   card_id: number;
@@ -980,7 +980,7 @@ export type SyncStatus = {
   enabled: boolean;
   account: string | null;
   state: SyncState;
-  phase: "pull" | "push" | "media" | "snapshot" | "backup" | "restore" | null;
+  phase: "pull" | "push" | "media" | "snapshot" | "backup" | "local-backup" | "merge" | "restore" | null;
   done: number;
   total: number;
   last_sync: number | null;

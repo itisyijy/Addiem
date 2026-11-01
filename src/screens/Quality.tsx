@@ -220,7 +220,7 @@ export function Quality({ deckId }: { deckId: number }) {
   const done = changes.filter((c) => !c.undone && c.kind === "split");
   const fixed = changes.filter((c) => !c.undone && c.kind === "rewrite");
   // R6: 초안 · 그림 · 표에서 만든 카드 (7일). api.ts CardChange.kind 에 "draft" 가 없어 글자로 비교한다
-  const made = changes.filter((c) => !c.undone && (c.kind as string) === "draft");
+  const made = changes.filter((c) => !c.undone && c.kind === "draft");
   const undoDraft = (changeId: number) =>
     qualityApi.undo(changeId).then(
       () => (load(), toast({ title: "카드 만들기를 되돌렸어요" })),

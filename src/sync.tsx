@@ -694,8 +694,7 @@ export function DriveLoadLink() {
 
 /** 합류 버튼의 진행: 이 기기 백업 → 받기 · 합치기 (변경 파일마다 받는 데 시간이 걸린다, R-03) */
 const joinLabel = (s: SyncStatus | null, label: string) => {
-  // ponytail: api.ts 의 phase 타입에 local-backup · merge 가 아직 없다 (Rust 만 보낸다)
-  const phase: string | null | undefined = s?.phase;
+  const phase = s?.phase;
   return phase === "local-backup" ? "백업하는 중…" : phase === "pull" && s && s.total > 1 ? `${label} ${n(s.done)} / ${n(s.total)}` : label;
 };
 
