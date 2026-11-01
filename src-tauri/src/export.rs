@@ -236,16 +236,16 @@ fn preview(con: &Connection, deck_id: i64) -> Res<ExportPreview> {
 
 /// 고른 덱과 보관하지 않은 하위 덱
 fn scope(con: &Connection, deck_id: i64) -> Res<Vec<i64>> {
-    let mut st = con
-        .prepare(
-            "WITH RECURSIVE t(id) AS (
-                 SELECT id FROM deck WHERE id = ?1 AND archived_at IS NULL
-                 UNION ALL SELECT d.id FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
-             SELECT id FROM t",
-        )
-        .map_err(err)?;
-    let rows = st.query_map([deck_id], |r| r.get(0)).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(
+        con,
+        "WITH RECURSIVE t(id) AS (
+             SELECT id FROM deck WHERE id = ?1 AND archived_at IS NULL
+             UNION ALL SELECT d.id FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
+         SELECT id FROM t",
+        [deck_id],
+        |r| r.get(0),
+    )
+    .map_err(err)
 }
 
 // ------------------------------------------------------------------ C1-xc CSV
@@ -286,18 +286,16 @@ fn csv_text(con: &Connection, deck_id: i64, columns: &[String], plain_text: bool
     if cols.is_empty() {
         return Err("넣을 열을 하나 이상 골라 주세요.".into());
     }
-    let paths: HashMap<i64, String> = {
-        let mut st = con
-            .prepare(
-                "WITH RECURSIVE t(id, path) AS (
-                     SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
-                     UNION ALL SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
-                 SELECT id, path FROM t",
-            )
-            .map_err(err)?;
-        let rows = st.query_map([deck_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let paths: HashMap<i64, String> = db::rows(
+        con,
+        "WITH RECURSIVE t(id, path) AS (
+             SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
+             UNION ALL SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
+         SELECT id, path FROM t",
+        [deck_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)?;
     if paths.is_empty() {
         return Err("내보낼 덱을 찾지 못했어요.".into());
     }
@@ -547,19 +545,17 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let now = now_ms();
 
     // 덱. 고른 덱이 맨 위 이름이다. 보관한 덱은 그 아래까지 뺀다
-    let decks: Vec<(i64, String, i64, i64, Option<i64>)> = {
-        let mut st = con
-            .prepare(
-                "WITH RECURSIVE t(id, path) AS (
-                     SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
-                     UNION ALL
-                     SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
-                 SELECT t.id, t.path, d.created_at, d.updated_at, d.anki_deck_id FROM t JOIN deck d ON d.id = t.id",
-            )
-            .map_err(err)?;
-        let rows = st.query_map([deck_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let decks: Vec<(i64, String, i64, i64, Option<i64>)> = db::rows(
+        con,
+        "WITH RECURSIVE t(id, path) AS (
+             SELECT id, name FROM deck WHERE id = ?1 AND archived_at IS NULL
+             UNION ALL
+             SELECT d.id, t.path || '::' || d.name FROM deck d JOIN t ON d.parent_id = t.id WHERE d.archived_at IS NULL)
+         SELECT t.id, t.path, d.created_at, d.updated_at, d.anki_deck_id FROM t JOIN deck d ON d.id = t.id",
+        [deck_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .map_err(err)?;
     if decks.is_empty() {
         return Err("내보낼 덱을 찾지 못했어요.".into());
     }
@@ -576,65 +572,61 @@ fn build_collection(con: &Connection, deck_id: i64, col: &Path, with_history: bo
     let in_decks = deck_map.keys().map(i64::to_string).collect::<Vec<_>>().join(",");
 
     // 신규 카드 순서는 우리 큐와 같다 (commands::load_cards 의 position)
-    let mut cards: Vec<Card> = {
-        let mut st = con
-            .prepare(&format!(
-                "SELECT id, note_id, deck_id, template_ord, state, due_at, interval_days, stability, difficulty, srs_step,
-                        reps, lapses, created_at, updated_at, anki_card_id
-                 FROM card WHERE deck_id IN ({in_decks}) ORDER BY COALESCE(anki_card_id, id)"
-            ))
-            .map_err(err)?;
-        let rows = st
-            .query_map([], |r| {
-                Ok(Card {
-                    id: r.get(0)?,
-                    note_id: r.get(1)?,
-                    deck_id: r.get(2)?,
-                    ord: r.get(3)?,
-                    state: r.get(4)?,
-                    due_at: r.get(5)?,
-                    interval_days: r.get(6)?,
-                    stability: r.get(7)?,
-                    difficulty: r.get(8)?,
-                    step: r.get(9)?,
-                    reps: r.get(10)?,
-                    lapses: r.get(11)?,
-                    created_at: r.get(12)?,
-                    updated_at: r.get(13)?,
-                    anki_card_id: r.get(14)?,
-                })
+    let mut cards: Vec<Card> = db::rows(
+        con,
+        &format!(
+            "SELECT id, note_id, deck_id, template_ord, state, due_at, interval_days, stability, difficulty, srs_step,
+                    reps, lapses, created_at, updated_at, anki_card_id
+             FROM card WHERE deck_id IN ({in_decks}) ORDER BY COALESCE(anki_card_id, id)"
+        ),
+        [],
+        |r| {
+            Ok(Card {
+                id: r.get(0)?,
+                note_id: r.get(1)?,
+                deck_id: r.get(2)?,
+                ord: r.get(3)?,
+                state: r.get(4)?,
+                due_at: r.get(5)?,
+                interval_days: r.get(6)?,
+                stability: r.get(7)?,
+                difficulty: r.get(8)?,
+                step: r.get(9)?,
+                reps: r.get(10)?,
+                lapses: r.get(11)?,
+                created_at: r.get(12)?,
+                updated_at: r.get(13)?,
+                anki_card_id: r.get(14)?,
             })
-            .map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+        },
+    )
+    .map_err(err)?;
     if cards.is_empty() {
         return Err("내보낼 카드가 없어요.".into());
     }
-    let mut notes: Vec<Note> = {
-        let mut st = con
-            .prepare(&format!(
-                "SELECT id, note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid, exam_hits, exam_names FROM note
-                 WHERE id IN (SELECT note_id FROM card WHERE deck_id IN ({in_decks})) ORDER BY id"
-            ))
-            .map_err(err)?;
-        let rows = st
-            .query_map([], |r| {
-                Ok(Note {
-                    id: r.get(0)?,
-                    note_type_id: r.get(1)?,
-                    fields: r.get(2)?,
-                    tags: r.get(3)?,
-                    created_at: r.get(4)?,
-                    updated_at: r.get(5)?,
-                    anki_note_id: r.get(6)?,
-                    anki_guid: r.get(7)?,
-                    exam_hits: r.get(8)?,
-                    exam_names: r.get(9)?,
-                })
+    let mut notes: Vec<Note> = db::rows(
+        con,
+        &format!(
+            "SELECT id, note_type_id, fields, tags, created_at, updated_at, anki_note_id, anki_guid, exam_hits, exam_names FROM note
+             WHERE id IN (SELECT note_id FROM card WHERE deck_id IN ({in_decks})) ORDER BY id"
+        ),
+        [],
+        |r| {
+            Ok(Note {
+                id: r.get(0)?,
+                note_type_id: r.get(1)?,
+                fields: r.get(2)?,
+                tags: r.get(3)?,
+                created_at: r.get(4)?,
+                updated_at: r.get(5)?,
+                anki_note_id: r.get(6)?,
+                anki_guid: r.get(7)?,
+                exam_hits: r.get(8)?,
+                exam_names: r.get(9)?,
             })
-            .map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+        },
+    )
+    .map_err(err)?;
 
     let sources = source_tags(con)?;
     let root_did = deck_map[&deck_id];
@@ -1168,7 +1160,7 @@ mod tests {
     }
 
     fn strings(con: &Connection, sql: &str) -> Vec<String> {
-        con.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+        db::rows(con, sql, [], |r| r.get(0)).unwrap()
     }
 
     fn hex(b: &[u8]) -> String {
@@ -1846,14 +1838,14 @@ mod tests {
         assert_eq!(res["check_cards"].as_u64(), Some(0), "IO 스크립트를 '확인이 필요한 카드'로 세지 않는다");
         let con = a.db.lock().unwrap();
         let names = crate::commands::note_field_names(&con).unwrap();
-        let mut st = con
-            .prepare(
-                "SELECT n.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord FROM card c JOIN note n ON n.id = c.note_id
-                 JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id ORDER BY n.id, c.template_ord",
-            )
-            .unwrap();
-        let rows: Vec<(i64, String, i64, String, String, u32)> =
-            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        let rows: Vec<(i64, String, i64, String, String, u32)> = db::rows(
+            &con,
+            "SELECT n.id, n.fields, nt.id, t.qfmt, t.afmt, c.template_ord FROM card c JOIN note n ON n.id = c.note_id
+             JOIN note_type nt ON nt.id = n.note_type_id JOIN card_template t ON t.note_type_id = nt.id ORDER BY n.id, c.template_ord",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap();
         assert!(!rows.is_empty());
         for (nid, fields, nt, q, a, ord) in rows {
             assert!(crate::occlusion::is_note(&con, nid).unwrap(), "{nt}");
@@ -1946,8 +1938,7 @@ mod tests {
         crate::import::run_import_anki(&|_, _, _| {}, &b, out.to_str().unwrap(), false, &mut vec![]).unwrap();
         let bc = b.db.lock().unwrap();
         let rows = |c: &Connection| -> Vec<(String, ExamState)> {
-            let mut st = c.prepare("SELECT tags, exam_hits, exam_names FROM note ORDER BY fields").unwrap();
-            st.query_map([], |r| Ok((r.get(0)?, ExamState::of(0, r.get(1)?, r.get(2)?)))).unwrap().collect::<Result<_, _>>().unwrap()
+            db::rows(c, "SELECT tags, exam_hits, exam_names FROM note ORDER BY fields", [], |r| Ok((r.get(0)?, ExamState::of(0, r.get(1)?, r.get(2)?)))).unwrap()
         };
         let (before, after) = (rows(&con), rows(&bc));
         let tags: Vec<&str> = after.iter().map(|r| r.0.as_str()).collect();

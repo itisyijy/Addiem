@@ -15,7 +15,7 @@
 //! 학습 화면은 캔버스·스크립트 없이 % 로 위치한 div 를 그림 위에 겹친다. 창 크기가 바뀌어도 CSS 만으로 맞는다
 
 use crate::commands::{self, AppState};
-use crate::db::now_ms;
+use crate::db::{self, now_ms};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -373,9 +373,8 @@ fn load(con: &Connection, note_id: i64) -> Res<OcclusionNote> {
     let mut v: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
     v.resize(4, String::new());
     let (shapes, hide_all) = parse(&v[0]);
-    let mut st = con.prepare("SELECT id, template_ord, deck_id, reps > 0 OR lapses > 0 FROM card WHERE note_id = ?1 ORDER BY template_ord").map_err(err)?;
     let rows: Vec<(i64, u32, i64, bool)> =
-        st.query_map([note_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?.collect::<Result<_, _>>().map_err(err)?;
+        db::rows(con, "SELECT id, template_ord, deck_id, reps > 0 OR lapses > 0 FROM card WHERE note_id = ?1 ORDER BY template_ord", [note_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(err)?;
     Ok(OcclusionNote {
         note_id,
         deck_id: rows.first().map_or(0, |r| r.2),
@@ -625,12 +624,7 @@ mod tests {
     }
 
     fn cards(con: &Connection, nid: i64) -> Vec<(u32, i64)> {
-        con.prepare("SELECT template_ord + 1, id FROM card WHERE note_id = ?1 ORDER BY template_ord")
-            .unwrap()
-            .query_map([nid], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
+        db::rows(con, "SELECT template_ord + 1, id FROM card WHERE note_id = ?1 ORDER BY template_ord", [nid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
     }
 
     #[test]

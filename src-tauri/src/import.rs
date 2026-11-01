@@ -486,11 +486,13 @@ fn json_note_key(con: &Connection, c: &JsonCard) -> Res<(i64, String)> {
 /// 덱에 이미 있는 노트의 (노트 유형, 필드 JSON). 같은 JSON · CSV 를 다시 가져오면 이것과 같은 항목은 건너뛴다 (T4-02).
 /// batch: 지금 가져오는 묶음. 같은 파일 안의 같은 항목은 지금처럼 둘 다 넣는다 (duplicate 경고)
 fn deck_notes(con: &Connection, deck: i64, batch: Option<i64>) -> Res<HashSet<(i64, String)>> {
-    let mut st = con
-        .prepare("SELECT DISTINCT n.note_type_id, n.fields FROM note n JOIN card c ON c.note_id = n.id WHERE c.deck_id = ?1 AND (?2 IS NULL OR n.import_batch_id IS NOT ?2)")
-        .map_err(err)?;
-    let rows = st.query_map(params![deck, batch], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(
+        con,
+        "SELECT DISTINCT n.note_type_id, n.fields FROM note n JOIN card c ON c.note_id = n.id WHERE c.deck_id = ?1 AND (?2 IS NULL OR n.import_batch_id IS NOT ?2)",
+        params![deck, batch],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(err)
 }
 
 /// 이미 있어 넣지 않는 항목(번호)의 경고 · 참고는 뺀다. 넣지 않은 항목에 "가져왔어요"가 붙었다 (QA V2-03)
@@ -915,14 +917,9 @@ fn read_modern(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
             Pb::Varint(k) if n == 9 => Some(k as i64),
             _ => None,
         });
-        let fields: Vec<String> = col
-            .prepare("SELECT name FROM fields WHERE ntid = ?1 ORDER BY ord")
-            .and_then(|mut s| s.query_map([id], |r| r.get(0))?.collect())
-            .map_err(err)?;
-        let raw: Vec<(u32, String, Option<Vec<u8>>)> = col
-            .prepare("SELECT ord, name, config FROM templates WHERE ntid = ?1 ORDER BY ord")
-            .and_then(|mut s| s.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect())
-            .map_err(err)?;
+        let fields: Vec<String> = db::rows(col, "SELECT name FROM fields WHERE ntid = ?1 ORDER BY ord", [id], |r| r.get(0)).map_err(err)?;
+        let raw: Vec<(u32, String, Option<Vec<u8>>)> =
+            db::rows(col, "SELECT ord, name, config FROM templates WHERE ntid = ?1 ORDER BY ord", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
         // CardTemplate.Config: 1 앞면 · 2 뒷면 · 5 target_deck_id (deck override, 0 = 없음)
         let tdecks: Vec<(u32, i64)> = raw
             .iter()
@@ -1198,11 +1195,8 @@ fn target_deck(pkg: &Package, did: i64, odid: i64) -> Option<&ADeck> {
 /// B2-s. 실제 덱마다 자기 카드 · 노트 · 기록 · 밀린 복습 · 수식 · 템플릿 기능 수.
 /// existing: 이미 앱에 있는 노트 guid. gone: 넣지 않을 내가 지운 노트 guid. overdue_before: 이 날(컬렉션 생성일 기준 일수)보다 기한이 앞선 복습 카드는 밀린 것
 fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>, overdue_before: i64) -> Res<Vec<DeckStat>> {
-    let revs: HashMap<i64, usize> = {
-        let mut st = pkg.col.prepare("SELECT cid, count(*) FROM revlog GROUP BY cid").map_err(err)?;
-        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let revs: HashMap<i64, usize> =
+        db::rows(&pkg.col, "SELECT cid, count(*) FROM revlog GROUP BY cid", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)?;
     let mut st = pkg
         .col
         .prepare(&format!(
@@ -1282,9 +1276,7 @@ fn count(col: &Connection, sql: &str) -> Res<usize> {
 
 /// 노트타입별 카드 수
 fn cards_by_type(col: &Connection) -> Res<HashMap<i64, usize>> {
-    let mut st = col.prepare("SELECT n.mid, count(*) FROM cards c JOIN notes n ON n.id = c.nid GROUP BY n.mid").map_err(err)?;
-    let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)?;
-    rows.collect::<Result<_, _>>().map_err(err)
+    db::rows(col, "SELECT n.mid, count(*) FROM cards c JOIN notes n ON n.id = c.nid GROUP BY n.mid", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)
 }
 
 fn degraded_summary(pkg: &Package, by_type: &HashMap<i64, usize>) -> Vec<Degraded> {
@@ -1322,9 +1314,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
     let overdue_before = db::study_day(now_ms()) - crt_day;
     let existing: HashSet<String> = {
         let con = state.db.lock().map_err(err)?;
-        let mut st = con.prepare("SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL").map_err(err)?;
-        let rows = st.query_map([], |r| r.get(0)).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
+        db::rows(&con, "SELECT anki_guid FROM note WHERE anki_guid IS NOT NULL", [], |r| r.get(0)).map_err(err)?
     };
     let (update, gone) = {
         let con = state.db.lock().map_err(err)?;
@@ -1486,11 +1476,7 @@ fn run_import_selected(
     let mut decks = Decks::default();
     let mut deck_cache: HashMap<i64, i64> = HashMap::new();
     {
-        let pairs: Vec<(i64, i64)> = {
-            let mut st = pkg.col.prepare("SELECT DISTINCT did, odid FROM cards").map_err(err)?;
-            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-            rows.collect::<Result<_, _>>().map_err(err)?
-        };
+        let pairs: Vec<(i64, i64)> = db::rows(&pkg.col, "SELECT DISTINCT did, odid FROM cards", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
         for (did, odid) in pairs {
             let real = real_deck(did, odid);
             if deck_cache.contains_key(&real) || !selected.is_none_or(|s| s.contains(&real)) {
@@ -1648,9 +1634,7 @@ fn run_import_selected(
     // 옮기면 Anki 의 상태, 간격, 기한, 기억 상태를 그대로 가져온다
     let crt_day = db::study_day(pkg.col.query_row("SELECT crt FROM col", [], |r| r.get::<_, i64>(0)).map_err(err)? * 1000);
     let last_review: HashMap<i64, i64> = if with_history {
-        let mut st = pkg.col.prepare("SELECT cid, max(id) FROM revlog WHERE ease BETWEEN 1 AND 4 GROUP BY cid").map_err(err)?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
+        db::rows(&pkg.col, "SELECT cid, max(id) FROM revlog WHERE ease BETWEEN 1 AND 4 GROUP BY cid", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?
     } else {
         HashMap::new()
     };
@@ -1752,11 +1736,8 @@ fn run_import_selected(
     }
     emit("cards", total, total);
     if !gone.is_empty() {
-        let logs: HashMap<i64, i64> = {
-            let mut st = pkg.col.prepare("SELECT cid, count(*) FROM revlog WHERE ease BETWEEN 1 AND 4 GROUP BY cid").map_err(err)?;
-            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-            rows.collect::<Result<_, _>>().map_err(err)?
-        };
+        let logs: HashMap<i64, i64> =
+            db::rows(&pkg.col, "SELECT cid, count(*) FROM revlog WHERE ease BETWEEN 1 AND 4 GROUP BY cid", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
         for ((ty, tpl), cids) in &gone {
             let reviews = cids.iter().filter_map(|c| logs.get(c)).sum::<i64>() as usize;
             // 기록은 지운 카드의 기록처럼 카드 없이 통계에만 남긴다 (A4). 옮기지 않으면 넣지 않는다
@@ -1848,11 +1829,8 @@ fn run_import_selected(
     emit("media", names.len(), names.len());
     // 넣은 노트의 미디어 참조를 바꾼 이름으로 고치고, 넣은 값(자리 맞추기 · 미디어 이름 바꾸기 뒤)을 원본(B)으로 남긴다 (DU1)
     {
-        let notes: Vec<(i64, String, String)> = {
-            let mut st = tx.prepare("SELECT id, fields, tags FROM note WHERE import_batch_id = ?1").map_err(err)?;
-            let rows = st.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
-            rows.collect::<Result<_, _>>().map_err(err)?
-        };
+        let notes: Vec<(i64, String, String)> =
+            db::rows(&tx, "SELECT id, fields, tags FROM note WHERE import_batch_id = ?1", [batch], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
         for (id, fields, tags) in notes {
             let old: Vec<String> = serde_json::from_str(&fields).map_err(err)?;
             let new: Vec<String> = old.iter().map(|f| rename_refs(f, &renamed)).collect();
@@ -1874,8 +1852,8 @@ fn run_import_selected(
     result.decks = roots.len();
     // AU5 소리는 재생한다 (I28 경고는 없앴다). 쓰는 소리 · 그림 파일이 미디어 폴더에 없는 노트만 알린다 (그림은 T4-13)
     let (missing_sound, missing_image) = {
-        let mut st = pkg.col.prepare("SELECT id, flds FROM notes WHERE flds LIKE '%[sound:%' OR flds LIKE '%src=%'").map_err(err)?;
-        let notes = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
+        let notes: Vec<(i64, String)> =
+            db::rows(&pkg.col, "SELECT id, flds FROM notes WHERE flds LIKE '%[sound:%' OR flds LIKE '%src=%'", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
         let gone = |s: &str| safe_media_name(s).is_err() || !dir.join(renamed.get(s).map_or(s, String::as_str)).exists();
         let (mut sound, mut image) = (0, 0);
         for (_, flds) in notes.iter().filter(|(id, _)| picked_note(*id)) {
@@ -1903,8 +1881,7 @@ fn run_import_selected(
         import_revlog(&tx, &pkg.col, cards_of, &ords_of)?
     } else {
         // 이미 있던 노트의 카드 기록은 세지 않는다: 그 노트를 처음 가져올 때 옮겼거나 옮기지 않기로 골랐다
-        let mut st = pkg.col.prepare("SELECT cid FROM revlog").map_err(err)?;
-        let cids = st.query_map([], |r| r.get::<_, i64>(0)).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
+        let cids: Vec<i64> = db::rows(&pkg.col, "SELECT cid FROM revlog", [], |r| r.get(0)).map_err(err)?;
         cids.into_iter().filter(|cid| inserted.contains(cid)).count()
     };
     result.filtered_decks = pkg.decks.values().filter(|d| d.filtered).count();
@@ -2038,11 +2015,7 @@ fn schedule(c: &AnkiCard, crt_day: i64, fsrs: &fsrs::FSRS) -> Schedule {
 /// 끝내 못 찾은 기록(원본에서 지운 카드)은 card_id 없이 남긴다 (통계는 사실로 남아야 한다, 데이터 모델 A4)
 /// ords_of: 다시 맞춘 유형(모델 id)의 Anki ord -> 우리 ord. 없는 ord 는 이 앱에서 지운 카드 종류라 카드를 찾지 않는다 (Q2-08)
 fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>, ords_of: &HashMap<i64, HashMap<u32, u32>>) -> Res<usize> {
-    let mut card_by_anki: HashMap<i64, i64> = {
-        let mut st = tx.prepare("SELECT anki_card_id, id FROM card WHERE anki_card_id IS NOT NULL").map_err(err)?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let mut card_by_anki: HashMap<i64, i64> = db::rows(tx, "SELECT anki_card_id, id FROM card WHERE anki_card_id IS NOT NULL", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
     {
         let mut ours = tx
             .prepare("SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = ?1 AND c.template_ord = ?2")
@@ -2066,16 +2039,8 @@ fn import_revlog(tx: &Connection, col: &Connection, only: Option<&HashSet<i64>>,
             }
         }
     }
-    let done: HashSet<i64> = {
-        let mut st = tx.prepare("SELECT anki_revlog_id FROM review_log WHERE anki_revlog_id IS NOT NULL").map_err(err)?;
-        let rows = st.query_map([], |r| r.get(0)).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
-    let seen: HashSet<(i64, i64)> = {
-        let mut st = tx.prepare("SELECT card_id, reviewed_at FROM review_log WHERE card_id IS NOT NULL").map_err(err)?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)?
-    };
+    let done: HashSet<i64> = db::rows(tx, "SELECT anki_revlog_id FROM review_log WHERE anki_revlog_id IS NOT NULL", [], |r| r.get(0)).map_err(err)?;
+    let seen: HashSet<(i64, i64)> = db::rows(tx, "SELECT card_id, reviewed_at FROM review_log WHERE card_id IS NOT NULL", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
     // 음수 간격은 초 단위다 (학습 단계)
     let days = |x: i64| if x < 0 { -x as f64 / 86_400.0 } else { x as f64 };
     let mut st = col.prepare("SELECT id, cid, ease, ivl, lastIvl, time, type FROM revlog WHERE ease BETWEEN 1 AND 4 ORDER BY id").map_err(err)?;
@@ -2502,7 +2467,7 @@ mod tests {
         let r = run_import_selected(&|_, _, _| {}, &s, pkg_path.to_str().unwrap(), true, Some(&picked), &[], &mut vec![]).unwrap();
         assert_eq!((r.notes, r.cards, r.media, r.reviews, r.filtered_cards), (2, 2, 2, 2, 1));
         let con = s.db.lock().unwrap();
-        let strings = |sql: &str| -> Vec<String> { con.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap() };
+        let strings = |sql: &str| -> Vec<String> { db::rows(&con, sql, [], |r| r.get(0)).unwrap() };
         assert_eq!(strings("SELECT name FROM deck ORDER BY id"), ["A", "1"], "고르지 않은 덱(A::2, B)은 만들지 않는다");
         assert_eq!(strings("SELECT anki_guid FROM note ORDER BY anki_guid"), ["guid1", "guid4"]);
         assert_eq!(strings("SELECT filename FROM media ORDER BY filename"), ["a1.png", "f.png"], "고른 노트가 쓰는 미디어만");
@@ -2648,10 +2613,7 @@ mod tests {
         assert_eq!(r.media, 1);
         assert_eq!(renamed(&r), ["이름은 같은데 내용이 다른 미디어 1개는 기존 파일을 그대로 두고 새 이름으로 저장했어요"]);
         assert!(!r.issues.iter().any(|i| i.kind == "missing_sound"), "바꾼 이름으로 소리 파일을 찾는다");
-        let rows: Vec<String> = {
-            let con = s.db.lock().unwrap();
-            con.prepare("SELECT filename FROM media ORDER BY filename").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
-        };
+        let rows: Vec<String> = db::rows(&s.db.lock().unwrap(), "SELECT filename FROM media ORDER BY filename", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, [new.clone(), "heart.png".into()]);
 
         // 같은 파일을 다시: 새로 쓰는 것도, 세는 것도 없다 (T2-17)
@@ -2796,8 +2758,7 @@ mod tests {
             "SELECT count(*) FROM note WHERE anki_guid = 'g'",
             "SELECT c.id FROM card c JOIN note n ON n.id = c.note_id WHERE n.anki_guid = 'g' AND c.template_ord = 0",
         ] {
-            let plan: Vec<String> =
-                con.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap().query_map([], |r| r.get(3)).unwrap().map(Result::unwrap).collect();
+            let plan: Vec<String> = db::rows(&con, &format!("EXPLAIN QUERY PLAN {sql}"), [], |r| r.get(3)).unwrap();
             assert!(plan.iter().any(|p| p.contains("idx_note_guid")), "{plan:?}");
         }
         // T2-09: BOM 이 붙은 JSON 파일 (메모장 · PowerShell)
