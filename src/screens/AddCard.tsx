@@ -10,7 +10,7 @@ import { deckFace, scopeCss } from "../cardCss";
 import { checkMath, findMath, withMath } from "../math";
 import { useToast, type ToastInput } from "../toast";
 import { useFileDrop } from "../fileDrop";
-import { when } from "../sync";
+import { when } from "../dates";
 import { DiscardModal } from "./NewDeck";
 import { menuKeys } from "./Deck";
 import { DeckPicker, rootDeckIdOf, type DeckChoice } from "./DeckPicker";

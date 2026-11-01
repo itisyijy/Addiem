@@ -4,33 +4,8 @@ import { api, errorText, planApi, type ConfigPreview, type DeckConfig, type Deck
 import { Button, Icon, Toggle } from "../ui";
 import { n, studyDate, useKey, useLeaveGuard, useNav, type Route } from "../nav";
 import { DiscardModal } from "./NewDeck";
+import { addDays, dotDate, iso, longDate, monthDay, parse } from "../dates";
 
-const WEEKDAY = "일월화수목금토";
-const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const parse = (s: string) => {
-  const [y, m, d] = s.split("-").map(Number);
-  return new Date(y, m - 1, d);
-};
-/** 2026. 10. 28. (수) */
-const longDate = (s: string) => {
-  const d = parse(s);
-  return `${d.getFullYear()}. ${d.getMonth() + 1}. ${d.getDate()}. (${WEEKDAY[d.getDay()]})`;
-};
-/** 10월 28일 */
-const shortDate = (s: string) => {
-  const d = parse(s);
-  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
-};
-/** 10. 16. (금) */
-const dotDate = (s: string) => {
-  const d = parse(s);
-  return `${d.getMonth() + 1}. ${d.getDate()}. (${WEEKDAY[d.getDay()]})`;
-};
-const addDays = (s: string, days: number) => {
-  const d = parse(s);
-  d.setDate(d.getDate() + days);
-  return iso(d);
-};
 /** a 부터 b 까지 (둘 다 포함) 며칠 */
 const spanDays = (a: string, b: string) => Math.round((parse(b).getTime() - parse(a).getTime()) / 86_400_000) + 1;
 /** 10 아래는 1씩, 그 위는 5씩 */
@@ -136,7 +111,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
     ? [
         ["하루 신규 상한", saved.daily_new_limit === null ? "없음" : `${n(saved.daily_new_limit)}장`, `${n(edit.daily_new_limit ?? 0)}장`],
         ["하루 신규 필요", before.needed_per_day === null ? "—" : `${n(before.needed_per_day)}장`, `${n(after.needed_per_day ?? 0)}장`],
-        ["신규 첫 학습 완료 예상", before.finish_date ? shortDate(before.finish_date) : "—", after.finish_date ? shortDate(after.finish_date) : "—"],
+        ["신규 첫 학습 완료 예상", before.finish_date ? monthDay(before.finish_date) : "—", after.finish_date ? monthDay(after.finish_date) : "—"],
       ]
     : [
         ["학습 가능 일수", days(before), days(after)],
@@ -157,7 +132,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
     }
     const exact = r / after.days;
     if (paused && after.resume_date)
-      return `남은 신규 ${n(r)}장 ÷ 쉬지 않는 ${n(after.days)}일 = ${Number.isInteger(exact) ? n(exact) : exact.toFixed(1)} → ${shortDate(after.resume_date)}부터 하루 ${n(Math.ceil(exact))}장`;
+      return `남은 신규 ${n(r)}장 ÷ 쉬지 않는 ${n(after.days)}일 = ${Number.isInteger(exact) ? n(exact) : exact.toFixed(1)} → ${monthDay(after.resume_date)}부터 하루 ${n(Math.ceil(exact))}장`;
     // 0.1 보다 작으면 "0.0" 이 되지 않게 둘째 자리까지 (QA T3-26)
     return `남은 신규 ${n(r)}장 ÷ ${n(after.days)}일 = ${Number.isInteger(exact) ? n(exact) : exact.toFixed(exact < 0.1 ? 2 : 1)} → 하루 ${n(Math.ceil(exact))}장${Number.isInteger(exact) ? "" : " (올림)"}`;
   })();
@@ -387,13 +362,13 @@ export function DeckSettings({ deckId }: { deckId: number }) {
                   <Button variant="secondary" size="M" label={`상한 ${n(after.needed_per_day)}장으로`} onClick={() => set({ daily_new_limit: after.needed_per_day })} />
                 )}
                 {suggested && (
-                  <Button variant="secondary" size="M" label={`목표일 ${shortDate(suggested)}로`} onClick={() => set({ target_date: suggested })} />
+                  <Button variant="secondary" size="M" label={`목표일 ${monthDay(suggested)}로`} onClick={() => set({ target_date: suggested })} />
                 )}
               </div>
               {/* 목표일 당일을 빼면 마지막 학습일 다음 날을 제안한다. 두 날짜가 다른 이유를 같이 적는다 */}
               {suggested && after.finish_date && !edit.include_target_day && (
                 <p className="t-caption c-tertiary">
-                  {shortDate(after.finish_date)}까지 학습 · 당일 제외 기준 목표일 {shortDate(suggested)}
+                  {monthDay(after.finish_date)}까지 학습 · 당일 제외 기준 목표일 {monthDay(suggested)}
                 </p>
               )}
             </div>
@@ -422,7 +397,7 @@ export function DeckSettings({ deckId }: { deckId: number }) {
                   <Button
                     variant="secondary"
                     size="M"
-                    label={`목표일도 ${n(pausedDays!)}일 미루기 (${shortDate(shifted)})`}
+                    label={`목표일도 ${n(pausedDays!)}일 미루기 (${monthDay(shifted)})`}
                     onClick={() => set({ target_date: shifted })}
                   />
                 </div>

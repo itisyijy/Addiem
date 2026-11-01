@@ -22,6 +22,7 @@ import { NoteTypesEntry } from "./NoteTypes";
 import { LAST_TYPE } from "./AddCard";
 import type { Undoable } from "../api";
 import { UndoConfirm } from "./DeckUpdate";
+import { md, monthDay, monthDayAt, stamp, WEEKDAY } from "../dates";
 
 const HOURS = [0, 1, 2, 3, 4, 5, 6];
 const THEMES: [ThemePref, string][] = [
@@ -29,10 +30,6 @@ const THEMES: [ThemePref, string][] = [
   ["light", "밝게"],
   ["dark", "어둡게"],
 ];
-
-function when(ms: number, secs = false) {
-  return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", second: secs ? "2-digit" : undefined, hour12: false }).format(ms);
-}
 
 /** 긴 경로는 끝의 세 단계만. C:\Users\me\AppData\Roaming\앱\backups -> …\Roaming\앱\backups */
 const shortPath = (p: string) => {
@@ -101,7 +98,7 @@ export function Settings({ focus, backup }: { focus?: "archived" | "restore"; ba
           <span className="prefs__text">
             <span className="t-body-m-strong">지금 백업 만들기</span>
             <span className="t-body-s c-secondary">
-              {info.last_backup ? `마지막 백업 · ${when(info.last_backup)} · ` : "아직 백업이 없어요 · "}
+              {info.last_backup ? `마지막 백업 · ${stamp(info.last_backup)} · ` : "아직 백업이 없어요 · "}
               덱, 카드, 복습 기록, 미디어, 연결한 자료가 파일 하나에 들어가요.
             </span>
           </span>
@@ -367,7 +364,7 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
       await api.restoreBackup(pick, true);
       // 다시 불러온 홈이 토스트로 알린다 (DU49). 저장이 막혀도 복구는 됐다
       try {
-        sessionStorage.setItem(RESTORED_KEY, when(list!.find((b) => b.name === pick)!.at));
+        sessionStorage.setItem(RESTORED_KEY, stamp(list!.find((b) => b.name === pick)!.at));
       } catch {
         /* 토스트만 빠진다 */
       }
@@ -392,7 +389,7 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
               <span className="import__radio" />
               <span className="import__option-text">
                 {/* 같은 분에 만든 백업끼리만 초까지 (DU51) */}
-                <span className="t-body-m-strong">{when(b.at, list.some((o) => o !== b && when(o.at) === when(b.at)))}</span>
+                <span className="t-body-m-strong">{stamp(b.at, list.some((o) => o !== b && stamp(o.at) === stamp(b.at)))}</span>
                 <span className="t-caption c-tertiary">
                   {BACKUP_KIND[b.kind]}
                   {b.kind === "other" && ` (${b.name})`} · {size(b.bytes)}
@@ -488,8 +485,6 @@ function WipeConfirm({ info, onClose, onDone }: { info: AppInfo; onClose: () => 
 const DAY = 86_400_000;
 const dayNum = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / DAY;
 const isoOf = (day: number) => new Date(day * DAY).toISOString().slice(0, 10);
-const md = (iso: string) => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
-const longDate = (iso: string) => `${+iso.slice(5, 7)}월 ${+iso.slice(8, 10)}일`;
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 /** 계획 완료율을 보는 기간 (오늘 제외 최근 14일, mvp_metrics 와 같다) */
 const WINDOW = 14;
@@ -563,10 +558,10 @@ function Metrics() {
                         key={day}
                         className="metric__bar"
                         style={{ height: Math.max(2, Math.round(Math.min(1, p.done / p.planned) * CHART_H)) }}
-                        title={`${longDate(day)} · 계획 ${n(p.planned)}장 중 ${n(p.done)}장`}
+                        title={`${monthDay(day)} · 계획 ${n(p.planned)}장 중 ${n(p.done)}장`}
                       />
                     ) : (
-                      <span key={day} className="metric__bar metric__bar--none" title={`${longDate(day)} · 계획 없음`} />
+                      <span key={day} className="metric__bar metric__bar--none" title={`${monthDay(day)} · 계획 없음`} />
                     );
                   })}
                 </div>
@@ -632,7 +627,6 @@ const CELL = 17; // 13px 칸 + 4px 간격
 const LABEL_W = 28; // 요일 글자 칸
 /** 칸 색 단계: 0 / 1–49 / 50–99 / 100–199 / 200+ (고정 장수, E2-h 노트) */
 const heatLevel = (n: number) => (n === 0 ? 0 : n < 50 ? 1 : n < 100 ? 2 : n < 200 ? 3 : 4);
-const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
 
 function Heatmap() {
   const [deck, setDeck] = useState<{ id: number; name: string } | null>(null);
@@ -733,7 +727,7 @@ function Heatmap() {
               key={iso}
               className={`heat__cell heat--${heatLevel(count(iso))} ${hover?.iso === iso ? "is-hover" : ""}`}
               style={{ left: LABEL_W + i * CELL, top: 18 + d * CELL }}
-              aria-label={`${longDate(iso)} · 학습한 카드 ${n(count(iso))}장`}
+              aria-label={`${monthDay(iso)} · 학습한 카드 ${n(count(iso))}장`}
               onMouseEnter={() => setHover({ w: i, d, iso })}
             />
           )),
@@ -741,7 +735,7 @@ function Heatmap() {
         {hover && (
           <span className="heat__tip t-caption" style={{ left: Math.min(LABEL_W + hover.w * CELL + 20, LABEL_W + fit * CELL - 190), top: 18 + hover.d * CELL - 34 }}>
             <b>
-              {longDate(hover.iso)} ({WEEKDAY[new Date(dayNum(hover.iso) * DAY).getUTCDay()]})
+              {monthDay(hover.iso)} ({WEEKDAY[new Date(dayNum(hover.iso) * DAY).getUTCDay()]})
             </b>
             {tip ? `학습한 카드 ${n(tip.cards)}장${tip.decks ? ` · 덱 ${n(tip.decks)}개` : ""}` : "학습 없음"}
           </span>
@@ -775,7 +769,7 @@ function Heatmap() {
               .reverse()
               .map(([iso, sum]) => (
                 <tr key={iso}>
-                  <td>{longDate(iso)} 주</td>
+                  <td>{monthDay(iso)} 주</td>
                   <td>{n(sum)}장</td>
                 </tr>
               ))}
@@ -787,8 +781,6 @@ function Heatmap() {
 }
 
 // ---------------------------------------------------------------- E3 보관한 덱
-
-const monthDay = (ms: number) => new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric" }).format(ms);
 
 function Archived({ focus }: { focus: boolean }) {
   const nav = useNav();
@@ -844,10 +836,10 @@ function Archived({ focus }: { focus: boolean }) {
           <span className="prefs__text">
             <span className="prefs__title">
               <span className="t-body-m-strong">{d.name}</span>
-              {d.target_passed && d.target_date && <Badge>목표일 지남 · {longDate(d.target_date)}</Badge>}
+              {d.target_passed && d.target_date && <Badge>목표일 지남 · {monthDay(d.target_date)}</Badge>}
             </span>
             <span className="t-body-s c-tertiary">
-              {monthDay(d.archived_at)} 보관 · 카드 {n(d.cards)}장{d.subdecks > 0 ? ` · 하위 덱 ${n(d.subdecks)}개` : ""}
+              {monthDayAt(d.archived_at)} 보관 · 카드 {n(d.cards)}장{d.subdecks > 0 ? ` · 하위 덱 ${n(d.subdecks)}개` : ""}
             </span>
           </span>
           <Button variant="ghost" size="M" icon="trash" label="완전히 삭제" className="btn--danger-text" onClick={() => setDeleting(d)} />

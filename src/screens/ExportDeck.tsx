@@ -7,9 +7,9 @@ import { Button, Icon, Spinner, Toggle } from "../ui";
 import { n, useKey, useNav, eul } from "../nav";
 import { useToast } from "../toast";
 import { Modal } from "./NewDeck";
+import { eta, iso } from "../dates";
 import "../styles/export.css";
 
-const iso = (t: Date) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
 /** 저장 경로는 마지막 폴더와 파일 이름만 (…\Documents\덱 2026-10-14.apkg) */
 const shortPath = (p: string) => p.replace(/^.*([\\/][^\\/]+[\\/][^\\/]+)$/, "…$1");
 
@@ -326,16 +326,14 @@ function Progress({ info, history, prog, started }: { info: ExportPreview; histo
   const at = prog ? steps.findIndex((s) => s.key === prog.step) : 0;
   const frac = prog && prog.total > 0 ? prog.done / prog.total : 0;
   const ratio = Math.min(1, (at + frac) / steps.length);
-  // 남은 시간은 지금까지 걸린 시간에 비례한 어림값. 처음 5% 는 너무 흔들려서 보이지 않는다 (B2-p 와 같다)
-  const elapsed = (Date.now() - started) / 1000;
-  const left = ratio >= 0.05 && ratio < 1 ? Math.max(1, Math.ceil((elapsed * (1 - ratio)) / ratio)) : null;
+  const left = eta(ratio, started);
   const done = { notes: `${n(info.cards)}장`, reviews: `${n(info.reviews)}건`, media: `${n(info.media)}개`, zip: "완료" };
 
   return (
     <div className="export__progress">
       <div className="export__progress-head">
         <span className="t-title-s c-accent">{Math.floor(ratio * 100)}%</span>
-        {left !== null && <span className="t-caption c-tertiary">약 {left < 60 ? `${left}초` : `${Math.ceil(left / 60)}분`} 남음</span>}
+        {left !== null && <span className="t-caption c-tertiary">{left}</span>}
       </div>
       <div className="progress__track">
         <span className="progress__fill export__fill" style={{ width: `${ratio * 100}%` }} />

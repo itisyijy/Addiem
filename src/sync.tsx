@@ -11,6 +11,7 @@ import { Badge, Button, Checkbox, Icon, Input, Segment, Spinner, Toggle, type Ic
 import { useToast } from "./toast";
 import { n, useKey, useModalScope, useNav, useOverlayScope } from "./nav";
 import { plainEnter } from "./keys";
+import { dateWithDay, hm, iso, monthDayAt, when } from "./dates";
 import { useFocusTrap } from "./screens/NewDeck";
 import "./styles/sync.css";
 
@@ -58,19 +59,6 @@ export const syncFlow = (f: Flow) => openFlow(f);
 
 // ---------------------------------------------------------------- 글자
 
-const DAY = 86_400_000;
-const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
-const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-const md = (d: Date) => `${d.getMonth() + 1}월 ${d.getDate()}일`;
-const dayStart = (ms: number) => new Date(new Date(ms).toDateString()).getTime();
-
-/** 오늘 09:12 · 어제 22:10 · 10월 12일 22:40. secs: 같은 분에 고친 두 버전을 가리려고 초까지 (K7) */
-export function when(ms: number, secs = false) {
-  const d = new Date(ms);
-  const t = secs ? `${hm(d)}:${String(d.getSeconds()).padStart(2, "0")}` : hm(d);
-  const days = Math.round((dayStart(Date.now()) - dayStart(ms)) / DAY);
-  return days === 0 ? `오늘 ${t}` : days === 1 ? `어제 ${t}` : `${md(d)} ${t}`;
-}
 /** 맞추지 못했을 때: 변경은 이 기기에 남아 있다는 것을 먼저 (T3-14) */
 const failText = (s: SyncStatus) =>
   s.pending > 0 ? `아직 올리지 못한 변경 ${n(s.pending)}건은 이 기기에 저장돼 있어요. 다음 동기화 때 올려요.` : "이 기기 데이터는 그대로예요. 다음 동기화 때 다시 맞춰요.";
@@ -113,7 +101,7 @@ export function ago(ms: number) {
 }
 const backupDate = (ms: number) => {
   const d = new Date(ms);
-  return `${md(d)} (${WEEKDAY[d.getDay()]}) ${hm(d)}`;
+  return `${dateWithDay(iso(d))} ${hm(d)}`;
 };
 // 1MB 아래는 KB (처음 쓰는 계정의 백업 17KB 가 "0.0MB" 로 보였다)
 export const size = (b: number) =>
@@ -836,7 +824,7 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
   const title = !choice
     ? "이 기기에도 덱이 있어요"
     : kind === "restore"
-      ? `${dev}에서 데이터를 ${header?.reason?.backup_at ? md(new Date(header.reason.backup_at)) : "예전"} 백업으로 복구했어요`
+      ? `${dev}에서 데이터를 ${header?.reason?.backup_at ? monthDayAt(header.reason.backup_at) : "예전"} 백업으로 복구했어요`
       : kind === "lock"
         ? "다른 기기에서 Drive 데이터를 암호로 잠갔어요"
         : kind === "unlock"

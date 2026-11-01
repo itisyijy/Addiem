@@ -6,9 +6,7 @@ import { api, errorText, type AppInfo } from "../api";
 import { useToast } from "../toast";
 import { Button, Icon } from "../ui";
 import { Modal } from "./NewDeck";
-
-const when = (ms: number) =>
-  new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(ms);
+import { stamp } from "../dates";
 
 /** empty: 카드 0장 백업밖에 없다고 확인한 뒤의 복구 (QA V1-01) */
 type Act = "retry" | "restore" | "empty" | "fresh";
@@ -33,7 +31,7 @@ export function Recover({ info, onRecovered }: { info: AppInfo; onRecovered: () 
         const name = await api.restoreBackup(null, false, kind === "empty");
         // 어느 백업으로 돌아갔는지 알린다 (QA V1-01)
         const at = (await api.localBackups().catch(() => [])).find((b) => b.name === name)?.at;
-        toast({ title: at ? `${when(at)} 백업으로 복구했어요` : "백업으로 복구했어요", text: "열지 못한 데이터 파일은 데이터 폴더에 남겨 뒀어요", ms: 5000 });
+        toast({ title: at ? `${stamp(at)} 백업으로 복구했어요` : "백업으로 복구했어요", text: "열지 못한 데이터 파일은 데이터 폴더에 남겨 뒀어요", ms: 5000 });
       }
       onRecovered();
     } catch (e) {
@@ -52,7 +50,7 @@ export function Recover({ info, onRecovered }: { info: AppInfo; onRecovered: () 
         <Icon name="alert" size={22} scaled className="c-warn" />
       </span>
       <h1 className="t-title-s">학습 데이터를 열지 못했어요</h1>
-      <p className="t-caption c-tertiary">{info.last_backup ? `마지막 백업 · ${when(info.last_backup)}` : "백업이 아직 없어요"}</p>
+      <p className="t-caption c-tertiary">{info.last_backup ? `마지막 백업 · ${stamp(info.last_backup)}` : "백업이 아직 없어요"}</p>
       <div className="recover__actions">
         <Button variant="secondary" size="M" icon="rotate" label="다시 시도" busy={busy === "retry"} busyLabel="여는 중…" disabled={!!busy} onClick={() => run("retry")} />
         {info.last_backup && (

@@ -10,6 +10,7 @@ import { useToast } from "../toast";
 import { useFileDrop } from "../fileDrop";
 import { Modal } from "./NewDeck";
 import { UpdateChoice } from "./DeckUpdate";
+import { eta } from "../dates";
 import "../styles/import.css";
 
 // String.raw: JSON 문자열 안의 수식은 역슬래시를 두 번 쓴다 (\\( … \\)). 그대로 보여주고 그대로 붙여넣게
@@ -636,9 +637,7 @@ function ProgressCard({ prog, started, cards, decks, media }: {
   const active = at + (ended ? 1 : 0);
   const frac = prog && !ended && prog.step !== "done" && prog.total > 0 ? prog.done / prog.total : 0;
   const ratio = Math.min(1, (active + frac) / STEPS.length);
-  // 남은 시간은 지금까지 걸린 시간에 비례한 어림값. 처음 5% 는 너무 흔들려서 보이지 않는다
-  const elapsed = (Date.now() - started) / 1000;
-  const left = ratio >= 0.05 && ratio < 1 ? Math.max(1, Math.ceil((elapsed * (1 - ratio)) / ratio)) : null;
+  const left = eta(ratio, started);
   // 미디어는 고른 노트가 쓰는 것만 들어가서, 덱을 골랐으면 미디어 단계 이벤트가 알려 주는 수를 쓴다
   const mediaTotal = media ?? (prog?.step === "media" || prog?.step === "done" ? prog.total : null);
   const totals = { unzip: 0, decks, cards, media: mediaTotal ?? 0 };
@@ -648,7 +647,7 @@ function ProgressCard({ prog, started, cards, decks, media }: {
       <div className="import__progress-head">
         <span className="t-title-s">가져오는 중</span>
         <span className="t-label-m c-accent">
-          {Math.floor(ratio * 100)}%{left !== null && ` · 약 ${left < 60 ? `${left}초` : `${Math.ceil(left / 60)}분`} 남음`}
+          {Math.floor(ratio * 100)}%{left !== null && ` · ${left}`}
         </span>
       </div>
       <div className="progress__track">

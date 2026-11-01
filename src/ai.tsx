@@ -6,7 +6,8 @@ import { aiApi, errorText, type AiAuthEvent, type AiError, type AiStatus } from 
 import { Badge, Button, Icon, Spinner, type BadgeTone, type IconName } from "./ui";
 import { useToast } from "./toast";
 import { n } from "./nav";
-import { Head, Sheet, when } from "./sync";
+import { Head, Sheet } from "./sync";
+import { when } from "./dates";
 import { Modal } from "./screens/NewDeck";
 import { placeOf, SIGNAL_LABEL, SIGNAL_TONE, type Sent } from "./sourceApi";
 // OpenAI 공식 로그인 버튼 로고 (developers.openai.com/assets/siwc/sign-in-buttons, 고치지 않고 쓴다)

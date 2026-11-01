@@ -12,12 +12,8 @@ import { SourcesButton } from "./Sources";
 import { ExamLine } from "./Exam";
 import { CramHint } from "./StudyParts";
 import { useSyncStatus } from "../sync";
+import { addDays, dateWithDay, iso, md, monthDay, parse } from "../dates";
 
-const WEEKDAY = "일월화수목금토";
-export function dateWithDay(iso: string) {
-  const [y, m, d] = iso.split("-").map(Number);
-  return `${m}월 ${d}일 (${WEEKDAY[new Date(y, m - 1, d).getDay()]})`;
-}
 /** queue.rs BURY_RETURN_DAYS. 접어둔 카드는 학습일 기준 3일 뒤 오늘의 학습에 돌아온다 */
 export const BURY_DAYS = 3;
 /** 지금 접으면 돌아오는 날 "10월 18일 (토)" */
@@ -29,18 +25,6 @@ export function buryReturnDay() {
 export const ddayLabel = (dd: number) => (dd === 0 ? "D-day" : dd > 0 ? `D-${dd}` : `D+${-dd}`);
 /** "10월 16일(금)". 쉬기 배너·메뉴는 괄호 앞을 띄우지 않는다 (C1-p, C1-r) */
 const dayTight = (iso: string) => dateWithDay(iso).replace(" (", "(");
-const parse = (iso: string) => {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d);
-};
-const iso = (t: Date) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
-export const addDays = (s: string, days: number) => {
-  const t = parse(s);
-  t.setDate(t.getDate() + days);
-  return iso(t);
-};
-/** "10월 17일" */
-const monthDay = (s: string) => `${parse(s).getMonth() + 1}월 ${parse(s).getDate()}일`;
 
 type Reload = () => Promise<unknown>;
 
@@ -423,7 +407,7 @@ function FullDeck({ d, reload }: { d: DeckDetail; reload: Reload }) {
                 d.hard === 0
                   ? "두 번 막히거나 직접 접은 카드"
                   : `자동 ${n(d.hard_auto)} · 직접 ${n(d.hard - d.hard_auto)} · ${
-                      d.hard_next && d.hard_next > studyDate().toLocaleDateString("sv-SE") ? `${+d.hard_next.slice(5, 7)}/${+d.hard_next.slice(8, 10)}` : "오늘"
+                      d.hard_next && d.hard_next > studyDate().toLocaleDateString("sv-SE") ? md(d.hard_next) : "오늘"
                     } 복귀`
               }
             />

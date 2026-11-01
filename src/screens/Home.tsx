@@ -6,7 +6,7 @@ import { useToast } from "../toast";
 import { actionKey, useKeymap } from "../keys";
 import { CramHint } from "./StudyParts";
 import { PlanConflictBanner } from "./Plan";
-import { addDays } from "./Deck";
+import { addDays, md } from "../dates";
 import { dateLabel, n, useKey, useNav } from "../nav";
 import { DriveLoadLink, useSyncStatus } from "../sync";
 import { RESTORED_KEY } from "./Settings";
@@ -222,8 +222,6 @@ function BigCount({ value }: { value: number }) {
     </p>
   );
 }
-
-const md = (iso: string) => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
 
 type PanelProps = { title: string; caption: string; data: HomeData; mode: "today" | "done"; reload: () => void };
 
