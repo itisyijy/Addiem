@@ -771,13 +771,15 @@ pub(crate) fn hidden_slots(con: &Connection, nt: &Nt) -> Res<Vec<HiddenSlot>> {
         .collect())
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
 pub struct TemplateAdded {
     pub(crate) ord: u32,
     /// 기존 노트에 새로 생긴 카드 수
     pub(crate) cards: usize,
 }
 
+#[cfg(test)]
 /// 카드 종류 더하기. ord 는 지운 번호도 다시 쓰지 않는다. 기존 노트마다 앞면이 비지 않으면 카드를 만든다
 pub(crate) fn add_template(con: &Connection, id: i64, name: Option<&str>, qfmt: &str, afmt: &str) -> Res<TemplateAdded> {
     let nt = load(con, id)?;
@@ -886,45 +888,6 @@ pub(crate) fn save_css(con: &Connection, id: i64, css: &str) -> Res<()> {
     load(con, id)?.editable()?;
     con.execute("UPDATE note_type SET css = ?2, updated_at = ?3 WHERE id = ?1", params![id, css, now_ms()]).map_err(err)?;
     Ok(())
-}
-
-#[derive(Deserialize)]
-pub struct Draft {
-    pub(crate) ord: u32,
-    pub(crate) qfmt: String,
-}
-
-/// 저장 전 확인 "카드 N장의 앞면이 비어요": 초안 앞면(drafts)과 지울 필드(removed)로 지금은 앞면이 있는데 비게 되는 카드 수
-pub(crate) fn empty_front_count(con: &Connection, id: i64, drafts: &[Draft], removed: &[usize]) -> Res<i64> {
-    let nt = load(con, id)?;
-    let cloze = nt.cloze();
-    let qfmt = |ord: u32, draft: bool| -> Option<&str> {
-        let ord = if cloze { 0 } else { ord };
-        draft.then(|| drafts.iter().find(|d| d.ord == ord).map(|d| d.qfmt.as_str())).flatten().or_else(|| nt.template(ord).ok().map(|t| t.qfmt.as_str()))
-    };
-    let gone: Vec<&str> = removed.iter().filter_map(|s| nt.slots.get(*s)).map(String::as_str).collect();
-    let mut cards: HashMap<i64, Vec<u32>> = HashMap::new();
-    {
-        let mut st = con
-            .prepare("SELECT c.note_id, c.template_ord FROM card c JOIN note n ON n.id = c.note_id WHERE n.note_type_id = ?1")
-            .map_err(err)?;
-        for r in st.query_map([id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?))).map_err(err)? {
-            let (nid, ord) = r.map_err(err)?;
-            cards.entry(nid).or_default().push(ord);
-        }
-    }
-    let mut n = 0;
-    for (nid, values) in notes_of(con, id)? {
-        let before = nt.field_map(&values);
-        let mut after = before.clone();
-        after.retain(|k, _| !gone.contains(&k.as_str()));
-        for &ord in cards.get(&nid).into_iter().flatten() {
-            let (Some(q0), Some(q1)) = (qfmt(ord, false), qfmt(ord, true)) else { continue };
-            let lost = if cloze { cloze_front(q0, &before, ord) && !cloze_front(q1, &after, ord) } else { has_front(q0, &before) && !has_front(q1, &after) };
-            n += i64::from(lost);
-        }
-    }
-    Ok(n)
 }
 
 #[derive(Serialize, Debug)]
@@ -2170,51 +2133,6 @@ pub fn delete_note_type(state: State<AppState>, id: i64) -> Res<()> {
 }
 
 #[tauri::command]
-pub fn add_note_field(state: State<AppState>, id: i64, name: String) -> Res<usize> {
-    state.write(|c| add_field(c, id, &name))
-}
-
-#[tauri::command]
-pub fn rename_note_field(state: State<AppState>, id: i64, slot: usize, name: String) -> Res<()> {
-    state.write(|c| rename_field(c, id, slot, &name))
-}
-
-#[tauri::command]
-pub fn reorder_note_fields(state: State<AppState>, id: i64, slots: Vec<usize>) -> Res<()> {
-    state.write(|c| reorder_fields(c, id, &slots))
-}
-
-#[tauri::command]
-pub fn delete_note_field(state: State<AppState>, id: i64, slot: usize) -> Res<()> {
-    state.write(|c| delete_field(c, id, slot))
-}
-
-#[tauri::command]
-pub fn add_card_template(state: State<AppState>, id: i64, name: Option<String>, qfmt: String, afmt: String) -> Res<TemplateAdded> {
-    state.write(|c| add_template(c, id, name.as_deref(), &qfmt, &afmt))
-}
-
-#[tauri::command]
-pub fn delete_card_template(state: State<AppState>, id: i64, ord: u32, dry_run: bool) -> Res<TemplateImpact> {
-    state.write(|c| delete_template(c, id, ord, dry_run))
-}
-
-#[tauri::command]
-pub fn save_card_template(state: State<AppState>, id: i64, ord: u32, name: Option<String>, qfmt: String, afmt: String) -> Res<usize> {
-    state.write(|c| save_template(c, id, ord, name.as_deref(), &qfmt, &afmt))
-}
-
-#[tauri::command]
-pub fn save_note_type_css(state: State<AppState>, id: i64, css: String) -> Res<()> {
-    state.write(|c| save_css(c, id, &css))
-}
-
-#[tauri::command]
-pub fn note_type_empty_fronts(state: State<AppState>, id: i64, drafts: Vec<Draft>, removed: Vec<usize>) -> Res<i64> {
-    empty_front_count(&*state.db.lock().map_err(err)?, id, &drafts, &removed)
-}
-
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn preview_template(
     state: State<AppState>,
@@ -2994,22 +2912,6 @@ mod tests {
         con.execute("UPDATE card_template SET updated_at = 0", []).unwrap();
         save_template(&con, nt, 2, Some("뒤"), "{{Back}}", "{{FrontSide}}<hr id=answer>{{Front}}").unwrap();
         assert_eq!(q(&con, &format!("SELECT (updated_at > 0) || (SELECT updated_at > 0 FROM card_template WHERE note_type_id = {nt}) FROM note_type WHERE id = {nt}")), ["11"]);
-    }
-
-    #[test]
-    fn empty_front_count_before_saving() {
-        let (con, deck) = setup();
-        let nt = anki_clone(&con, "reversed", None);
-        note(&con, deck, nt, &["q1", "a1"]);
-        note(&con, deck, nt, &["q2", "a2"]);
-        let d = |ord, qfmt: &str| Draft { ord, qfmt: qfmt.into() };
-        assert_eq!(empty_front_count(&con, nt, &[], &[]).unwrap(), 0);
-        assert_eq!(empty_front_count(&con, nt, &[d(1, "고정 글자")], &[]).unwrap(), 2, "Card 2 앞면에서 Back 을 뺐다");
-        assert_eq!(empty_front_count(&con, nt, &[d(1, "{{Back}}")], &[1]).unwrap(), 2, "Back 을 지운다");
-        assert_eq!(empty_front_count(&con, nt, &[d(0, "{{Front}}{{Back}}"), d(1, "{{Front}}{{Back}}")], &[1]).unwrap(), 0);
-        let cz = anki_clone(&con, "cloze", None);
-        note(&con, deck, cz, &["{{c1::a}}", "{{c2::b}}"]);
-        assert_eq!(empty_front_count(&con, cz, &[d(0, "{{cloze:Back Extra}}")], &[]).unwrap(), 1, "c1 은 Back Extra 에 없다");
     }
 
     #[test]
