@@ -83,7 +83,7 @@ function fieldNameError(name: string, others: string[]) {
   const v = name.trim();
   if (!v) return "필드 이름을 입력해 주세요.";
   if (/[:{}"]/.test(v) || /^[#/^]/.test(v)) return '필드 이름에는 : { } " 를 쓸 수 없고, # / ^ 로 시작할 수 없어요.';
-  if (SPECIAL.includes(v)) return `'${v}'은 템플릿이 따로 쓰는 이름이에요.`;
+  if (SPECIAL.includes(v)) return `'${v}'은 카드 모양이 따로 쓰는 이름이에요.`;
   if (others.some((o) => o.toLowerCase() === v.toLowerCase())) return `'${v}' 필드가 이미 있어요.`;
   return null;
 }

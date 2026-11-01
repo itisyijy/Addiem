@@ -239,6 +239,7 @@ export function NewDeckModal({ parentId = null, onClose, onCreated }: {
           label={isSub ? "이름" : "덱 이름"}
           placeholder={isSub ? undefined : "예: 정보처리기사 실기"}
           value={name}
+          maxLength={100}
           autoFocus
           error={error}
           helper={isSub ? "같은 곳에 같은 이름은 만들 수 없어요" : "목표일과 학습 설정은 나중에 덱 안에서 정할 수 있어요."}

@@ -179,6 +179,7 @@ function RenameTitle({ d, sub, onDone }: { d: DeckDetail; sub: string; onDone: (
       <input
         className={`deck__rename t-title-l ${error ? "is-error" : ""}`}
         aria-label="덱 이름"
+        maxLength={100}
         defaultValue={d.name}
         autoFocus
         onFocus={(e) => e.currentTarget.select()}
@@ -836,7 +837,7 @@ function MoreMenu({ d, onRename, onPause, onResume }: {
                 onClick={(e) => {
                   e.stopPropagation();
                   setPauseByKey(false);
-                  setPauseOpen((v) => !v);
+                  setPauseOpen(true); // 마우스를 올려 이미 열렸으니 누르면 열어 둔다. 닫기는 벗어나기 · ← · Esc (QA T1-10)
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter" && e.key !== " " && e.key !== "ArrowRight") return;
@@ -981,7 +982,8 @@ function PauseMenu({ d, today, focusFirst, onBack, onPick, onPickDate }: {
         aria-label="얼마나 쉴까요?"
         onKeyDown={(e) => {
           menuKeys(e);
-          if (e.key === "ArrowLeft") {
+          // Esc 도 ← 처럼 하위 메뉴만 닫고 위 메뉴로 돌아간다 (QA T8-18)
+          if (e.key === "ArrowLeft" || e.key === "Escape") {
             e.preventDefault();
             e.stopPropagation();
             onBack();
@@ -1054,7 +1056,9 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const ok = typed.trim() === name.trim();
+  // 보이지 않는 글자(U+200B–200D, U+2060, U+FEFF)는 덱 이름에서 빼는 것과 같게 양쪽 다 빼고 비교한다 (QA T1-21)
+  const bare = (s: string) => s.replace(/[​-‍⁠﻿]/g, "").trim();
+  const ok = bare(typed) === bare(name);
   const sync = useSyncStatus();
   const synced = !!sync?.connected && !!sync.enabled;
 

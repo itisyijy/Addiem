@@ -37,3 +37,13 @@ export function parseCsv(text: string, delim: string): string[][] {
   if (cell !== "" || row.length > 0) end();
   return rows;
 }
+
+/**
+ * "하위 덱" 열의 최상위 덱 (T4-15). 비지 않은 칸이 모두 같은 첫 이름으로 시작하면 CSV 내보내기처럼 최상위 덱까지 든 전체 경로로 보고
+ * 그 이름을 최상위로 쓴다 (full). 아니면 칸은 파일 이름 아래 경로다 (Day 12 → 토익 영단어::Day 12)
+ */
+export function csvDeckRoot(cells: string[], fileName: string): { root: string; full: boolean } {
+  const heads = new Set(cells.filter(Boolean).map((c) => c.split("::")[0].trim()));
+  const [only] = heads;
+  return heads.size === 1 && only ? { root: only, full: true } : { root: fileName.replace(/\.[^.]+$/, ""), full: false };
+}

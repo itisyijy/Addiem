@@ -59,7 +59,7 @@ pub(crate) fn esc(s: &str) -> String {
 }
 
 /// 받침이 있는가 (I57 nav.tsx jong 과 같은 규칙: 영문 · 숫자는 읽는 소리로)
-fn final_consonant(word: &str) -> bool {
+pub(crate) fn final_consonant(word: &str) -> bool {
     let last = word.trim_end_matches(|c: char| c.is_whitespace() || ")]}\"'.·…-".contains(c)).chars().last();
     match last {
         Some(c @ '가'..='힣') => !(c as u32 - '가' as u32).is_multiple_of(28),

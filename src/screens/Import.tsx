@@ -1,6 +1,6 @@
 // B2 Anki 덱 가져오기 (B2-0 고르기 전, B2-r 기록 이전 선택, B2-p 진행, S1-5 실패) / B2-j JSON 가져오기 / B3 가져오기 결과
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { parseCsv } from "../csv";
+import { csvDeckRoot, parseCsv } from "../csv";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorText, type AnkiPreview, type ImportIssue, type ImportProgress, type ImportResult, type JsonPreview } from "../api";
@@ -322,8 +322,8 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
       label: "노트 유형",
       value: all
         ? info.note_types_ok === info.note_types
-          ? `${n(info.note_types)}종 모두 지원 (필드 치환 템플릿)`
-          : `${n(info.note_types)}종 중 ${n(info.note_types_ok)}종 지원 (필드 치환 템플릿)`
+          ? `${n(info.note_types)}종 모두 지원 (필드 치환 카드 모양)`
+          : `${n(info.note_types)}종 중 ${n(info.note_types_ok)}종 지원 (필드 치환 카드 모양)`
         : none
           ? "고른 덱 없음"
           : typesOk === types.length
@@ -339,11 +339,11 @@ function AnkiImport({ onLock, autoPick, initialPath }: { onLock: (v: boolean) =>
           ? []
           : [{ icon: "info" as IconName, tone: "c-secondary", label: "읽어주기", value: `이 기기에 ${lang} 음성이 없어 ${n(s.cards)}장은 소리 없이 보여요` }];
       return s.cards === 0
-        ? [{ icon: "check" as IconName, tone: "c-success", label: `${d.feature}${eul(d.feature)} 쓰는 템플릿`, value: "고른 덱에는 없어요" }]
+        ? [{ icon: "check" as IconName, tone: "c-success", label: `${d.feature}${eul(d.feature)} 쓰는 카드 모양`, value: "고른 덱에는 없어요" }]
         : [{
             icon: "alert" as IconName,
             tone: "c-warn",
-            label: `${d.feature}${eul(d.feature)} 쓰는 템플릿`,
+            label: `${d.feature}${eul(d.feature)} 쓰는 카드 모양`,
             value: `${n(s.types)}종 · ${n(s.cards)}장은 ${d.feature === "빈칸 입력칸" ? "써 넣은 답을 본문 전체와 비교해요" : "일부가 다르게 보여요"}`,
           }];
     }),
@@ -1090,9 +1090,11 @@ function CsvImport({ deckId, onCancel, onLock }: { deckId: number | null; onCanc
   const json = useMemo(() => {
     if (!file || !ready) return null;
     const at = (r: string[], role: Role) => (r[roles.indexOf(role)] ?? "").trim();
-    // "하위 덱" 열은 최상위 덱 아래 경로다 (Day 12 → 토익 영단어::Day 12). 덱에서 열었으면 그 덱이, 아니면 파일 이름이 최상위
-    const root = deckId === null ? file.name.replace(/\.[^.]+$/, "") : null;
-    const sub = (v: string) => (v && root ? `${root}::${v}` : v || undefined);
+    // "하위 덱" 열은 최상위 덱 아래 경로다 (Day 12 → 토익 영단어::Day 12). 덱에서 열었으면 그 덱이, 아니면 파일 이름이 최상위.
+    // 칸이 모두 같은 첫 이름으로 시작하면(CSV 내보내기) 칸이 전체 경로이고 그 이름이 최상위다 (csvDeckRoot, T4-15)
+    const top = deckId === null ? csvDeckRoot(data.map((r) => at(r, "deck")), file.name) : null;
+    const root = top?.root ?? null;
+    const sub = (v: string) => (v && root && !top?.full ? `${root}::${v}` : v || undefined);
     const cards = data.map((r) =>
       r.length > width || roles.indexOf("front") >= r.length || roles.indexOf("back") >= r.length
         ? null
@@ -1130,7 +1132,8 @@ function CsvImport({ deckId, onCancel, onLock }: { deckId: number | null; onCanc
     try {
       const result = await api.importJson(json, file.name, deckId);
       result.issues = csvIssues(result.issues);
-      carried.set(result, { roots: preview.roots, skipped: skippedJson(json, result.issues) });
+      // 건너뛴 행을 JSON 으로 복사해도 CSV 로 다시 쓸 수 없어 복사 버튼을 숨긴다. 번호는 데이터 행 번호 그대로 (I58, T4-28)
+      carried.set(result, { roots: preview.roots, skipped: null });
       lock(false);
       nav({ name: "importResult", result });
     } catch (e) {
@@ -1475,7 +1478,7 @@ export function ImportResultScreen({ result: r }: { result: ImportResult }) {
             <div className={`stat ${r.check_cards > 0 ? "stat--warn" : ""}`}>
               <p className="t-body-s c-secondary">확인이 필요한 카드</p>
               <p className="t-title-l">{n(r.check_cards)}</p>
-              <p className="t-caption c-tertiary">{r.check_cards > 0 ? "템플릿 기능" : "없음"}</p>
+              <p className="t-caption c-tertiary">{r.check_cards > 0 ? "카드 모양 기능" : "없음"}</p>
             </div>
             <StatTile label="지원하지 않은 항목" value={`${n(unsupported)}종`} sub={unsupported > 0 ? "아래에서 확인" : "없음"} />
           </>
