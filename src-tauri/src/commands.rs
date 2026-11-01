@@ -3252,13 +3252,7 @@ pub fn start_fresh(state: State<AppState>) -> Res<()> {
 pub fn open_backup_dir(state: State<AppState>, data: Option<bool>) -> Res<()> {
     let dir = if data == Some(true) { state.data_dir.clone() } else { backup_dir(&state.data_dir) };
     std::fs::create_dir_all(&dir).map_err(err)?;
-    #[cfg(target_os = "windows")]
-    let program = "explorer";
-    #[cfg(target_os = "macos")]
-    let program = "open";
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let program = "xdg-open";
-    std::process::Command::new(program).arg(&dir).spawn().map_err(err)?;
+    crate::sync::open_url(&dir.to_string_lossy());
     Ok(())
 }
 
