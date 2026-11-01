@@ -132,6 +132,13 @@ impl Serialize for AiError {
     }
 }
 
+/// 백그라운드 스레드가 끝나지 못했다 (spawn_blocking)
+impl From<tauri::Error> for AiError {
+    fn from(e: tauri::Error) -> Self {
+        AiError::Other(e.to_string())
+    }
+}
+
 fn net(e: store::SyncError) -> AiError {
     match e {
         store::SyncError::Offline(m) => AiError::Offline(m),
@@ -1000,7 +1007,7 @@ pub fn ai_cancel(state: State<AiState>) {
 #[tauri::command]
 /// segment_ids: 첫 확인 목록에서 남긴 구간 (R3). 이 카드에 연결된 구간만 받는다. 비면 카드 한 장만 (L4 그대로)
 pub async fn ai_regroup(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) -> Result<SplitProposal, AiError> {
-    tauri::async_runtime::spawn_blocking(move || regroup_blocking(&app, card_id, &segment_ids)).await.map_err(|e| AiError::Other(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || regroup_blocking(&app, card_id, &segment_ids)).await?
 }
 
 fn regroup_blocking(app: &AppHandle, card_id: i64, segment_ids: &[i64]) -> Result<SplitProposal, AiError> {
@@ -1251,8 +1258,7 @@ pub async fn ai_check_card(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) 
         }
         res
     })
-    .await
-    .map_err(|e| AiError::Other(e.to_string()))?
+    .await?
 }
 
 /// 실패 까닭을 이 기기의 `ai-errors.log`(데이터 폴더)와 stderr 에 한 줄로 남긴다. 카드 글 · 응답 글은 남기지 않는다 (까닭 글만).

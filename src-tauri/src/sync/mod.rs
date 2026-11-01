@@ -554,6 +554,12 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
 
 // ---------------------------------------------------------------- 명령
 
+/// f 를 백그라운드 스레드에서 (Drive · 파일 일이 화면을 막지 않게)
+async fn blocking<T: Send + 'static>(sh: &Arc<Shared>, f: impl FnOnce(&Arc<Shared>) -> Result<T, SyncError> + Send + 'static) -> Res<T> {
+    let sh = sh.clone();
+    tauri::async_runtime::spawn_blocking(move || f(&sh)).await.map_err(err)?.map_err(err)
+}
+
 #[tauri::command(async)]
 pub fn sync_status(state: State<SyncState>) -> Status {
     refresh(&state.0);
@@ -721,8 +727,7 @@ fn drive_counts(store: &dyn Store, r: &engine::Remote, devices: &[J]) -> J {
 
 #[tauri::command]
 pub async fn sync_probe(state: State<'_, SyncState>) -> Res<Probe> {
-    let sh = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || probe(&sh).map_err(err)).await.map_err(err)?
+    blocking(&state.0, probe).await
 }
 
 #[derive(Deserialize)]
@@ -973,18 +978,12 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
 /// K3 [동기화 시작] · K6-f [이 데이터로 시작] · K6-m [합치기 / Drive 데이터로 바꾸기 / Drive 새로 시작]
 #[tauri::command]
 pub async fn sync_join(state: State<'_, SyncState>, opts: JoinOpts) -> Res<()> {
-    let sh = state.0.clone();
     let later = opts.later;
-    let r = tauri::async_runtime::spawn_blocking({
-        let sh = sh.clone();
-        move || join_blocking(&sh, opts)
-    })
-    .await
-    .map_err(err)?;
-    refresh(&sh);
-    r.map_err(err)?;
+    let r = blocking(&state.0, move |sh| join_blocking(sh, opts)).await;
+    refresh(&state.0);
+    r?;
     if !later {
-        enqueue(&sh, true, true);
+        enqueue(&state.0, true, true);
     }
     Ok(())
 }
@@ -1021,45 +1020,40 @@ pub async fn sync_disconnect(state: State<'_, SyncState>, delete_remote: bool) -
 
 /// [연결 끊기] · 모든 데이터 삭제(남기기, Q2-10): 이 기기의 동기화 기록 · Google 로그인 토큰 · Drive 잠금 키를 지운다
 pub(crate) async fn disconnect(state: &SyncState, delete_remote: bool) -> Res<()> {
-    let sh = state.0.clone();
-    let r = tauri::async_runtime::spawn_blocking({
-        let sh = sh.clone();
-        move || -> Result<(), SyncError> {
-            let _g = sh.run.lock().map_err(store::other)?;
-            if delete_remote {
-                let store = store_of(&sh)?;
-                for e in store.list("backups/")?.into_iter().chain(store.list("")?) {
-                    store.delete(&e.path)?;
-                }
-            } else if let Ok(store) = store_of(&sh) {
-                // 남기더라도 이 기기 파일은 지운다. 남으면 다른 기기가 끊은 기기를 90일 동안 기다린다 (기기 목록 · 정리 · 폐기 판단).
-                // 못 지우면(오프라인) 90일 뒤 "오래 안 씀"으로 빠진다
-                let me = sh.with_db(engine::device_uid).unwrap_or_default();
-                let _ = store.delete(&format!("devices/{me}.json"));
+    let r = blocking(&state.0, move |sh| {
+        let _g = sh.run.lock().map_err(store::other)?;
+        if delete_remote {
+            let store = store_of(sh)?;
+            for e in store.list("backups/")?.into_iter().chain(store.list("")?) {
+                store.delete(&e.path)?;
             }
-            if sh.folder.is_none()
-                && (delete_remote || !others_active(&sh))
-                && let Some(t) = auth::load_secret(auth::REFRESH)
-            {
-                auth::revoke(&sh.agent, &t);
-            }
-            auth::delete_secret(auth::REFRESH);
-            auth::delete_secret(auth::KEY);
-            *sh.token.lock().map_err(store::other)? = None;
-            *sh.key.lock().map_err(store::other)? = None;
-            *sh.account.lock().map_err(store::other)? = None;
-            let con = sh.db().lock().map_err(store::other)?;
-            forget_local(&con).map_err(store::other)?;
-            engine::init(&con)
+        } else if let Ok(store) = store_of(sh) {
+            // 남기더라도 이 기기 파일은 지운다. 남으면 다른 기기가 끊은 기기를 90일 동안 기다린다 (기기 목록 · 정리 · 폐기 판단).
+            // 못 지우면(오프라인) 90일 뒤 "오래 안 씀"으로 빠진다
+            let me = sh.with_db(engine::device_uid).unwrap_or_default();
+            let _ = store.delete(&format!("devices/{me}.json"));
         }
+        if sh.folder.is_none()
+            && (delete_remote || !others_active(sh))
+            && let Some(t) = auth::load_secret(auth::REFRESH)
+        {
+            auth::revoke(&sh.agent, &t);
+        }
+        auth::delete_secret(auth::REFRESH);
+        auth::delete_secret(auth::KEY);
+        *sh.token.lock().map_err(store::other)? = None;
+        *sh.key.lock().map_err(store::other)? = None;
+        *sh.account.lock().map_err(store::other)? = None;
+        let con = sh.db().lock().map_err(store::other)?;
+        forget_local(&con).map_err(store::other)?;
+        engine::init(&con)
     })
-    .await
-    .map_err(err)?;
-    if let Ok(mut s) = sh.status.lock() {
+    .await;
+    if let Ok(mut s) = state.0.status.lock() {
         *s = Status::default();
     }
-    refresh(&sh);
-    r.map_err(err)
+    refresh(&state.0);
+    r
 }
 
 #[derive(Deserialize)]
@@ -1090,51 +1084,36 @@ pub fn sync_settings(state: State<SyncState>, opts: SettingsOpts) -> Res<()> {
 /// K4 암호로 잠그기 [바꾸기]. 켜거나 끄면 Drive 를 새 세대로 다시 올린다 (다른 기기는 K6-m 을 거친다)
 #[tauri::command]
 pub async fn sync_set_lock(state: State<'_, SyncState>, password: Option<String>) -> Res<()> {
-    let sh = state.0.clone();
-    let r = tauri::async_runtime::spawn_blocking({
-        let sh = sh.clone();
-        move || -> Result<(), SyncError> {
-            // 끝까지 run 잠금을 쥔다: 새 세대로 옮긴 뒤 이 기기가 올린 변경을 아래에서 지우지 않게
-            let _g = sh.run.lock().map_err(store::other)?;
-            // 먼저 받는다: 다른 기기가 올리고 이 기기가 아직 받지 않은 변경 · 그림도 새 세대에 들어간다 (T3-09).
-            // 고르는 창이 떠 있거나 Drive 가 없어졌으면 바꾸지 않는다
-            match with_ctx(&sh, |cx| engine::pull(sh.db(), cx))? {
-                Pulled::Done(_) => {}
-                _ => return Err(store::other("먼저 Drive 데이터와 맞춰 주세요. 상단의 동기화 표시에서 고를 수 있어요.")),
-            }
-            let old_gen = sh.with_db(engine::gen_of)?;
-            let kind = if password.as_deref().is_some_and(|p| !p.is_empty()) { "lock" } else { "unlock" };
-            let opts = JoinOpts { mode: Join::Fresh, device_name: None, backup: sh.with_db(|c| engine::local(c, "backup"))?, password, later: false };
-            // 지울 변경 파일은 새 세대를 올리기 전에 정한다
-            let store = store_of(&sh)?;
-            let before = engine::remote(&*store)?;
-            join_locked(&sh, opts, kind)?;
-            engine::drop_old_generation(&*store, old_gen, &before)
+    let r = blocking(&state.0, move |sh| {
+        // 끝까지 run 잠금을 쥔다: 새 세대로 옮긴 뒤 이 기기가 올린 변경을 아래에서 지우지 않게
+        let _g = sh.run.lock().map_err(store::other)?;
+        // 먼저 받는다: 다른 기기가 올리고 이 기기가 아직 받지 않은 변경 · 그림도 새 세대에 들어간다 (T3-09).
+        // 고르는 창이 떠 있거나 Drive 가 없어졌으면 바꾸지 않는다
+        match with_ctx(sh, |cx| engine::pull(sh.db(), cx))? {
+            Pulled::Done(_) => {}
+            _ => return Err(store::other("먼저 Drive 데이터와 맞춰 주세요. 상단의 동기화 표시에서 고를 수 있어요.")),
         }
+        let old_gen = sh.with_db(engine::gen_of)?;
+        let kind = if password.as_deref().is_some_and(|p| !p.is_empty()) { "lock" } else { "unlock" };
+        let opts = JoinOpts { mode: Join::Fresh, device_name: None, backup: sh.with_db(|c| engine::local(c, "backup"))?, password, later: false };
+        // 지울 변경 파일은 새 세대를 올리기 전에 정한다
+        let store = store_of(sh)?;
+        let before = engine::remote(&*store)?;
+        join_locked(sh, opts, kind)?;
+        engine::drop_old_generation(&*store, old_gen, &before)
     })
-    .await
-    .map_err(err)?;
-    refresh(&sh);
-    r.map_err(err)?;
-    enqueue(&sh, true, true);
+    .await;
+    refresh(&state.0);
+    r?;
+    enqueue(&state.0, true, true);
     Ok(())
 }
 
 /// 잠긴 Drive 를 이 기기에서 열 비밀번호 (K6-f 다음 "암호를 입력하세요")
 #[tauri::command]
 pub async fn sync_unlock(state: State<'_, SyncState>, password: String) -> Res<()> {
-    let sh = state.0.clone();
-    let r = tauri::async_runtime::spawn_blocking({
-        let sh = sh.clone();
-        move || {
-            let store = store_of(&sh)?;
-            unlock(&sh, &*store, &password)
-        }
-    })
-    .await
-    .map_err(err)?;
-    r.map_err(err)?;
-    enqueue(&sh, true, true);
+    blocking(&state.0, move |sh| unlock(sh, &*store_of(sh)?, &password)).await?;
+    enqueue(&state.0, true, true);
     Ok(())
 }
 
@@ -1180,8 +1159,7 @@ fn backups_of(sh: &Arc<Shared>) -> Result<Vec<DriveBackup>, SyncError> {
 
 #[tauri::command]
 pub async fn sync_backups(state: State<'_, SyncState>) -> Res<Vec<DriveBackup>> {
-    let sh = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || backups_of(&sh).map_err(err)).await.map_err(err)?
+    blocking(&state.0, backups_of).await
 }
 
 /// Drive 백업 zip 을 연다. 잠그기 전에 만든 백업은 평문이다 (잠가도 지우지 않는다). 사용자가 골라 되돌리는 것이라 그대로 연다.
@@ -1240,10 +1218,9 @@ pub struct RestorePreview {
 /// K9 머리: 무엇이 사라지는지 숫자로 먼저
 #[tauri::command]
 pub async fn sync_restore_preview(state: State<'_, SyncState>, name: String, password: Option<String>) -> Res<RestorePreview> {
-    let sh = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<RestorePreview, SyncError> {
-        let tmp = download_backup(&sh, &name, password.as_deref())?;
-        check_backup(&sh, &tmp)?;
+    blocking(&state.0, move |sh| {
+        let tmp = download_backup(sh, &name, password.as_deref())?;
+        check_backup(sh, &tmp)?;
         let result = sh.with_db(|c| {
             c.execute("ATTACH DATABASE ?1 AS b", [tmp.to_string_lossy()]).map_err(store::other)?;
             let n = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(store::other);
@@ -1260,29 +1237,21 @@ pub async fn sync_restore_preview(state: State<'_, SyncState>, name: String, pas
         });
         let _ = std::fs::remove_file(&tmp);
         let (cards, reviews, lost_reviews, lost_changes) = result?;
-        let list = backups_of(&sh)?;
+        let list = backups_of(sh)?;
         let b = list.iter().find(|b| b.name == name);
         let others = sh.status.lock().map(|s| s.devices.iter().filter(|d| !d.me && !d.stale).map(|d| d.name.clone()).collect()).unwrap_or_default();
         Ok(RestorePreview { at: b.map(|b| b.at).unwrap_or(0), device: b.and_then(|b| b.device.clone()), name, cards, reviews, lost_reviews, lost_changes, others })
     })
     .await
-    .map_err(err)?
-    .map_err(err)
 }
 
 /// K9 되돌리기: ① 지금 DB 를 addiem-before-restore-<시각>.zip 으로 ② Drive 백업으로 DB 복원 (그림은 동기화 공간에서)
 /// ③ 세대를 올린 새 스냅샷 ④ 다른 기기는 다음 받기에서 K6-m. 하나라도 실패하면 ①로 되돌린다
 #[tauri::command]
 pub async fn sync_restore(state: State<'_, SyncState>, name: String, password: Option<String>) -> Res<Option<String>> {
-    let sh = state.0.clone();
-    let r = tauri::async_runtime::spawn_blocking({
-        let sh = sh.clone();
-        move || restore_blocking(&sh, &name, password.as_deref())
-    })
-    .await
-    .map_err(err)?;
-    refresh(&sh);
-    r.map_err(err)
+    let r = blocking(&state.0, move |sh| restore_blocking(sh, &name, password.as_deref())).await;
+    refresh(&state.0);
+    r
 }
 
 /// 복구 전 데이터를 남긴 이 기기 백업 파일 이름을 돌려준다 (화면이 그 이름을 보인다, T5-17)
@@ -1384,16 +1353,15 @@ fn restore_locked(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Resul
 /// K4 ⋯ [그림까지 묶어 내려받기]: Drive 백업 + 그림을 이 기기 백업(I19)과 같은 zip 으로
 #[tauri::command]
 pub async fn sync_backup_full(state: State<'_, SyncState>, name: String, path: String, password: Option<String>) -> Res<String> {
-    let sh = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<String, SyncError> {
+    blocking(&state.0, move |sh| {
         use std::io::Write;
-        let tmp = download_backup(&sh, &name, password.as_deref())?;
+        let tmp = download_backup(sh, &name, password.as_deref())?;
         let files: Vec<(String, String)> = {
             let c = Connection::open(&tmp).map_err(store::other)?;
             let mut st = c.prepare("SELECT filename, sha256 FROM media").map_err(store::other)?;
             st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(store::other)?.filter_map(Result::ok).collect()
         };
-        let result = with_ctx(&sh, |cx| {
+        let result = with_ctx(sh, |cx| {
             let out = std::fs::File::create(&path).map_err(store::other)?;
             let mut zip = zip::ZipWriter::new(out);
             let deflate = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -1423,39 +1391,32 @@ pub async fn sync_backup_full(state: State<'_, SyncState>, name: String, path: S
         result
     })
     .await
-    .map_err(err)?
-    .map_err(err)
 }
 
 /// K4 ⋯ [이 백업 지우기]
 #[tauri::command]
 pub async fn sync_delete_backup(state: State<'_, SyncState>, name: String) -> Res<()> {
-    let sh = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || store_of(&sh)?.delete(&format!("backups/{name}"))).await.map_err(err)?.map_err(err)
+    blocking(&state.0, move |sh| store_of(sh)?.delete(&format!("backups/{name}"))).await
 }
 
 /// K5 공간 부족 [오래된 백업 정리]: 가장 새 백업 3개만 남긴다
 #[tauri::command]
 pub async fn sync_prune_backups(state: State<'_, SyncState>) -> Res<usize> {
-    let sh = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<usize, SyncError> {
-        let store = store_of(&sh)?;
-        let list = backups_of(&sh)?;
+    blocking(&state.0, |sh| {
+        let store = store_of(sh)?;
+        let list = backups_of(sh)?;
         for b in list.iter().skip(3) {
             store.delete(&format!("backups/{}", b.name))?;
         }
         Ok(list.len().saturating_sub(3))
     })
     .await
-    .map_err(err)?
-    .map_err(err)
 }
 
 /// K4 [Drive에서 열기] · K5 [Drive 열기]: 보이는 백업 폴더를 브라우저(개발용 폴더면 탐색기)로
 #[tauri::command]
 pub async fn sync_open_folder(state: State<'_, SyncState>) -> Res<()> {
-    let sh = state.0.clone();
-    let link = tauri::async_runtime::spawn_blocking(move || store_of(&sh)?.folder_link()).await.map_err(err)?.map_err(err)?;
+    let link = blocking(&state.0, |sh| store_of(sh)?.folder_link()).await?;
     open_url(&link);
     Ok(())
 }

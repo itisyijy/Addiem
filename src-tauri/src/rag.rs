@@ -263,7 +263,7 @@ pub(crate) fn root_of(con: &Connection, deck_id: i64) -> Res<i64> {
 /// R1-b [초안 만들기]. amount: few | normal | many (구간마다 1 / 1–2 / 1–3장). 아무것도 바꾸지 않는다
 #[tauri::command]
 pub async fn rag_draft(app: AppHandle, segment_ids: Vec<i64>, amount: String, cloze: bool) -> Result<Draft, AiError> {
-    tauri::async_runtime::spawn_blocking(move || draft_blocking(&app, &segment_ids, &amount, cloze)).await.map_err(|e| AiError::Other(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || draft_blocking(&app, &segment_ids, &amount, cloze)).await?
 }
 
 fn draft_blocking(app: &AppHandle, ids: &[i64], amount: &str, cloze: bool) -> Result<Draft, AiError> {
@@ -497,8 +497,7 @@ pub async fn rag_grade_scope(app: AppHandle, card_id: i64, answer: String) -> Re
         let segments = with_db(&app, |c| sent_of(c, &picks))?;
         Ok(GradeScope { question, mine, model, segments })
     })
-    .await
-    .map_err(|e| AiError::Other(e.to_string()))?
+    .await?
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -596,8 +595,7 @@ pub async fn rag_grade(app: AppHandle, card_id: i64, answer: String, segment_ids
         let (right, missing, rating) = parse_grade(&text, &sent)?;
         Ok(Grade { right, missing, rating, sent })
     })
-    .await
-    .map_err(|e| AiError::Other(e.to_string()))?
+    .await?
 }
 
 #[cfg(test)]
