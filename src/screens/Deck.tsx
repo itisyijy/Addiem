@@ -837,7 +837,7 @@ function MoreMenu({ d, onRename, onPause, onResume }: {
                 onClick={(e) => {
                   e.stopPropagation();
                   setPauseByKey(false);
-                  setPauseOpen((v) => !v);
+                  setPauseOpen(true); // 마우스를 올려 이미 열렸으니 누르면 열어 둔다. 닫기는 벗어나기 · ← · Esc (QA T1-10)
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter" && e.key !== " " && e.key !== "ArrowRight") return;
@@ -982,7 +982,8 @@ function PauseMenu({ d, today, focusFirst, onBack, onPick, onPickDate }: {
         aria-label="얼마나 쉴까요?"
         onKeyDown={(e) => {
           menuKeys(e);
-          if (e.key === "ArrowLeft") {
+          // Esc 도 ← 처럼 하위 메뉴만 닫고 위 메뉴로 돌아간다 (QA T8-18)
+          if (e.key === "ArrowLeft" || e.key === "Escape") {
             e.preventDefault();
             e.stopPropagation();
             onBack();
