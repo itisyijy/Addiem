@@ -83,7 +83,6 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
   // 머리말 · 복습 칸 · 오른쪽 제목도 같은 수로: 다시 볼 카드는 "예정 복습"이나 "남은 N장"에 넣지 않는다 (QA V3-02 · V6-02)
   const unseen = remaining - s.remaining_seen;
   const reviewLeft = s.remaining_review - s.remaining_seen;
-  const again = s.remaining_seen > 0 ? ` · 다시 볼 카드 ${n(s.remaining_seen)}장` : "";
 
   return (
     <main className="done">
@@ -91,8 +90,15 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
         <span className="pill">
           <span className={`dot ${finished ? "dot--local" : "dot--warm"}`} />
           <span className="t-label-s c-secondary">
-            {finished ? `오늘 예정 ${n(s.studied)}장 모두 봤어요` : `오늘 예정 중 ${n(unseen)}장이 남았어요${again}`}
+            {finished ? `오늘 예정 ${n(s.studied)}장 모두 봤어요` : `오늘 예정 중 ${n(unseen)}장이 남았어요`}
           </span>
+          {/* 다시 볼 카드는 따로 한 조각 (Figma 351:26006) */}
+          {!finished && s.remaining_seen > 0 && (
+            <>
+              <span className="dot dot--ink" />
+              <span className="t-label-s c-secondary">다시 볼 {n(s.remaining_seen)}장</span>
+            </>
+          )}
         </span>
         <div className="done__gap" />
         <p className="t-display-l c-tertiary">오늘 학습한 카드</p>
@@ -110,7 +116,7 @@ export function Done({ sessionId, summary: s, completed, deckIds, scale }: {
           <StatTile
             label="남은 카드"
             value={n(unseen)}
-            sub={finished ? undefined : s.remaining_seen > 0 ? `+ 다시 볼 카드 ${n(s.remaining_seen)}장` : "오늘 안에 이어서"}
+            sub={finished ? undefined : s.remaining_seen > 0 ? `+ 다시 볼 ${n(s.remaining_seen)}장` : "오늘 안에 이어서"}
           />
         </div>
         <div className="done__note">
