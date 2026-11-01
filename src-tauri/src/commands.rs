@@ -1581,22 +1581,27 @@ pub(crate) fn write_mode_source(con: &Connection, deck_id: i64) -> Res<Option<(i
 
 #[tauri::command]
 pub fn save_deck_config(state: State<AppState>, config: DeckConfigInput) -> Res<()> {
+    save_deck_config_in(&*state.db.lock().map_err(err)?, config)
+}
+
+fn save_deck_config_in(con: &Connection, config: DeckConfigInput) -> Res<()> {
     if let Some(d) = &config.target_date {
         db::day_from_date(d).ok_or("날짜 형식이 올바르지 않아요.")?;
     }
     if config.daily_new_limit.is_some_and(|n| n < 0) || config.today_new.is_some_and(|n| n < 0) {
         return Err("신규 카드 수는 0 이상이어야 해요.".into());
     }
-    let con = state.db.lock().map_err(err)?;
     if let Some(u) = &config.paused_until {
         db::day_from_date(u).ok_or("날짜 형식이 올바르지 않아요.")?;
     }
     let today = config.today_new.map(|_| db::date_from_day(study_day(now_ms())));
+    // 목표일을 바꾸면 시험 전 회독은 새 회독 (P11): 회독 시작(mix_since)을 지금으로
     con.execute(
         "INSERT INTO deck_config (deck_id, target_date, include_target_day, daily_new_limit, today_new, today_new_day, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(deck_id) DO UPDATE SET target_date = ?2, include_target_day = ?3, daily_new_limit = ?4,
-                                            today_new = ?5, today_new_day = ?6, updated_at = ?7",
+                                            today_new = ?5, today_new_day = ?6, updated_at = ?7,
+                                            mix_since = CASE WHEN target_date IS ?2 THEN mix_since ELSE ?7 END",
         params![config.deck_id, config.target_date, config.include_target_day as i64, config.daily_new_limit, config.today_new, today, now_ms()],
     )
     .map_err(err)?;
@@ -3909,6 +3914,31 @@ mod tests {
         let deck = super::deck_detail_in(&con, con.query_row("SELECT deck_id FROM card WHERE id = ?1", [ids[0]], |r| r.get(0)).unwrap()).unwrap();
         assert_eq!((home.done_today, deck.done_today), (1, 1));
         assert_eq!((home.buried, deck.hard), (1, 1));
+    }
+
+    #[test]
+    fn moving_the_target_date_starts_a_new_round() {
+        // QA T3-19 · P11: 목표일을 바꾸면 회독 시작(mix_since)이 지금으로. 같은 목표일로 다시 저장하면 그대로
+        let con = crate::db::open_in_memory().unwrap();
+        deck_with_cards(&con, 1, None);
+        let save = |date: &str| {
+            let config = super::DeckConfigInput {
+                deck_id: 1,
+                target_date: Some(date.into()),
+                include_target_day: false,
+                daily_new_limit: None,
+                today_new: None,
+                paused: None,
+                paused_until: None,
+                write_mode: None,
+            };
+            super::save_deck_config_in(&con, config).unwrap();
+            con.query_row("SELECT mix_since FROM deck_config WHERE deck_id = 1", [], |r| r.get::<_, Option<i64>>(0)).unwrap()
+        };
+        assert!(save("2030-01-10").is_some_and(|t| t > 0));
+        con.execute("UPDATE deck_config SET mix_since = 5", []).unwrap();
+        assert_eq!(save("2030-01-10"), Some(5));
+        assert!(save("2030-01-12").is_some_and(|t| t > 5));
     }
 
     #[test]

@@ -151,18 +151,24 @@ pub struct CramPlan {
     new_per_day: i64,
 }
 
-/// H3 압축 회독을 열 수 있으면 그 계획. 목표일이 3일보다 멀거나 지났으면 없다
+/// H3 압축 회독을 열 수 있으면 그 계획. 목표일이 14일보다 멀거나 지났으면, 배운 카드가 없으면 없다 (입구 · 계획 줄을 숨긴다, QA T3-18)
 #[tauri::command]
 pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Option<CramPlan>> {
-    let con = state.db.lock().map_err(err)?;
+    cram_plan_in(&*state.db.lock().map_err(err)?, deck_ids)
+}
+
+fn cram_plan_in(con: &Connection, deck_ids: Option<Vec<i64>>) -> Res<Option<CramPlan>> {
     let today = study_day(now_ms());
-    let decks = commands::load_decks(&con)?;
+    let decks = commands::load_decks(con)?;
     let Some(t) = target(&decks, deck_ids.as_deref(), today) else { return Ok(None) };
     let (weak_ids, weak_names) = weak_scope(t, &decks);
-    let all = items(&con, &commands::descendants(t.id, &decks), &weak_ids)?;
+    let all = items(con, &commands::descendants(t.id, &decks), &weak_ids)?;
+    if all.is_empty() {
+        return Ok(None);
+    }
     let count = |f: &dyn Fn(&Item) -> bool| all.iter().filter(|i| f(i)).count();
-    let seen = round_seen(&con, t)?;
-    let fed = id_set(&con, "SELECT card_id FROM review_log WHERE fed_to_scheduler = 1 AND kind IS NULL AND reviewed_at >= ?1", [commands::today_start_ms(today)])?;
+    let seen = round_seen(con, t)?;
+    let fed = id_set(con, "SELECT card_id FROM review_log WHERE fed_to_scheduler = 1 AND kind IS NULL AND reviewed_at >= ?1", [commands::today_start_ms(today)])?;
     let dday = t.target_day.unwrap_or(today) - today;
     Ok(Some(CramPlan {
         deck_id: t.id,
@@ -175,12 +181,12 @@ pub fn cram_plan(state: State<AppState>, deck_ids: Option<Vec<i64>>) -> Res<Opti
         again: count(&|i| i.again && !i.stable),
         stable: count(&|i| i.stable),
         scopes: [0, 1, 2].map(|s| count(&|i| i.picked(s))),
-        sec_per_card: sec_per_card(&con)?,
+        sec_per_card: sec_per_card(con)?,
         mode: if dday <= CRAM_DAYS { "cram" } else { "mix" },
         learned: all.len(),
         round_seen: count(&|i| seen.contains(&i.id)),
         today_seen: count(&|i| !seen.contains(&i.id) && fed.contains(&i.id)),
-        new_per_day: crate::plan::share_today(&con, today, &decks, &commands::descendants(t.id, &decks).into_iter().collect())?,
+        new_per_day: crate::plan::share_today(con, today, &decks, &commands::descendants(t.id, &decks).into_iter().collect())?,
     }))
 }
 
@@ -453,6 +459,23 @@ fn summary(con: &Connection, session_id: i64, since: i64, t: &queue::Deck, decks
 mod tests {
     use super::*;
     use crate::db;
+
+    #[test]
+    fn no_plan_without_learned_cards() {
+        // QA T3-18: 배운 카드가 없는 덱은 시험 전 회독 입구 · 계획 줄을 숨긴다
+        let con = db::open_in_memory().unwrap();
+        let exam = db::date_from_day(study_day(now_ms()) + 2);
+        con.execute_batch(&format!(
+            "INSERT INTO deck (id, name, created_at, updated_at) VALUES (1, '시험', 0, 0);
+             INSERT INTO deck_config (deck_id, target_date, updated_at) VALUES (1, '{exam}', 0);
+             INSERT INTO note (id, note_type_id, fields, created_at, updated_at) VALUES (1, 1, '[\"q\",\"a\"]', 0, 0);
+             INSERT INTO card (id, note_id, deck_id, template_ord, state, created_at, updated_at) VALUES (1, 1, 1, 0, 'new', 0, 0);"
+        ))
+        .unwrap();
+        assert!(cram_plan_in(&con, Some(vec![1])).unwrap().is_none());
+        con.execute("UPDATE card SET state = 'review', stability = 3", []).unwrap();
+        assert!(cram_plan_in(&con, Some(vec![1])).unwrap().is_some());
+    }
 
     #[test]
     fn collects_shaky_weak_and_again_but_not_stable() {
