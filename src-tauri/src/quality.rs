@@ -868,8 +868,10 @@ pub(crate) fn split_text(question: &str, answer: &[String], per_card: i64) -> Ve
         // 앞 카드들은 per 개씩, 남는 것은 마지막 카드로
         let end = if k + 1 == cards { items.len() } else { start + per };
         let range = if end - start == 1 { format!("{}번째", start + 1) } else { format!("{}–{}번째", start + 1, end) };
+        // 명령형 끝(…하라 · 하시오 · 하세요) 뒤에는 "?"를 붙이지 않는다 (QA T8-23)
+        let ask = if ["라", "시오", "세요"].iter().any(|e| base.ends_with(e)) { "" } else { "?" };
         parts.push(SplitPart {
-            front: if noun { format!("{base} 중 {range}{}?", if has_batchim(&range) { "은" } else { "는" }) } else { format!("{base}? ({range})") },
+            front: if noun { format!("{base} 중 {range}{}?", if has_batchim(&range) { "은" } else { "는" }) } else { format!("{base}{ask} ({range})") },
             back: items[start..end].iter().map(|i| strip_marker(i)).collect::<Vec<_>>().join("\n"),
         });
         start = end;
@@ -1005,9 +1007,9 @@ pub(crate) fn undo(con: &mut Connection, change_id: i64) -> Res<()> {
 /// "그 뒤에 고친 내용이 있어요 · 되돌리면 그 내용도 사라져요" 확인을 받은 뒤에만 준다 (CQ2)
 pub(crate) fn undo_at(con: &mut Connection, change_id: i64, force: bool) -> Res<bool> {
     let tx = con.transaction().map_err(err)?;
-    let (kind, card_id, payload, undone): (String, Option<i64>, String, Option<i64>) = tx
-        .query_row("SELECT kind, card_id, payload, undone_at FROM card_change WHERE id = ?1", [change_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    let (kind, card_id, payload, undone, made_at): (String, Option<i64>, String, Option<i64>, i64) = tx
+        .query_row("SELECT kind, card_id, payload, undone_at, created_at FROM card_change WHERE id = ?1", [change_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })
         .optional()
         .map_err(err)?
@@ -1022,8 +1024,10 @@ pub(crate) fn undo_at(con: &mut Connection, change_id: i64, force: bool) -> Res<
     } else {
         let p: SplitPayload = serde_json::from_str(&payload).map_err(err)?;
         for nid in &p.new_notes {
-            // 새 카드에 복습 기록이 있어도 기록은 남는다 (review_log.card_id 가 NULL 이 된다)
-            tx.execute("DELETE FROM note WHERE id = ?1", [nid]).map_err(err)?;
+            // 새 카드에 복습 기록이 있어도 기록은 남는다 (review_log.card_id 가 NULL 이 된다).
+            // 노트 id 는 지운 뒤 다시 쓰일 수 있어, 변경보다 나중에 만든 노트는 지우지 않는다 (QA W9: 손으로 지운 뒤 새로 만든 노트)
+            // ponytail: 1분 여유, 변경 기록에 노트 만든 시각을 남기면 정확해진다
+            tx.execute("DELETE FROM note WHERE id = ?1 AND created_at <= ?2", params![nid, made_at + 60_000]).map_err(err)?;
         }
         if let (Some(card), Some(prev)) = (card_id, p.prev_state) {
             tx.execute("UPDATE card SET state = ?2, updated_at = ?3 WHERE id = ?1", params![card, prev, now_ms()]).map_err(err)?;
@@ -1050,7 +1054,7 @@ pub fn undo_change(state: State<AppState>, change_id: i64, force: Option<bool>) 
 #[derive(Serialize)]
 pub struct ChangeRow {
     id: i64,
-    /// split | rewrite
+    /// split | rewrite | draft
     kind: String,
     /// rewrite 만: format | ai | edit
     how: Option<String>,
@@ -1058,22 +1062,32 @@ pub struct ChangeRow {
     card_id: Option<i64>,
     created_at: i64,
     undone: bool,
+    /// 나누기 · 초안: 되돌리면 지워질 새 카드 중 복습했거나 만든 뒤 고친 카드 수. 0 이 아니면 화면이 먼저 묻는다 (QA G4-05)
+    studied: i64,
 }
 
-/// G1 "최근 나눈 카드" · "최근 고친 카드"(7일) 30개 (R1 초안은 토스트의 [되돌리기]로만)
+/// G1 "최근 나눈 카드" · "최근 고친 카드"(7일) · "최근 만든 카드"(초안 · 그림 · 표, 7일) 30개 (R6, QA T7-11)
 #[tauri::command]
 pub fn recent_changes(state: State<AppState>, deck_id: i64) -> Res<Vec<ChangeRow>> {
-    let con = state.db.lock().map_err(err)?;
-    let decks = commands::load_decks(&con)?;
+    recent_of(&*state.db.lock().map_err(err)?, deck_id)
+}
+
+fn recent_of(con: &Connection, deck_id: i64) -> Res<Vec<ChangeRow>> {
+    let decks = commands::load_decks(con)?;
     let ids = commands::descendants(deck_id, &decks).iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     db::rows(
-        &con,
+        con,
         &format!(
-            "SELECT id, kind, json_extract(payload, '$.how'), summary, card_id, created_at, undone_at IS NOT NULL FROM card_change
-             WHERE (kind = 'split' OR (kind = 'rewrite' AND created_at >= ?1)) AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
+            "SELECT id, kind, json_extract(payload, '$.how'), summary, card_id, created_at, undone_at IS NOT NULL,
+               (SELECT count(*) FROM card c JOIN note n ON n.id = c.note_id
+                WHERE c.note_id IN (SELECT value FROM json_each(card_change.payload, '$.new_notes'))
+                  AND n.created_at <= card_change.created_at + 60000
+                  AND (n.updated_at > n.created_at OR EXISTS (SELECT 1 FROM review_log r WHERE r.card_id = c.id)))
+             FROM card_change
+             WHERE (kind = 'split' OR (kind IN ('rewrite', 'draft') AND created_at >= ?1)) AND deck_id IN ({ids}) ORDER BY created_at DESC LIMIT 30"
         ),
         [now_ms() - REWRITE_DAYS * DAY_MS],
-        |r| Ok(ChangeRow { id: r.get(0)?, kind: r.get(1)?, how: r.get(2)?, summary: r.get(3)?, card_id: r.get(4)?, created_at: r.get(5)?, undone: r.get(6)? }),
+        |r| Ok(ChangeRow { id: r.get(0)?, kind: r.get(1)?, how: r.get(2)?, summary: r.get(3)?, card_id: r.get(4)?, created_at: r.get(5)?, undone: r.get(6)?, studied: r.get(7)? }),
     )
     .map_err(err)
 }
@@ -1304,6 +1318,8 @@ mod tests {
         // 이름꼴이 아니면 물음 뒤에 범위를 붙이고, 물음표 뒤 안내 문장은 뗀다
         let p = split_text("항목과 키워드를 연결하면? 판단한 뒤 정답을 확인하세요.", &ten, 5);
         assert_eq!(p[1].front, "항목과 키워드를 연결하면? (6–10번째)");
+        // 명령형 끝에는 "?"를 붙이지 않는다 (QA T8-23)
+        assert_eq!(split_text("OSI 7계층을 순서대로 설명하라.", &ten, 3)[0].front, "OSI 7계층을 순서대로 설명하라 (1–3번째)");
     }
 
     #[test]
@@ -1345,6 +1361,75 @@ mod tests {
         assert_eq!(count(&con, &format!("SELECT count(*) FROM card WHERE id = {orig} AND state = 'review'")), 1);
         undo(&mut con, change).unwrap();
         assert!(apply_split(&mut con, orig, &[SplitPart { front: " ".into(), back: "".into() }], true).is_err());
+    }
+
+    #[test]
+    fn recent_lists_drafts_for_seven_days() {
+        // R6 · QA T7-11: 초안 · 그림 · 표에서 만든 카드도 "최근 만든 카드"로 7일 동안 (나누기는 기한 없이)
+        let con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let old = now_ms() - 8 * DAY_MS;
+        for (kind, at) in [("draft", now_ms()), ("draft", old), ("split", old)] {
+            con.execute(
+                "INSERT INTO card_change (kind, deck_id, summary, payload, created_at) VALUES (?1, ?2, 's', '{}', ?3)",
+                params![kind, deck, at],
+            )
+            .unwrap();
+        }
+        let kinds: Vec<String> = recent_of(&con, deck).unwrap().into_iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, ["draft", "split"]);
+    }
+
+    #[test]
+    fn recent_counts_studied_new_cards() {
+        // QA G4-05: 되돌리면 지워질 새 카드 중 복습했거나 고친 카드 수. 화면은 0 이 아닐 때만 묻는다
+        let mut con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let card = NewCard { deck_id: deck, kind: "basic".into(), front: "Q?".into(), back: "① a<br>② b<br>③ c".into(), importance: None };
+        commands::insert_note(&con, &card, "", None).unwrap();
+        let orig: i64 = con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 1, 1)", [orig]).unwrap();
+        let parts: Vec<SplitPart> = (1..=3).map(|i| SplitPart { front: format!("Q {i}?"), back: "a".into() }).collect();
+        let change = apply_split(&mut con, orig, &parts, true).unwrap();
+        let studied = |con: &Connection| recent_of(con, deck).unwrap().into_iter().find(|c| c.id == change).unwrap().studied;
+        assert_eq!(studied(&con), 0, "원래 카드의 복습은 세지 않는다");
+        let new: Vec<(i64, i64)> = db::rows(&con, "SELECT id, note_id FROM card WHERE id != ?1 ORDER BY id", [orig], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 2, 3)", [new[0].0]).unwrap();
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 3, 3)", [new[0].0]).unwrap();
+        assert_eq!(studied(&con), 1, "복습한 카드 (기록 수가 아니라 카드 수)");
+        commands::save_note_fields_at(&con, new[1].1, &["Q 2 고침?".into(), "a".into()], now_ms() + 5).unwrap();
+        assert_eq!(studied(&con), 2, "만든 뒤 고친 카드");
+        // 변경보다 나중에 만든 노트(지운 뒤 같은 id 로 다시 만든 노트)는 되돌려도 지우지 않으니 세지 않는다 (undo_at 과 같은 조건, QA V2-03)
+        con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 4, 3)", [new[2].0]).unwrap();
+        assert_eq!(studied(&con), 3);
+        con.execute("UPDATE note SET created_at = created_at + 120000, updated_at = updated_at + 120000 WHERE id = ?1", [new[2].1]).unwrap();
+        assert_eq!(studied(&con), 2, "변경 뒤에 만든 노트");
+        // 고쳐 쓰기 기록은 new_notes 가 없어 0
+        con.execute("INSERT INTO card_change (kind, deck_id, summary, payload, created_at) VALUES ('rewrite', ?1, 's', '{}', ?2)", params![deck, now_ms()]).unwrap();
+        assert!(recent_of(&con, deck).unwrap().iter().filter(|c| c.kind == "rewrite").all(|c| c.studied == 0));
+    }
+
+    #[test]
+    fn undo_keeps_notes_made_after_the_change() {
+        // 나누기로 만든 노트를 손으로 지우고 새로 만들면 같은 id 가 다시 쓰인다. 그 뒤 [되돌리기]는 새 노트를 지우지 않는다
+        let mut con = crate::db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('d', 0, 0)", []).unwrap();
+        let deck = con.last_insert_rowid();
+        let card = NewCard { deck_id: deck, kind: "basic".into(), front: "Q?".into(), back: "① a<br>② b<br>③ c".into(), importance: None };
+        commands::insert_note(&con, &card, "", None).unwrap();
+        let orig: i64 = con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap();
+        let parts: Vec<SplitPart> = (1..=3).map(|i| SplitPart { front: format!("Q {i}?"), back: "a".into() }).collect();
+        let change = apply_split(&mut con, orig, &parts, true).unwrap();
+        let reused: i64 = con.query_row("SELECT max(note_id) FROM card", [], |r| r.get(0)).unwrap();
+        // 2분 전 변경, 마지막 노트는 그 뒤에 새로 만든 노트(같은 id)인 셈
+        con.execute("UPDATE card_change SET created_at = created_at - 120000 WHERE id = ?1", [change]).unwrap();
+        con.execute("UPDATE note SET created_at = created_at - 120000 WHERE id != ?1", [reused]).unwrap();
+        undo(&mut con, change).unwrap();
+        let left: Vec<i64> = db::rows(&con, "SELECT id FROM note ORDER BY id", [], |r| r.get(0)).unwrap();
+        assert!(left.contains(&reused), "변경보다 나중에 만든 노트는 남는다");
+        assert_eq!(left.len(), 2, "원래 노트 + 나중 노트, 나눈 노트 둘은 지운다");
     }
 
     // ------------------------------------------------------------------ 8.2 질문과 답의 대응 · 서식 · 고쳐 쓰기

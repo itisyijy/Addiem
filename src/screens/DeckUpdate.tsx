@@ -67,7 +67,7 @@ async function pullFirst(onStart: () => void): Promise<Exclude<Pull, "pulling">>
 export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPreview; onAdd: () => void }) {
   const nav = useNav();
   const first = info.update!;
-  const [mode, setMode] = useState<"update" | "add">(first.suggested ? "update" : "add");
+  const [picked, setMode] = useState<"update" | "add">(first.suggested ? "update" : "add");
   const [pull, setPull] = useState<Pull | null>(null);
   const [summary, setSummary] = useState<UpdateSummary | null>(null);
   const [error, setError] = useState<string>();
@@ -91,6 +91,7 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
   const deck = hint.known_decks[0];
   const half = hint.existing_notes * 2 >= hint.notes;
   const adds = hint.notes - hint.existing_notes - hint.gone_notes;
+  const mode = adds === 0 ? "update" : picked; // 새 노트가 없으면 더하기는 고를 수 없다 (T4-09)
   const ready = !!summary && pull !== "pulling" && pull !== null;
   const counts = summary
     ? [
@@ -178,17 +179,21 @@ export function UpdateChoice({ path, info, onAdd }: { path: string; info: AnkiPr
           </span>
         </label>
         <label className={`import__option ${mode === "add" ? "is-on" : ""}`}>
-          <input type="radio" name="du-mode" checked={mode === "add"} onChange={() => setMode("add")} />
+          <input type="radio" name="du-mode" checked={mode === "add"} disabled={adds === 0} onChange={() => setMode("add")} />
           <span className="import__radio" />
           <span className="import__option-text">
             <span className="import__option-title">
-              <span className="t-body-m-strong">새 노트만 더하기</span>
-              {!hint.suggested && <Badge tone="accent">권장</Badge>}
+              <span className={`t-body-m-strong ${adds === 0 ? "c-tertiary" : ""}`}>새 노트만 더하기</span>
+              {!hint.suggested && adds > 0 && <Badge tone="accent">권장</Badge>}
             </span>
-            <span className="t-body-s c-secondary">
-              이미 있는 노트 {n(hint.existing_notes)}개는 그대로 두고 새 노트 {n(adds)}개만 넣어요.
-              {hint.gone_notes > 0 && ` 내가 지운 노트 ${n(hint.gone_notes)}개는 다시 넣지 않아요.`} 만든 사람이 고친 내용은 들어오지 않아요.
-            </span>
+            {adds === 0 ? (
+              <span className="t-body-s c-tertiary">이 파일에 새 노트가 없어요</span>
+            ) : (
+              <span className="t-body-s c-secondary">
+                이미 있는 노트 {n(hint.existing_notes)}개는 그대로 두고 새 노트 {n(adds)}개만 넣어요.
+                {hint.gone_notes > 0 && ` 내가 지운 노트 ${n(hint.gone_notes)}개는 다시 넣지 않아요.`} 만든 사람이 고친 내용은 들어오지 않아요.
+              </span>
+            )}
           </span>
         </label>
       </div>
@@ -1426,7 +1431,7 @@ export function UpdateResultScreen({ summary: s }: { summary: UpdateSummary }) {
                 {tidied?.action === "delete"
                   ? "지우기 전 백업을 만들었어요 · 업데이트를 되돌려도 지운 노트는 돌아오지 않아요"
                   : tidied
-                    ? `카드 ${n(tidied.cards)}장은 학습에 나오지 않아요 · 기록 · 일정은 남아 있어요. 카드 목록의 [학습 중지 n장 보기]에서 풀 수 있어요. 업데이트를 되돌려도 학습 중지는 그대로예요.`
+                    ? `카드 ${n(tidied.cards)}장은 학습에 나오지 않아요 · 기록 · 일정은 남아 있어요. 카드 목록의 [학습 중지 ${n(tidied.cards)}장 보기]에서 풀 수 있어요. 업데이트를 되돌려도 학습 중지는 그대로예요.`
                     : `지우지 않았어요. 카드 ${n(s.missing_card_ids.length)}장 · 기록 · 일정 그대로 학습에도 나와요. 더 볼 필요가 없으면 정리할 수 있어요`}
               </span>
             </span>

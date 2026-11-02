@@ -33,6 +33,8 @@ const STATE: Record<CardRow["state"], [string, BadgeTone]> = {
 const buriedDay = (until: string | null) =>
   !until ? null : until <= studyDate().toLocaleDateString("sv-SE") ? "오늘" : `${+until.slice(5, 7)}/${+until.slice(8, 10)}`;
 const key = (path: string[]) => path.join("\u0000");
+/** 카드가 따르는 설정의 덱: 모두 최상위 덱에 있으면 "덱", 아니면 "하위 덱" (카드 추가와 같다, T1-23 · G2-06) */
+const deckWord = (cards: { deck_path: string[] }[]) => (cards.every((c) => c.deck_path.length === 1) ? "덱" : "하위 덱");
 /** "…으로/로". 받침이 있으면 으로, 없거나 ㄹ 받침이면 로 */
 
 /** 목록 범위. deckId 가 null 이면 모든 덱 (홈의 "접어둔 카드 보기") */
@@ -134,8 +136,12 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
       page(PAGE, last)
         .then((l) => {
           if (g !== gen.current) return;
-          shown.current = rows.length + l.rows.length;
-          setList((p) => p && { ...l, rows: [...p.rows, ...l.rows] });
+          // 옛 관찰자가 같은 쪽을 한 번 더 받을 수 있다: 목록 끝이 그대로 last 일 때만 붙인다
+          setList((p) => {
+            if (!p || p.rows[p.rows.length - 1]?.id !== last) return p;
+            shown.current = p.rows.length + l.rows.length;
+            return { ...l, rows: [...p.rows, ...l.rows] };
+          });
         }, (e) => setError(errorText(e)))
         .finally(() => (loadingMore.current = false));
     });
@@ -247,7 +253,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
       before.set(was, [...(before.get(was) ?? []), c.id]);
     }
     undoable(
-      { title: level === null ? `${n(cards.length)}장을 하위 덱 설정으로 되돌렸어요` : `${n(cards.length)}장을 ${LEVEL_LABEL[level]}으로 바꿨어요` },
+      { title: level === null ? `${n(cards.length)}장을 ${deckWord(cards)} 설정으로 되돌렸어요` : `${n(cards.length)}장을 ${LEVEL_LABEL[level]}으로 바꿨어요` },
       api.setCardsImportance(cards.map((c) => c.id), level),
       () => Promise.all([...before].map(([was, ids]) => api.setCardsImportance(ids, was))),
     );
@@ -379,7 +385,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                     : query.trim()
                       ? "모든 덱 · 찾은 카드"
                       : "모든 덱"
-              : `${deck.name} · 중요도는 하위 덱 설정을 따르고, 카드마다 직접 지정할 수 있어요`}
+              : `${deck.name} · 중요도는 ${deck.path.length === 1 && deck.subdecks.length === 0 ? "덱" : "하위 덱"} 설정을 따르고, 카드마다 직접 지정할 수 있어요`}
           </p>
         </div>
         {deckId !== null && <Button size="M" icon="plus" label="카드 추가" shortcut={actionKey("addCard")} onClick={() => nav({ name: "addCard", deckId })} />}
@@ -546,7 +552,8 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                 cap={`고른 ${n(picked.length)}장을 바꿔요`}
                 current={sameLevel}
                 canFollow={ownCount > 0}
-                follow={ownCount > 0 ? `직접 지정한 ${n(ownCount)}장이 하위 덱 설정으로` : "직접 지정한 카드가 없어요"}
+                word={deckWord(picked)}
+                follow={ownCount > 0 ? `직접 지정한 ${n(ownCount)}장이 ${deckWord(picked)} 설정으로` : "직접 지정한 카드가 없어요"}
                 onPick={(l) => setLevels(picked, l)}
               />
             )}
@@ -681,7 +688,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
           return (
             <div
               key={c.id}
-              className={`cards__row ${on ? "is-selected" : ""} ${rowMenu === c.id ? "is-menu" : ""}`}
+              className={`cards__row ${on ? "is-selected" : ""} ${rowMenu === c.id || impMenu === c.id ? "is-menu" : ""}`}
               onDoubleClick={(e) => {
                 if (selecting) return;
                 // 행은 초점을 받지 않는다. 늘 보이는 ⋯ 를 연 곳으로 삼아 닫은 뒤 초점이 body 로 빠지지 않게 (QA V4-08 ④ · V9-07)
@@ -740,6 +747,7 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
                     cap="이 카드만 바꿔요"
                     current={c.importance}
                     canFollow={c.own_importance}
+                    word={deckWord([c])}
                     follow={`${relPath(c.deck_path)}${inherited !== undefined ? ` → ${LEVEL_LABEL[inherited]}` : ""}`}
                     onPick={(l) => pick(c, l)}
                   />
@@ -975,11 +983,13 @@ export function Cards({ deckId, buriedOnly = false, cardIds, weakOnly = false, e
 }
 
 /** C2-m 중요도 메뉴. 행의 칩(한 장)과 선택 바(여러 장)가 같이 쓴다 */
-function ImportanceMenu({ cap, current, canFollow, follow, onPick, className = "" }: {
+function ImportanceMenu({ cap, current, canFollow, word, follow, onPick, className = "" }: {
   cap: string;
   /** ✓ 를 붙일 값. 여러 장이 서로 다르면 없음 */
   current?: Level;
   canFollow: boolean;
+  /** "덱" · "하위 덱" (deckWord) */
+  word: string;
   /** "하위 덱 설정 따르기" 아래 캡션 */
   follow: string;
   onPick: (level: Level | null) => void;
@@ -1016,7 +1026,7 @@ function ImportanceMenu({ cap, current, canFollow, follow, onPick, className = "
       <button role="menuitem" className="menu__item cards__imp-follow" disabled={!canFollow} onClick={() => onPick(null)}>
         <Icon name="rotate" size={16} scaled />
         <span className="menu__text">
-          <span className="t-body-m">하위 덱 설정 따르기</span>
+          <span className="t-body-m">{word} 설정 따르기</span>
           <span className="t-caption c-tertiary">{follow}</span>
         </span>
       </button>

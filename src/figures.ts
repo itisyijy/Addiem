@@ -338,13 +338,44 @@ export function tableCandidates(lay: Layout): Candidate[] {
 
 export const suggestTables = (lay: Layout) => tableCandidates(lay).filter((c) => !c.reason);
 
+/** 이름표 앞 번호 ("그림 3-6" · "Fig. 2" · "Figure S1"). 낱말 뒤 숫자 · 영문 한 자+숫자만 (Tablet · Figures 는 아님) */
+export const CAPTION = /^(그림|표|도표|사진|Figure|Fig\.?|Table)\s*(?:\d|[A-Z](?=[-.]?\d))[\w.-]*/i;
+/** 이름표의 번호 부분 ("Figure 1. 회귀" → "Figure 1"), 없으면 undefined */
+export const captionTag = (text: string) => text.match(CAPTION)?.[0].replace(/[.-]+$/, "");
+type Run = { text: string; size: number; box: number[] };
+/** 기준선 (box 는 pdf 좌표, 아래는 기준선 − 0.25×크기) */
+const base = (l: Run) => l.box[1] + l.size * 0.25;
+/** 이름표로 시작하는 줄: 번호 뒤가 끝 · 띄어쓰기 · ":" ("그림 3에 정리되어 있다" 는 본문, QA G4-04) */
+const CAPTION_LINE = new RegExp(String.raw`${CAPTION.source}(?![\w.-])(?=$|[\s:])`, "i");
+/** 쪽의 보통 줄 간격: 이어진 두 줄(크기 10% 안)의 기준선 간격 중앙값 (크기의 0.5~3배만, 같은 줄 · 단 넘김은 뺀다). 없으면 0 */
+export const lineGapOf = (lines: Run[]) =>
+  median(
+    lines.flatMap((b, i) => {
+      const a = lines[i - 1];
+      const g = a ? Math.abs(base(a) - base(b)) : 0;
+      return a && Math.abs(b.size - a.size) <= a.size * 0.1 && g > a.size * 0.5 && g <= a.size * 3 ? [g] : [];
+    }),
+  );
+/** 강조 구간 묶기 (QA T6-15 · G4-02~04): 같은 신호로 이어진 두 줄(a 다음 b)이 다른 덩어리인가.
+ * 글자 크기가 10% 넘게 바뀜 · 기준선 간격이 크기의 1.6배와 쪽의 보통 줄 간격(gap, lineGapOf)의 1.4배 중 큰 것보다 넓음
+ * (줄 간격 160% · 1.5줄 · 2줄 문서의 두 줄짜리 강조는 한 구간). 다만 a 가 문장으로 끝나면 크기의 1.6배만 (성긴 쪽은 gap 이 문단 간격, QA V2-02)
+ * · a 나 b 가 이름표 · b 가 제목 번호("1." · "2.1 제목", "3.5 ms" 는 아님)
+ * ponytail: 제목 번호는 점 · 뒤 글자로만 본다 ("1.5 배" 처럼 한글 단위가 오면 나눈다). 더 틀리면 글꼴 · 들여쓰기도 본다.
+ * 문장 끝은 마침표 · ? · ! 만 본다. 문장 중간에서 끝난 다른 하이라이트 둘이 성긴 쪽에 붙어 있으면 아직 한 구간 (그때는 주석마다 나눈다) */
+export const splitsRun = (a: Run, b: Run, gap = 0) =>
+  Math.abs(b.size - a.size) > a.size * 0.1 ||
+  Math.abs(base(a) - base(b)) > (/[.?!。？！]["'”’)\]]?$/.test(a.text) ? a.size * 1.6 : Math.max(a.size * 1.6, gap * 1.4)) + 0.1 ||
+  CAPTION_LINE.test(a.text) ||
+  CAPTION_LINE.test(b.text) ||
+  /^(\d+\.)+\s|^\d+(\.\d+)+\s+[^a-z\s]/.test(b.text);
+
 /** 그림 · 표 이름표: 바로 아래(없으면 위) 줄이 "그림 3-4 …" · "표 2 …" · "Figure 1 …" 처럼 시작하면 그 글 (40자) */
 export function captionOf(lay: Layout, box: Box): string {
   const near = rowsOf(lay.items.filter((it) => Math.min(it.box[2], box[2]) - Math.max(it.box[0], box[0]) > 0));
   const text = (r: Chunk[]) => r.map((c) => c.text.trim()).join(" ");
   const below = near.find((r) => r[0].box[1] >= box[3] - 1 && r[0].box[1] <= box[3] + r[0].size * 2.5);
   const above = [...near].reverse().find((r) => r[0].box[3] <= box[1] + 1 && r[0].box[3] >= box[1] - r[0].size * 2.5);
-  const hit = [below, above].find((r) => r && /^(그림|표|도표|사진|Fig\.?|Figure|Table)\s*[\dA-Z]/i.test(text(r)));
+  const hit = [below, above].find((r) => r && CAPTION.test(text(r)));
   return hit ? text(hit).slice(0, 40) : "";
 }
 

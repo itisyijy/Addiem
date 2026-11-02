@@ -455,18 +455,32 @@ fn options() -> Vec<String> {
     VERDICTS.iter().map(|v| format!(" {v}")).collect()
 }
 
-/// 출력(첫머리 포함)의 첫 JSON 문자열 배열. 뒤에 붙은 말은 버린다
+/// 출력(첫머리 포함)의 첫 JSON 문자열 배열. 뒤에 붙은 말은 버린다.
+/// 길이 한도에 잘려 배열이 닫히지 않았으면 끝까지 온전한 문자열만 (QA T7-12)
 fn strings(text: &str) -> Option<Vec<String>> {
     let start = text.find('[')?;
-    let v: Vec<String> = serde_json::Deserializer::from_str(&text[start..]).into_iter().next()?.ok()?;
+    let v: Vec<String> = match serde_json::Deserializer::from_str(&text[start..]).into_iter().next()? {
+        Ok(v) => v,
+        Err(_) => {
+            let (mut v, mut rest) = (vec![], text[start + 1..].trim_start());
+            while rest.starts_with('"') {
+                let mut one = serde_json::Deserializer::from_str(rest).into_iter::<String>();
+                let Some(Ok(s)) = one.next() else { break };
+                v.push(s);
+                rest = rest[one.byte_offset()..].trim_start().trim_start_matches(',').trim_start();
+            }
+            v
+        }
+    };
     Some(v.into_iter().map(|s| s.trim().to_string()).collect())
 }
 
-/// 뽑은 관계 검사: 1~5개, 빈 것 없이 80자까지, 같은 것은 하나로. 어기면 없다 (결과 없음)
+/// 뽑은 관계 검사: 앞 4개까지, 1개 이상, 빈 것 없이 80자까지, 같은 것은 하나로. 어기면 없다 (결과 없음)
 pub fn parse_relations(text: &str) -> Option<Vec<String>> {
     let mut v = strings(text)?;
     v.dedup();
-    ((1..=5).contains(&v.len()) && v.iter().all(|r| !r.is_empty() && r.chars().count() <= 80)).then_some(v)
+    v.truncate(4);
+    (!v.is_empty() && v.iter().all(|r| !r.is_empty() && r.chars().count() <= 80)).then_some(v)
 }
 
 /// 글 묶음의 SHA-256 (캐시 열쇠)
@@ -494,26 +508,25 @@ impl<T: Clone> Cache<T> {
     }
 }
 
-/// 모범 답안마다: 뽑은 관계 (질문 · 모범 답안의 해시)
-static PREPARED: Mutex<Cache<Vec<String>>> = Mutex::new(Cache(vec![]));
+/// 모범 답안마다: 뽑은 관계 (질문 · 모범 답안의 해시). None: 관계를 못 뽑았다 (다시 해도 같다, QA T7-12)
+static PREPARED: Mutex<Cache<Option<Vec<String>>>> = Mutex::new(Cache(vec![]));
 /// 답마다: 판정 결과 (질문 · 모범 답안 · 내 답의 해시). 같은 답을 다시 확인하지 않는다
 static RESULTS: Mutex<Cache<Vec<Relation>>> = Mutex::new(Cache(vec![]));
 
-/// 1단계. 같은 모범 답안은 다시 하지 않는다. 관계 형식이 틀리면 없다
-fn prepared(e: &mut Engine, question: &str, model: &str, stop: &dyn Fn() -> bool) -> Res<Option<Vec<String>>> {
+/// 1단계. 같은 모범 답안은 다시 하지 않는다 (못 뽑은 것도). 관계 형식이 틀리면 없다. generate: 프롬프트 → 모델 출력
+fn prepared(question: &str, model: &str, generate: impl FnOnce(&str) -> Res<String>) -> Res<Option<Vec<String>>> {
     let k = key(&[question, model]);
     if let Some(p) = PREPARED.lock().map_err(err)?.get(&k) {
-        return Ok(Some(p));
+        return Ok(p);
     }
-    let text = e.generate("", &extract_prompt(question, model), 160, stop)?;
-    let Some(rels) = parse_relations(&format!("{PREFIX}{text}")) else { return Ok(None) };
+    let rels = parse_relations(&format!("{PREFIX}{}", generate(&extract_prompt(question, model))?));
     PREPARED.lock().map_err(err)?.put(k, rels.clone());
-    Ok(Some(rels))
+    Ok(rels)
 }
 
 /// 답을 쓰는 동안: 관계를 뽑고 판정의 앞부분을 읽어 둔다
 pub fn warm(e: &mut Engine, question: &str, model: &str, stop: &dyn Fn() -> bool) -> Res<()> {
-    if let Some(rels) = prepared(e, question, model, stop)? {
+    if let Some(rels) = prepared(question, model, |p| e.generate("", p, 160, stop))? {
         e.prime(&judge_prefix(question, model, &rels), stop)?;
     }
     Ok(())
@@ -527,7 +540,7 @@ pub struct Detail {
 }
 
 pub fn check_detail(e: &mut Engine, question: &str, model: &str, answer: &str, stop: &dyn Fn() -> bool) -> Res<Option<Detail>> {
-    let Some(rels) = prepared(e, question, model, stop)? else { return Ok(None) };
+    let Some(rels) = prepared(question, model, |p| e.generate("", p, 160, stop))? else { return Ok(None) };
     let rest = format!("{}{TAIL}", clip(answer, 600));
     let lp = e.choose(&judge_prefix(question, model, &rels), &rest, &slots(rels.len()), &options(), stop)?;
     let relations = rels.into_iter().zip(&lp).map(|(rel, l)| Relation { rel, verdict: VERDICTS[decide(l)].to_string() }).collect();
@@ -594,6 +607,9 @@ pub fn run(bin: Option<&Path>, data_dir: &Path, job: u64, question: &str, model:
     // 캐시는 엔진 잠금 앞에서 본다: 다른 카드의 미리 하기가 엔진을 쥐고 있어도 기다리지 않는다 (QA Q5 L1: 되돌리기로 돌아온 카드가 9.5초)
     if let Some(r) = cached(question, model, answer)? {
         return Ok(Some(r));
+    }
+    if PREPARED.lock().map_err(err)?.get(&key(&[question, model])) == Some(None) {
+        return Ok(None); // 이 모범 답안은 관계를 못 뽑았다: 엔진을 기다리지 않는다
     }
     let started = Instant::now();
     let mut last = String::new();
@@ -677,9 +693,28 @@ mod tests {
     fn relations_are_validated() {
         let rels = format!("{PREFIX}수요 증가 → 가격 상승\", \"수요 증가 → 거래량 증가\"] 끝");
         assert_eq!(parse_relations(&rels).unwrap(), ["수요 증가 → 가격 상승", "수요 증가 → 거래량 증가"], "뒤에 붙은 말은 버린다");
-        for bad in [format!("{PREFIX}\"]"), "[]".into(), format!("{PREFIX}{}\"]", "가".repeat(81)), format!("{PREFIX}a\""), "관계가 없어요".into()] {
+        for bad in [format!("{PREFIX}\"]"), "[]".into(), format!("{PREFIX}{}\"]", "가".repeat(81)), format!("{PREFIX}a"), "관계가 없어요".into()] {
             assert!(parse_relations(&bad).is_none(), "{bad}");
         }
+        // 길이 한도에 잘린 배열 (QA T7-12): 끝까지 온전한 것만, 앞 4개까지
+        let cut = format!("{PREFIX}a → b\", \"c → d\",
+ \"e → f\", \"g → h\", \"i → j\", \"k → l\", \"m → ");
+        assert_eq!(parse_relations(&cut).unwrap(), ["a → b", "c → d", "e → f", "g → h"]);
+        assert_eq!(parse_relations(&format!("{PREFIX}a → b\", \"c → ")).unwrap(), ["a → b"]);
+    }
+
+    #[test]
+    fn failed_extraction_is_remembered() {
+        // QA T7-12: 관계를 못 뽑은 모범 답안은 [다시 확인] · 같은 모범 답안의 다른 카드에서 다시 생성하지 않는다
+        let mut calls = 0;
+        for _ in 0..2 {
+            let r = prepared("기억 시험 질문", "모범 답안", |_| {
+                calls += 1;
+                Ok("관계가 없어요".into())
+            });
+            assert_eq!(r.unwrap(), None);
+        }
+        assert_eq!(calls, 1);
     }
 
     #[test]

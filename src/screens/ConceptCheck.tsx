@@ -361,9 +361,12 @@ export function useConcept({ cardId, typed, on, writing, toastBusy }: { cardId: 
       <span className="concept__grow">
         개념 관계를 확인하지 못했어요 · {phase === "bad" ? "모범 답안에서 관계를 찾지 못했어요." : fail} 핵심어 검사와 평가는 그대로예요.
       </span>
-      <button type="button" className="ai-link t-label-s" onClick={run}>
-        다시 확인
-      </button>
+      {/* 관계를 못 찾은 모범 답안은 앱이 기억해 다시 해도 같다: 오류일 때만 (QA T7-12) */}
+      {phase === "error" && (
+        <button type="button" className="ai-link t-label-s" onClick={run}>
+          다시 확인
+        </button>
+      )}
     </p>
   ) : phase === "done" && result ? (
     <section className={`concept ${open ? "is-open" : "concept--line"}`} aria-label="개념 관계 (참고용)" ref={setBox}>

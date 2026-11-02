@@ -4,6 +4,7 @@ import { api, errorText, type DeckDetail, type Level } from "../api";
 import { Button, Icon, Input, LEVEL_LABEL, type IconName } from "../ui";
 import { useNav, useOverlayScope } from "../nav";
 import { composing } from "../keys";
+import { dialogs } from "../toast";
 
 /** 창 안의 [취소] 버튼이 X · Esc · 바깥 클릭과 같은 닫기(고친 것이 있으면 묻기)를 쓰게 */
 const CloseContext = createContext<() => void>(() => {});
@@ -94,8 +95,8 @@ export function Modal({ title, sub, onClose, children, wide, variant, icon = "al
 }
 
 const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
-/** 열린 모달. 맨 위 것만 Tab 을 가둔다 (C3-e 위의 새 하위 덱 창처럼 겹칠 때) */
-const openBoxes: HTMLElement[] = [];
+/** 열린 모달 중 맨 위. 맨 위 것만 Tab 을 가둔다 (C3-e 위의 새 하위 덱 창처럼 겹칠 때). 토스트도 이 창 안에 그린다 (I181) */
+const topBox = () => dialogs.get().slice(-1)[0];
 
 /**
  * Tab 이 모달 밖으로 나가지 않게 한다. onEscape 가 있으면 맨 위 창만 Esc 를 받는다 (창 위에 뜬 확인 창의 Esc 가 아래 창까지 닫지 않게).
@@ -107,11 +108,11 @@ export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>, onEsca
   useEffect(() => {
     const box = ref.current;
     if (!box) return;
-    openBoxes.push(box);
+    dialogs.set([...dialogs.get(), box]);
     // autoFocus 한 입력이 있으면 그대로, 없으면 창 자체에 (스크린리더가 제목을 읽는다)
     if (!box.contains(document.activeElement)) box.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (openBoxes[openBoxes.length - 1] !== box) return;
+      if (topBox() !== box) return;
       if (composing(e)) return; // 한글 조합 중 Esc 는 조합만 끝낸다
       if (e.key === "Escape" && esc.current) {
         if (e.defaultPrevented) return; // 창 안의 팝오버 · 입력 칸이 먼저 받았다
@@ -131,13 +132,13 @@ export function useFocusTrap(ref: React.RefObject<HTMLDivElement | null>, onEsca
     // 창 안에서 초점이 있던 것이 사라지면(팝오버 · 이름 칸이 닫힘) 초점이 body 로 빠져 창 단축키 · Tab 자리를 잃는다. 창으로 돌려준다 (QA V6-05 · V4-08)
     const onLost = (e: FocusEvent) =>
       !e.relatedTarget &&
-      queueMicrotask(() => document.activeElement === document.body && box.isConnected && openBoxes[openBoxes.length - 1] === box && box.focus());
+      queueMicrotask(() => document.activeElement === document.body && box.isConnected && topBox() === box && box.focus());
     document.addEventListener("keydown", onKey);
     box.addEventListener("focusout", onLost);
     return () => {
       document.removeEventListener("keydown", onKey);
       box.removeEventListener("focusout", onLost);
-      openBoxes.splice(openBoxes.indexOf(box), 1);
+      dialogs.set(dialogs.get().filter((b) => b !== box));
     };
   }, [ref]);
 }
@@ -163,6 +164,10 @@ export function DiscardModal({ title, text, keep, discard, onKeep, onDiscard }: 
 }
 
 const LEVELS: Level[] = [2, 1, 0];
+
+/** 덱 이름 100자는 Rust(deck_name)처럼 글자로 센다. maxLength 는 UTF-16 단위라 이모지 이름이 50자에서 멈춘다 (G3-07).
+ *  넘치면 뒤를 자른다: 예전에 가져온 100자 넘는 이름도 고치는 순간 100자로 줄어 저장된다 */
+export const fitDeckName = (v: string) => [...v].slice(0, 100).join("");
 
 /**
  * parentId 가 있으면 C1-s 하위 덱 만들기. 넣을 곳은 그 덱이 기본이고 더 깊은 하위 덱도 고를 수 있다.
@@ -243,7 +248,7 @@ export function NewDeckModal({ parentId = null, onClose, onCreated }: {
           error={error}
           helper={isSub ? "같은 곳에 같은 이름은 만들 수 없어요" : "목표일과 학습 설정은 나중에 덱 안에서 정할 수 있어요."}
           onChange={(e) => {
-            setName(e.target.value);
+            setName(fitDeckName(e.target.value));
             setError(undefined);
           }}
         />

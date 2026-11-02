@@ -501,7 +501,7 @@ fn field_name(nt: &Nt, name: &str, except: Option<usize>) -> Res<String> {
         return Err("필드 이름에는 : { } \" 를 쓸 수 없고, # / ^ 로 시작할 수 없어요.".into());
     }
     if SPECIAL.contains(&n) {
-        return Err(format!("'{n}'은 템플릿이 따로 쓰는 이름이에요."));
+        return Err(format!("'{n}'은 카드 모양이 따로 쓰는 이름이에요."));
     }
     if nt.visible().iter().any(|(s, x)| Some(*s) != except && x.to_lowercase() == n.to_lowercase()) {
         return Err(format!("'{n}' 필드가 이미 있어요."));
@@ -710,7 +710,7 @@ pub(crate) fn delete_field(con: &Connection, id: i64, slot: usize) -> Res<()> {
     }
     let name = nt.slots[slot].clone();
     if let Some(t) = nt.templates.iter().find(|t| refs(&t.qfmt).contains(&name) || refs(&t.afmt).contains(&name)) {
-        return Err(format!("'{}' 카드 종류가 이 필드를 써요. 템플릿에서 먼저 빼 주세요.", t.name));
+        return Err(format!("'{}' 카드 종류가 이 필드를 써요. 카드 모양에서 먼저 빼 주세요.", t.name));
     }
     nt.slots[slot] = String::new();
     save_slots(con, &nt)

@@ -44,7 +44,7 @@ pub struct Status {
     pub account: Option<String>,
     /// off | paused | idle | syncing | offline | login | quota | update | choice | gone | locked | error
     pub state: String,
-    /// pull | push | media | snapshot | backup | restore
+    /// pull | push | media | snapshot | backup (Drive 백업) | restore | local-backup · merge (합류: 이 기기 백업 → 합치기, R-03)
     pub phase: Option<String>,
     pub done: u64,
     pub total: u64,
@@ -487,15 +487,26 @@ fn refresh(sh: &Arc<Shared>) {
             (s.connected, s.enabled, s.account, s.backup, s.lock, s.last_sync) = (r.connected, r.enabled, r.account, r.backup, r.lock, r.last_sync);
             (s.pending, s.pending_reviews, s.pending_notes) = (r.pending, r.pending_reviews, r.pending_notes);
             (s.devices, s.device_name, s.conflicts, s.conflict_seq) = (r.devices, r.device_name, r.conflicts, r.conflict_seq);
-            if !r.connected {
-                s.state = "off".into();
-            } else if !r.enabled && s.state != "choice" && s.state != "gone" {
-                s.state = "paused".into();
-            } else if s.state.is_empty() || s.state == "off" || s.state == "paused" {
-                s.state = "idle".into();
-            }
+            s.settle();
         }
     });
+}
+
+impl Status {
+    /// 연결 · 켜짐(connected · enabled)으로 상태를 맞춘다. 합류 · 복구하는 동안(working)은 끝에 그쪽이 정한다:
+    /// 합류는 아직 세대가 없어 켜지지 않은 것으로 읽혀 "동기화가 꺼져 있어요"가 보였다 (R-03)
+    fn settle(&mut self) {
+        if self.state == "syncing" && self.phase.is_some() {
+            return;
+        }
+        if !self.connected {
+            self.state = "off".into();
+        } else if !self.enabled && self.state != "choice" && self.state != "gone" {
+            self.state = "paused".into();
+        } else if self.state.is_empty() || self.state == "off" || self.state == "paused" {
+            self.state = "idle".into();
+        }
+    }
 }
 
 /// 아직 올리지 않은 변경 (전송 대기 묶음, 복습 기록, 카드 변경). 복습은 세션 하나를 한 묶음으로 센다 (K5).
@@ -562,8 +573,9 @@ pub fn sync_status(state: State<SyncState>) -> Status {
     state.0.status.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
-/// 학습 화면에 들어가면 true, 나오면 false. 나올 때(학습을 마칠 때) 받기 -> 올리기
-#[tauri::command]
+/// 학습 화면에 들어가면 true, 나오면 false. 나올 때(학습을 마칠 때) 받기 -> 올리기.
+/// async: start_session 이 DB 를 잡은 동안 refresh 가 기다리며 창을 멈추게 하지 않는다 (QA P-01)
+#[tauri::command(async)]
 pub fn sync_pause(state: State<SyncState>, paused: bool) {
     let was = state.0.paused.swap(paused, Ordering::Relaxed);
     if was && !paused {
@@ -881,7 +893,13 @@ fn local_backup(sh: &Shared, kind: &str) -> Result<Option<PathBuf>, SyncError> {
 
 fn join_blocking(sh: &Arc<Shared>, o: JoinOpts) -> Result<(), SyncError> {
     let _g = sh.run.lock().map_err(store::other)?;
-    join_locked(sh, o, "fresh")
+    if o.later {
+        return join_locked(sh, o, "fresh");
+    }
+    // R-03 합류하는 동안 "맞추는 중"(syncing). 단계는 join_locked 가 정한다 (이 기기 백업 → 합치기).
+    // 백업이 있는 합류는 처음부터 "백업하는 중": 잠금 확인(암호 풀기)이 길어도 "합치는 중"이 백업보다 먼저 보이지 않는다 (G3-02)
+    let first = if o.mode == Join::New { "merge" } else { "local-backup" };
+    working(&sh.status, || sh.emit(), first, || join_locked(sh, o, "fresh"))
 }
 
 /// run 잠금을 쥔 채로 부른다. fresh_kind: 새로 시작할 때 다른 기기 고르는 창에 보일 이유 (fresh · lock · unlock)
@@ -940,7 +958,10 @@ fn join_locked(sh: &Arc<Shared>, o: JoinOpts, fresh_kind: &str) -> Result<(), Sy
         }
     }
     if o.mode != Join::New {
+        // R-03 합류 단계: 화면이 "백업하는 중…" → "합치는 중…"으로 보인다
+        sh.set(|s| s.phase = Some("local-backup".into()));
         local_backup(sh, "before-sync")?;
+        sh.set(|s| s.phase = Some("merge".into()));
     }
     // 계정 · 설정은 잠금을 확인하고 합치기 전 백업을 만든 뒤에 쓴다 (K47): 틀린 암호로 멈추거나 그 백업으로 되돌려도 반쯤 연결된 채 남지 않는다
     save_settings()?;
@@ -1253,16 +1274,16 @@ pub async fn sync_restore(state: State<'_, SyncState>, name: String, password: O
 /// 복구 전 데이터를 남긴 이 기기 백업 파일 이름을 돌려준다 (화면이 그 이름을 보인다, T5-17)
 fn restore_blocking(sh: &Arc<Shared>, name: &str, password: Option<&str>) -> Result<Option<String>, SyncError> {
     let _g = sh.run.lock().map_err(store::other)?;
-    restoring(&sh.status, || sh.emit(), || restore_locked(sh, name, password))
+    working(&sh.status, || sh.emit(), "restore", || restore_locked(sh, name, password))
 }
 
-/// K9 복구 동안 상태를 "백업으로 복구하는 중"(syncing · restore)으로 두고 f 를 부른다. 성공하면 idle, 실패하면 복구 전 상태로 되돌린다
+/// K9 복구 · R-03 합류 동안 상태를 syncing · phase(restore: "백업으로 복구하는 중")로 두고 f 를 부른다. 성공하면 idle, 실패하면 그 전 상태로 되돌린다
 /// (QA V1-03: 실패하면 "복구하는 중"에 멈춘 채 다음 자동 동기화까지 남았다). emit: 바뀐 상태를 화면에 알린다
-fn restoring<T>(status: &Mutex<Status>, emit: impl Fn(), f: impl FnOnce() -> Result<T, SyncError>) -> Result<T, SyncError> {
+fn working<T>(status: &Mutex<Status>, emit: impl Fn(), phase: &str, f: impl FnOnce() -> Result<T, SyncError>) -> Result<T, SyncError> {
     let before = status
         .lock()
         .map(|mut s| {
-            s.phase = Some("restore".into());
+            s.phase = Some(phase.into());
             std::mem::replace(&mut s.state, "syncing".into())
         })
         .unwrap_or_default();
@@ -1701,9 +1722,10 @@ mod revoke_tests {
         // QA V1-03: 실패한 K9 복구가 "백업으로 복구하는 중"(syncing · restore)에 멈춰 남지 않는다
         let status = Mutex::new(Status { state: "error".into(), ..Default::default() });
         let emitted = std::cell::Cell::new(0);
-        let r: Result<(), SyncError> = restoring(
+        let r: Result<(), SyncError> = working(
             &status,
             || emitted.set(emitted.get() + 1),
+            "restore",
             || {
                 let s = status.lock().unwrap();
                 assert_eq!((s.state.as_str(), s.phase.as_deref()), ("syncing", Some("restore")), "복구하는 동안");
@@ -1713,9 +1735,27 @@ mod revoke_tests {
         assert!(r.is_err());
         let s = status.lock().unwrap().clone();
         assert_eq!((s.state.as_str(), s.phase, s.changed_seq, emitted.get()), ("error", None, 0, 2), "복구 전 상태로");
-        restoring(&status, || {}, || Ok(())).unwrap();
+        working(&status, || {}, "restore", || Ok(())).unwrap();
         let s = status.lock().unwrap().clone();
         assert_eq!((s.state.as_str(), s.phase, s.changed_seq), ("idle", None, 1), "성공하면 idle, 화면이 다시 읽는다");
+    }
+
+    #[test]
+    fn joining_does_not_read_as_paused() {
+        // R-03: 합류하는 동안 화면이 상태를 다시 읽어도(sync_status → refresh) "동기화가 꺼져 있어요"(paused)가 아니다.
+        // 아직 세대가 없어 켜지지 않은 것으로 읽힌다. 실패하면 그 전 상태로 돌아가 다시 읽는다
+        let status = Mutex::new(Status { state: "paused".into(), connected: true, ..Default::default() });
+        let _ = working(&status, || {}, "merge", || {
+            let mut s = status.lock().unwrap();
+            s.phase = Some("local-backup".into());
+            s.settle();
+            assert_eq!(s.state, "syncing", "백업하는 동안");
+            Err::<(), _>(store::other("암호가 맞지 않아요"))
+        });
+        let mut s = status.lock().unwrap();
+        assert_eq!((s.state.as_str(), s.phase.as_deref()), ("paused", None));
+        s.settle();
+        assert_eq!(s.state, "paused", "합류하지 않았으면 그대로");
     }
 
     #[test]

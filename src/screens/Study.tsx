@@ -2,7 +2,7 @@
 // J1~J3 서술형 · H3 압축 회독 · G3 학습 중 신호 · I2 원자료 패널 · Q1/Q2 목록 회상 · 선택형
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { OcclusionEdit } from "./Occlusion";
-import { api, errorText, type CardView, type ExamState, type Level, type NoteEdit, type QueueSummary } from "../api";
+import { api, errorText, type BuriedCard, type CardView, type ExamState, type Level, type NoteEdit, type QueueSummary } from "../api";
 import { Badge, Button, Checkbox, Icon, Importance, Kbd, LEVEL_LABEL, RatingButton, Toggle, type Rating } from "../ui";
 import { eul, n, ro, useKey, useNav, useOverlayScope, type Route } from "../nav";
 import { actionKey, getKeys, matchAction, useKeymap } from "../keys";
@@ -111,7 +111,7 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
   // 머리 문장은 순서 원칙만. 핵심 우선은 늘 적용되는 규칙이다. 목표일은 그 덱의 신규 수를 나눴을 때만 덧붙인다
   // (큐 사유가 "남은 N장 ÷ M일" 계산식이면 목표일이 수를 정한 것)
   const base = "복습을 먼저 비우고, 신규는 핵심부터 넣었어요.";
-  const split = !!t && q.notes.some((x) => x.startsWith(`${t.name}: `) && x.includes("÷"));
+  const split = !!t && t.note.includes("÷");
   // P9: 시험 전 회독(혼합)에서 본 오늘 예정 카드는 오늘의 학습에서 빠졌다
   const mixed = q.mixed_today > 0 ? ` 시험 전 회독에서 ${n(q.mixed_today)}장을 이미 봤어요.` : "";
   const reason =
@@ -122,13 +122,16 @@ function Plan({ deckIds }: { deckIds: number[] | null }) {
         : split
           ? `${base} ${t.name} 목표일까지 ${t.dday}일이라 하루 몫을 나눴어요.`
           : base) + mixed;
-  // 핵심 신규 캡션은 숫자와 맞게: 여러 덱에서 오면 그렇다고, 목표 계산식은 결과까지 (하루 N장)
-  const perDay = t ? Math.ceil(t.remaining_new / Math.max(1, t.days)) : 0;
+  // 핵심 신규 캡션은 숫자와 맞게: 여러 덱에서 오면 그렇다고, 하루 몫은 큐가 정한 수 그대로. 계산식은 큐가 나눴을 때만, 큐 메모 그대로
+  // (분량 조정은 이 화면의 선택이라 뺀다, QA T3-24)
+  const perDay = t?.per_day ?? 0;
   const coreDesc = !t
     ? "핵심으로 정한 카드부터"
     : q.new_decks > 1
       ? `덱 ${n(q.new_decks)}개에서 오늘 몫만큼 · 목표가 가장 가까운 ${t.name}${eul(t.name) === "을" ? "은" : "는"} 하루 ${n(perDay)}장`
-      : `${t.name} · 남은 ${n(t.remaining_new)}장 ÷ ${n(t.days)}일 = 하루 ${n(perDay)}장`;
+      : split
+        ? `${t.name} · ${t.note.split(" (사용자 조정")[0]}`
+        : `${t.name} · ${t.note.startsWith("오늘만") ? "오늘만" : "하루"} ${n(perDay)}장`;
   const reviewDesc = [
     `예정 ${n(Math.max(0, q.learning + q.review - q.again))}`,
     q.backlog > 0 && `밀린 ${n(q.backlog)}${q.backlog_deferred > 0 ? ` (나머지 ${n(q.backlog_deferred)}장은 차차)` : ""}`,
@@ -333,7 +336,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
   const mixStats = useRef<MixStats>({ full: [0, 0], weak: [0, 0], again: [0, 0], due: 0 });
   const mixReplayed = useRef(false); // 접어둔 카드는 회독(혼합 · 압축) 끝에 한 번 더
   const mixDue = useRef(new Set<number>()); // P3 "오늘 예정이던 N장": 자리(전체 · 취약)와 상관없이 한 번씩, 오늘의 학습에서 빠진 카드만 (QA T3-04 · V6-03)
-  const openedAt = useRef(Date.now()); // P3 "N장 회독 · M분": 이 화면에서 쓴 시간 (같은 날 이어 쓴 세션의 쉬던 시간은 빼고)
+  const activeMs = useRef(0); // P3 "N장 회독 · M분": 카드마다 본 시간의 합 (한 장에 최대 60초. 쉬던 시간은 빼고, QA T3-17)
   const foldedIds = useRef<number[]>([]);
   const [typed, setTyped] = useState(""); // J1 내 답
   // Q 목록 회상 · 선택형: 연 칸 수 · 표시(목록은 빠뜨린 항목, 선택형은 고른 보기. 1부터) · 보기 순서(필드 번호) · 평가 추천
@@ -413,7 +416,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         return setError(errorText(e));
       }
       if (mix) {
-        const minutes = Math.max(summary.studied > 0 ? 1 : 0, Math.round((Date.now() - openedAt.current) / 60_000));
+        const minutes = Math.max(summary.studied > 0 ? 1 : 0, Math.round(activeMs.current / 60_000));
         return nav({ name: "mixDone", sessionId: session.current, run: mix, stats: mixStats.current, minutes, completed });
       }
       nav({ name: "done", sessionId: session.current, summary, completed, deckIds, scale });
@@ -496,13 +499,16 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     (async () => {
       try {
         // H3 압축 회독은 세션을 열지 않는다 (오늘의 학습 · 완주 지표와 따로)
-        const s: { session_id: number | null; card_ids: number[] } = cram
+        const s: { session_id: number | null; card_ids: number[]; buried?: BuriedCard[] } = cram
           ? { session_id: null, card_ids: props.cardIds ?? [] }
           : props.cardIds && props.sessionId !== undefined
             ? { session_id: props.sessionId, card_ids: props.cardIds }
             : await api.startSession(deckIds, scale);
         session.current = s.session_id;
         queue.current = [...s.card_ids];
+        // 이어 쓴 세션에서 앞서 접은 카드도 칩에 (QA T2-18)
+        if (s.buried?.length)
+          setFolded(s.buried.map((b) => ({ id: b.id, question: b.question, importance: b.importance, deck_path: b.deck_path, auto: b.reason !== "user", at: b.at })));
         if (mix) {
           for (const c of mix.cards) mixRoles.current.set(c.id, [...(mixRoles.current.get(c.id) ?? []), c.weak]);
           const weak = mix.cards.filter((c) => c.weak).length;
@@ -664,7 +670,8 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
     guard(async () => {
       const c = card!;
       // Q9 빠뜨림 · 고른 보기는 평가가 남을 때 같이 저장된다 (이 기기에만. 되돌리면 그 전 값으로)
-      const res = await backend.answer(c.view.id, r, Date.now() - shownAt.current, c.view.special ? marks : null);
+      const ms = Date.now() - shownAt.current;
+      const res = await backend.answer(c.view.id, r, ms, c.view.special ? marks : null);
       if (res.action === "day_rollover") {
         ended.current = true; // 백엔드가 세션을 닫았다
         // 큐 명세 8장: 학습 중 하루 경계를 넘었다. 세션은 닫혔고 방금 평가는 남지 않았다. 새 날의 학습을 다시 짠다
@@ -672,6 +679,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
         return nav(mix ? { name: "home" } : { name: "summary", deckIds });
       }
       if (mix) {
+        activeMs.current += Math.min(ms, 60_000);
         const role = mixRoles.current.get(c.view.id)?.shift();
         const st = mixStats.current;
         if (role !== undefined) {
@@ -952,12 +960,13 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
       : [`1–${n(order.length)} 고르기`, `${actionKey("reveal")} 확인`, `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, "Esc 그만하기"]
     : writing
     ? [`${actionKey("save")} 비교하기`, `Esc 입력 칸 나가기 (그다음 ${actionKey("reveal")}로 바로 답 보기)`]
-    : [`${actionKey("reveal")} 답 보기`, replayHint(card?.front), mix && "평가가 복습 일정에 반영돼요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
+    : [`${actionKey("reveal")} 답 보기`, replayHint(card?.front), mix && "평가가 복습 일정에 반영돼요", cram && "평가는 기록만 해요", fit.overflow && "↑ ↓ 카드 안 스크롤", `${actionKey("edit")} 편집`, `${actionKey("bury")} 접어두기`, last && `${actionKey("undo")} 되돌리기`, "Esc 그만하기"];
   const keysA = [
     `${rateKeys.join(" · ")} 로 평가`,
     replayHint(card?.view.back),
     special?.kind === "list" && "항목 누르기 · X 기억 여부 바꾸기",
     mix && "평가가 복습 일정에 반영돼요",
+    cram && "평가는 기록만 해요",
     grade.ready && `${actionKey("grade")} ChatGPT 채점 보조`,
     fit.overflow && "↑ ↓ 카드 안 스크롤",
     card?.source && `${actionKey("source")} 연결 자료`,
@@ -1001,7 +1010,7 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
               <div className="fold__pop" role="dialog" aria-label="접어둔 카드">
                 <div className="fold__head">
                   <p className="t-title-s">접어둔 카드 {n(folded.length)}장</p>
-                  <p className="t-caption c-tertiary">나머지를 끝내면 마지막에 묶어서 다시 보여드려요</p>
+                  <p className="t-caption c-tertiary">{cram || mix ? "나머지를 끝내면 마지막에 묶어서 다시 보여드려요" : "학습을 마치면 다시 볼지 물어볼게요"}</p>
                 </div>
                 <div className="fold__list">
                   {folded.map((f, i) => (
@@ -1336,11 +1345,11 @@ export function Study(props: { deckIds: number[] | null; scale: number; cardIds?
             {!undoTop && <span className="t-body-s c-on-inverse">
               {toast.reason
                 ? `두 번 막혔어요. ${toast.reason}, 나눠서 외우는 게 나을 수도 있어요.`
-                : toast.auto
-                  ? "같은 학습에서 두 번 기억나지 않았어요. 나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
-                  : cram || mix
-                    ? "나머지를 먼저 끝내고 마지막에 다시 보여드릴게요."
-                    : "학습을 마치면 다시 볼지 물어볼게요."}
+                : `${toast.auto ? "같은 학습에서 두 번 기억나지 않았어요. " : ""}${
+                    cram || mix ? "나머지를 먼저 끝내고 마지막에 다시 보여드릴게요." : "학습을 마치면 다시 볼지 물어볼게요."
+                  }`}
+              {/* [되돌리기] 버튼이 빠진 토스트는 키로 안내한다 (QA T2-16) */}
+              {last?.id === toast.id && (toast.reason || toast.source) && ` · ${actionKey("undo")} 로 되돌리기`}
             </span>}
           </span>
           {/* G3: 학습을 멈추지 않는다. "나중에 볼 제안"에 넣고 토스트만 닫는다 (D5 접어둔 카드 행에 칩으로 다시 나온다) */}
@@ -1723,7 +1732,8 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
               </>
             ) : note?.names.map((_, i) =>
               note.roles[i] === "line" ? (
-                <label key={i} className="edit__item">
+                // 12자를 넘는 값은 한 줄 칸이 좁아 잘린다. 넓은 칸으로 (QA V4-06)
+                <label key={i} className={plainText(note.values[i]).length > 12 ? "edit__item edit__item--wide" : "edit__item"}>
                   <span className="t-label-m">{label(i)}</span>
                   <input
                     ref={(el) => {
@@ -1786,7 +1796,7 @@ export function EditNote({ noteId, card, back, onClose, onSaved, onDeleted }: {
                   <span className="edit__importance-label">
                     <span className="t-label-m">중요도</span>
                     <span className="t-caption c-tertiary">
-                      {target ? `하위 덱 기본값 ${LEVEL_LABEL[target.importance]} · ` : ""}
+                      {target ? `${target.id === rootId ? "덱" : "하위 덱"} 기본값 ${LEVEL_LABEL[target.importance]} · ` : ""}
                       {/* 중요도는 노트 단위라 앞뒤 둘 다는 두 장이 같이 바뀐다 (C3-r) */}
                       {reversed ? "앞뒤 두 장을 같이 바꿔요" : "이 카드만 바꿔요"}
                     </span>

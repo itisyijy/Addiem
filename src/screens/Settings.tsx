@@ -373,7 +373,8 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
       setBusy(false);
     }
   };
-  const update = updates.find((x) => x.backup === pick && !x.blocked);
+  // 되돌릴 수 없는 업데이트도 띠는 보이고 이유만 (버튼 없이, QA T4-16)
+  const update = updates.find((x) => x.backup === pick);
   if (undo !== null) return <UndoConfirm batch={undo} onClose={() => setUndo(null)} />;
   return (
     // 복구하는 동안은 닫지 않는다: 다른 화면의 명령이 복구가 끝날 때까지 기다리다 갑자기 새로 고쳐진다 (QA T9-07)
@@ -382,29 +383,33 @@ function RestoreBackup({ initial, onClose }: { initial?: string; onClose: () => 
       {list && list.length === 0 && <p className="t-body-s c-tertiary">이 기기 백업이 아직 없어요</p>}
       {list && list.length > 0 && (
         <div className="restore__list" role="radiogroup" aria-label="복구할 백업">
-          {list.map((b) => (
-            <label key={b.name} className={`import__option ${pick === b.name ? "is-on" : ""}`}>
-              <input type="radio" name="restore" checked={pick === b.name} onChange={() => setPick(b.name)} />
-              <span className="import__radio" />
-              <span className="import__option-text">
-                {/* 같은 분에 만든 백업끼리만 초까지 (DU51) */}
-                <span className="t-body-m-strong">{stamp(b.at, list.some((o) => o !== b && stamp(o.at) === stamp(b.at)))}</span>
-                <span className="t-caption c-tertiary">
-                  {BACKUP_KIND[b.kind]}
-                  {b.kind === "other" && ` (${b.name})`} · {mb(b.bytes)}
+          {list.map((b) => {
+            const from = b.kind === "update" ? updates.find((x) => x.backup === b.name) : undefined;
+            return (
+              <label key={b.name} className={`import__option ${pick === b.name ? "is-on" : ""}`}>
+                <input type="radio" name="restore" checked={pick === b.name} onChange={() => setPick(b.name)} />
+                <span className="import__radio" />
+                <span className="import__option-text">
+                  {/* 같은 분에 만든 백업끼리만 초까지 (DU51) */}
+                  <span className="t-body-m-strong">{stamp(b.at, list.some((o) => o !== b && stamp(o.at) === stamp(b.at)))}</span>
+                  <span className="t-caption c-tertiary">
+                    {BACKUP_KIND[b.kind]}
+                    {b.kind === "other" && ` (${b.name})`}
+                    {from && ` 「${from.file_name}」`} · {mb(b.bytes)}
+                  </span>
                 </span>
-              </span>
-            </label>
-          ))}
+              </label>
+            );
+          })}
         </div>
       )}
       {update && (
         <div className="du-undo-strip">
           <Icon name="rotate" size={16} className="c-accent" />
           <span className="t-body-s">
-            「{update.file_name}」 업데이트 전 백업이에요 · 그 업데이트로 바뀐 것만 되돌리면 그 뒤의 학습과 수정은 그대로예요
+            「{update.file_name}」 업데이트 전 백업이에요 · {update.blocked ?? "그 업데이트로 바뀐 것만 되돌리면 그 뒤의 학습과 수정은 그대로예요"}
           </span>
-          <Button variant="secondary" size="M" label="이 업데이트 되돌리기" onClick={() => setUndo(update.batch)} />
+          {!update.blocked && <Button variant="secondary" size="M" label="이 업데이트 되돌리기" onClick={() => setUndo(update.batch)} />}
         </div>
       )}
       {/* Drive 에 연결하기 전 백업(처음 연결할 때의 동기화 전 자동 백업 등)에는 연결이 없다: 되돌리면 연결이 풀린다 (K47, QA V1-04) */}

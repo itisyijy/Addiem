@@ -62,7 +62,7 @@ const isRecall = (k: Kind) => k === "list" || k === "choice";
 
 // ---------------------------------------------------------------- NT12 덱마다 마지막에 쓴 유형 (이 기기에만)
 
-export const LAST_TYPE = "addiem.addCard.lastType"; // { [덱 id]: 노트 유형 id }. 모든 데이터 삭제가 같이 지운다
+export const LAST_TYPE = "addiem.addCard.lastType"; // { [덱 id]: 노트 유형 id, added: 마지막으로 카드를 넣은 덱 }. 모든 데이터 삭제가 같이 지운다
 function lastType(deckId: number): number | undefined {
   try {
     return JSON.parse(localStorage.getItem(LAST_TYPE) ?? "{}")[deckId];
@@ -70,12 +70,20 @@ function lastType(deckId: number): number | undefined {
     return undefined; // 못 읽으면 그 덱 노트가 가장 많이 쓰는 유형으로 연다
   }
 }
-export function rememberType(deckId: number, typeId: number) {
+export function rememberType(deckId: number | "added", value: number | { deck: number; root: number }) {
   try {
     const all = JSON.parse(localStorage.getItem(LAST_TYPE) ?? "{}");
-    localStorage.setItem(LAST_TYPE, JSON.stringify({ ...all, [deckId]: typeId }));
+    localStorage.setItem(LAST_TYPE, JSON.stringify({ ...all, [deckId]: value }));
   } catch {
     /* 저장하지 못해도 카드 추가는 된다 */
+  }
+}
+/** 마지막으로 카드를 넣은 덱과 그 최상위 덱 (홈 [카드 추가]가 연다, QA T1-17) */
+export function lastAdded(): { deck: number; root: number } | undefined {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_TYPE) ?? "{}").added;
+  } catch {
+    return undefined;
   }
 }
 
@@ -313,6 +321,7 @@ export function AddCard({ deckId }: { deckId: number }) {
     setGen((g) => g + 1);
     setKind(k);
     setTyped(k === "typed" ? t : null);
+    setError(undefined); // 앞 유형의 저장 오류("그림을 넣어 주세요." 등)를 남기지 않는다 (G5-03)
     if (isRecall(k) && filled(values[1] ?? "")) setExtraOpen(true);
     const id = typeIdOf(k, t);
     if (id !== undefined) rememberType(deckId, id);
@@ -508,6 +517,7 @@ export function AddCard({ deckId }: { deckId: number }) {
       setHintOff(false); // 새 노트에서는 다시 권한다
       setHint(null);
       if (currentTypeId !== undefined) rememberType(deckId, currentTypeId);
+      if (rootId !== undefined) rememberType("added", { deck: target, root: rootId });
       if (keepGoing) {
         q.current?.clear();
         a.current?.clear();
@@ -888,8 +898,8 @@ export function AddCard({ deckId }: { deckId: number }) {
               <span className="t-label-m">중요도</span>
               <span className="t-caption c-tertiary">
                 {importance === null
-                  ? `하위 덱 설정을 따르는 중 · ${LEVEL_LABEL[inherited]}`
-                  : `직접 지정 · 같은 칸을 다시 누르면 하위 덱 설정(${LEVEL_LABEL[inherited]})으로`}
+                  ? `${target === rootId ? "덱" : "하위 덱"} 설정을 따르는 중 · ${LEVEL_LABEL[inherited]}`
+                  : `직접 지정 · 같은 칸을 다시 누르면 ${target === rootId ? "덱" : "하위 덱"} 설정(${LEVEL_LABEL[inherited]})으로`}
               </span>
             </span>
             <div className="segment segment--boxed">

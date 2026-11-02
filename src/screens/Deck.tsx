@@ -6,7 +6,7 @@ import { Badge, Button, Checkbox, Icon, Importance, Input, Kbd, StatTile } from 
 import { n, studyDate, useKey, useNav, useMenu } from "../nav";
 import { actionKey, plainEnter } from "../keys";
 import { useToast, type ToastInput } from "../toast";
-import { Modal, NewDeckModal } from "./NewDeck";
+import { Modal, NewDeckModal, fitDeckName } from "./NewDeck";
 import { ExportDeckDialog } from "./ExportDeck";
 import { SourcesButton } from "./Sources";
 import { ExamLine } from "./Exam";
@@ -182,7 +182,11 @@ function RenameTitle({ d, sub, onDone }: { d: DeckDetail; sub: string; onDone: (
         defaultValue={d.name}
         autoFocus
         onFocus={(e) => e.currentTarget.select()}
-        onChange={() => setError(undefined)}
+        onChange={(e) => {
+          const fit = fitDeckName(e.currentTarget.value);
+          if (fit !== e.currentTarget.value) e.currentTarget.value = fit;
+          setError(undefined);
+        }}
         onKeyDown={(e) => {
           // 한글 조합 중 Enter 는 글자만 마친다. 그 Enter 로 칸을 나가면 확정 Enter 가 화면의 "Enter = 학습 시작"으로 샌다 (QA T1-25 · T8-09)
           if (plainEnter(e)) e.currentTarget.blur();
@@ -242,7 +246,7 @@ function reasonText(d: DeckDetail, adjust: Adjust) {
     return `오늘 이 덱 신규는 0장이에요 · ${d.target_from ? `「${d.target_from.name}」` : "상위 덱"} 하루 신규 ${n(d.per_day)}장을 다른 하위 덱이 먼저 써요`;
   // 상위 덱 목표를 따르는 하위 덱은 이 덱 설정으로 계산할 수 없다. 상위 덱 상세와 같은 지금 남은 수로 백엔드가 만든 문장을 쓴다 (QA V3-04)
   if (!d.target_date && d.target_from && d.reason) return d.reason;
-  if (!d.target_date || d.learnable_days === null) return `목표일 없음 · 하루 신규 상한 ${n(d.per_day)}장대로`;
+  if (!d.target_date || d.learnable_days === null) return `목표일 없음 · 하루 신규 ${n(d.per_day)}장 (상한 ${n(d.daily_new_limit ?? 20)}장)`;
   // 당일 학습을 끈 목표일 당일은 "지났어요"가 아니다 (QA T3-03). 수는 이 덱 예산이 나눌 신규만 (자기 설정을 가진 하위 덱은 따로, QA T3-08)
   if (d.learnable_days === 0) return `오늘이 목표일이에요 · 남은 신규 ${n(d.budget_unseen)}장을 오늘 모두 올렸어요`;
   if (d.learnable_days < 0) return `목표일이 지났어요 · 남은 신규 ${n(d.budget_unseen)}장을 모두 올렸어요`;
@@ -836,7 +840,7 @@ function MoreMenu({ d, onRename, onPause, onResume }: {
                 onClick={(e) => {
                   e.stopPropagation();
                   setPauseByKey(false);
-                  setPauseOpen((v) => !v);
+                  setPauseOpen(true); // 마우스를 올려 이미 열렸으니 누르면 열어 둔다. 닫기는 벗어나기 · ← · Esc (QA T1-10)
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter" && e.key !== " " && e.key !== "ArrowRight") return;
@@ -981,7 +985,8 @@ function PauseMenu({ d, today, focusFirst, onBack, onPick, onPickDate }: {
         aria-label="얼마나 쉴까요?"
         onKeyDown={(e) => {
           menuKeys(e);
-          if (e.key === "ArrowLeft") {
+          // Esc 도 ← 처럼 하위 메뉴만 닫고 위 메뉴로 돌아간다 (QA T8-18)
+          if (e.key === "ArrowLeft" || e.key === "Escape") {
             e.preventDefault();
             e.stopPropagation();
             onBack();
@@ -1054,7 +1059,9 @@ export function DeleteDeckConfirm({ id, name, counts, onClose, onDone }: {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const ok = typed.trim() === name.trim();
+  // 보이지 않는 글자(U+200B–200D, U+2060, U+FEFF)는 덱 이름에서 빼는 것과 같게 양쪽 다 빼고 비교한다 (QA T1-21)
+  const bare = (s: string) => s.replace(/[​-‍⁠﻿]/g, "").trim();
+  const ok = bare(typed) === bare(name);
   const sync = useSyncStatus();
   const synced = !!sync?.connected && !!sync.enabled;
 

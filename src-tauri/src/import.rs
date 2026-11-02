@@ -105,7 +105,7 @@ fn deck_name_level(name: &str) -> Option<(i64, String)> {
     const CORE: [&str; 8] = ["요약", "핵심", "정리", "기출", "필수", "summary", "core", "essential"];
     const SUPP: [&str; 7] = ["부록", "참고", "심화", "보충", "appendix", "extra", "advanced"];
     let lower = name.to_lowercase();
-    let reason = |k: &str| format!("하위 덱 이름에 '{k}'{} 있어요", if crate::quality::has_batchim(k) { "이" } else { "가" });
+    let reason = |k: &str| format!("하위 덱 이름에 '{k}'{} 있어요", if crate::table::final_consonant(k) { "이" } else { "가" });
     let core = CORE.iter().find(|k| lower.contains(*k));
     let supp = SUPP.iter().find(|k| lower.contains(*k));
     match (core, supp) {
@@ -126,7 +126,7 @@ struct Decks {
 }
 
 impl Decks {
-    /// 경로대로 찾거나 만든다. 같은 이름이 있으면 그 덱에 합친다 (Anki 와 같다)
+    /// 경로대로 찾거나 만든다. 같은 이름이 있으면 (덱 이름 규칙처럼 대소문자만 달라도) 그 덱에 합친다 (Anki 와 같다)
     fn ensure(&mut self, con: &Connection, parent: Option<i64>, parts: &[String], now: i64) -> Res<i64> {
         let mut cur = parent;
         for name in parts {
@@ -135,7 +135,7 @@ impl Decks {
                 Some(id) => *id,
                 None => {
                     let found: Option<(i64, Option<i64>)> = con
-                        .query_row("SELECT id, archived_at FROM deck WHERE parent_id IS ?1 AND name = ?2", params![cur, name], |r| {
+                        .query_row("SELECT id, archived_at FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![cur, name], |r| {
                             Ok((r.get(0)?, r.get(1)?))
                         })
                         .optional()
@@ -262,7 +262,12 @@ struct JsonCard {
 }
 
 fn split_path(p: &str) -> Vec<String> {
-    p.split("::").map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+    p.split("::").map(import_deck_name).filter(|s| !s.is_empty()).collect()
+}
+
+/// 가져온 덱 이름 한 단계: 덱 이름 규칙(clean_deck_name)을 따르고, 100자를 넘으면 거절하지 않고 자른다 (G3-01)
+pub(super) fn import_deck_name(s: &str) -> String {
+    crate::commands::clean_deck_name(s).chars().take(100).collect::<String>().trim_end().to_string()
 }
 
 fn has_cloze(s: &str) -> bool {
@@ -272,20 +277,22 @@ fn has_cloze(s: &str) -> bool {
 /// 목록 · 선택형 (Q10). 여기서는 키 모양만 보고, 내용은 앱의 저장 검증(recall::list_fields · choice_fields) 그대로
 fn json_recall(nt: &str, o: &serde_json::Map<String, Value>) -> Result<Vec<String>, (&'static str, String)> {
     let missing = |key: &str| ("missing_field", format!("{key} 키가 없어요"));
+    // 조사는 키를 읽는 소리로 (question 이 · items 가)
+    let ga = |key: &str| if crate::table::final_consonant(key) { "이" } else { "가" };
     let text = |key: &str| match o.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(("bad_field", format!("{key} 가 문자열이 아니에요"))),
+        Some(_) => Err(("bad_field", format!("{key} {} 문자열이 아니에요", ga(key)))),
     };
     let flag = |key: &str| match o.get(key) {
         None | Some(Value::Null) => Ok(true),
         Some(Value::Bool(b)) => Ok(*b),
-        Some(_) => Err(("bad_field", format!("{key} 는 true 또는 false 예요"))),
+        Some(_) => Err(("bad_field", format!("{key} {} true 또는 false 예요", if crate::table::final_consonant(key) { "은" } else { "는" }))),
     };
     let strings = |key: &str| match o.get(key) {
         None | Some(Value::Null) => Err(missing(key)),
         Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(String::from).ok_or(("bad_field", format!("{key} 에 문자열이 아닌 값이 있어요")))).collect(),
-        Some(_) => Err(("bad_field", format!("{key} 가 배열이 아니에요"))),
+        Some(_) => Err(("bad_field", format!("{key} {} 배열이 아니에요", ga(key)))),
     };
     let question = text("question")?.ok_or_else(|| missing("question"))?;
     let extra = text("extra")?.unwrap_or_default();
@@ -422,7 +429,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
                 // 앞뒤 둘 다: 노트 하나에서 카드 두 장 (앞 → 뒤, 뒤 → 앞)
                 let reversed = ["reversed", "Basic (and reversed card)"].iter().any(|t| note_type.eq_ignore_ascii_case(t));
                 if !cloze && !reversed && !note_type.eq_ignore_ascii_case("basic") {
-                    issues.push(at(i, "info", "note_type", format!("노트타입 '{note_type}'의 카드는 질문과 답변으로 가져왔어요")));
+                    issues.push(at(i, "info", "note_type", format!("노트 유형 '{note_type}'의 카드는 질문과 답변으로 가져왔어요")));
                 }
                 (front, back, if cloze { "cloze" } else if reversed { "reversed" } else { "basic" }, vec![])
             }
@@ -468,7 +475,7 @@ fn parse_json(text: &str) -> (Vec<JsonCard>, Vec<Issue>, Option<String>) {
 /// 대상 덱이 있으면 경로를 그 아래로 옮긴다. 경로 첫 단계가 대상 덱 이름이면 겹치지 않게 뗀다
 fn relative_path(path: &[String], target_name: Option<&str>) -> Vec<String> {
     match target_name {
-        Some(t) if path.first().is_some_and(|p| p == t) => path[1..].to_vec(),
+        Some(t) if path.first().is_some_and(|p| p.to_lowercase() == t.to_lowercase()) => path[1..].to_vec(),
         Some(_) => path.to_vec(),
         None => path.to_vec(),
     }
@@ -539,22 +546,31 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
     };
     // 만들어질 덱을 센다. 읽기만 한다
     let mut new_paths: HashSet<Vec<String>> = HashSet::new();
-    let mut roots: Vec<String> = vec![];
+    // (이미 있는 덱 id, 이름). 이미 있으면 그 덱의 이름, 새 덱끼리는 가져오기처럼 대소문자를 가리지 않고 하나로 (QA V2-01)
+    let mut roots: Vec<(Option<i64>, String)> = vec![];
     let mut known = HashMap::new();
     let mut existing = HashSet::new();
     for c in &cards {
         let path = relative_path(&c.deck, target.as_ref().map(|t| t.1.as_str()));
-        let root_name = target.as_ref().map(|t| t.1.clone()).or_else(|| path.first().cloned()).unwrap_or_default();
+        let mut root = match &target {
+            Some((id, name)) => (Some(*id), name.clone()),
+            None => (None, path.first().cloned().unwrap_or_default()),
+        };
         let mut parent = target.as_ref().map(|t| t.0);
         let mut missing = false;
         for d in 1..=path.len() {
             if !missing {
-                let found: Option<i64> = con
-                    .query_row("SELECT id FROM deck WHERE parent_id IS ?1 AND name = ?2", params![parent, path[d - 1]], |r| r.get(0))
+                let found: Option<(i64, String)> = con
+                    .query_row("SELECT id, name FROM deck WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE ORDER BY name = ?2 DESC, archived_at IS NOT NULL LIMIT 1", params![parent, path[d - 1]], |r| Ok((r.get(0)?, r.get(1)?)))
                     .optional()
                     .map_err(err)?;
                 match found {
-                    Some(id) => parent = Some(id),
+                    Some((id, name)) => {
+                        if parent.is_none() {
+                            root = (Some(id), name);
+                        }
+                        parent = Some(id)
+                    }
                     None => missing = true,
                 }
             }
@@ -569,8 +585,8 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
             existing.insert(c.index);
             continue;
         }
-        if !roots.contains(&root_name) {
-            roots.push(root_name);
+        if !roots.iter().any(|r| r.0 == root.0 && (r.0.is_some() || r.1.eq_ignore_ascii_case(&root.1))) {
+            roots.push(root);
         }
     }
     let issues = drop_existing(issues, &existing);
@@ -582,7 +598,7 @@ fn json_preview(con: &Connection, text: &str, deck_id: Option<i64>) -> Res<JsonP
         // 참고(info)는 경고에 세지 않는다. 결과 화면과 같은 수 (T4-07)
         warnings: issues.iter().filter(|i| i.severity == "warning").count(),
         issues,
-        roots,
+        roots: roots.into_iter().map(|r| r.1).collect(),
         new_decks: new_paths.len(),
         error,
     })
@@ -756,12 +772,35 @@ struct AType {
     fields: Vec<String>,
     css: String,
     templates: Vec<(u32, String, String, String)>, // ord, 이름, 앞면, 뒷면
-    /// 원본과 다르게 보일 수 있는 기능 (스크립트, 빈칸 type-in, TTS)
-    degraded: Vec<&'static str>,
+    /// 원본과 다르게 보일 수 있는 기능 (스크립트, 빈칸 type-in, TTS). 템플릿 ord 마다, 기능이 있는 템플릿만 (T2-19)
+    degraded: Vec<(u32, Vec<&'static str>)>,
     /// Anki originalStockKind (0 = 사용자 정의). 내보낼 때 다시 붙인다 (I78)
     stock: i64,
     /// 카드 종류마다 덱 (Anki deck override, 템플릿 did · target_deck_id): (ord, Anki 덱 id). NT76
     decks: Vec<(u32, i64)>,
+}
+
+impl AType {
+    /// 카드(ord)가 쓰는 템플릿의 기능. 빈칸 유형은 템플릿이 하나이고 카드 ord 가 빈칸 번호라, 템플릿이 하나면 모든 카드가 그것을 쓴다
+    fn degraded_at(&self, ord: u32) -> &[&'static str] {
+        let one = self.templates.len() == 1;
+        self.degraded.iter().find(|(o, _)| one || *o == ord).map_or(&[], |(_, f)| f)
+    }
+
+    /// 템플릿 어디에든 있는 기능 (노트 유형 하나로 볼 때)
+    fn features(&self) -> Vec<&'static str> {
+        let mut out = vec![];
+        for f in self.degraded.iter().flat_map(|(_, f)| f) {
+            if !out.contains(f) {
+                out.push(*f);
+            }
+        }
+        out
+    }
+}
+
+fn degraded_by_ord(templates: &[(u32, String, String, String)], voices: &[String]) -> Vec<(u32, Vec<&'static str>)> {
+    templates.iter().map(|t| (t.0, degraded_features(&format!("{}\n{}", t.2, t.3), voices))).filter(|(_, f)| !f.is_empty()).collect()
 }
 
 struct Package {
@@ -938,14 +977,7 @@ fn read_modern(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
                 (ord, n, pb_str(&c, 1), pb_str(&c, 2))
             })
             .collect();
-        let mut degraded = vec![];
-        for t in &templates {
-            for f in degraded_features(&format!("{}\n{}", t.2, t.3), voices) {
-                if !degraded.contains(&f) {
-                    degraded.push(f);
-                }
-            }
-        }
+        let degraded = degraded_by_ord(&templates, voices);
         types.insert(id, AType { name, fields, css: pb_str(&cfg, 3), templates, degraded, stock: stock.unwrap_or(0), decks: tdecks });
     }
     Ok((decks, types))
@@ -980,14 +1012,7 @@ fn read_legacy(col: &Connection, voices: &[String]) -> Res<(HashMap<i64, ADeck>,
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut degraded = vec![];
-            for tp in &templates {
-                for f in degraded_features(&format!("{}\n{}", tp.2, tp.3), voices) {
-                    if !degraded.contains(&f) {
-                        degraded.push(f);
-                    }
-                }
-            }
+            let degraded = degraded_by_ord(&templates, voices);
             let stock = t.get("originalStockKind").and_then(Value::as_i64).unwrap_or(0);
             let tdecks: Vec<(u32, i64)> = t
                 .get("tmpls")
@@ -1184,7 +1209,7 @@ pub struct DeckStat {
 
 /// 우리 덱 경로로 옮길 때의 이름 (앞뒤 공백을 떼고 빈 이름은 뺀다). 가져오기와 덱 고르기 트리가 같은 경로를 쓴다
 fn deck_parts(d: &ADeck) -> Vec<String> {
-    let parts: Vec<String> = d.path.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<String> = d.path.iter().map(|s| import_deck_name(s)).filter(|s| !s.is_empty()).collect();
     if parts.is_empty() { vec![DEFAULT_DECK.into()] } else { parts }
 }
 
@@ -1202,7 +1227,7 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>,
         .col
         .prepare(&format!(
             "SELECT c.id, c.nid, c.did, c.odid, c.type, c.queue, {REAL_DUE}, n.mid, n.guid, n.flds LIKE '%[latex]%',
-                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{{document}}%' OR n.flds LIKE '%\\usepackage%'
+                    n.flds LIKE '%\\documentclass%' OR n.flds LIKE '%\\begin{{document}}%' OR n.flds LIKE '%\\usepackage%', c.ord
              FROM cards c JOIN notes n ON n.id = c.nid",
         ))
         .map_err(err)?;
@@ -1242,7 +1267,8 @@ fn deck_stats(pkg: &Package, existing: &HashSet<String>, gone: &HashSet<String>,
         if !s.types.contains(&mid) {
             s.types.push(mid);
         }
-        for (f, t) in pkg.types.get(&mid).into_iter().flat_map(|t| t.degraded.iter().map(move |f| (f, t))) {
+        let ord: u32 = r.get(11).map_err(err)?;
+        for (f, t) in pkg.types.get(&mid).into_iter().flat_map(|t| t.degraded_at(ord).iter().map(move |f| (f, t))) {
             match s.degraded.iter_mut().find(|x| x.feature == *f) {
                 Some(x) => {
                     x.cards += 1;
@@ -1275,22 +1301,24 @@ fn count(col: &Connection, sql: &str) -> Res<usize> {
     col.query_row(sql, [], |r| r.get::<_, i64>(0)).map(|n| n as usize).map_err(err)
 }
 
-/// 노트타입별 카드 수
-fn cards_by_type(col: &Connection) -> Res<HashMap<i64, usize>> {
-    db::rows(col, "SELECT n.mid, count(*) FROM cards c JOIN notes n ON n.id = c.nid GROUP BY n.mid", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))).map_err(err)
+/// (노트타입, 카드 종류 ord)별 카드 수. 기능은 카드 종류(템플릿)마다 다르다 (T2-19)
+fn cards_by_type(col: &Connection) -> Res<HashMap<(i64, u32), usize>> {
+    db::rows(col, "SELECT n.mid, c.ord, count(*) FROM cards c JOIN notes n ON n.id = c.nid GROUP BY n.mid, c.ord", [], |r| {
+        Ok(((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?), r.get::<_, i64>(2)? as usize))
+    })
+    .map_err(err)
 }
 
-fn degraded_summary(pkg: &Package, by_type: &HashMap<i64, usize>) -> Vec<Degraded> {
+fn degraded_summary(pkg: &Package, by_type: &HashMap<(i64, u32), usize>) -> Vec<Degraded> {
     let mut out: Vec<Degraded> = vec![];
-    for (id, t) in &pkg.types {
-        let cards = by_type.get(id).copied().unwrap_or(0);
-        if cards == 0 {
-            continue;
-        }
-        for f in &t.degraded {
+    for (&(mid, ord), &cards) in by_type {
+        let Some(t) = pkg.types.get(&mid) else { continue };
+        for f in t.degraded_at(ord) {
             match out.iter_mut().find(|d| d.feature == *f) {
                 Some(d) => {
-                    d.note_types.push(t.name.clone());
+                    if !d.note_types.contains(&t.name) {
+                        d.note_types.push(t.name.clone());
+                    }
                     d.cards += cards;
                 }
                 None => out.push(Degraded { feature: f.to_string(), note_types: vec![t.name.clone()], cards }),
@@ -1309,7 +1337,7 @@ pub async fn inspect_anki(state: State<'_, AppState>, path: String, voices: Opti
     let tops: BTreeSet<&String> = paths.iter().filter_map(|p| p.first()).collect();
     let prefixes: BTreeSet<&[String]> = paths.iter().flat_map(|p| (2..=p.len()).map(move |d| &p[..d])).collect();
     let by_type = cards_by_type(&pkg.col)?;
-    let used_types: Vec<&i64> = pkg.types.keys().filter(|id| by_type.contains_key(id)).collect();
+    let used_types: Vec<&i64> = pkg.types.keys().filter(|id| by_type.keys().any(|(m, _)| m == *id)).collect();
     // 밀린 복습: 기한(컬렉션 생성일부터의 일수)이 오늘보다 앞선 복습 카드
     let crt_day = db::study_day(pkg.col.query_row("SELECT crt FROM col", [], |r| r.get::<_, i64>(0)).map_err(err)? * 1000);
     let overdue_before = db::study_day(now_ms()) - crt_day;
@@ -1454,13 +1482,13 @@ fn run_import_selected(
     let by_type = match &chosen {
         None => cards_by_type(&pkg.col)?,
         Some(c) => {
-            let mut st = pkg.col.prepare("SELECT n.mid, c.id FROM cards c JOIN notes n ON n.id = c.nid").map_err(err)?;
-            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(err)?;
-            let mut out: HashMap<i64, usize> = HashMap::new();
+            let mut st = pkg.col.prepare("SELECT n.mid, c.ord, c.id FROM cards c JOIN notes n ON n.id = c.nid").map_err(err)?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?, r.get::<_, i64>(2)?))).map_err(err)?;
+            let mut out: HashMap<(i64, u32), usize> = HashMap::new();
             for row in rows {
-                let (mid, id) = row.map_err(err)?;
+                let (mid, ord, id) = row.map_err(err)?;
                 if c.cards.contains(&id) {
-                    *out.entry(mid).or_default() += 1;
+                    *out.entry((mid, ord)).or_default() += 1;
                 }
             }
             out
@@ -1496,7 +1524,7 @@ fn run_import_selected(
     // 8.1 이미 있던 유형(같은 모델 id)은 사용자가 필드 순서 · 이름 · 카드 종류를 고쳤을 수 있다: 들어오는 필드는 자리로, 카드 ord 는 우리 ord 로
     let mut remap: HashMap<i64, Remap> = HashMap::new();
     for (aid, t) in &pkg.types {
-        if !by_type.contains_key(aid) {
+        if !by_type.keys().any(|(m, _)| m == aid) {
             continue;
         }
         // 내보낸 내 덱의 앱 기본 유형은 내보낸 모델 id 로 찾는다 (DU55, 새 "Basic" 이 생기지 않게)
@@ -1514,7 +1542,7 @@ fn run_import_selected(
         nt_map.insert(*aid, id);
         // Q10: 이름은 목록 · 선택형인데 필드가 바뀐 노트는 알아보지 못하고 템플릿대로 보인다
         if crate::recall::unrecognized(&t.name, &t.fields) {
-            result.issues.push(issue("info", "recall_type", format!("노트타입 '{}'은 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name)));
+            result.issues.push(issue("info", "recall_type", format!("노트 유형 '{}'{} 필드가 바뀌어 목록 · 선택형으로 알아보지 못했어요. 질문과 답변처럼 한 번에 보여요", t.name, if crate::table::final_consonant(&t.name) { "은" } else { "는" })));
         }
     }
 
@@ -1901,10 +1929,11 @@ fn run_import_selected(
             "warning",
             "degraded_template",
             format!(
-                "노트타입 '{}'이 {}{} 써요. {what} ({}장)",
+                "노트 유형 '{}'{} {}{} 써요. {what} ({}장)",
                 d.note_types.join("', '"),
+                if d.note_types.last().is_some_and(|t| crate::table::final_consonant(t)) { "이" } else { "가" },
                 d.feature,
-                if crate::quality::has_batchim(&d.feature) { "을" } else { "를" },
+                if crate::table::final_consonant(&d.feature) { "을" } else { "를" },
                 n(d.cards)
             ),
         ));
@@ -1932,7 +1961,7 @@ fn insert_type(tx: &Connection, aid: i64, t: &AType, now: i64, deck_of: DeckOf) 
             t.css,
             now,
             t.degraded.is_empty() as i64,
-            (!t.degraded.is_empty()).then(|| t.degraded.join(", ")),
+            (!t.degraded.is_empty()).then(|| t.features().join(", ")),
             aid,
             (t.stock > 0).then_some(t.stock),
             deck_update::new_type_origin(t)
@@ -2119,6 +2148,28 @@ mod tests {
     }
 
     #[test]
+    fn degraded_cards_are_counted_per_template() {
+        // T2-19: 기능을 쓰는 카드 종류의 카드만 센다. 빈칸 유형은 템플릿 하나를 모든 빈칸 카드가 쓴다
+        use deck_update::testpkg::{self, Model, note};
+        let tmp = TempDir(std::env::temp_dir().join(format!("addiem-t219-{}-{}", std::process::id(), now_ms())));
+        std::fs::create_dir_all(&tmp.0).unwrap();
+        let p = tmp.0.join("tts.apkg");
+        let tts = Model { id: 1, name: "TTS", fields: vec!["Front", "Back"], templates: vec![("1", "{{Front}}", "{{Back}}"), ("2", "{{tts zh_CN:Back}}", "{{Front}}")], css: "" };
+        let cz = Model { id: 2, name: "Cloze", fields: vec!["Text"], templates: vec![("Cloze", "{{cloze:Text}}<script>x()</script>", "{{cloze:Text}}")], css: "" };
+        let notes: Vec<_> = (1..=3).map(|i| note(i, ["g1", "g2", "g3"][i as usize - 1], 1, &["a", "b"], &[(1, 0), (1, 1)])).chain([note(9, "g9", 2, &["{{c1::a}} {{c2::b}}"], &[(1, 0), (1, 1)])]).collect();
+        testpkg::write(&p, &[tts, cz], &[(1, "A")], &notes, &[]);
+        let pkg = open_package(&p, &tmp.0, &["en".into()]).unwrap();
+        let mut sum = degraded_summary(&pkg, &cards_by_type(&pkg.col).unwrap());
+        sum.sort_by(|a, b| a.feature.cmp(&b.feature));
+        let got: Vec<_> = sum.iter().map(|d| (d.feature.as_str(), d.cards)).collect();
+        assert_eq!(got, [("스크립트", 2), ("읽어주기(중국어)", 3)]);
+        let stats = deck_stats(&pkg, &HashSet::new(), &HashSet::new(), 0).unwrap();
+        let mut got: Vec<_> = stats[0].degraded.iter().map(|d| (d.feature.as_str(), d.cards)).collect();
+        got.sort();
+        assert_eq!(got, [("스크립트", 2), ("읽어주기(중국어)", 3)], "덱 고르기 트리도 같게");
+    }
+
+    #[test]
     fn importance_rules() {
         assert_eq!(tags_level("중요도::최우선 과목::1").map(|t| t.0), Some(2));
         assert_eq!(tags_level("중요도::높음").map(|t| t.0), Some(1));
@@ -2132,6 +2183,8 @@ mod tests {
         assert_eq!(deck_name_level("3장 정리").map(|t| t.1), Some("하위 덱 이름에 '정리'가 있어요".to_string()), "받침 없는 낱말은 '가'");
         assert_eq!(deck_name_level("3장 요약").map(|t| t.1), Some("하위 덱 이름에 '요약'이 있어요".to_string()));
         assert_eq!(deck_name_level("Core").map(|t| t.1), Some("하위 덱 이름에 'core'가 있어요".to_string()));
+        // G3-05: 영문도 읽는 소리로 (table::final_consonant, I57). essential(에센셜) → '이'
+        assert_eq!(deck_name_level("Essential").map(|t| t.1), Some("하위 덱 이름에 'essential'이 있어요".to_string()));
     }
 
     #[test]
@@ -2206,6 +2259,9 @@ mod tests {
         let f = &parse_json(r#"[{"question":"q","options":["a","","b","c"],"answer":["a","b"]}]"#).0[0].fields;
         assert_eq!(f[7], "1,2", "빈 보기를 당겨도 correct 와 같다");
         assert!(parse_json(r#"[{"question":"q","options":["a","b"],"answer":"c"}]"#).1[0].detail.contains("'c'"), "어느 글자인지 알린다");
+        // 조사는 키를 읽는 소리로 (QA T4-19)
+        assert_eq!(parse_json(r#"[{"question":5,"items":["a","b"]}]"#).1[0].detail, "question 이 문자열이 아니에요");
+        assert_eq!(parse_json(r#"[{"question":"q","items":"a b"}]"#).1[0].detail, "items 가 배열이 아니에요");
 
         // 잘못된 항목은 그것만 건너뛰고 번호와 이유를 알린다
         for (card, kind) in [
@@ -2518,6 +2574,9 @@ mod tests {
         assert_eq!((p.ok, p.existing), (1, 1));
         assert!(p.issues.is_empty(), "{:?}", p.issues.iter().map(|i| &i.detail).collect::<Vec<_>>());
         assert_eq!(p.roots, ["B"]);
+        // V2-01: 대소문자만 다른 이름은 이미 있는 덱 이름으로 한 번. 새 덱끼리도 한 번 (가져오기도 한 덱으로 합친다)
+        let p = json_preview(&con, r#"[{"front": "x", "back": "1", "deck": "b"}, {"front": "y", "back": "1", "deck": "B"}, {"front": "z", "back": "1", "deck": "new"}, {"front": "w", "back": "1", "deck": "NEW"}]"#, None).unwrap();
+        assert_eq!(p.roots, ["B", "new"]);
         let r = run_import_json(&mut con, again, "f".into(), None).unwrap();
         assert_eq!(r.issues.iter().map(|i| i.kind).collect::<Vec<_>>(), ["existing"]);
         assert_eq!((r.notes, r.decks, r.roots.len()), (1, 1, 1));
@@ -2549,6 +2608,18 @@ mod tests {
         run_import_json(&mut con, r#"{"deck": "A", "cards": [{"front": "q", "back": "a"}]}"#, "f".into(), None).unwrap();
         let archived: i64 = con.query_row("SELECT count(*) FROM deck WHERE archived_at IS NOT NULL", [], |r| r.get(0)).unwrap();
         assert_eq!(archived, 0);
+    }
+
+    #[test]
+    fn imported_deck_names_follow_the_deck_name_rules() {
+        // G3-01: "DECK" 은 있는 "Deck" 에 합치고, 보이지 않는 글자는 빼고, 100자를 넘으면 거절하지 않고 자른다
+        let mut con = db::open_in_memory().unwrap();
+        con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('Deck', 0, 0)", []).unwrap();
+        let long = "가".repeat(130);
+        let json = format!(r#"[{{"deck": "DECK::​하위﻿ ", "front": "q", "back": "a"}}, {{"deck": "{long}", "front": "q2", "back": "a"}}]"#);
+        run_import_json(&mut con, &json, "f".into(), None).unwrap();
+        let names: Vec<String> = db::rows(&con, "SELECT name FROM deck ORDER BY id", [], |r| r.get(0)).unwrap();
+        assert_eq!(names, vec!["Deck".to_string(), "하위".into(), "가".repeat(100)]);
     }
 
     #[test]

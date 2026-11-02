@@ -35,6 +35,7 @@ jobs:
       - run: node tools/check_outline.mjs
       - run: node tools/check_figures.mjs
       - run: node tools/check_dates.mjs
+      - run: node tools/check_csv.mjs
 
       - uses: Swatinem/rust-cache@v2
         with:

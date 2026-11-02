@@ -532,7 +532,7 @@ fn study_session_of_the_other_device_is_not_resumed() {
     let env = Env::new();
     let (a, b, card) = pair(&env);
     let day = "2026-10-20";
-    let sb = crate::commands::open_session(&b.con(), day, None, 5_000).unwrap();
+    let sb = crate::commands::open_session(&b.con(), day, None, None, 5_000).unwrap();
     b.review(&env.fsrs, card, 3, 6_000);
     {
         let con = b.con();
@@ -544,15 +544,15 @@ fn study_session_of_the_other_device_is_not_resumed() {
     env.sync(&a);
     let b_uid = b.uid("study_session", sb);
     assert!(a.id("study_session", &b_uid).is_some(), "B 세션을 받았다");
-    let sa = crate::commands::open_session(&a.con(), day, None, 8_000).unwrap();
+    let sa = crate::commands::open_session(&a.con(), day, None, None, 8_000).unwrap();
     assert_ne!(a.uid("study_session", sa), b_uid, "다른 기기의 세션은 이어 쓰지 않고 새로 연다");
     assert_eq!(a.n("SELECT count(*) FROM study_session WHERE end_reason = 'user_exit'"), 1, "B 세션의 끝난 이유를 덮지 않는다");
     // B 는 자기 세션을 이어 쓰고, 아무도 답하지 않은 A 의 새 세션도 A 가 다시 열면 이어 쓴다
-    assert_eq!(crate::commands::open_session(&b.con(), day, None, 9_000).unwrap(), sb);
+    assert_eq!(crate::commands::open_session(&b.con(), day, None, None, 9_000).unwrap(), sb);
     a.con().execute("UPDATE study_session SET ended_at = 8500, end_reason = 'user_exit' WHERE id = ?1", [sa]).unwrap();
-    assert_eq!(crate::commands::open_session(&a.con(), day, None, 9_000).unwrap(), sa);
+    assert_eq!(crate::commands::open_session(&a.con(), day, None, None, 9_000).unwrap(), sa);
     // 혼합 학습(mix) 세션은 보통 학습과 따로
-    assert_ne!(crate::commands::open_session(&a.con(), day, Some("mix"), 9_500).unwrap(), sa);
+    assert_ne!(crate::commands::open_session(&a.con(), day, Some("mix"), None, 9_500).unwrap(), sa);
 }
 
 #[test]
@@ -2044,6 +2044,65 @@ fn same_template_edited_on_both_devices_keeps_the_losing_version() {
     assert_eq!(qfmt(&a), "B 앞면 {{Front}}", "나중에 고친 쪽");
     let kept = |d: &Dev| d.n("SELECT count(*) FROM sync_type_conflict WHERE loser = 'A 앞면 {{Front}}' AND winner = 'B 앞면 {{Front}}'");
     assert!(kept(&a) + kept(&b) >= 1, "진 쪽 앞면을 기록에 남긴다");
+}
+
+#[test]
+fn type_edit_loser_that_pushed_first_also_keeps_the_record() {
+    // T5-14 · K39: A 가 먼저 고쳐 올리고 B 가 A 것을 모르고 나중에 고쳤다. 받는 B 만이 아니라 진 A 에도 진 쪽 기록이 남는다 (K7 처럼 바탕 HLC bk).
+    // bk 가 없는 변경(v0.1.1 기기)이면 예전처럼 A 에는 남지 않고 결과는 같다
+    use crate::notetype as nt;
+    for old_peer in [false, true] {
+        let env = Env::new();
+        let (a, b, _) = pair(&env);
+        let (id, _) = user_type(&env, &a, &b);
+        let ty = a.uid("note_type", id);
+        let b_id = b.id("note_type", &ty).unwrap();
+        let edit = |d: &Dev, id: i64, at: i64, who: &str| {
+            d.at(at, || {
+                nt::rename_field(&d.con(), id, 1, &format!("뒷{who}")).unwrap();
+                let afmt = nt::load(&d.con(), id).unwrap().templates[0].afmt.clone();
+                nt::save_template(&d.con(), id, 0, None, &format!("{who} 앞면 {{{{Front}}}}"), &afmt).unwrap();
+            })
+        };
+        let t = db::now_ms();
+        edit(&a, id, t + 1000, "A");
+        env.sync(&a);
+        edit(&b, b_id, t + 2000, "B");
+        env.sync(&b);
+        if old_peer {
+            // 예전 앱이 쓴 변경 파일처럼 bk 를 뺀다
+            for path in env.files(&format!("changes/{}/", b.me())) {
+                use std::io::Write;
+                let (header, recs) = engine::decode(env.store.get(&path).unwrap(), None).unwrap();
+                let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                writeln!(gz, "{header}").unwrap();
+                for mut r in recs {
+                    r.bk = None;
+                    writeln!(gz, "{}", serde_json::to_string(&r).unwrap()).unwrap();
+                }
+                env.store.put(&path, &gz.finish().unwrap()).unwrap();
+            }
+        }
+        env.sync(&a);
+        assert_eq!(a.dump(), b.dump(), "old_peer={old_peer}");
+        let kept = |d: &Dev, what: &str, win: &str, lose: &str| {
+            d.con()
+                .query_row("SELECT count(*) FROM sync_type_conflict WHERE type_uid = ?1 AND what = ?2 AND winner = ?3 AND loser = ?4", params![ty, what, win, lose], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        let front = "카드 종류 'Card 1' 앞면";
+        assert_eq!(kept(&b, front, "B 앞면 {{Front}}", "A 앞면 {{Front}}"), 1, "받은 B (예전처럼)");
+        assert_eq!(kept(&b, "필드 이름", "뒷B", "뒷A"), 1);
+        let want = if old_peer { 0 } else { 1 };
+        assert_eq!(kept(&a, front, "B 앞면 {{Front}}", "A 앞면 {{Front}}"), want, "먼저 올린 진 A (old_peer={old_peer})");
+        assert_eq!(kept(&a, "필드 이름", "뒷B", "뒷A"), want, "old_peer={old_peer}");
+        // 한 번 더 돌아도 기록이 늘지 않는다 (A 는 B 값을 받아 안다)
+        let count = || a.n("SELECT count(*) FROM sync_type_conflict") + b.n("SELECT count(*) FROM sync_type_conflict");
+        let before = count();
+        env.sync(&b);
+        env.sync(&a);
+        assert_eq!(count(), before);
+    }
 }
 
 #[test]

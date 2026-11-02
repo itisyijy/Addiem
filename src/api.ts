@@ -191,7 +191,8 @@ export type QueueSummary = {
   deck_count: number;
   new_decks: number;
   notes: string[];
-  target: { name: string; dday: number; remaining_new: number; days: number } | null;
+  /** per_day: 오늘 하루 신규 몫 (큐가 정한 수) · note: 그 사유 (큐 메모, 계산식이면 "÷" 가 있다) */
+  target: { name: string; dday: number; remaining_new: number; days: number; per_day: number; note: string } | null;
   /** 오늘 시험 전 회독(혼합)에서 일정에 반영한 카드 수 (D1 머리 문장, P9) */
   mixed_today: number;
   /** learning · review · backlog 중 오늘 이미 평가해 다시 볼 카드 (홈 · 덱 상세의 "다시 볼", QA V9-04) */
@@ -331,7 +332,8 @@ export type CardKindHint = "cloze" | "choice" | "list" | "occlusion";
 
 /** day_rollover: 학습 중 하루 경계를 넘어 세션이 닫혔다. 평가는 남지 않았다 (큐 명세 8장) */
 export type AnswerResult = { action: "next" | "again_later" | "buried" | "day_rollover"; due_in_ms: number | null };
-export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[] };
+/** at: 접은 시각 (ms) */
+export type BuriedCard = { id: number; question: string; reason: string; importance: Level; deck_path: string[]; at: number };
 export type SessionSummary = {
   studied: number;
   new_done: number;
@@ -347,6 +349,9 @@ export type SessionSummary = {
   tomorrow_review: number;
   tomorrow_new: number;
   tomorrow_decks: { name: string; review: number; new: number; dday: number | null }[];
+  /** 남은 신규를 맡은 덱에 목표일이 있다. 없으면 new_cap: 그 덱들의 하루 신규 상한 합 (QA T3-25) */
+  has_target: boolean;
+  new_cap: number;
   /** 방금 끝난 학습의 마지막 평가 · 접기를 되돌릴 수 있다 (평가 없던 학습 · 지난 학습일이면 false) */
   undoable: boolean;
 };
@@ -675,7 +680,7 @@ export const api = {
   confirmImportance: (deckIds: number[]) => invoke<void>("confirm_importance", { deckIds }),
   queuePreview: (deckIds: number[] | null, scale: number) => invoke<QueueSummary>("queue_preview", { deckIds, scale }),
   startSession: (deckIds: number[] | null, scale: number) =>
-    invoke<{ session_id: number; card_ids: number[] }>("start_session", { deckIds, scale }),
+    invoke<{ session_id: number; card_ids: number[]; buried: BuriedCard[] }>("start_session", { deckIds, scale }),
   cardView: (cardId: number) => invoke<CardView>("card_view", { cardId }),
   /** marks: Q 목록 · 선택형의 빠뜨린 항목 · 고른 보기. 평가가 남을 때만 "지난번"으로 저장된다 */
   answer: (sessionId: number, cardId: number, rating: 1 | 2 | 3 | 4, elapsedMs: number, marks: number[] | null) =>
@@ -804,8 +809,9 @@ export type SplitProposal = {
   sent: Sent[];
   evidence: Sent[];
 };
-/** kind rewrite 는 7일 안의 것만. how: format 서식 고치기 · ai AI로 확인한 뒤 · edit 직접 */
-export type CardChange = { id: number; kind: "split" | "rewrite"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean };
+/** kind rewrite 는 7일 안의 것만. how: format 서식 고치기 · ai AI로 확인한 뒤 · edit 직접.
+ * studied: 나누기 · 초안을 되돌리면 지워질 새 카드 중 복습했거나 만든 뒤 고친 카드 수 (QA G4-05) */
+export type CardChange = { id: number; kind: "split" | "rewrite" | "draft"; how: "format" | "ai" | "edit" | null; summary: string; card_id: number | null; created_at: number; undone: boolean; studied: number };
 /** 8.2 고쳐 쓰기 전후 (글자, 줄바꿈으로 줄을 나눈다. **…** 는 굵게). locked: 그림 · 소리 · 서식이 있어 덮을 수 없는 칸 [질문, 답] */
 export type Rewrite = {
   card_id: number;
@@ -929,10 +935,9 @@ export type PlanConflict = {
   b: ConflictDeck;
   peak_date: string;
   peak: number;
-  limit: number;
-  /** 기준선이 쓸 수 있는 시간이면 true, 아니면 최근 30일 평균의 1.5배 */
+  /** 기준선(막대마다 limit, 없으면 0)이 쓸 수 있는 시간이면 true, 아니면 최근 30일 평균의 1.5배 */
   by_time: boolean;
-  bars: { date: string; a: number; b: number; other: number; limit: number }[];
+  bars: { date: string; weekend: boolean; a: number; b: number; other: number; limit: number }[];
   spread_peak: number;
   spread_extra: number;
   first_peak: number;
@@ -977,7 +982,7 @@ export type SyncStatus = {
   enabled: boolean;
   account: string | null;
   state: SyncState;
-  phase: "pull" | "push" | "media" | "snapshot" | "backup" | "restore" | null;
+  phase: "pull" | "push" | "media" | "snapshot" | "backup" | "local-backup" | "merge" | "restore" | null;
   done: number;
   total: number;
   last_sync: number | null;

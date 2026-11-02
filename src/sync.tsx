@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { Badge, Button, Checkbox, Icon, Input, Segment, Spinner, Toggle, type IconName } from "./ui";
 import { useToast } from "./toast";
-import { n, useKey, useNav, useMenu, useOverlayScope } from "./nav";
+import { eun, n, useKey, useNav, useMenu, useOverlayScope } from "./nav";
 import { plainEnter } from "./keys";
 import { dateWithDay, hm, iso, monthDayAt, when } from "./dates";
 import { useFocusTrap } from "./screens/NewDeck";
@@ -99,11 +99,6 @@ export const size = (b: number) =>
   b >= 1e9 ? `${(b / 1e9).toFixed(1)}GB` : b >= 1e8 ? `${Math.round(b / 1e6)}MB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)}MB` : `${Math.ceil(b / 1e3)}KB`;
 const counts = (c: { decks: number; cards: number; reviews: number } | null | undefined) =>
   c ? `덱 ${n(c.decks)}개 · 카드 ${n(c.cards)}장 · 복습 기록 ${n(c.reviews)}건` : "덱 · 카드 수를 아직 몰라요";
-/** 은/는 */
-const eun = (w: string) => {
-  const c = w.charCodeAt(w.length - 1);
-  return c >= 0xac00 && c <= 0xd7a3 && (c - 0xac00) % 28 ? "은" : "는";
-};
 const others = (s: SyncStatus | null) => (s?.devices ?? []).filter((d) => !d.me && !d.stale).map((d) => d.name);
 
 /** 상단 바(K5)와 설정(K4)이 같은 말을 쓴다 */
@@ -692,8 +687,11 @@ export function DriveLoadLink() {
   );
 }
 
-/** 합류 버튼의 진행: 변경 파일마다 받는 데 시간이 걸린다 (R-03) */
-const joinLabel = (s: SyncStatus | null, label: string) => (s?.phase === "pull" && s.total > 1 ? `${label} ${n(s.done)} / ${n(s.total)}` : label);
+/** 합류 버튼의 진행: 이 기기 백업 → 받기 · 합치기 (변경 파일마다 받는 데 시간이 걸린다, R-03) */
+const joinLabel = (s: SyncStatus | null, label: string) => {
+  const phase = s?.phase;
+  return phase === "local-backup" ? "백업하는 중…" : phase === "pull" && s && s.total > 1 ? `${label} ${n(s.done)} / ${n(s.total)}` : label;
+};
 
 function FoundModal({ probe, note, onClose }: { probe: SyncProbe; note?: string; onClose: () => void }) {
   const s = useSyncStatus();
@@ -909,7 +907,7 @@ function ChoiceModal({ probe: given, note, onClose }: { probe: SyncProbe | null;
         <span className="t-caption c-tertiary">어느 쪽이든 바꾸기 전에 이 기기 백업을 먼저 만들어요</span>
         <span className="sync-foot__actions">
           <Button variant="ghost" size="M" label="취소" onClick={onClose} />
-          <Button size="M" icon={labels[mode][1]} label={labels[mode][0]} busy={busy} busyLabel={joinLabel(s, "맞추는 중…")} disabled={!probe || (locked && !password && !hasKey)} onClick={go} />
+          <Button size="M" icon={labels[mode][1]} label={labels[mode][0]} busy={busy} busyLabel={joinLabel(s, mode === "merge" ? "합치는 중…" : "맞추는 중…")} disabled={!probe || (locked && !password && !hasKey)} onClick={go} />
         </span>
       </div>
     </Sheet>

@@ -537,6 +537,10 @@ pub struct Rec {
     /// note.fields 를 고칠 때 바탕이 된 값의 HLC. 받는 쪽이 이것보다 새 값을 가졌으면 동시에 고친 것이다 (K7)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub b: Option<String>,
+    /// 노트 유형 정의 열(TYPE_COLS · note_type.fields)마다 고칠 때 바탕이 된 값의 HLC. 받는 쪽이 이것보다 새 값을 가졌으면 진 쪽을 남긴다 (K39, b 와 같다).
+    /// 예전 앱은 보내지 않고 받아도 모른다: 없으면 예전처럼 아직 올리지 않은 변경일 때만 남긴다
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bk: Option<BTreeMap<String, String>>,
 }
 
 pub fn seal_opt(data: Vec<u8>, key: Option<&[u8; 32]>) -> Vec<u8> {
@@ -593,7 +597,7 @@ pub fn decode(data: Vec<u8>, key: Option<&[u8; 32]>) -> SRes<(J, Vec<Rec>)> {
         return Err(SyncError::NewerSchema);
     }
     let recs: Vec<Rec> = lines.map(serde_json::from_str).collect::<Result<_, _>>().map_err(other)?;
-    if recs.iter().any(|r| !valid_hlc(&r.h) || r.k.iter().flatten().any(|(_, h)| !valid_hlc(h)) || r.b.as_deref().is_some_and(|b| !valid_hlc(b))) {
+    if recs.iter().any(|r| !valid_hlc(&r.h) || r.k.iter().flatten().any(|(_, h)| !valid_hlc(h)) || r.b.as_deref().is_some_and(|b| !valid_hlc(b)) || r.bk.iter().flatten().any(|(_, h)| !valid_hlc(h))) {
         return Err(other("변경 파일을 읽지 못했어요: 시각 값이 올바르지 않아요"));
     }
     Ok((header, recs))
@@ -743,6 +747,9 @@ pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
                 let k: BTreeMap<String, String> = per.iter().filter(|(_, v)| **v != h).map(|(c, v)| (c.clone(), v.clone())).collect();
                 // 처음 합친 결과는 Drive 쪽 내용을 바탕으로 고친 것이 아니다: 받는 쪽이 다르면 K7 에 남긴다
                 let b = (t == "note" && per.contains_key("fields")).then(|| if p.resend && p.all.is_none() { "0".to_string() } else { clock.col("fields").to_string() });
+                // K39 같은 바탕을 노트 유형 정의 열마다. 처음 합친 결과를 다시 보낼 때는 싣지 않는다 (예전처럼)
+                let bk: BTreeMap<String, String> =
+                    if p.resend && p.all.is_none() { BTreeMap::new() } else { per.keys().filter(|c| type_col(&t, c)).map(|c| (c.clone(), clock.col(c).to_string())).collect() };
                 if t == "media"
                     && let (Some(sha), Some(name)) = (r.get("sha256").and_then(|v| v.as_str()), r.get("filename").and_then(|v| v.as_str()))
                     && sha.len() == 64
@@ -755,7 +762,7 @@ pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
                     reviews += 1;
                 }
                 let all = p.all_cols();
-                recs.push(Rec { t: t.clone(), u: u.clone(), op: "up".into(), h, r: Some(r), c: (!all).then_some(names), k: (!k.is_empty()).then_some(k), b });
+                recs.push(Rec { t: t.clone(), u: u.clone(), op: "up".into(), h, r: Some(r), c: (!all).then_some(names), k: (!k.is_empty()).then_some(k), b, bk: (!bk.is_empty()).then_some(bk) });
                 out_rows.push(Pushed { t, u, all, cols: per, deleted: None });
             }
             // 이번 묶음에서 생겼다 사라진 행(되돌린 복습 기록 등)은 아무도 모르니 보낼 것도 없다.
@@ -764,7 +771,7 @@ pub fn prepare_push(con: &mut Connection, cx: &Ctx) -> SRes<Option<Batch>> {
             None => {
                 let Some(d) = p.deleted else { continue };
                 top = top.max(d.clone());
-                recs.push(Rec { t: t.clone(), u: u.clone(), op: "del".into(), h: d.clone(), r: None, c: None, k: None, b: None });
+                recs.push(Rec { t: t.clone(), u: u.clone(), op: "del".into(), h: d.clone(), r: None, c: None, k: None, b: None, bk: None });
                 out_rows.push(Pushed { t, u, all: false, cols: BTreeMap::new(), deleted: Some(d) });
             }
         }
@@ -1135,6 +1142,8 @@ struct Fold {
     cols: BTreeMap<String, (J, String)>,
     /// note.fields 의 바탕 HLC (가장 새 fields 를 보낸 변경의 것)
     base: Option<String>,
+    /// 노트 유형 정의 열마다 바탕 HLC (그 열의 가장 새 값을 보낸 변경의 bk, K39)
+    bk: BTreeMap<String, String>,
 }
 
 fn fold(recs: Vec<Rec>, aliases: &HashMap<(String, String), String>) -> (HashMap<(String, String), Fold>, String) {
@@ -1164,6 +1173,10 @@ fn fold(recs: Vec<Rec>, aliases: &HashMap<(String, String), String>) -> (HashMap
                 if c == "fields" {
                     f.base = rec.b.clone();
                 }
+                match rec.bk.as_ref().and_then(|m| m.get(&c)) {
+                    Some(b) => f.bk.insert(c.clone(), b.clone()),
+                    None => f.bk.remove(&c),
+                };
                 f.cols.insert(c.clone(), (v.clone(), h));
             }
         }
@@ -1328,6 +1341,11 @@ pub const KEPT_BOTH: &str = "같은 자리에 두 기기가 필드를 더해 둘
 /// 두 기기에서 고친 노트 유형 정의를 남기는 열 (K39): (표, 열, 화면 이름)
 const TYPE_COLS: [(&str, &str, &str); 5] =
     [("card_template", "qfmt", "앞면"), ("card_template", "afmt", "뒷면"), ("card_template", "name", "이름"), ("note_type", "css", "CSS"), ("note_type", "name", "유형 이름")];
+
+/// 진 쪽을 남기는 노트 유형 정의 열 (TYPE_COLS + 자리마다 합치는 필드 목록)
+fn type_col(t: &str, c: &str) -> bool {
+    (t == "note_type" && c == "fields") || TYPE_COLS.iter().any(|(tt, cc, _)| *tt == t && *cc == c)
+}
 
 /// note_type.fields · field_ids 를 자리마다 합친 것 (Q2-06)
 #[derive(Default, Debug, PartialEq)]
@@ -1770,10 +1788,11 @@ impl Applier<'_> {
                     continue;
                 }
                 srs_differs |= !same && t == "card" && SRS_COLS.contains(&c.as_str());
-                // 노트 유형 정의를 이 기기도 고쳤는데 아직 올리지 않았다: 받은 쪽은 이 기기 것을 모르고 고쳤다. 진 쪽을 남긴다 (K39)
+                // 노트 유형 정의를 이 기기도 고쳤다: 아직 올리지 않았거나, 이긴 받은 쪽의 바탕이 이 기기 값보다 옛것이다 (먼저 올린 진 쪽, T5-14).
+                // 받은 쪽은 이 기기 것을 모르고 고쳤다. 진 쪽을 남긴다 (K39)
                 if !same
                     && let Some((_, _, label)) = TYPE_COLS.iter().find(|(tt, cc, _)| *tt == t && cc == c)
-                    && pend.as_ref().and_then(|p| p.col(c)).is_some()
+                    && (pend.as_ref().and_then(|p| p.col(c)).is_some() || (*h > lh && f.bk.get(c).is_some_and(|b| *b < lh)))
                 {
                     let (mine, theirs) = (local.get(c).and_then(|x| x.as_str()).unwrap_or_default(), v.as_str().unwrap_or_default());
                     let (win, lose) = if *h > lh { ((theirs, h.as_str()), (mine, lh.as_str())) } else { ((mine, lh.as_str()), (theirs, h.as_str())) };
@@ -1971,8 +1990,9 @@ impl Applier<'_> {
             }
             self.report.applied += 1;
         }
-        // 진 쪽 기록 (K39): 같은 필드 이름을 이 기기도 바꿨는데 아직 올리지 않았다 · 같은 자리에 따로 더한 필드는 새 자리로 옮겼다
-        if pend.and_then(|p| p.col("fields")).is_some() {
+        // 진 쪽 기록 (K39): 같은 필드 이름을 이 기기도 바꿨는데 아직 올리지 않았다 (또는 이긴 받은 쪽의 바탕이 이 기기 값보다 옛것, T5-14) ·
+        // 같은 자리에 따로 더한 필드는 새 자리로 옮겼다
+        if pend.and_then(|p| p.col("fields")).is_some() || (incoming && f.bk.get("fields").is_some_and(|b| *b < lh)) {
             for (w, l) in &m.renamed {
                 self.type_conflict("note_type", uid, local, "필드 이름", (w, wh), (l, loh))?;
             }
@@ -2435,13 +2455,13 @@ fn build_snapshot(con: &Connection, generation: i64, reason: &J, key: Option<&[u
             let c = load_clock(con, table.name, &uid)?.unwrap_or_else(|| Clock::implicit(&r, &me));
             let k = (!c.cols.is_empty()).then(|| c.cols.clone());
             let b = (table.name == "note").then(|| c.col("fields").to_string());
-            recs.push(Rec { t: table.name.into(), u: uid, op: "up".into(), h: c.base, r: Some(r), c: None, k, b });
+            recs.push(Rec { t: table.name.into(), u: uid, op: "up".into(), h: c.base, r: Some(r), c: None, k, b, bk: None });
         }
         let tombs: Vec<(String, String)> =
             db::rows(con, "SELECT uid, deleted FROM sync_row WHERE table_name = ?1 AND deleted IS NOT NULL", [table.name], |r| Ok((r.get(0)?, r.get(1)?))).map_err(other)?;
         for (u, d) in tombs {
             if rowid_of(con, table.name, &u)?.is_none() {
-                recs.push(Rec { t: table.name.into(), u, op: "del".into(), h: d, r: None, c: None, k: None, b: None });
+                recs.push(Rec { t: table.name.into(), u, op: "del".into(), h: d, r: None, c: None, k: None, b: None, bk: None });
             }
         }
     }
