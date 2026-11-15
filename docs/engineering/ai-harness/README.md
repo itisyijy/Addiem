@@ -17,7 +17,7 @@ ChatGPT 를 쓰는 작업마다 Spec → Skill → Subagent → Workflow → Hoo
 | 순서 | 작업 | 명령 | 문서 | 상태 |
 |---|---|---|---|---|
 | 1 | 채점 보조 | `rag_grade` | [grade.md](grade.md) | 코드 반영함. 첫 측정을 마쳤고 부분 답 판정을 고칠 차례 (grade.md 6.8) |
-| 2 | AI로 확인 | `ai_check_card` | check-card.md | 시작 전 |
+| 2 | AI로 확인 | `ai_check_card` | [check-card.md](check-card.md) | 코드 반영함. 평가셋 측정 · 화면 확인은 미실행 (check-card.md 6.1) |
 | 3 | 자료에서 카드 초안 | `rag_draft` | [draft.md](draft.md) | 코드 반영함. 평가셋 측정 · 화면 확인은 미실행 (draft.md 6.4 · 6.5) |
 | 4 | 오답 보기 제안 | `ai_distractors` | [distractors.md](distractors.md) | 코드 반영함. 측정 · 화면 확인은 미실행 (distractors.md 6.1) |
 | 5 | 성격별로 묶기 | `ai_regroup` | [regroup.md](regroup.md) | 코드 반영함. 평가셋(`regroup-dev.jsonl`) 측정 · 화면 확인은 미실행 (regroup.md 6.3 · 6.5) |
