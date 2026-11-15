@@ -1133,7 +1133,7 @@ fn eval_run(app: &AppHandle, out: &std::path::Path) -> Vec<J> {
                 c
             }
             Err(e) => {
-                record(item, "criteria", json!({ "error": e.kind() }));
+                record(item, "criteria", json!({ "error": e.kind(), "detail": format!("{e:?}") }));
                 if fatal(&e) {
                     break 'items;
                 }
@@ -1156,7 +1156,7 @@ fn eval_run(app: &AppHandle, out: &std::path::Path) -> Vec<J> {
                     }),
                 ),
                 Err(e) => {
-                    record(item, run, json!({ "error": e.kind() }));
+                    record(item, run, json!({ "error": e.kind(), "detail": format!("{e:?}") }));
                     if fatal(&e) {
                         break 'items;
                     }

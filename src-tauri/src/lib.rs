@@ -187,7 +187,7 @@ pub fn run() {
             quality::split_suggest,
             quality::split_apply,
             quality::rewrite_suggest, quality::rewrite_apply, quality::rewrite_change, ai::ai_check_card,
-            ai::ai_status, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_cancel,
+            ai::ai_status, ai::ai_models, ai::ai_set_model, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_cancel,
             quality::undo_change,
             quality::recent_changes,
             plan::study_plan,

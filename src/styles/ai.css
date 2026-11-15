@@ -16,6 +16,10 @@
 .ai-rows { display: flex; flex-direction: column; padding-top: 6px; border-bottom: 1px solid var(--border-default); }
 .ai-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; }
 .ai-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 20px; }
+/* L13 모델 · 추론 수준 고르기 (설정의 하루 시작 시각과 같은 펼침 목록) */
+.menu__list.ai-pick { right: 0; left: auto; width: 320px; max-height: 320px; overflow-y: auto; white-space: normal; }
+.ai-pick__item { justify-content: space-between; width: 100%; }
+.ai-pick__note { padding: 10px 0; }
 
 /* L2 */
 .modal.ai-l2 { width: 600px; gap: 16px; }

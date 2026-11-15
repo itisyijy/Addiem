@@ -868,6 +868,8 @@ export type AiStatus = {
   connected: boolean;
   email: string | null;
   model: string | null;
+  /** 사용자가 고른 추론 수준. null 이면 모델의 기본값 */
+  effort: string | null;
   /** 이번 달 보낸 카드와 마지막으로 보낸 시각. 이 기기에서 센 수 (사용량 추정 아님) */
   sent_month: number;
   sent_at: number | null;
@@ -882,8 +884,16 @@ export type AiAuthEvent = {
 };
 export type AiErrorKind = "not_connected" | "expired" | "scope" | "not_eligible" | "unavailable" | "limit" | "offline" | "bad_output" | "cancelled" | "error";
 export type AiError = { kind: AiErrorKind; message: string };
+/** L13 고를 수 있는 모델 하나. levels: 고를 수 있는 추론 수준 (low · medium · high …), default_level: 고르지 않았을 때 모델이 쓰는 수준 */
+export type AiModelOption = { slug: string; name: string; description: string; default_level: string | null; levels: string[] };
+/** L13 이 계정의 모델 목록과 지금 고른 것. model 이 null 이면 아직 보낸 적이 없다 (처음 보낼 때 목록의 앞 모델로 정해진다) */
+export type AiModels = { models: AiModelOption[]; model: string | null; effort: string | null };
 export const aiApi = {
   status: () => invoke<AiStatus>("ai_status"),
+  /** L13 고를 수 있는 모델. 목록 조회라 사용량에 들지 않는다. 오류는 AiError */
+  models: () => invoke<AiModels>("ai_models"),
+  /** L13 모델과 추론 수준을 고른다 (effort null = 모델의 기본값). 다섯 AI 기능이 모두 이 설정으로 보낸다 */
+  setModel: (model: string, effort: string | null) => invoke<void>("ai_set_model", { model, effort }),
   /** 브라우저를 열고 로그인 주소를 돌려준다 ([링크 복사]). 결과는 "ai-auth". reconsent: 사용량 권한을 다시 묻는다, newAccount: 다른 계정으로 */
   connect: (reconsent = false, newAccount = false) => invoke<string>("ai_connect", { reconsent, newAccount }),
   cancelConnect: () => invoke<void>("ai_connect_cancel"),

@@ -134,6 +134,8 @@ $env:ADDIEM_AI_FAKE = "ok"; $env:ADDIEM_DATA_DIR = "C:\temp\addiem-test"; npm ru
 
 ```powershell
 # 앞 5개만: $env:ADDIEM_GRADE_EVAL_LIMIT = "5" · 다른 평가셋: $env:ADDIEM_GRADE_EVAL_SET = "<jsonl>"
+# 모델 · 추론 수준을 정해서 재기 (설정에서 고른 것보다 먼저다): $env:ADDIEM_AI_MODEL = "gpt-6-luna"; $env:ADDIEM_AI_EFFORT = "high"
+# 이 계정의 모델 목록을 파일로 (요청을 보내지 않는다): $env:ADDIEM_AI_MODELS = "C:\temp\models.txt"
 $env:ADDIEM_GRADE_EVAL = "C:\temp\grade-eval.jsonl"; npm run tauri dev
 ```
 

@@ -55,6 +55,8 @@ const AGENT_NAME: &str = "Addiem";
 const META_EMAIL: &str = "ai_email";
 const META_SUB: &str = "ai_sub";
 const META_MODEL: &str = "ai_model";
+/// 사용자가 고른 추론 수준 (low · medium · high …). 없으면 모델의 기본값 (요청에 reasoning 을 넣지 않는다)
+const META_EFFORT: &str = "ai_effort";
 /// "YYYY-MM N": 이번 달 보낸 카드와 마지막으로 보낸 시각 (ms). 이 기기에서만 센다
 const META_SENT: &str = "ai_sent";
 const META_SENT_AT: &str = "ai_sent_at";
@@ -373,6 +375,82 @@ fn pick_models(body: &J) -> Vec<String> {
     out
 }
 
+/// 설정에서 고를 수 있는 모델 하나. levels: 고를 수 있는 추론 수준 (서버 순서), default_level: 고르지 않았을 때 서버가 쓰는 수준
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ModelOption {
+    slug: String,
+    name: String,
+    description: String,
+    default_level: Option<String>,
+    levels: Vec<String>,
+}
+
+/// 모델 목록 응답 → 고를 수 있는 모델 (visibility == "list" 만, 서버 순서대로)
+fn model_options(body: &J) -> Vec<ModelOption> {
+    let text = |m: &J, k: &str| m[k].as_str().unwrap_or("").trim().to_string();
+    body["models"]
+        .as_array()
+        .or(body["data"].as_array())
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"] == "list")
+        .filter_map(|m| {
+            let slug = m["slug"].as_str().or(m["id"].as_str())?.to_string();
+            let name = Some(text(m, "display_name")).filter(|n| !n.is_empty()).unwrap_or_else(|| slug.clone());
+            // 수준은 {"effort": "low", …} 이거나 글자 그대로
+            let levels = m["supported_reasoning_levels"].as_array().into_iter().flatten().filter_map(|l| l["effort"].as_str().or(l.as_str())).map(String::from).collect();
+            Some(ModelOption { slug, name, description: text(m, "description"), default_level: m["default_reasoning_level"].as_str().map(String::from), levels })
+        })
+        .collect()
+}
+
+/// 고른 모델 · 추론 수준이 목록에 있는가. effort 없음 = 모델의 기본값
+fn check_choice(models: &[ModelOption], model: &str, effort: Option<&str>) -> Result<(), AiError> {
+    let m = models.iter().find(|m| m.slug == model).ok_or_else(|| AiError::Other("이 계정에서 고를 수 없는 모델이에요.".into()))?;
+    match effort {
+        Some(e) if !m.levels.iter().any(|l| l == e) => Err(AiError::Other("이 모델에서 고를 수 없는 추론 수준이에요.".into())),
+        _ => Ok(()),
+    }
+}
+
+/// 요청 본문에 추론 수준을 넣는다. 없으면 그대로 (모델의 기본값)
+fn with_effort(mut body: J, effort: Option<&str>) -> J {
+    if let Some(e) = effort {
+        body["reasoning"] = json!({ "effort": e });
+    }
+    body
+}
+
+/// 개발용 가짜 목록 (ADDIEM_AI_FAKE): 설정의 모델 · 추론 수준 고르기를 계정 없이 본다
+fn fake_models() -> J {
+    let levels = |v: &[&str]| v.iter().map(|e| json!({ "effort": e })).collect::<Vec<_>>();
+    json!({ "models": [
+        { "slug": "gpt-fake-large", "display_name": "가짜 큰 모델", "description": "개발용 가짜 목록", "visibility": "list", "default_reasoning_level": "low", "supported_reasoning_levels": levels(&["low", "medium", "high", "xhigh"]) },
+        { "slug": "gpt-fake-small", "display_name": "가짜 작은 모델", "description": "개발용 가짜 목록", "visibility": "list", "default_reasoning_level": "medium", "supported_reasoning_levels": levels(&["low", "medium", "high"]) },
+        { "slug": "gpt-fake-hidden", "visibility": "hide" },
+    ]})
+}
+
+/// 이 계정의 모델 목록 (서버 응답). 글을 만드는 요청이 아니라 사용량에 들지 않는다. 401 이면 토큰을 한 번 새로 받아 다시
+fn fetch_models(app: &AppHandle, st: &AiState) -> Result<J, AiError> {
+    if fake_mode().is_some() {
+        return if fake_off() { Err(AiError::NotConnected) } else { Ok(fake_models()) };
+    }
+    for force in [false, true] {
+        let token = access_token(app, st, force)?;
+        let r = store::send(&st.agent, store::req(Method::GET, MODELS, &token).body(vec![]).unwrap()).map_err(net)?;
+        if r.status == 200 {
+            return Ok(serde_json::from_slice(&r.body).unwrap_or(J::Null));
+        }
+        match classify(r.status, &r.body) {
+            Reject::Unauthorized if !force => continue,
+            Reject::Fail(e) => return Err(e),
+            _ => break,
+        }
+    }
+    Err(AiError::Other("쓸 수 있는 모델 목록을 받지 못했어요.".into()))
+}
+
 fn list_models(agent: &ureq::Agent, token: &str) -> Result<Vec<String>, Reject> {
     let r = store::send(agent, store::req(Method::GET, MODELS, token).body(vec![]).unwrap()).map_err(|e| Reject::Fail(net(e)))?;
     if r.status != 200 {
@@ -687,6 +765,8 @@ fn complete(app: &AppHandle, st: &AiState, run: u64, body: &dyn Fn(&str, bool) -
         Some(m) => Some(m.clone()),
         None => with_db(app, |c| Ok(get_meta(c, META_MODEL)))?,
     };
+    // 추론 수준: 설정에서 고른 것 (측정용 ADDIEM_AI_EFFORT 가 있으면 그것). 없으면 보내지 않는다 (모델의 기본값)
+    let mut effort = debug_env("ADDIEM_AI_EFFORT").or(with_db(app, |c| Ok(get_meta(c, META_EFFORT)))?);
     let mut tried: Vec<String> = vec![];
     let mut models: Option<Vec<String>> = None;
     let (mut format, mut reauthed, mut counted) = (true, false, false);
@@ -702,15 +782,17 @@ fn complete(app: &AppHandle, st: &AiState, run: u64, body: &dyn Fn(&str, bool) -
                 }
                 let next = models.iter().flatten().find(|m| !tried.contains(*m)).cloned();
                 let next = next.ok_or_else(|| AiError::Other("이 계정으로 쓸 수 있는 모델이 없어요.".into()))?;
-                let _ = with_db(app, |c| set_meta(c, META_MODEL, Some(&next)));
+                // 고른 모델을 못 써 다른 모델로 넘어가면 고른 추론 수준도 지운다 (그 모델에 없는 수준일 수 있다)
+                let _ = with_db(app, |c| {
+                    set_meta(c, META_MODEL, Some(&next))?;
+                    set_meta(c, META_EFFORT, None)
+                });
+                effort = debug_env("ADDIEM_AI_EFFORT");
                 next
             }
         };
         tried.push(m.clone());
-        let mut sent = body(&m, format);
-        if let Some(effort) = debug_env("ADDIEM_AI_EFFORT") {
-            sent["reasoning"] = json!({ "effort": effort });
-        }
+        let sent = with_effort(body(&m, format), effort.as_deref());
         let res = agent_stream(st, run, &token, &sent, &mut || {
             if !counted {
                 counted = true;
@@ -780,7 +862,7 @@ pub(crate) fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Result<
 /// 지금 쓰는 모델 이름 (측정 기록에 적는다, rag::eval_run). 가짜 응답 모드나 아직 보내 본 적이 없으면 없다
 pub(crate) fn model_name(app: &AppHandle) -> Option<String> {
     let model = debug_env("ADDIEM_AI_MODEL").or_else(|| with_db(app, |c| Ok(get_meta(c, META_MODEL))).ok().flatten())?;
-    Some(match debug_env("ADDIEM_AI_EFFORT") {
+    Some(match debug_env("ADDIEM_AI_EFFORT").or_else(|| with_db(app, |c| Ok(get_meta(c, META_EFFORT))).ok().flatten()) {
         Some(effort) => format!("{model} ({effort})"),
         None => model,
     })
@@ -871,6 +953,8 @@ pub struct AiStatus {
     connected: bool,
     email: Option<String>,
     model: Option<String>,
+    /// 사용자가 고른 추론 수준. 없으면 모델의 기본값
+    effort: Option<String>,
     /// 이번 달 보낸 카드와 마지막으로 보낸 시각 (이 기기에서 센 수. 사용량 추정은 하지 않는다)
     sent_month: i64,
     sent_at: Option<i64>,
@@ -882,9 +966,43 @@ pub fn ai_status(app: AppHandle) -> Res<AiStatus> {
         let email = get_meta(c, META_EMAIL);
         let sent_at = get_meta(c, META_SENT_AT).and_then(|v| v.parse().ok());
         let email = if fake_off() { None } else { email.or_else(|| fake_mode().map(|m| format!("개발용 가짜 연결 ({m})"))) };
-        Ok(AiStatus { connected: email.is_some(), email, model: get_meta(c, META_MODEL), sent_month: sent_this_month(c), sent_at })
+        Ok(AiStatus { connected: email.is_some(), email, model: get_meta(c, META_MODEL), effort: get_meta(c, META_EFFORT), sent_month: sent_this_month(c), sent_at })
     })
     .map_err(|e| e.to_string())
+}
+
+/// 설정 > AI 연결의 모델 · 추론 수준 고르기 (DECISIONS L13)
+#[derive(Serialize)]
+pub struct AiModels {
+    models: Vec<ModelOption>,
+    /// 지금 쓰는 모델. 아직 보낸 적이 없으면 없다 (처음 보낼 때 목록의 앞 모델로 정해진다)
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+/// 이 계정에서 고를 수 있는 모델과 지금 고른 것. 목록 조회라 사용량에 들지 않는다
+#[tauri::command]
+pub async fn ai_models(app: AppHandle) -> Result<AiModels, AiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let models = model_options(&fetch_models(&app, &app.state::<AiState>())?);
+        with_db(&app, |c| Ok(AiModels { models, model: get_meta(c, META_MODEL), effort: get_meta(c, META_EFFORT) }))
+    })
+    .await?
+}
+
+/// 모델과 추론 수준을 고른다 (effort 없음 = 모델의 기본값). 목록에 있는 것만 받는다. 이 기기에만 둔다 (동기화하지 않는다).
+/// 다섯 AI 기능이 모두 이 설정으로 보낸다
+#[tauri::command]
+pub async fn ai_set_model(app: AppHandle, model: String, effort: Option<String>) -> Result<(), AiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let effort = effort.filter(|e| !e.is_empty());
+        check_choice(&model_options(&fetch_models(&app, &app.state::<AiState>())?), &model, effort.as_deref())?;
+        with_db(&app, |c| {
+            set_meta(c, META_MODEL, Some(&model))?;
+            set_meta(c, META_EFFORT, effort.as_deref())
+        })
+    })
+    .await?
 }
 
 /// 로그인 결과 ("ai-auth" 이벤트)
@@ -1051,7 +1169,10 @@ pub async fn ai_disconnect(app: AppHandle, state: State<'_, AiState>) -> Res<boo
             _ => true,
         };
         forget(&app, &st);
-        let _ = with_db(&app, |c| set_meta(c, META_MODEL, None));
+        let _ = with_db(&app, |c| {
+            set_meta(c, META_MODEL, None)?;
+            set_meta(c, META_EFFORT, None)
+        });
         revoked
     })
     .await
@@ -1659,7 +1780,7 @@ fn check_eval_run(app: &AppHandle, out: &std::path::Path) -> Vec<J> {
                     }),
                 ),
                 Err(e) => {
-                    record(item, run, json!({ "error": e.kind() }));
+                    record(item, run, json!({ "error": e.kind(), "detail": format!("{e:?}") }));
                     if fatal(&e) {
                         break 'items;
                     }
@@ -2038,6 +2159,34 @@ mod tests {
         ]});
         assert_eq!(pick_models(&body), ["gpt-6.1-mini", "gpt-6.1-sol", "gpt-6"]);
         assert!(pick_models(&json!({})).is_empty());
+    }
+
+    /// L13 설정의 모델 · 추론 수준 고르기: 보이는 모델만, 서버 순서대로, 수준은 {"effort": …} 이거나 글자
+    #[test]
+    fn model_choice_lists_checks_and_sends_effort() {
+        let body = json!({ "models": [
+            { "slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "description": "Latest workhorse", "visibility": "list", "default_reasoning_level": "low",
+              "supported_reasoning_levels": [{ "effort": "low", "description": "x" }, { "effort": "high" }] },
+            { "slug": "gpt-internal", "visibility": "hide" },
+            { "slug": "gpt-6-luna", "visibility": "list", "supported_reasoning_levels": ["medium", "high"] },
+        ]});
+        let models = model_options(&body);
+        assert_eq!(models.iter().map(|m| m.slug.as_str()).collect::<Vec<_>>(), ["gpt-6.1-sol", "gpt-6-luna"], "숨긴 모델은 빼고 서버 순서대로 (mini 를 앞에 두지 않는다)");
+        assert_eq!((models[0].name.as_str(), models[0].default_level.as_deref(), models[0].levels.clone()), ("GPT-6.1-Sol", Some("low"), vec!["low".to_string(), "high".into()]));
+        assert_eq!((models[1].name.as_str(), models[1].default_level.as_deref(), models[1].levels.clone()), ("gpt-6-luna", None, vec!["medium".to_string(), "high".into()]), "이름이 없으면 slug");
+        assert!(model_options(&json!({})).is_empty());
+        // 목록에 있는 모델 · 그 모델의 수준만 받는다. 수준 없음은 모델의 기본값
+        assert!(check_choice(&models, "gpt-6-luna", Some("high")).is_ok() && check_choice(&models, "gpt-6-luna", None).is_ok());
+        assert!(check_choice(&models, "gpt-6-luna", Some("low")).is_err(), "그 모델에 없는 수준");
+        assert!(check_choice(&models, "gpt-internal", None).is_err() && check_choice(&models, "gpt-7", None).is_err());
+        // 고른 수준만 요청에 넣는다. 고르지 않았으면 reasoning 을 보내지 않는다
+        let sent = with_effort(request_body("gpt-6-luna", "i", "x", None), Some("high"));
+        assert_eq!(sent["reasoning"], json!({ "effort": "high" }));
+        assert!(with_effort(request_body("gpt-6-luna", "i", "x", None), None)["reasoning"].is_null());
+        // 가짜 목록도 같은 길을 지난다
+        let fake = model_options(&fake_models());
+        assert_eq!(fake.len(), 2);
+        assert!(check_choice(&fake, "gpt-fake-small", Some("high")).is_ok() && check_choice(&fake, "gpt-fake-small", Some("xhigh")).is_err());
     }
 
     fn items(n: usize) -> Vec<String> {

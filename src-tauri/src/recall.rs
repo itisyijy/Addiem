@@ -699,6 +699,7 @@ fn distractor_eval_run(app: &AppHandle, out: &std::path::Path) -> Vec<serde_json
                 }
                 Err(e) => {
                     line["error"] = json!(e.kind());
+                    line["detail"] = json!(format!("{e:?}"));
                     stop = fatal(&e);
                 }
             }
