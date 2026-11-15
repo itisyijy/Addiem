@@ -20,7 +20,7 @@ ChatGPT 를 쓰는 작업마다 Spec → Skill → Subagent → Workflow → Hoo
 | 2 | AI로 확인 | `ai_check_card` | check-card.md | 시작 전 |
 | 3 | 자료에서 카드 초안 | `rag_draft` | draft.md | 시작 전 |
 | 4 | 오답 보기 제안 | `ai_distractors` | distractors.md | 시작 전 |
-| 5 | 성격별로 묶기 | `ai_regroup` | regroup.md | 시작 전 |
+| 5 | 성격별로 묶기 | `ai_regroup` | [regroup.md](regroup.md) | 코드 반영함. 평가셋(`regroup-dev.jsonl`) 측정 · 화면 확인은 미실행 (regroup.md 6.3 · 6.5) |
 
 로컬 모델의 개념 관계 확인(`concept_check`, `llm.rs`)은 다시 쓰지 않는다. 판정을 다섯 낱말로 제한하고, 전체 판정을 규칙으로 내고, 개발셋으로 재는 구조를 이미 갖춰 본보기로만 참조한다.
 

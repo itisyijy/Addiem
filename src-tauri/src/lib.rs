@@ -82,6 +82,7 @@ pub fn run() {
             app.manage(ai::AiState::new());
             // R2 채점 보조 측정 (debug 빌드에서 ADDIEM_GRADE_EVAL 이 있을 때만, docs/engineering/ai-harness/grade.md 6.3)
             rag::eval_on_start(app.handle());
+            ai::regroup_eval_on_start(app.handle()); // 성격별로 묶기 측정 (ADDIEM_REGROUP_EVAL, ai-harness/regroup.md 6.3)
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다

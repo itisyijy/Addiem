@@ -3,7 +3,7 @@
 ## 문서 상태
 
 - 버전: v0.1
-- 상태: **1–6절 확정 (2026-11-15).** 코드 반영 전이다
+- 상태: **1–6절 확정, 코드 반영함 (2026-11-15).** 단위 테스트는 통과했고, 평가셋 측정과 화면 확인은 미실행이다 (6.1)
 - 화면: 카드 점검 › 나누기 제안 창의 [비슷한 내용끼리 나누기] (`src/screens/Quality.tsx` `SplitModal`). DECISIONS 와 코드에서는 "성격별로 묶기"라 부른다
 - 코드: `src-tauri/src/ai.rs` 의 "성격별로 묶기 (프롬프트 · 검사)" 구간과 `ai_regroup` · `regroup_blocking` · `parse_cited`, `quality.rs` 의 `answer_items` · `strip_marker` · `split_apply`
 - 관련: [README](README.md), [DECISIONS](../../DECISIONS-PENDING-REVIEW.md) I66 · I74 · I76 · I77 · L5 · L7 · L9 · R18–R20 · R26
@@ -397,16 +397,16 @@ RG-SC-05 · 06(묶음 품질, 재현성)은 코드 검사로 지킬 수 없다. 
 
 | 성공 기준 | 방법 | 위치 | 상태 |
 |---|---|---|---|
-| RG-SC-01 답은 원래 항목 그대로다 | 테스트 | `regroup_output_is_validated`, `items_keep_their_original_order` | 미실행 (코드 반영 전) |
-| RG-SC-02 장수와 질문의 형식 | 테스트 | `regroup_output_is_validated` | 미실행 (코드 반영 전) |
-| RG-SC-03 질문이 답을 드러내지 않는다 | 테스트 · 평가셋 · 사람 | `fronts_that_show_the_answer_are_cleared`, 6.4 의 답 누설 비율, 6.5 | 미실행 |
-| RG-SC-04 질문끼리 구별된다 | 테스트 · 평가셋 · 사람 | `fronts_that_show_the_answer_are_cleared`, 6.4 의 질문 겹침 비율, 6.5 | 미실행 |
+| RG-SC-01 답은 원래 항목 그대로다 | 테스트 | `regroup_output_is_validated`, `items_keep_their_original_order` | 통과 (2026-11-15) |
+| RG-SC-02 장수와 질문의 형식 | 테스트 | `regroup_output_is_validated` | 통과 (2026-11-15) |
+| RG-SC-03 질문이 답을 드러내지 않는다 | 테스트 · 평가셋 · 사람 | `fronts_that_show_the_answer_are_cleared`, 6.4 의 답 누설 비율, 6.5 | 테스트 통과 (2026-11-15). 평가셋 · 사람은 미실행 |
+| RG-SC-04 질문끼리 구별된다 | 테스트 · 평가셋 · 사람 | `fronts_that_show_the_answer_are_cleared`, 6.4 의 질문 겹침 비율, 6.5 | 테스트 통과 (2026-11-15). 평가셋 · 사람은 미실행 |
 | RG-SC-05 성격이 같은 항목끼리 묶는다 | 평가셋 | 6.4 의 잘못 합친 비율 · 잘못 가른 비율 | 미실행 |
 | RG-SC-06 다시 해도 같다 | 평가셋 | 6.4 의 묶음 일치율 · 짝 일치율 | 미실행 |
-| RG-SC-07 근거 구간은 보낸 것뿐이다 | 테스트 | `cited_segments_become_evidence` | 미실행 (코드 반영 전) |
-| RG-SC-08 보내는 범위 | 테스트 | `only_plain_card_text_is_sent_and_nothing_changes`, `long_or_short_cards_are_not_sent` | 미실행 (코드 반영 전) |
-| RG-SC-09 카드를 바꾸지 않는다 | 테스트 | `only_plain_card_text_is_sent_and_nothing_changes` | 미실행 (코드 반영 전) |
-| RG-SC-10 실패를 추적할 수 있다 | 테스트 | `bad_regroup_is_logged_without_card_text` | 미실행 (코드 반영 전) |
+| RG-SC-07 근거 구간은 보낸 것뿐이다 | 테스트 | `cited_segments_become_evidence` | 통과 (2026-11-15) |
+| RG-SC-08 보내는 범위 | 테스트 | `only_plain_card_text_is_sent_and_nothing_changes`, `long_or_short_cards_are_not_sent` | 통과 (2026-11-15) |
+| RG-SC-09 카드를 바꾸지 않는다 | 테스트 | `only_plain_card_text_is_sent_and_nothing_changes` | 통과 (2026-11-15) |
+| RG-SC-10 실패를 추적할 수 있다 | 테스트 | `bad_regroup_is_logged_without_card_text` | 통과 (2026-11-15) |
 | RG-SC-11 실패해도 나눌 수 있다 | 사람 | 6.5 | 미실행 |
 | 화면의 상태 (4.3) | 사람 | 6.5 | 미실행 |
 
