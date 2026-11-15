@@ -662,12 +662,6 @@ fn save_criteria(con: &Connection, card_id: i64, key: &str, criteria: &[String])
     Ok(())
 }
 
-/// [기준 다시 뽑기]: 저장한 기준을 지운다 (되살리지 않는다)
-fn forget_criteria(con: &Connection, card_id: i64) -> Res<()> {
-    con.execute("DELETE FROM grade_criteria WHERE card_id = ?1", [card_id]).map_err(err)?;
-    Ok(())
-}
-
 /// GR-H-10 인용이 보낸 내 답 안에 이어진 글로 있는가
 fn quoted(mine: &str, quote: &str) -> bool {
     let (m, q) = (letters(mine), letters(quote));
@@ -764,7 +758,7 @@ fn fake_verdicts(n: usize, mine: &str, sent: &[Sent]) -> String {
 }
 
 /// R2 [ChatGPT로 채점 보조]: 기준을 정하고(목록이면 항목 · 저장해 둔 것 · 없으면 뽑아서 저장) 기준마다 판정을 받아, 가드와 추천 계산을 거쳐 돌려준다.
-/// reextract: [기준 다시 뽑기] (저장한 기준을 지우고 새로 뽑는다). 카드 · 복습 일정은 바꾸지 않는다. DB 에 쓰는 것은 뽑은 기준뿐이다
+/// reextract: [기준 다시 뽑기] (저장한 기준을 쓰지 않고 새로 뽑아 덮어쓴다). 카드 · 복습 일정은 바꾸지 않는다. DB 에 쓰는 것은 뽑은 기준뿐이다
 #[tauri::command]
 pub async fn rag_grade(app: AppHandle, card_id: i64, answer: String, segment_ids: Vec<i64>, reextract: Option<bool>) -> Result<Grade, AiError> {
     tauri::async_runtime::spawn_blocking(move || grade_blocking(&app, card_id, &answer, &segment_ids, reextract.unwrap_or(false))).await?
@@ -783,10 +777,8 @@ fn grade_blocking(app: &AppHandle, card_id: i64, answer: &str, segment_ids: &[i6
         let linked = linked_segments(c, card_id)?;
         let how = |id: i64| linked.iter().find(|l| l.0 == id).map_or("similar", |l| l.1);
         let sent = sent_of(c, &segment_ids.iter().map(|id| (*id, how(*id))).collect::<Vec<_>>())?;
-        if reextract {
-            forget_criteria(c, card_id)?;
-        }
-        let saved = saved_criteria(c, card_id, &criteria_key(&q, &model))?;
+        // [기준 다시 뽑기]: 저장한 기준을 보지 않고 새로 뽑는다. 새 기준이 검사를 지나야 덮어쓴다 (뽑다가 멈추거나 실패하면 옛 기준이 남는다)
+        let saved = if reextract { None } else { saved_criteria(c, card_id, &criteria_key(&q, &model))? };
         Ok((q, model, mine, sent, written::keywords_of(c, card_id)?, saved))
     })?;
     // ② 기준 정하기: 목록이면 항목, 저장해 둔 것, 없으면 뽑아서 저장. 실패한 뽑기는 기억하지 않는다 (다시 하면 달라질 수 있다)
@@ -1101,8 +1093,6 @@ mod tests {
         save_criteria(&con, card, &key2, &crit(3)).unwrap();
         assert_eq!((saved_criteria(&con, card, &key).unwrap(), saved_criteria(&con, card, &key2).unwrap()), (None, Some(crit(3))));
         assert_eq!(con.query_row("SELECT count(*) FROM grade_criteria", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
-        forget_criteria(&con, card).unwrap();
-        assert_eq!(saved_criteria(&con, card, &key2).unwrap(), None, "[기준 다시 뽑기]");
     }
 
     #[test]
@@ -1118,11 +1108,11 @@ mod tests {
             (note, due, n("SELECT count(*) FROM card"), n("SELECT count(*) FROM review_log"), n("SELECT count(*) FROM card_change"), n("SELECT count(*) FROM written_answer"))
         };
         let before = snapshot(&con);
-        // 채점이 DB 에 쓰는 길은 이 셋뿐이다 (grade_blocking)
+        // 채점이 DB 에 쓰는 길은 save_criteria 하나다 (grade_blocking). [기준 다시 뽑기]도 같은 줄을 덮어쓴다
         let key = criteria_key("q", "a");
         save_criteria(&con, card, &key, &crit(2)).unwrap();
         saved_criteria(&con, card, &key).unwrap();
-        forget_criteria(&con, card).unwrap();
+        save_criteria(&con, card, &key, &crit(3)).unwrap();
         assert_eq!(snapshot(&con), before, "카드 · 노트 · 복습 기록 · 변경 기록 · 쓴 답 그대로");
     }
 

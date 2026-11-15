@@ -107,7 +107,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
     setPhase((p) => (p === "busy" || p === "confirm" ? "idle" : p));
   }, [phase]);
 
-  /** reextract: [기준 다시 뽑기] (저장해 둔 기준을 지우고 새로 뽑아 채점한다) */
+  /** reextract: [기준 다시 뽑기] (저장해 둔 기준을 쓰지 않고 새로 뽑아 채점한다) */
   const send = (reextract = false) => {
     if (cardId === null) return;
     confirmed.current = true;

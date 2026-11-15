@@ -49,7 +49,7 @@ export const ragApi = {
   linked: (cardId: number) => invoke<Sent[]>("rag_linked", { cardId }),
   /** R2 버튼 아래 한 줄 · 첫 확인 목록. 아무것도 보내지 않는다 */
   gradeScope: (cardId: number, answer: string) => invoke<GradeScope>("rag_grade_scope", { cardId, answer }),
-  /** R2 채점 보조. reextract: 저장해 둔 기준을 지우고 다시 뽑는다. 오류는 AiError */
+  /** R2 채점 보조. reextract: 저장해 둔 기준을 쓰지 않고 다시 뽑아 덮어쓴다. 오류는 AiError */
   grade: (cardId: number, answer: string, segmentIds: number[], reextract = false) => invoke<Grade>("rag_grade", { cardId, answer, segmentIds, reextract }),
 };
 
