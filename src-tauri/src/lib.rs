@@ -80,6 +80,8 @@ pub fn run() {
             sync::setup(app.handle());
             // G2 성격별로 묶기 · ChatGPT 요금제 (연결하지 않았으면 네트워크를 쓰지 않는다)
             app.manage(ai::AiState::new());
+            // R2 채점 보조 측정 (debug 빌드에서 ADDIEM_GRADE_EVAL 이 있을 때만, docs/engineering/ai-harness/grade.md 6.3)
+            rag::eval_on_start(app.handle());
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다

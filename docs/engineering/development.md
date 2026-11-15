@@ -130,6 +130,13 @@ $env:ADDIEM_SYNC_FOLDER = "C:\temp\addiem-drive"; $env:ADDIEM_DATA_DIR = "C:\tem
 $env:ADDIEM_AI_FAKE = "ok"; $env:ADDIEM_DATA_DIR = "C:\temp\addiem-test"; npm run tauri dev
 ```
 
+채점 보조(R2)의 실제 출력은 평가셋으로 잰다 ([ai-harness/grade.md](ai-harness/grade.md) 6.3 · 6.4). debug 빌드에서 `ADDIEM_GRADE_EVAL` 을 주고 앱을 띄우면, 앱이 뜬 뒤 **로그인한 ChatGPT 계정으로** `src-tauri/tests/fixtures/eval83-dev.jsonl` 41개를 돌려 호출마다 한 줄씩 남기고 끝에 지표를 `<결과 파일>.summary.txt` 와 stderr 에 쓴다. 요청이 180회쯤이고 이번 달 보낸 수에 들어간다. `ADDIEM_AI_FAKE` 와 같이 주면 가짜 응답으로 돌아 계정을 쓰지 않는다 (길만 확인할 때).
+
+```powershell
+# 앞 5개만: $env:ADDIEM_GRADE_EVAL_LIMIT = "5" · 다른 평가셋: $env:ADDIEM_GRADE_EVAL_SET = "<jsonl>"
+$env:ADDIEM_GRADE_EVAL = "C:\temp\grade-eval.jsonl"; npm run tauri dev
+```
+
 ### 확인
 
 ```powershell

@@ -712,6 +712,11 @@ pub(crate) fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Result<
     f(&con)
 }
 
+/// 지금 쓰는 모델 이름 (측정 기록에 적는다, rag::eval_run). 가짜 응답 모드나 아직 보내 본 적이 없으면 없다
+pub(crate) fn model_name(app: &AppHandle) -> Option<String> {
+    with_db(app, |c| Ok(get_meta(c, META_MODEL))).ok().flatten()
+}
+
 /// 이번 달 보낸 카드 수 ("2026-10 3")
 fn sent_this_month(con: &Connection) -> i64 {
     let month = chrono::Local::now().format("%Y-%m").to_string();
@@ -1213,13 +1218,15 @@ pub async fn ai_check_card(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) 
     .await?
 }
 
+/// 기록 한 줄: 시각 · 작업 · 오류 종류 · 까닭 글. 취소 · 연결 안 됨은 없다
+pub(crate) fn failure_line(what: &str, e: &AiError) -> Option<String> {
+    (!matches!(e, AiError::Cancelled | AiError::NotConnected)).then(|| format!("{} {what} {}: {e:?}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), e.kind()))
+}
+
 /// 실패 까닭을 이 기기의 `ai-errors.log`(데이터 폴더)와 stderr 에 한 줄로 남긴다. 카드 글 · 응답 글은 남기지 않는다 (까닭 글만).
 /// 취소 · 연결 안 됨은 남기지 않는다. ponytail: 크기 제한 없이 덧붙인다 (드문 일), 커지면 돌려쓰기
-fn log_failure(app: &AppHandle, what: &str, e: &AiError) {
-    if matches!(e, AiError::Cancelled | AiError::NotConnected) {
-        return;
-    }
-    let line = format!("{} {what} {}: {e:?}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), e.kind());
+pub(crate) fn log_failure(app: &AppHandle, what: &str, e: &AiError) {
+    let Some(line) = failure_line(what, e) else { return };
     eprint!("{line}");
     let path = app.state::<AppState>().data_dir.join("ai-errors.log");
     let _ = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));

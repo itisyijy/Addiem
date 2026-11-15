@@ -377,6 +377,14 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     PRIMARY KEY (kind, ref_id, model)
 );
 
+-- R2 채점 보조가 ChatGPT 로 뽑은 채점 기준. 이 기기에서만 쓴다 (다시 뽑을 수 있다). 질문이나 모범 답안이 바뀌면 text_hash 가 달라져 다시 뽑는다
+CREATE TABLE IF NOT EXISTS grade_criteria (
+    card_id    INTEGER PRIMARY KEY REFERENCES card(id) ON DELETE CASCADE,
+    text_hash  TEXT    NOT NULL,              -- 보낸 질문 + 모범 답안의 SHA-256
+    criteria   TEXT    NOT NULL,              -- JSON ["기준", …] (1–4개)
+    created_at INTEGER NOT NULL
+);
+
 -- ---------------------------------------------------------------- J · 서술형 (학습 화면 J1~J3)
 
 -- 서술형 설정. 노트 단위 (서술형 노트는 카드가 하나다). 행이 없으면 기본값: 앞면에 {{type:필드}} 가 있으면 써서 답하기, 키워드 없음
