@@ -126,9 +126,8 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
-/// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다 (시험에서는 10초).
-/// Windows 는 닫힌 localhost 포트도 연결을 몇 번 다시 해 본 뒤에야(2초 남짓) 거절하므로, 바쁜 CI 에서 2초면 Net 대신 Stalled 가 나왔다
-const IDLE: Duration = Duration::from_secs(if cfg!(test) { 10 } else { 30 });
+/// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다 (시험에서는 2초)
+const IDLE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
 pub const STALLED: &str = "연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 pub const OFFLINE: &str = "모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 /// 사용자가 멈췄다 (화면은 이 말로 시작하면 오류가 아니라 회색으로 보인다)
@@ -296,6 +295,15 @@ pub mod tests {
         format!("http://{addr}")
     }
 
+    /// 연결을 받자마자 닫는 서버 (네트워크 오류). 닫힌 포트를 쓰면 Windows 는 연결을 몇 번 다시 해 본 뒤(2초 남짓)에야
+    /// 거절해서, 바쁜 CI 에서는 IDLE(2초)이 먼저 끝나 Net 대신 Stalled 가 나왔다
+    fn closing_server() -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || for s in l.incoming() { drop(s) });
+        format!("http://{addr}/x")
+    }
+
     #[test]
     fn whole_body_arrives() {
         let url = server(300_000, 300_000, Duration::from_millis(10));
@@ -338,9 +346,8 @@ pub mod tests {
     /// 화면에는 사용자 문구만 (원인 글 "os error 10061" 같은 것은 로그로)
     #[test]
     fn fetch_shows_only_user_sentences() {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let part = std::env::temp_dir().join(format!("na-dl-test-{}.part", std::process::id()));
-        assert_eq!(fetch(&format!("http://127.0.0.1:{port}/x"), 10, "", &part, &|| false, |_| {}), Err(OFFLINE.into()));
+        assert_eq!(fetch(&closing_server(), 10, "", &part, &|| false, |_| {}), Err(OFFLINE.into()));
         assert_eq!(fetch(&server(1000, 1000, Duration::from_millis(10)), 1000, "00", &part, &|| false, |_| {}), Err("받은 모델 파일이 원본과 달라요. 다시 시도해 주세요.".into()));
         assert!(!part.exists(), "실패하면 받던 파일을 지운다");
         // 사용자가 멈췄으면 지웠다고 알린다 (화면은 회색)
@@ -359,9 +366,8 @@ pub mod tests {
     }
 
     #[test]
-    fn closed_port_is_a_network_error_and_write_errors_pass_through() {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port(); // 닫힌 포트
-        assert!(matches!(stream(&format!("http://127.0.0.1:{port}/x"), 10, IDLE, &|| false, |_| Ok(())), Err(Fail::Net(_))));
+    fn closed_connection_is_a_network_error_and_write_errors_pass_through() {
+        assert!(matches!(stream(&closing_server(), 10, IDLE, &|| false, |_| Ok(())), Err(Fail::Net(_))));
         let url = server(1000, 1000, Duration::from_millis(10));
         assert_eq!(stream(&url, 1001, IDLE, &|| false, |_| Err("디스크가 가득 찼어요".into())), Err(Fail::Write("디스크가 가득 찼어요".into())));
     }
