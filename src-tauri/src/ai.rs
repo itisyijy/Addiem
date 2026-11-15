@@ -626,7 +626,12 @@ pub(crate) fn generate(app: &AppHandle, body: &dyn Fn(&str, bool) -> J, fake: im
 /// response.completed 의 글자를 돌려준다. 처음 200 을 받으면 이번 달 보낸 수를 센다
 fn complete(app: &AppHandle, st: &AiState, run: u64, body: &dyn Fn(&str, bool) -> J) -> Result<String, AiError> {
     let mut token = access_token(app, st, false)?;
-    let mut model = with_db(app, |c| Ok(get_meta(c, META_MODEL)))?;
+    // 측정용 (debug): ADDIEM_AI_MODEL 이 있으면 저장된 모델 대신 그 모델로만 보낸다 (저장하지 않고, 못 쓰면 다른 모델로 넘어가지 않는다)
+    let forced = debug_env("ADDIEM_AI_MODEL");
+    let mut model = match &forced {
+        Some(m) => Some(m.clone()),
+        None => with_db(app, |c| Ok(get_meta(c, META_MODEL)))?,
+    };
     let mut tried: Vec<String> = vec![];
     let mut models: Option<Vec<String>> = None;
     let (mut format, mut reauthed, mut counted) = (true, false, false);
@@ -647,7 +652,11 @@ fn complete(app: &AppHandle, st: &AiState, run: u64, body: &dyn Fn(&str, bool) -
             }
         };
         tried.push(m.clone());
-        let res = agent_stream(st, run, &token, &body(&m, format), &mut || {
+        let mut sent = body(&m, format);
+        if let Some(effort) = debug_env("ADDIEM_AI_EFFORT") {
+            sent["reasoning"] = json!({ "effort": effort });
+        }
+        let res = agent_stream(st, run, &token, &sent, &mut || {
             if !counted {
                 counted = true;
                 let _ = with_db(app, count_sent);
@@ -671,6 +680,7 @@ fn complete(app: &AppHandle, st: &AiState, run: u64, body: &dyn Fn(&str, bool) -
                 model = Some(m);
                 tried.pop();
             }
+            Err(Reject::NextModel) if forced.is_some() => return Err(AiError::Other(format!("이 계정으로 {m} 모델을 쓸 수 없어요 (ADDIEM_AI_MODEL)."))),
             Err(Reject::NextModel) => {}
             Err(Reject::DropFormat) => return Err(AiError::Other("ChatGPT가 이 요청 형식을 받지 않았어요.".into())),
             Err(Reject::Fail(e)) => return Err(e),
@@ -714,7 +724,38 @@ pub(crate) fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Result<
 
 /// 지금 쓰는 모델 이름 (측정 기록에 적는다, rag::eval_run). 가짜 응답 모드나 아직 보내 본 적이 없으면 없다
 pub(crate) fn model_name(app: &AppHandle) -> Option<String> {
-    with_db(app, |c| Ok(get_meta(c, META_MODEL))).ok().flatten()
+    let model = debug_env("ADDIEM_AI_MODEL").or_else(|| with_db(app, |c| Ok(get_meta(c, META_MODEL))).ok().flatten())?;
+    Some(match debug_env("ADDIEM_AI_EFFORT") {
+        Some(effort) => format!("{model} ({effort})"),
+        None => model,
+    })
+}
+
+/// debug 빌드에서만 듣는 환경 변수 (측정용). 릴리스 빌드에서는 늘 없다
+fn debug_env(name: &str) -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// debug 빌드에서 `ADDIEM_AI_MODELS=<파일>` 이면 앱이 뜬 뒤 이 계정의 모델 목록(서버 응답 그대로)을 그 파일에 쓴다.
+/// 글을 만드는 요청이 아니라 사용량에 들지 않는다. 측정에 쓸 모델 이름(`ADDIEM_AI_MODEL`)을 고를 때 본다
+pub fn models_on_start(app: &AppHandle) {
+    let Some(out) = debug_env("ADDIEM_AI_MODELS") else { return };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let st = app.state::<AiState>();
+        let text = match access_token(&app, &st, false) {
+            Ok(token) => match store::send(&st.agent, store::req(Method::GET, MODELS, &token).body(vec![]).unwrap()) {
+                Ok(r) => format!("{}
+{}", r.status, String::from_utf8_lossy(&r.body)),
+                Err(e) => format!("error: {:?}", net(e)),
+            },
+            Err(e) => format!("error: {e:?}"),
+        };
+        let _ = std::fs::write(out, text);
+    });
 }
 
 /// 이번 달 보낸 카드 수 ("2026-10 3")

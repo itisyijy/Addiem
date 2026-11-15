@@ -82,6 +82,8 @@ pub fn run() {
             app.manage(ai::AiState::new());
             // R2 채점 보조 측정 (debug 빌드에서 ADDIEM_GRADE_EVAL 이 있을 때만, docs/engineering/ai-harness/grade.md 6.3)
             rag::eval_on_start(app.handle());
+            // 측정에 쓸 모델을 고를 때: 이 계정의 모델 목록을 파일로 (debug 빌드에서 ADDIEM_AI_MODELS 가 있을 때만)
+            ai::models_on_start(app.handle());
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
