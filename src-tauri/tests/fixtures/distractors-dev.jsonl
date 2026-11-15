@@ -9,7 +9,7 @@
 {"id":"m3","case":"multi","question":"다음 중 파이썬에서 변경할 수 없는(immutable) 내장 자료형을 모두 고르면?","correct":["tuple","str"],"wrong":["list"],"also_correct":["int","float","bool","complex","bytes","frozenset","range","NoneType","튜플","문자열","정수","실수"]}
 {"id":"u1","case":"number","question":"1기압에서 물이 끓는 온도는?","correct":["100℃"],"wrong":["90℃"],"also_correct":["100°C","100도","섭씨 100도","100","212℉","212°F","373K","373.15K"]}
 {"id":"u2","case":"number","question":"훈민정음이 반포된 해는?","correct":["1446년"],"wrong":["1443년"],"also_correct":["1446","세종 28년"]}
-{"id":"u3","case":"number","question":"정육면체의 모서리 수는?","correct":["12개"],"wrong":["8개"],"also_correct":["12","열두 개","12 개"]}
+{"id":"u3","case":"number","question":"정육면체의 모서리 수는?","correct":["12개"],"wrong":["8개"],"also_correct":["12","열두 개"]}
 {"id":"e1","case":"empty","question":"광합성이 일어나는 세포 소기관은?","correct":["엽록체"],"wrong":[],"also_correct":["Chloroplast","chloroplasts"]}
 {"id":"e2","case":"empty","question":"희곡 『햄릿』을 쓴 작가는?","correct":["셰익스피어"],"wrong":[],"also_correct":["윌리엄 셰익스피어","세익스피어","Shakespeare","William Shakespeare"]}
 {"id":"e3","case":"empty","question":"원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?","correct":["원자가 전자"],"wrong":[],"also_correct":["가전자","최외각 전자","valence electron"]}

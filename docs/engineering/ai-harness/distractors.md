@@ -3,7 +3,7 @@
 ## 문서 상태
 
 - 버전: v0.1
-- 상태: **1–6절 확정 (2026-11-15, 1.8 의 네 갈림길 모두 추천안).** 코드 반영 전이고 측정은 미실행
+- 상태: **1–6절 확정, 코드 반영함 (2026-11-15).** 단위 테스트는 통과했다. 평가셋 측정과 화면 확인은 미실행이다 (6.1)
 - 화면: 카드 추가(C3) · 카드 편집(E · C2)의 선택형 편집기, 보기 목록 아래 [오답 보기 N개 제안 받기] (`src/screens/Recall.tsx` `DistractorLine`)
 - 코드: `src-tauri/src/recall.rs` (Q8 오답 보기 제안), `src/recall.ts` (`wantedDistractors`, `optionKey`)
 - 관련: [README](README.md), [DECISIONS](../../DECISIONS-PENDING-REVIEW.md) Q8 · Q37–Q46, [채점 보조](grade.md)
@@ -398,15 +398,15 @@ DS-SC-04 · 05 · 06(정답 섞임, 헷갈릴 만함, 잘못 버림)은 코드 �
 
 | 성공 기준 | 방법 | 위치 | 상태 |
 |---|---|---|---|
-| DS-SC-01 겹치지 않는다 | 테스트 | `distractors_are_validated`, `fake_distractors_pass_through_the_same_checks` | 미실행 (코드 반영 전) |
-| DS-SC-02 보기 글자만 보인다 | 테스트 | `numbering_is_stripped_only_before_a_space`, `distractors_are_validated` | 미실행 (코드 반영 전) |
-| DS-SC-03 수는 코드가 정한다 | 테스트 | `distractors_are_validated` | 미실행 (코드 반영 전) |
+| DS-SC-01 겹치지 않는다 | 테스트 | `distractors_are_validated`, `fake_distractors_pass_through_the_same_checks` | 통과 (2026-11-15) |
+| DS-SC-02 보기 글자만 보인다 | 테스트 | `numbering_is_stripped_only_before_a_space`, `distractors_are_validated` | 통과 (2026-11-15) |
+| DS-SC-03 수는 코드가 정한다 | 테스트 | `distractors_are_validated` | 통과 (2026-11-15) |
 | DS-SC-04 정답이 섞이지 않는다 | 평가셋 | 6.4 의 정답 섞임 (목록 · 사람) | 미실행 |
 | DS-SC-05 헷갈릴 만하다 | 평가셋 | 6.4 의 엉뚱한 보기 | 미실행 |
 | DS-SC-06 코드가 버린 것은 버릴 것이다 | 평가셋 | 6.4 의 잘못 버린 비율 | 미실행 |
-| DS-SC-07 보내는 범위 | 테스트 | `distractor_input_is_plain_editor_text_only` (있음) | 미실행 (코드 반영 전) |
+| DS-SC-07 보내는 범위 | 테스트 | `distractor_input_is_plain_editor_text_only` (있음) | 통과 (2026-11-15) |
 | DS-SC-08 아무것도 저장하지 않는다 | 사람 | 6.5 | 미실행 |
-| DS-SC-09 실패를 추적할 수 있다 | 테스트 | `no_distractors_left_logs_reasons_without_text` | 미실행 (코드 반영 전) |
+| DS-SC-09 실패를 추적할 수 있다 | 테스트 | `no_distractors_left_logs_reasons_without_text` | 통과 (2026-11-15) |
 | 화면의 상태 (4.3) | 사람 | 6.5 | 미실행 |
 
 ### 6.2 단위 테스트
@@ -418,11 +418,12 @@ DS-SC-04 · 05 · 06(정답 섞임, 헷갈릴 만함, 잘못 버림)은 코드 �
 | `distractor_input_is_plain_editor_text_only` (있음) | 질문은 화면 글자, 그림 · 소리 · 태그가 없다. 정답 여럿 · 오답 없음 · 앞 제안 · 600자 자르기 | DS-H-04 |
 | `distractor_schema_is_strict_options_list` (있음) | strict 스키마, `store: false` | — |
 | `distractors_are_validated` (있음, 고침) | 정답 · 보낸 보기와 같은 글, 빈 글, 81자, 제안끼리 겹침은 그 보기만 버린다. 요청한 수까지. 남는 것이 없으면 형식 오류이고 까닭별 수가 적힌다. JSON 아님 · `options` 없음 · 글자 아님 | DS-H-05 · 07 · 08 · 09 · 10 |
-| `numbering_is_stripped_only_before_a_space` (새) | "1. ACK" · "① ACK" · "- ACK" · "(2) ACK" 는 "ACK". "1.5배" · "-273℃" · "①번" 은 그대로. 떼고 나면 빈 글이면 버린다 | DS-H-06 |
+| `numbering_is_stripped_only_before_a_space` (새) | "1. ACK" · "① ACK" · "- ACK" · "(2) ACK" 는 "ACK". "1.5배" · "-273℃" · "①번" · "2)" 는 그대로 | DS-H-06 |
 | `no_distractors_left_logs_reasons_without_text` (새) | 다 버려졌을 때 기록 줄에 호출 이름과 까닭별 수가 있고 보기 글자 · 질문 글자가 없다 | DS-H-10 · 13 |
 | `fake_distractors_pass_through_the_same_checks` (있음, 고침) | 가짜 응답이 같은 검사를 지난다. 앞 번호가 붙은 가짜 보기("1. ACK")가 떼어져 보인다. [다시 제안]은 다음 보기, 다 쓰면 형식 오류 | — |
 | `distractor_eval_set_is_well_formed` (새) | 평가셋 줄마다 필드가 있고, 정답이 있고, 오답 · `also_correct` 가 정답과 같은 글이 아니고, id 가 겹치지 않고, 지시문의 예시(이산화탄소 · 포유류 · OSI 계층)를 쓰지 않는다 | — |
 | `distractor_eval_summary_counts_each_metric` (새) | 결과 줄에서 6.4 의 자동 지표를 맞게 센다 | — |
+| `eval_helpers_compare_like_the_checks` (새) | 측정의 목록 일치 · 정답 글자 포함이 검사와 같은 비교(`option_key`)를 쓴다. 한 글자 정답과 같은 글은 포함으로 세지 않는다 | — |
 
 ### 6.3 평가를 돌리는 방법
 
@@ -471,6 +472,7 @@ DS-SC-04 · 05 · 06(정답 섞임, 헷갈릴 만함, 잘못 버림)은 코드 �
 - [ ] `malformed`: 형식 오류 줄과 기록 한 줄
 - [ ] 카드 편집(E)에서도 같다. 기다리는 동안 창을 닫으면 요청이 멈춘다
 - [ ] 실제 연결에서 한 번
+- [ ] 측정 길을 가짜 응답(`ADDIEM_AI_FAKE=ok`, `ADDIEM_DISTRACTOR_EVAL_LIMIT=2`)으로 끝까지 돌려 결과 줄 · review.tsv · summary.txt 가 생기는지
 
 ### 6.6 이 평가셋이 재지 못하는 것
 

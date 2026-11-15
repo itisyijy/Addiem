@@ -439,12 +439,24 @@ const MAX_DISTRACTOR_CHARS: usize = 80;
 const SEND_QUESTION_CHARS: usize = 600;
 const SEND_OPTION_CHARS: usize = 200;
 
-const DISTRACTOR_INSTRUCTIONS: &str = "선택형 암기 카드의 오답 보기를 만드는 일을 도와요. 사용자가 보낸 질문 · 정답 · 이미 쓴 오답을 보고, \
-\"만들 오답 수\"만큼 새 오답 보기를 만드세요.
-- 정답과 뜻이 같거나 정답이 될 수 있는 보기는 쓰지 마세요. 정답이 여러 개면 모두 정답이에요.
-- 이미 쓴 보기 · 앞서 제안한 오답과 겹치지 않게, 이미 쓴 보기와 같은 문체 · 길이로, 질문과 같은 언어로 쓰세요.
+/// 지시문 (distractors.md 2.1). 예시와 지시문 안의 보기는 평가셋에 넣지 않는다 (distractor_eval_set_is_well_formed)
+const DISTRACTOR_INSTRUCTIONS: &str = "선택형 암기 카드의 오답 보기를 만드는 일을 도와요. 사용자가 질문, 정답, 이미 쓴 오답, 만들 오답 수를 보내요.
+- \"만들 오답 수\"만큼 새 오답 보기를 만드세요.
+- 정답이 될 수 있는 보기는 쓰지 마세요. 정답이 여러 개면 모두 정답이에요. 이런 것도 정답이에요:
+  - 정답을 다르게 적은 것: 약어, 원어, 번역, 다른 숫자 표기 (이산화탄소 = CO₂ = carbon dioxide)
+  - 질문의 조건을 만족하는 다른 답 (포유류를 묻고 정답이 고래면 박쥐도 정답이에요)
+- 정답과 같은 종류로 쓰세요. 계층이 정답이면 계층, 사람이 정답이면 사람, 수가 정답이면 같은 단위의 수. 헷갈릴 만하지만 분명히 틀린 보기여야 해요.
+- 이미 쓴 보기와 같은 문체 · 길이로, 질문과 같은 언어로 쓰세요. 이미 쓴 오답 · 앞서 제안한 오답과 겹치지 마세요.
 - 보기 글자만 쓰세요. 번호나 설명은 붙이지 마세요.
-- 답은 {\"options\": [보기, …]} 모양의 JSON 하나만.";
+- 답은 {\"options\": [보기, …]} 모양의 JSON 하나만.
+
+예시
+질문: OSI 7계층에서 TCP가 속한 계층은?
+정답: 전송 계층
+이미 쓴 오답:
+- 네트워크 계층
+만들 오답 수: 2
+→ {\"options\": [\"세션 계층\", \"데이터 링크 계층\"]}";
 
 /// 편집기 보기 칸은 글자다. [sound:] 만 빼고 띄어쓰기를 하나로 (AU6)
 fn option_text(t: &str) -> String {
@@ -481,27 +493,62 @@ fn distractor_schema() -> serde_json::Value {
     ai::object(serde_json::json!({ "options": { "type": "array", "items": { "type": "string" } } }))
 }
 
-/// 모델 출력 → 제안. 빈 글 · 너무 긴 글 · 정답이나 보낸 보기와 같은 글 · 제안끼리 겹치는 글은 하나씩 버리고, count 개까지만.
+/// 모델이 낸 보기 → 칸 글자 (DS-H-06). 앞 번호 표시("1. " · "① " · "- ")는 뒤에 띄어쓰기가 올 때만 뗀다 ("1.5배" · "-273℃" 는 그대로)
+fn distractor_text(t: &str) -> String {
+    let t = option_text(t);
+    match quality::item_marker(&t) {
+        Some(n) if t[n..].starts_with(char::is_whitespace) => t[n..].trim().to_string(),
+        _ => t,
+    }
+}
+
+/// 버린 까닭 (ai-errors.log 와 측정에 센다). 넘침은 수를 맞춘 것이지 걸러 낸 것이 아니다
+const DROP_REASONS: [&str; 4] = ["빈 글", "너무 김", "같은 글", "넘침"];
+
+/// 보기마다 하나씩 (DS-H-07 · 08 · 09): 빈 글 · 너무 긴 글 · 정답이나 보낸 보기와 같은 글 · 앞에서 남긴 것과 같은 글은 버리고, count 개까지만 남긴다.
+/// (남긴 것, 버린 것과 까닭)
+fn sort_distractors(list: &[serde_json::Value], taken: &[String], count: usize) -> (Vec<String>, Vec<(String, &'static str)>) {
+    let mut seen: Vec<String> = taken.iter().map(|t| option_key(t)).collect();
+    let (mut out, mut dropped) = (vec![], vec![]);
+    for o in list {
+        let t = distractor_text(o.as_str().unwrap_or(""));
+        let k = option_key(&t);
+        let why = if k.is_empty() {
+            DROP_REASONS[0]
+        } else if t.chars().count() > MAX_DISTRACTOR_CHARS {
+            DROP_REASONS[1]
+        } else if seen.contains(&k) {
+            DROP_REASONS[2]
+        } else if out.len() == count {
+            DROP_REASONS[3]
+        } else {
+            seen.push(k);
+            out.push(t);
+            continue;
+        };
+        dropped.push((t, why));
+    }
+    (out, dropped)
+}
+
+/// 다 버렸을 때의 까닭: 까닭별 수만 (보기 글자는 ai-errors.log 에 남기지 않는다, DS-H-10)
+fn none_left(dropped: &[(String, &str)]) -> AiError {
+    let counts: Vec<String> = DROP_REASONS
+        .iter()
+        .filter_map(|r| Some(dropped.iter().filter(|d| d.1 == *r).count()).filter(|n| *n > 0).map(|n| format!("{r} {n}")))
+        .collect();
+    let counts = if counts.is_empty() { "받은 보기 없음".to_string() } else { counts.join(" · ") };
+    AiError::BadOutput(format!("쓸 수 있는 오답 보기가 없어요 · {counts}"))
+}
+
+/// 모델 출력 → 제안 (DS-H-05 – 10). JSON 이 아니거나 options 가 없으면 전부 버리고, 그 밖에는 보기 하나씩 거른다.
 /// 남는 것이 없으면 BadOutput ("알맞은 오답을 만들지 못했어요")
 fn parse_distractors(text: &str, taken: &[String], count: usize) -> Result<Vec<String>, AiError> {
     let v = ai::parse_json(text)?;
     let list = v["options"].as_array().ok_or_else(|| AiError::BadOutput("options 가 없어요".into()))?;
-    let mut seen: Vec<String> = taken.iter().map(|t| option_key(t)).collect();
-    let mut out = vec![];
-    for o in list {
-        let t = option_text(o.as_str().unwrap_or(""));
-        let k = option_key(&t);
-        if k.is_empty() || t.chars().count() > MAX_DISTRACTOR_CHARS || seen.contains(&k) {
-            continue;
-        }
-        seen.push(k);
-        out.push(t);
-        if out.len() == count {
-            break;
-        }
-    }
+    let (out, dropped) = sort_distractors(list, taken, count);
     if out.is_empty() {
-        return Err(AiError::BadOutput("쓸 수 있는 오답 보기가 없어요".into()));
+        return Err(none_left(&dropped));
     }
     Ok(out)
 }
@@ -513,7 +560,8 @@ fn fake_distractors(correct: &[String], wrong: &[String], avoid: &[String]) -> S
     let mut v: Vec<String> = correct.iter().take(1).map(|c| format!(" {} ", c.to_lowercase())).collect();
     v.extend(wrong.iter().take(1).chain(avoid.iter().take(1)).cloned());
     v.extend([String::new(), "가".repeat(MAX_DISTRACTOR_CHARS + 1)]);
-    v.extend(["ACK", "FIN-ACK", "RST", "URG", "PSH", "FIN"].map(String::from));
+    // "1. ACK": 모델이 붙인 번호는 검사가 뗀다 (DS-H-06)
+    v.extend(["1. ACK", "FIN-ACK", "RST", "URG", "PSH", "FIN"].map(String::from));
     serde_json::json!({ "options": v }).to_string()
 }
 
@@ -538,10 +586,172 @@ pub async fn ai_distractors(app: AppHandle, question: String, correct: Vec<Strin
         let input = distractor_input(&question, &correct, &wrong, &avoid, count);
         let schema = distractor_schema();
         let text = ai::generate(&app, &|m, f| ai::request_body(m, DISTRACTOR_INSTRUCTIONS, &input, f.then_some(("distractors", &schema))), || fake_distractors(&correct, &wrong, &avoid))?;
-        parse_distractors(&text, &[correct, wrong, avoid].concat(), count)
+        // 다 버려지면 까닭별 수만 남긴다 (DS-H-13)
+        parse_distractors(&text, &[correct, wrong, avoid].concat(), count).inspect_err(|e| ai::log_failure(&app, "ai_distractors", e))
     })
     .await
     .map_err(|e| AiError::Other(e.to_string()))?
+}
+
+// ---------------------------------------------------------------- Q8 측정 (distractors.md 6.3 · 6.4). debug 빌드에서만 돈다
+
+/// debug 빌드에서 `ADDIEM_DISTRACTOR_EVAL=<결과 파일>` 이면 앱이 뜬 뒤 평가셋을 로그인한 계정으로 돌린다 (`ADDIEM_AI_FAKE` 면 가짜 응답으로).
+/// `ADDIEM_DISTRACTOR_EVAL_SET=<jsonl>` (없으면 tests/fixtures/distractors-dev.jsonl), `ADDIEM_DISTRACTOR_EVAL_LIMIT=n` (앞 n개).
+/// 결과는 호출 한 번에 한 줄(JSON), 사람이 표시할 표는 `<결과 파일>.review.tsv`, 자동 지표는 stderr 와 `<결과 파일>.summary.txt`
+pub fn eval_on_start(app: &AppHandle) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Some(out) = std::env::var_os("ADDIEM_DISTRACTOR_EVAL").filter(|v| !v.is_empty()) else { return };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let out = std::path::PathBuf::from(out);
+        let summary = distractor_eval_summary(&distractor_eval_run(&app, &out));
+        eprintln!("{summary}");
+        let _ = std::fs::write(out.with_extension("summary.txt"), summary);
+    });
+}
+
+/// 정답 · 정답으로 칠 글과 같은 글인가 (option_key)
+fn listed(t: &str, keys: &[String]) -> bool {
+    keys.contains(&option_key(t))
+}
+
+/// 정답 글자(2자 이상)를 품은 다른 글인가. 거를지 정하려고 센다 (참고 지표)
+fn contains_correct(t: &str, correct: &[String]) -> bool {
+    let k = option_key(t);
+    correct.iter().map(|c| option_key(c)).any(|c| c.chars().count() >= 2 && c != k && k.contains(&c))
+}
+
+/// 항목마다 앱과 같은 차례로 두 번: `1` (정답 · 오답) → `again` (1 에서 보인 제안을 앞 제안으로, [다시 제안]).
+/// 받을 수는 화면의 wantedDistractors (Q37). 한도 · 오프라인 · 로그인 문제면 거기서 멈춘다
+fn distractor_eval_run(app: &AppHandle, out: &std::path::Path) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    use tauri::Manager;
+    let set = std::env::var("ADDIEM_DISTRACTOR_EVAL_SET").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/distractors-dev.jsonl").into());
+    let limit = std::env::var("ADDIEM_DISTRACTOR_EVAL_LIMIT").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(usize::MAX);
+    let items: Vec<serde_json::Value> = std::fs::read_to_string(&set).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).take(limit).collect();
+    let mut file = std::fs::File::create(out).ok();
+    let mut review = std::fs::File::create(out.with_extension("review.tsv")).ok();
+    if let Some(f) = review.as_mut() {
+        let _ = writeln!(f, "id\trun\tquestion\tcorrect\tstate\toption\tlisted\tsim\tmark");
+    }
+    // 어느 지시문으로 잰 값인지. 시각 · 모델 · 표시는 여기 코드가 적는다 (모델이 쓰지 않는다)
+    let prompt = format!("{:x}", Sha256::digest(DISTRACTOR_INSTRUCTIONS.as_bytes()))[..12].to_string();
+    // 임베딩 모델이 기기에 있을 때만 유사도를 적는다 (갈림길 ②: 앱에서는 쓰지 않는다)
+    let embedder = crate::embed::load(&app.state::<AppState>().data_dir).ok();
+    let schema = distractor_schema();
+    let fatal = |e: &AiError| !matches!(e, AiError::BadOutput(_) | AiError::Unavailable | AiError::Other(_));
+    let tsv = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+    let mut lines = vec![];
+    'items: for item in &items {
+        let strs = |k: &str| item[k].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).map(option_text).collect::<Vec<_>>()).unwrap_or_default();
+        let (question, correct, wrong, also) = (item["question"].as_str().unwrap_or("").to_string(), strs("correct"), strs("wrong"), strs("also_correct"));
+        let keys: Vec<String> = correct.iter().chain(&also).map(|t| option_key(t)).collect();
+        let filled = correct.len() + wrong.len();
+        let count = if filled < 4 { 4 - filled } else if filled < 6 { 1 } else { 0 };
+        let mut avoid: Vec<String> = vec![];
+        for run in ["1", "again"] {
+            let input = distractor_input(&question, &correct, &wrong, &avoid, count);
+            let got = ai::generate(app, &|m, f| ai::request_body(m, DISTRACTOR_INSTRUCTIONS, &input, f.then_some(("distractors", &schema))), || fake_distractors(&correct, &wrong, &avoid))
+                .and_then(|text| ai::parse_json(&text)?["options"].as_array().cloned().ok_or_else(|| AiError::BadOutput("options 가 없어요".into())));
+            let mut line = json!({
+                "at": chrono::Local::now().to_rfc3339(),
+                "model": ai::model_name(app),
+                "prompt": prompt,
+                "id": item["id"],
+                "case": item["case"],
+                "run": run,
+                "count": count,
+            });
+            let mut stop = false;
+            match got {
+                Ok(list) => {
+                    let (shown, dropped) = sort_distractors(&list, &[correct.clone(), wrong.clone(), avoid.clone()].concat(), count);
+                    let sim = embedder.as_ref().filter(|_| !shown.is_empty()).and_then(|m| m.embed(&[correct.clone(), shown.clone()].concat()).ok()).map(|v| {
+                        let (c, s) = v.split_at(correct.len());
+                        s.iter().map(|s| c.iter().map(|c| c.iter().zip(s).map(|(a, b)| a * b).sum::<f32>()).fold(f32::MIN, f32::max)).map(|x| (x * 100.0).round() / 100.0).collect::<Vec<_>>()
+                    });
+                    let raw: Vec<&str> = list.iter().map(|o| o.as_str().unwrap_or("")).collect();
+                    line["raw"] = json!(raw);
+                    line["raw_listed"] = json!(raw.iter().filter(|t| listed(&distractor_text(t), &keys)).count());
+                    line["shown"] = json!(shown);
+                    line["listed"] = json!(shown.iter().filter(|t| listed(t, &keys)).count());
+                    line["contains"] = json!(shown.iter().filter(|t| contains_correct(t, &correct)).count());
+                    line["dropped"] = json!(dropped.iter().map(|(t, why)| json!({ "text": t, "why": why })).collect::<Vec<_>>());
+                    line["sim"] = json!(sim);
+                    if shown.is_empty() {
+                        line["error"] = json!("bad_output");
+                    }
+                    if let Some(f) = review.as_mut() {
+                        let head = format!("{}\t{run}\t{}\t{}", item["id"].as_str().unwrap_or(""), tsv(&question), tsv(&correct.join(" · ")));
+                        for (i, t) in shown.iter().enumerate() {
+                            let sim = sim.as_ref().and_then(|s| s.get(i)).map_or(String::new(), |x| x.to_string());
+                            let _ = writeln!(f, "{head}\t보임\t{}\t{}\t{sim}\t", tsv(t), u8::from(listed(t, &keys)));
+                        }
+                        for (t, why) in dropped.iter().filter(|d| d.1 != DROP_REASONS[3]) {
+                            let _ = writeln!(f, "{head}\t버림({why})\t{}\t{}\t\t", tsv(t), u8::from(listed(t, &keys)));
+                        }
+                    }
+                    avoid = shown;
+                }
+                Err(e) => {
+                    line["error"] = json!(e.kind());
+                    stop = fatal(&e);
+                }
+            }
+            if let Some(f) = file.as_mut() {
+                let _ = writeln!(f, "{line}");
+            }
+            lines.push(line);
+            if stop {
+                break 'items;
+            }
+        }
+    }
+    lines
+}
+
+/// 결과 줄 → 자동 지표 (distractors.md 6.4). 사람이 표시하는 지표(정답 섞임 · 엉뚱한 보기 · 잘못 버린 비율)는 review.tsv 에서 센다
+fn distractor_eval_summary(lines: &[serde_json::Value]) -> String {
+    let pct = |a: usize, b: usize| (a * 100).checked_div(b).map_or("없음".to_string(), |p| format!("{a}/{b} ({p}%)"));
+    let n = |l: &serde_json::Value, k: &str| l[k].as_u64().unwrap_or(0) as usize;
+    let len = |l: &serde_json::Value, k: &str| l[k].as_array().map_or(0, |a| a.len());
+    let got: Vec<&serde_json::Value> = lines.iter().filter(|l| l["error"].is_null()).collect();
+    let sum = |k: &str, f: &dyn Fn(&serde_json::Value, &str) -> usize| lines.iter().map(|l| f(l, k)).sum::<usize>();
+    let (shown, raw) = (sum("shown", &len), sum("raw", &len));
+    let short = got.iter().filter(|l| len(l, "shown") < n(l, "count")).count();
+    let bad = lines.iter().filter(|l| l["error"] == "bad_output").count();
+    let drops: Vec<String> = DROP_REASONS
+        .iter()
+        .map(|r| {
+            let c = lines.iter().flat_map(|l| l["dropped"].as_array().cloned().unwrap_or_default()).filter(|d| d["why"] == *r).count();
+            format!("{r} {c}")
+        })
+        .collect();
+    let sims = lines.iter().filter(|l| l["sim"].is_array()).count();
+    let model = lines.iter().find_map(|l| l["model"].as_str()).unwrap_or("모름");
+    let items = lines.iter().filter_map(|l| l["id"].as_str()).collect::<std::collections::BTreeSet<_>>().len();
+    format!(
+        "오답 보기 측정 · 모델 {model} · 항목 {items} · 호출 {}\n\
+         정답 섞임 (목록, 보인 제안 중): {}\n\
+         결과 없음 비율 (형식 오류): {}\n\
+         모자란 수 (요청보다 적게 보임): {}\n\
+         정답 글자 포함 (보인 제안 중): {}\n\
+         모델이 낸 정답 (검사 전): {}\n\
+         버린 까닭: {}\n\
+         유사도를 적은 호출: {sims}\n\
+         사람이 표시할 것: review.tsv 의 mark 칸 (보임: ok · 정답 · 엉뚱 / 버림: ok · 다른 보기)\n",
+        lines.len(),
+        pct(sum("listed", &n), shown),
+        pct(bad, lines.len()),
+        pct(short, got.len()),
+        pct(sum("contains", &n), shown),
+        pct(sum("raw_listed", &n), raw),
+        drops.join(" · "),
+    )
 }
 
 #[cfg(test)]
@@ -779,6 +989,101 @@ mod tests {
         assert!(bad(r#"{"cards":[]}"#), "options 가 없다");
         assert!(bad("오답은 ACK 예요"), "JSON 이 아니다");
         assert!(bad(r#"{"options":[1,2]}"#), "글자가 아니다");
+        // 다 버렸으면 까닭별 수 (DS-H-10)
+        let s = serde_json::json!({ "options": ["SYN-ACK", "syn", "", long] }).to_string();
+        assert!(matches!(parse_distractors(&s, &taken, 2), Err(AiError::BadOutput(m)) if m == "쓸 수 있는 오답 보기가 없어요 · 빈 글 1 · 너무 김 1 · 같은 글 2"));
+        // 넘침은 버린 것으로 따로 센다 (측정에서 사람이 표시하지 않는다)
+        let list: Vec<serde_json::Value> = serde_json::from_str(r#"["A","SYN","B","C"]"#).unwrap();
+        let (kept, dropped) = sort_distractors(&list, &taken, 2);
+        assert_eq!((kept, dropped), (strings(&["A", "B"]), vec![("SYN".to_string(), "같은 글"), ("C".to_string(), "넘침")]));
+    }
+
+    #[test]
+    fn numbering_is_stripped_only_before_a_space() {
+        // DS-H-06: 모델이 붙인 번호 · 글머리는 뒤에 띄어쓰기가 올 때만 뗀다
+        for t in ["1. ACK", "① ACK", "- ACK", "(2) ACK", "3)  ACK", "· ACK"] {
+            assert_eq!(distractor_text(t), "ACK", "{t}");
+        }
+        for t in ["1.5배", "-273℃", "①번", "2)", "ACK"] {
+            assert_eq!(distractor_text(t), t, "그대로: {t}");
+        }
+    }
+
+    #[test]
+    fn no_distractors_left_logs_reasons_without_text() {
+        // DS-H-13: ai-errors.log 한 줄에 호출 이름과 까닭별 수. 보기 · 질문 글자는 없다
+        let e = parse_distractors(r#"{"options":["비밀 정답","비밀 오답"]}"#, &strings(&["비밀 정답", "비밀오답"]), 2).unwrap_err();
+        let line = ai::failure_line("ai_distractors", &e).unwrap();
+        assert!(line.contains("ai_distractors bad_output") && line.contains("같은 글 2"), "{line}");
+        assert!(!line.contains("비밀"), "{line}");
+        let e = parse_distractors(r#"{"options":[]}"#, &[], 2).unwrap_err();
+        assert!(ai::failure_line("ai_distractors", &e).unwrap().contains("받은 보기 없음"));
+    }
+
+    #[test]
+    fn distractor_eval_set_is_well_formed() {
+        let set = include_str!("../tests/fixtures/distractors-dev.jsonl");
+        let mut ids = std::collections::HashSet::new();
+        let mut cases = std::collections::BTreeMap::<String, usize>::new();
+        for l in set.lines() {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            let id = v["id"].as_str().unwrap();
+            assert!(ids.insert(id.to_string()), "id 겹침 {id}");
+            *cases.entry(v["case"].as_str().unwrap().to_string()).or_default() += 1;
+            let q = v["question"].as_str().unwrap();
+            assert!(!q.trim().is_empty(), "{id}");
+            // 지시문의 예시 · 보기를 쓰지 않는다 (모델이 예시를 따라 하면 측정이 흐려진다)
+            for ex in ["이산화탄소", "포유류", "고래", "OSI", "TCP"] {
+                assert!(!q.contains(ex), "{id} 가 지시문의 예시 {ex} 를 쓴다");
+            }
+            let list = |k: &str| v[k].as_array().unwrap_or_else(|| panic!("{id} {k}")).iter().map(|s| option_key(s.as_str().unwrap())).collect::<Vec<_>>();
+            let (correct, wrong, also) = (list("correct"), list("wrong"), list("also_correct"));
+            assert!(!correct.is_empty() && correct.len() + wrong.len() < 6, "{id}");
+            for k in wrong.iter().chain(&also) {
+                assert!(!correct.contains(k), "{id}: {k} 는 정답과 같은 글");
+            }
+            assert!(wrong.iter().all(|k| !also.contains(k)), "{id}: 오답이 정답 목록에 있다");
+        }
+        assert_eq!(cases.len(), 8, "유형 8개");
+        assert!(cases.values().all(|n| *n == 3), "유형마다 3개: {cases:?}");
+    }
+
+    #[test]
+    fn distractor_eval_summary_counts_each_metric() {
+        let lines = [
+            // 보인 2 중 목록 일치 1 · 정답 글자 포함 1, 모델이 낸 3 중 정답 2, 같은 글 1 버림, 유사도 있음
+            serde_json::json!({ "id": "a", "run": "1", "count": 2, "raw": ["x", "y", "z"], "raw_listed": 2, "shown": ["x", "y"], "listed": 1, "contains": 1,
+                "dropped": [{ "text": "z", "why": "같은 글" }], "sim": [0.9, 0.5] }),
+            // 요청 3 에 1 만 보임 (모자람), 넘침 1
+            serde_json::json!({ "id": "a", "run": "again", "count": 3, "raw": ["p", "q"], "raw_listed": 0, "shown": ["p"], "listed": 0, "contains": 0,
+                "dropped": [{ "text": "q", "why": "넘침" }], "sim": null }),
+            serde_json::json!({ "id": "b", "run": "1", "count": 1, "raw": [""], "raw_listed": 0, "shown": [], "listed": 0, "contains": 0,
+                "dropped": [{ "text": "", "why": "빈 글" }], "sim": null, "error": "bad_output" }),
+            serde_json::json!({ "id": "b", "run": "again", "count": 1, "error": "offline" }),
+        ];
+        let s = distractor_eval_summary(&lines);
+        for want in [
+            "항목 2 · 호출 4",
+            "정답 섞임 (목록, 보인 제안 중): 1/3 (33%)",
+            "결과 없음 비율 (형식 오류): 1/4 (25%)",
+            "모자란 수 (요청보다 적게 보임): 1/2 (50%)",
+            "정답 글자 포함 (보인 제안 중): 1/3 (33%)",
+            "모델이 낸 정답 (검사 전): 2/6 (33%)",
+            "버린 까닭: 빈 글 1 · 너무 김 0 · 같은 글 1 · 넘침 1",
+            "유사도를 적은 호출: 1",
+        ] {
+            assert!(s.contains(want), "{want}\n{s}");
+        }
+        assert!(distractor_eval_summary(&[]).contains("정답 섞임 (목록, 보인 제안 중): 없음"));
+    }
+
+    #[test]
+    fn eval_helpers_compare_like_the_checks() {
+        let keys = strings(&["4계층", "transportlayer"]).iter().map(|t| option_key(t)).collect::<Vec<_>>();
+        assert!(listed("Transport Layer", &keys) && !listed("세션 계층", &keys));
+        assert!(contains_correct("SYN-ACK 재전송", &strings(&["SYN-ACK"])));
+        assert!(!contains_correct("13", &strings(&["3"])), "한 글자 정답은 보지 않는다");
+        assert!(!contains_correct("syn-ack", &strings(&["SYN-ACK"])), "같은 글은 포함이 아니다");
     }
 
     #[test]
