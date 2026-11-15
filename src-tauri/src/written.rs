@@ -53,6 +53,11 @@ pub(crate) fn fold(text: &str) -> (Vec<char>, Vec<(usize, usize)>) {
     (chars, pos)
 }
 
+/// 낱말 끝에 붙는 조사인가 (성격별로 묶기의 답 누설 검사: "지구와"는 "지구"를 드러내지만 "지구형"은 아니다)
+pub(crate) fn is_particle(s: &str) -> bool {
+    PARTICLES.contains(&s)
+}
+
 /// 조사를 뗀 말. 남는 글자가 2자 이상일 때만 뗀다 ("결과" 의 "과" 는 조사가 아니다)
 fn strip_particle(word: &str) -> Option<&str> {
     PARTICLES.iter().find_map(|p| word.strip_suffix(p).filter(|rest| rest.chars().count() >= 2))

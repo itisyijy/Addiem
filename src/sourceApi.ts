@@ -33,7 +33,7 @@ export type DraftAmount = "few" | "normal" | "many";
 /** R2 보내는 범위. 글자는 보내는 그대로 (질문 600자 · 답 1500자에서 자른다) */
 export type GradeScope = { question: string; mine: string; model: string; segments: Sent[] };
 /** R2 기준 하나의 판정. text 는 모범 답안에서 온 기준 글, quote 는 내 답에 실제로 있는 글, note 는 틀림 · 보류의 까닭, segments 는 구간 id */
-export type GradeCriterion = { text: string; verdict: "met" | "missing" | "wrong" | "unsure"; quote: string | null; note: string | null; segments: number[] };
+export type GradeCriterion = { text: string; verdict: "met" | "partial" | "missing" | "wrong" | "unsure"; quote: string | null; note: string | null; segments: number[] };
 /** R2 결과 (docs/engineering/ai-harness/grade.md). rating: 1 Again · 2 Hard · 3 Good, 기기 안에서 계산한다. 보류한 기준이 있으면 null. extracted: 기준을 ChatGPT 가 뽑았다 */
 export type Grade = { criteria: GradeCriterion[]; rating: 1 | 2 | 3 | null; extracted: boolean; sent: Sent[] };
 export const MAX_PICK = 10;

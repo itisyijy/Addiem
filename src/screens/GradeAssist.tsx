@@ -203,6 +203,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
     <div key={i} className="grade__miss">
       <p className="t-body-s">
         {c.verdict === "wrong" && <span className="t-label-s c-danger">틀림 · </span>}
+        {c.verdict === "partial" && <span className="t-label-s c-warn">일부 · </span>}
         {c.text}
       </p>
       {c.quote && <p className="t-caption c-tertiary">내 답: “{c.quote}”</p>}
@@ -271,7 +272,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
             <Icon name="x" size={14} />
             <span className="t-label-s">빠지거나 틀린 점</span>
           </span>
-          {of("missing", "wrong").length ? of("missing", "wrong").map(item) : <p className="t-body-s c-tertiary">없어요</p>}
+          {of("partial", "missing", "wrong").length ? of("partial", "missing", "wrong").map(item) : <p className="t-body-s c-tertiary">없어요</p>}
         </div>
       </div>
       {of("unsure").length > 0 && (

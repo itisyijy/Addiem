@@ -16,11 +16,11 @@ ChatGPT 를 쓰는 작업마다 Spec → Skill → Subagent → Workflow → Hoo
 
 | 순서 | 작업 | 명령 | 문서 | 상태 |
 |---|---|---|---|---|
-| 1 | 채점 보조 | `rag_grade` | [grade.md](grade.md) | 코드 반영함. 두 번 쟀다 (sol 낮음 · luna 높음). 부분 답 판정을 고칠 차례 (grade.md 6.8) |
-| 2 | AI로 확인 | `ai_check_card` | [check-card.md](check-card.md) | 코드 반영함. 첫 측정 · 화면 확인을 마쳤다. 근거 부족인데 고친 안 18% (check-card.md 6.7) |
-| 3 | 자료에서 카드 초안 | `rag_draft` | [draft.md](draft.md) | 코드 반영함. 첫 측정 · 화면 확인을 마쳤다. 장수는 정한 대로, 끼워 넣은 지시가 카드로 샘 (draft.md 6.7) |
+| 1 | 채점 보조 | `rag_grade` | [grade.md](grade.md) | 코드 반영함. 세 번 쟀다. "일부" 판정과 추천 규칙을 고쳐 부분 답 33/33 Hard, 정답을 깎는 것 5/36 이 남았다 (grade.md 6.8) |
+| 2 | AI로 확인 | `ai_check_card` | [check-card.md](check-card.md) | 코드 반영함. 두 번 쟀다. 지시문을 고쳐 근거 부족인데 고친 안 0/27 (check-card.md 6.7) |
+| 3 | 자료에서 카드 초안 | `rag_draft` | [draft.md](draft.md) | 코드 반영함. 두 번 쟀다. 지시문을 고쳐 끼워 넣은 지시가 카드로 새지 않음 (draft.md 6.7) |
 | 4 | 오답 보기 제안 | `ai_distractors` | [distractors.md](distractors.md) | 코드 반영함. 첫 측정을 마쳤다. 정답이 될 수 있는 보기 0/89 (distractors.md 6.7) |
-| 5 | 성격별로 묶기 | `ai_regroup` | [regroup.md](regroup.md) | 코드 반영함. 첫 측정을 마쳤다. 답 누설 검사가 좋은 질문을 잘못 비움 (regroup.md 6.8) |
+| 5 | 성격별로 묶기 | `ai_regroup` | [regroup.md](regroup.md) | 코드 반영함. 두 번 쟀다. 답 누설 검사를 낱말 단위로 고쳐 잘못 비움 0/92 (regroup.md 6.8) |
 
 로컬 모델의 개념 관계 확인(`concept_check`, `llm.rs`)은 다시 쓰지 않는다. 판정을 다섯 낱말로 제한하고, 전체 판정을 규칙으로 내고, 개발셋으로 재는 구조를 이미 갖춰 본보기로만 참조한다.
 
