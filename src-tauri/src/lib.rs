@@ -86,6 +86,7 @@ pub fn run() {
             ai::models_on_start(app.handle());
             ai::regroup_eval_on_start(app.handle()); // 성격별로 묶기 측정 (ADDIEM_REGROUP_EVAL, ai-harness/regroup.md 6.3)
             recall::eval_on_start(app.handle()); // Q8 오답 보기 측정 (ADDIEM_DISTRACTOR_EVAL, distractors.md 6.3)
+            rag::draft_eval_on_start(app.handle()); // R1 카드 초안 측정 (ADDIEM_DRAFT_EVAL, docs/engineering/ai-harness/draft.md 6.3)
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
