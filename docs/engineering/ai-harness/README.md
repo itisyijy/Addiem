@@ -19,7 +19,7 @@ ChatGPT 를 쓰는 작업마다 Spec → Skill → Subagent → Workflow → Hoo
 | 1 | 채점 보조 | `rag_grade` | [grade.md](grade.md) | 코드 반영함. 첫 측정을 마쳤고 부분 답 판정을 고칠 차례 (grade.md 6.8) |
 | 2 | AI로 확인 | `ai_check_card` | check-card.md | 시작 전 |
 | 3 | 자료에서 카드 초안 | `rag_draft` | draft.md | 시작 전 |
-| 4 | 오답 보기 제안 | `ai_distractors` | distractors.md | 시작 전 |
+| 4 | 오답 보기 제안 | `ai_distractors` | [distractors.md](distractors.md) | 1–6절 확정. 코드 반영 중 |
 | 5 | 성격별로 묶기 | `ai_regroup` | regroup.md | 시작 전 |
 
 로컬 모델의 개념 관계 확인(`concept_check`, `llm.rs`)은 다시 쓰지 않는다. 판정을 다섯 낱말로 제한하고, 전체 판정을 규칙으로 내고, 개발셋으로 재는 구조를 이미 갖춰 본보기로만 참조한다.

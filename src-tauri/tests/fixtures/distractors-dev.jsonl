@@ -1,0 +1,24 @@
+{"id":"n1","case":"notation","question":"DNA에서 아데닌(A)과 짝을 이루는 염기는?","correct":["티민"],"wrong":["구아닌"],"also_correct":["T","티민(T)","Thymine"]}
+{"id":"n2","case":"notation","question":"세포에서 ATP를 주로 만드는 세포 소기관은?","correct":["미토콘드리아"],"wrong":["리보솜"],"also_correct":["사립체","Mitochondria","mitochondrion"]}
+{"id":"n3","case":"notation","question":"웹 페이지를 주고받는 데 쓰는 응용 계층 프로토콜은?","correct":["HTTP"],"wrong":["FTP"],"also_correct":["HTTPS","HyperText Transfer Protocol","하이퍼텍스트 전송 프로토콜"]}
+{"id":"o1","case":"open","question":"다음 중 비활성 기체(18족 원소)는?","correct":["네온"],"wrong":["질소"],"also_correct":["헬륨","아르곤","크립톤","제논","크세논","라돈","오가네손","Ne","He","Ar","Kr","Xe","Rn","Og","Neon"]}
+{"id":"o2","case":"open","question":"다음 중 소수(prime number)는?","correct":["7"],"wrong":["9"],"also_correct":["2","3","5","11","13","17","19","23","29","31","37","41","43","47","53","59","61","67","71","73","79","83","89","97"]}
+{"id":"o3","case":"open","question":"다음 중 조선의 왕은?","correct":["세종"],"wrong":["왕건"],"also_correct":["세종대왕","태조","이성계","정종","태종","문종","단종","세조","예종","성종","연산군","중종","인종","명종","선조","광해군","인조","효종","현종","숙종","경종","영조","정조","순조","헌종","철종","고종"]}
+{"id":"m1","case":"multi","question":"다음 중 빛의 삼원색을 모두 고르면?","correct":["빨강","초록","파랑"],"wrong":["노랑"],"also_correct":["빨간색","적색","초록색","녹색","파란색","청색","Red","Green","Blue","R","G","B"]}
+{"id":"m2","case":"multi","question":"다음 중 대한민국의 광역시를 모두 고르면?","correct":["부산","대구"],"wrong":["수원"],"also_correct":["인천","광주","대전","울산","부산광역시","대구광역시","인천광역시","광주광역시","대전광역시","울산광역시"]}
+{"id":"m3","case":"multi","question":"다음 중 파이썬에서 변경할 수 없는(immutable) 내장 자료형을 모두 고르면?","correct":["tuple","str"],"wrong":["list"],"also_correct":["int","float","bool","complex","bytes","frozenset","range","NoneType","튜플","문자열","정수","실수"]}
+{"id":"u1","case":"number","question":"1기압에서 물이 끓는 온도는?","correct":["100℃"],"wrong":["90℃"],"also_correct":["100°C","100도","섭씨 100도","100","212℉","212°F","373K","373.15K"]}
+{"id":"u2","case":"number","question":"훈민정음이 반포된 해는?","correct":["1446년"],"wrong":["1443년"],"also_correct":["1446","세종 28년"]}
+{"id":"u3","case":"number","question":"정육면체의 모서리 수는?","correct":["12개"],"wrong":["8개"],"also_correct":["12","열두 개","12 개"]}
+{"id":"e1","case":"empty","question":"광합성이 일어나는 세포 소기관은?","correct":["엽록체"],"wrong":[],"also_correct":["Chloroplast","chloroplasts"]}
+{"id":"e2","case":"empty","question":"희곡 『햄릿』을 쓴 작가는?","correct":["셰익스피어"],"wrong":[],"also_correct":["윌리엄 셰익스피어","세익스피어","Shakespeare","William Shakespeare"]}
+{"id":"e3","case":"empty","question":"원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?","correct":["원자가 전자"],"wrong":[],"also_correct":["가전자","최외각 전자","valence electron"]}
+{"id":"f1","case":"full","question":"태양계에서 가장 큰 행성은?","correct":["목성"],"wrong":["토성","천왕성","해왕성"],"also_correct":["Jupiter","주피터"]}
+{"id":"f2","case":"full","question":"임진왜란이 일어난 해는?","correct":["1592년"],"wrong":["1597년","1627년","1636년"],"also_correct":["1592","선조 25년","임진년"]}
+{"id":"f3","case":"full","question":"SQL 의 SELECT 에서 중복 행을 없애는 키워드는?","correct":["DISTINCT"],"wrong":["ORDER BY","HAVING","LIMIT"],"also_correct":["SELECT DISTINCT","UNIQUE"]}
+{"id":"g1","case":"english","question":"Which planet is known as the Red Planet?","correct":["Mars"],"wrong":["Venus"],"also_correct":["the planet Mars","화성"]}
+{"id":"g2","case":"english","question":"Who wrote the novel Nineteen Eighty-Four?","correct":["George Orwell"],"wrong":["Aldous Huxley"],"also_correct":["Orwell","Eric Arthur Blair","Eric Blair","조지 오웰"]}
+{"id":"g3","case":"english","question":"What is the time complexity of binary search on a sorted array?","correct":["O(log n)"],"wrong":["O(n)"],"also_correct":["O(lg n)","O(log2 n)","Θ(log n)","logarithmic time"]}
+{"id":"c1","case":"case","question":"일산화탄소의 화학식은?","correct":["CO"],"wrong":["CO₂"],"also_correct":[]}
+{"id":"c2","case":"case","question":"질소의 원소 기호는?","correct":["N"],"wrong":["Ne"],"also_correct":[]}
+{"id":"c3","case":"case","question":"메가바이트를 나타내는 단위 기호는?","correct":["MB"],"wrong":["GB"],"also_correct":[]}
