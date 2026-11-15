@@ -85,6 +85,7 @@ pub fn run() {
             // 측정에 쓸 모델을 고를 때: 이 계정의 모델 목록을 파일로 (debug 빌드에서 ADDIEM_AI_MODELS 가 있을 때만)
             ai::models_on_start(app.handle());
             ai::regroup_eval_on_start(app.handle()); // 성격별로 묶기 측정 (ADDIEM_REGROUP_EVAL, ai-harness/regroup.md 6.3)
+            recall::eval_on_start(app.handle()); // Q8 오답 보기 측정 (ADDIEM_DISTRACTOR_EVAL, distractors.md 6.3)
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
