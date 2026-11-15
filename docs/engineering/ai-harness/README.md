@@ -16,7 +16,7 @@ ChatGPT 를 쓰는 작업마다 Spec → Skill → Subagent → Workflow → Hoo
 
 | 순서 | 작업 | 명령 | 문서 | 상태 |
 |---|---|---|---|---|
-| 1 | 채점 보조 | `rag_grade` | [grade.md](grade.md) | 코드 반영함. 세 번 쟀다. "일부" 판정과 추천 규칙을 고쳐 부분 답 33/33 Hard, 정답을 깎는 것 5/36 이 남았다 (grade.md 6.8) |
+| 1 | 채점 보조 | `rag_grade` | [grade.md](grade.md) | 코드 반영함. 세 번 쟀다. "일부" 판정과 추천 규칙을 고쳐 부분 답 33/33 Hard. Good 문턱을 75% 로 낮춰 정답을 깎는 것 2/36 (다시 셈한 값, grade.md 6.8) |
 | 2 | AI로 확인 | `ai_check_card` | [check-card.md](check-card.md) | 코드 반영함. 두 번 쟀다. 지시문을 고쳐 근거 부족인데 고친 안 0/27 (check-card.md 6.7) |
 | 3 | 자료에서 카드 초안 | `rag_draft` | [draft.md](draft.md) | 코드 반영함. 두 번 쟀다. 지시문을 고쳐 끼워 넣은 지시가 카드로 새지 않음 (draft.md 6.7) |
 | 4 | 오답 보기 제안 | `ai_distractors` | [distractors.md](distractors.md) | 코드 반영함. 첫 측정을 마쳤다. 정답이 될 수 있는 보기 0/89 (distractors.md 6.7) |

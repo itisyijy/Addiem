@@ -983,15 +983,19 @@ fn guard_met(criteria: &mut [Criterion], keywords: &[written::Keyword], mine: &s
     }
 }
 
-/// GR-H-15 추천. 보류가 있으면 없다. 아니면 맞음 비율로 핵심어 검사와 같은 규칙(written::suggest: 40% 미만 Again, 80% 미만 Hard, 그 이상 Good),
-/// 틀림이 하나라도 있으면 Good 대신 Hard. Easy 는 없다 (R16)
+/// Good 을 내는 맞음 비율 (%). 핵심어 검사(written::suggest)는 80% 지만 여기는 75% 다: 기준을 한 사실씩 잘게 뽑아
+/// 4개 중 하나만 빠져도 80% 아래로 떨어져 정답을 깎았다 (2026-11-15 측정, 사용자 결정 2026-11-16, DECISIONS R34)
+const GOOD_PCT: usize = 75;
+
+/// GR-H-15 추천. 보류가 있으면 없다. 맞음이 GOOD_PCT 이상이면 Good (틀림이 하나라도 있으면 Hard).
+/// 맞음도 일부도 없거나, 틀림이 있고 맞음이 40% 미만이면 Again. 그 밖에는 Hard. Easy 는 없다 (R16)
 fn rating_of(criteria: &[Criterion]) -> Option<u8> {
     let count = |v: &str| criteria.iter().filter(|c| c.verdict == v).count();
     if criteria.is_empty() || count("unsure") > 0 {
         return None;
     }
     let (pct, wrong) = (count("met") * 100 / criteria.len(), count("wrong") > 0);
-    Some(if pct >= 80 {
+    Some(if pct >= GOOD_PCT {
         if wrong { 2 } else { 3 }
     } else if count("met") + count("partial") == 0 || (wrong && pct < 40) {
         1
@@ -1586,6 +1590,9 @@ mod tests {
         assert_eq!(r(&["met", "met", "missing"]), Some(2), "66% Hard");
         assert_eq!(r(&["met", "met", "met"]), Some(3), "Good");
         assert_eq!(r(&["met", "met", "met", "met", "missing"]), Some(3), "80% Good");
+        assert_eq!(r(&["met", "met", "met", "missing"]), Some(3), "75% 부터 Good (넷 중 하나가 빠진 답)");
+        assert_eq!(r(&["met", "met", "met", "wrong"]), Some(2), "75% 여도 틀림이 있으면 Hard");
+        assert_eq!(r(&["met", "met", "partial"]), Some(2), "66% 는 Hard");
         assert_eq!(r(&["met", "met", "met", "met", "wrong"]), Some(2), "틀림이 있으면 Good 대신 Hard");
         assert_eq!(r(&["wrong"]), Some(1));
         assert_eq!(r(&["met", "met", "unsure"]), None, "보류가 있으면 추천하지 않는다");
