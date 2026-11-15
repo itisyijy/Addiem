@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { aiApi, aiError, type AiError } from "../api";
 import { AiConnect, AiErrorBox, ScopeLine, SendList, SLOW, STOPPED, UsingPlan, refreshAi, sentRows, useAiStatus, useSlow, type SendRow } from "../ai";
 import { useToast } from "../toast";
-import { placeOf, ragApi, type Grade, type GradeScope, type Sent } from "../sourceApi";
+import { placeOf, ragApi, type Grade, type GradeCriterion, type GradeScope, type Sent } from "../sourceApi";
 import { actionKey } from "../keys";
 import { n, useKey, useOverlayScope } from "../nav";
 import { Button, Icon, Spinner } from "../ui";
@@ -107,14 +107,15 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
     setPhase((p) => (p === "busy" || p === "confirm" ? "idle" : p));
   }, [phase]);
 
-  const send = () => {
+  /** reextract: [기준 다시 뽑기] (저장해 둔 기준을 쓰지 않고 새로 뽑아 채점한다) */
+  const send = (reextract = false) => {
     if (cardId === null) return;
     confirmed.current = true;
     const my = ++seq.current;
     setFail(null);
     setPhase("busy");
     inFlight.current = true;
-    ragApi.grade(cardId, typed, segs.map((s) => s.id)).then(
+    ragApi.grade(cardId, typed, segs.map((s) => s.id), reextract).then(
       (g) => {
         if (seq.current !== my) return; // 그 사이 평가했다: 결과는 버린다
         inFlight.current = false;
@@ -188,11 +189,36 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
             <UsingPlan />
             <span className="grade__actions">
               <Button variant="ghost" size="M" label="취소" onClick={() => setPhase("idle")} />
-              <Button size="M" icon="send" label="보내기" onClick={send} />
+              <Button size="M" icon="send" label="보내기" onClick={() => send()} />
             </span>
           </div>
         }
       />
+    </div>
+  );
+
+  /** 결과의 기준들 (판정별). 기준 글은 모범 답안에서 온 것이고, 내 답 인용 · 까닭 · 근거 구간 칩이 붙는다 */
+  const of = (...verdicts: GradeCriterion["verdict"][]) => (result?.criteria ?? []).filter((c) => verdicts.includes(c.verdict));
+  const item = (c: GradeCriterion, i: number) => (
+    <div key={i} className="grade__miss">
+      <p className="t-body-s">
+        {c.verdict === "wrong" && <span className="t-label-s c-danger">틀림 · </span>}
+        {c.verdict === "partial" && <span className="t-label-s c-warn">일부 · </span>}
+        {c.text}
+      </p>
+      {c.quote && <p className="t-caption c-tertiary">내 답: “{c.quote}”</p>}
+      {c.note && <p className="t-caption c-secondary">{c.note}</p>}
+      {c.segments.map((id) => {
+        const s = result?.sent.find((x) => x.id === id);
+        return (
+          s && (
+            <button key={id} type="button" className="src-chip t-label-s" onClick={() => openSegment(id)}>
+              <Icon name="file" size={12} />
+              {placeOf(s)}
+            </button>
+          )
+        );
+      })}
     </div>
   );
 
@@ -209,7 +235,7 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
       e={fail}
       copy={COPY(fail)}
       retryLabel="다시 받기"
-      onRetry={send}
+      onRetry={() => send()}
       onClose={() => setPhase("idle")}
       onReconnect={(reconsent) => setConnect({ start: "wait", reconsent })}
     />
@@ -239,35 +265,33 @@ export function useGrade({ cardId, typed, on, confirmed, openSegment }: {
             <Icon name="check" size={14} />
             <span className="t-label-s">맞은 점</span>
           </span>
-          {result.right.length ? result.right.map((t, i) => <p key={i} className="t-body-s">{t}</p>) : <p className="t-body-s c-tertiary">없어요</p>}
+          {of("met").length ? of("met").map(item) : <p className="t-body-s c-tertiary">없어요</p>}
         </div>
         <div className="grade__col">
           <span className="grade__col-head c-warn">
             <Icon name="x" size={14} />
-            <span className="t-label-s">빠진 점</span>
+            <span className="t-label-s">빠지거나 틀린 점</span>
           </span>
-          {result.missing.length ? (
-            result.missing.map((m, i) => (
-              <div key={i} className="grade__miss">
-                <p className="t-body-s">{m.text}</p>
-                {m.segments.map((id) => {
-                  const s = result.sent.find((x) => x.id === id);
-                  return (
-                    s && (
-                      <button key={id} type="button" className="src-chip t-label-s" onClick={() => openSegment(id)}>
-                        <Icon name="file" size={12} />
-                        {placeOf(s)}
-                      </button>
-                    )
-                  );
-                })}
-              </div>
-            ))
-          ) : (
-            <p className="t-body-s c-tertiary">없어요</p>
-          )}
+          {of("partial", "missing", "wrong").length ? of("partial", "missing", "wrong").map(item) : <p className="t-body-s c-tertiary">없어요</p>}
         </div>
       </div>
+      {of("unsure").length > 0 && (
+        <div className="grade__col">
+          <span className="grade__col-head c-secondary">
+            <Icon name="info" size={14} />
+            <span className="t-label-s">직접 확인이 필요해요 · ChatGPT 추천은 내지 않았어요</span>
+          </span>
+          {of("unsure").map(item)}
+        </div>
+      )}
+      {result.extracted && (
+        <span className="grade__foot t-caption c-tertiary">
+          ChatGPT가 모범 답안에서 뽑은 기준으로 봤어요
+          <button type="button" className="ai-link t-label-s" onClick={() => send(true)}>
+            기준 다시 뽑기
+          </button>
+        </span>
+      )}
     </section>
   ) : null;
 

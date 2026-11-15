@@ -225,7 +225,7 @@ fn is_circled(c: char) -> bool {
 }
 
 /// 띄어쓰기 · 문장 부호를 빼고 소문자로 (같은 말인지 견줄 때)
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 

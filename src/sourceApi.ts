@@ -32,8 +32,10 @@ export type Draft = { cards: DraftCard[]; sent: Sent[]; missing: number[]; deck_
 export type DraftAmount = "few" | "normal" | "many";
 /** R2 보내는 범위. 글자는 보내는 그대로 (질문 600자 · 답 1500자에서 자른다) */
 export type GradeScope = { question: string; mine: string; model: string; segments: Sent[] };
-/** R2 결과. rating: 1 Again · 2 Hard · 3 Good. missing.segments 는 구간 id (기기 안에서 되돌린 것) */
-export type Grade = { right: string[]; missing: { text: string; segments: number[] }[]; rating: 1 | 2 | 3; sent: Sent[] };
+/** R2 기준 하나의 판정. text 는 모범 답안에서 온 기준 글, quote 는 내 답에 실제로 있는 글, note 는 틀림 · 보류의 까닭, segments 는 구간 id */
+export type GradeCriterion = { text: string; verdict: "met" | "partial" | "missing" | "wrong" | "unsure"; quote: string | null; note: string | null; segments: number[] };
+/** R2 결과 (docs/engineering/ai-harness/grade.md). rating: 1 Again · 2 Hard · 3 Good, 기기 안에서 계산한다. 보류한 기준이 있으면 null. extracted: 기준을 ChatGPT 가 뽑았다 */
+export type Grade = { criteria: GradeCriterion[]; rating: 1 | 2 | 3 | null; extracted: boolean; sent: Sent[] };
 export const MAX_PICK = 10;
 
 export const ragApi = {
@@ -47,8 +49,8 @@ export const ragApi = {
   linked: (cardId: number) => invoke<Sent[]>("rag_linked", { cardId }),
   /** R2 버튼 아래 한 줄 · 첫 확인 목록. 아무것도 보내지 않는다 */
   gradeScope: (cardId: number, answer: string) => invoke<GradeScope>("rag_grade_scope", { cardId, answer }),
-  /** R2 채점 보조. 오류는 AiError */
-  grade: (cardId: number, answer: string, segmentIds: number[]) => invoke<Grade>("rag_grade", { cardId, answer, segmentIds }),
+  /** R2 채점 보조. reextract: 저장해 둔 기준을 쓰지 않고 다시 뽑아 덮어쓴다. 오류는 AiError */
+  grade: (cardId: number, answer: string, segmentIds: number[], reextract = false) => invoke<Grade>("rag_grade", { cardId, answer, segmentIds, reextract }),
 };
 
 /** 자료 안 위치. PPTX 는 "슬라이드 4", PDF 는 "4쪽" (범위 "4–6" 도 받는다) */

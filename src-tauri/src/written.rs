@@ -38,7 +38,7 @@ const PARTICLES: [&str; 27] = [
 const PARTICLE_GAP: usize = 3;
 
 /// 판정용 글자 (소문자, 띄어쓰기 · 기호 없음)와 글자마다 원문 위치 (UTF-16 [시작, 끝). 화면이 JS 문자열 위치로 밑줄을 긋는다)
-fn fold(text: &str) -> (Vec<char>, Vec<(usize, usize)>) {
+pub(crate) fn fold(text: &str) -> (Vec<char>, Vec<(usize, usize)>) {
     let (mut chars, mut pos, mut at) = (vec![], vec![], 0);
     for c in text.chars() {
         let w = c.len_utf16();
@@ -51,6 +51,11 @@ fn fold(text: &str) -> (Vec<char>, Vec<(usize, usize)>) {
         at += w;
     }
     (chars, pos)
+}
+
+/// 낱말 끝에 붙는 조사인가 (성격별로 묶기의 답 누설 검사: "지구와"는 "지구"를 드러내지만 "지구형"은 아니다)
+pub(crate) fn is_particle(s: &str) -> bool {
+    PARTICLES.contains(&s)
 }
 
 /// 조사를 뗀 말. 남는 글자가 2자 이상일 때만 뗀다 ("결과" 의 "과" 는 조사가 아니다)
@@ -96,7 +101,7 @@ fn match_at(hay: &[char], i: usize, form: &Form) -> Option<usize> {
 }
 
 /// 글에서 키워드가 나온 자리들 (원문 UTF-16 위치). 겹치는 자리는 한 번만
-fn locate(folded: &(Vec<char>, Vec<(usize, usize)>), k: &Keyword) -> Vec<(usize, usize)> {
+pub(crate) fn locate(folded: &(Vec<char>, Vec<(usize, usize)>), k: &Keyword) -> Vec<(usize, usize)> {
     let (hay, pos) = folded;
     let mut taken: Vec<(usize, usize)> = vec![]; // 판정용 글자 위치
     for f in forms(k) {
@@ -374,6 +379,11 @@ fn card_info(con: &Connection, card_id: i64) -> Res<CardInfo> {
 /// R2 채점 보조가 보내는 모범 답안 (J2 비교 화면 오른쪽 칸과 같은 글자)
 pub(crate) fn model_answer(con: &Connection, card_id: i64) -> Res<String> {
     Ok(card_info(con, card_id)?.answer)
+}
+
+/// R2 채점 보조의 핵심어 가드가 보는 필수 키워드 (grade.md GR-H-14)
+pub(crate) fn keywords_of(con: &Connection, card_id: i64) -> Res<Vec<Keyword>> {
+    Ok(card_info(con, card_id)?.setting.keywords)
 }
 
 // ------------------------------------------------------------------ 명령: 학습 화면 (J1 · J2)

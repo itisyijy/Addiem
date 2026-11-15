@@ -80,6 +80,14 @@ pub fn run() {
             sync::setup(app.handle());
             // G2 성격별로 묶기 · ChatGPT 요금제 (연결하지 않았으면 네트워크를 쓰지 않는다)
             app.manage(ai::AiState::new());
+            // R2 채점 보조 측정 (debug 빌드에서 ADDIEM_GRADE_EVAL 이 있을 때만, docs/engineering/ai-harness/grade.md 6.3)
+            rag::eval_on_start(app.handle());
+            // 측정에 쓸 모델을 고를 때: 이 계정의 모델 목록을 파일로 (debug 빌드에서 ADDIEM_AI_MODELS 가 있을 때만)
+            ai::models_on_start(app.handle());
+            ai::regroup_eval_on_start(app.handle()); // 성격별로 묶기 측정 (ADDIEM_REGROUP_EVAL, ai-harness/regroup.md 6.3)
+            recall::eval_on_start(app.handle()); // Q8 오답 보기 측정 (ADDIEM_DISTRACTOR_EVAL, distractors.md 6.3)
+            rag::draft_eval_on_start(app.handle()); // R1 카드 초안 측정 (ADDIEM_DRAFT_EVAL, docs/engineering/ai-harness/draft.md 6.3)
+            ai::check_eval_on_start(app.handle()); // 8.2 AI로 확인 측정 (ADDIEM_CHECK_EVAL, check-card.md 6.3)
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
@@ -179,7 +187,7 @@ pub fn run() {
             quality::split_suggest,
             quality::split_apply,
             quality::rewrite_suggest, quality::rewrite_apply, quality::rewrite_change, ai::ai_check_card,
-            ai::ai_status, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_cancel,
+            ai::ai_status, ai::ai_models, ai::ai_set_model, ai::ai_connect, ai::ai_connect_cancel, ai::ai_disconnect, ai::ai_open_usage, ai::ai_regroup, ai::ai_cancel,
             quality::undo_change,
             quality::recent_changes,
             plan::study_plan,

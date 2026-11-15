@@ -1,0 +1,91 @@
+id	run	question	correct	state	option	listed	sim	mark
+n1	1	DNA에서 아데닌(A)과 짝을 이루는 염기는?	티민	보임	시토신	0		
+n1	1	DNA에서 아데닌(A)과 짝을 이루는 염기는?	티민	보임	우라실	0		
+n1	again	DNA에서 아데닌(A)과 짝을 이루는 염기는?	티민	보임	하이포잔틴	0		
+n1	again	DNA에서 아데닌(A)과 짝을 이루는 염기는?	티민	보임	잔틴	0		
+n2	1	세포에서 ATP를 주로 만드는 세포 소기관은?	미토콘드리아	보임	골지체	0		
+n2	1	세포에서 ATP를 주로 만드는 세포 소기관은?	미토콘드리아	보임	리소좀	0		
+n2	again	세포에서 ATP를 주로 만드는 세포 소기관은?	미토콘드리아	보임	세포핵	0		
+n2	again	세포에서 ATP를 주로 만드는 세포 소기관은?	미토콘드리아	보임	소포체	0		
+n3	1	웹 페이지를 주고받는 데 쓰는 응용 계층 프로토콜은?	HTTP	보임	SMTP	0		
+n3	1	웹 페이지를 주고받는 데 쓰는 응용 계층 프로토콜은?	HTTP	보임	DNS	0		
+n3	again	웹 페이지를 주고받는 데 쓰는 응용 계층 프로토콜은?	HTTP	보임	Telnet	0		
+n3	again	웹 페이지를 주고받는 데 쓰는 응용 계층 프로토콜은?	HTTP	보임	POP3	0		
+o1	1	다음 중 비활성 기체(18족 원소)는?	네온	보임	산소	0		
+o1	1	다음 중 비활성 기체(18족 원소)는?	네온	보임	플루오린	0		
+o1	again	다음 중 비활성 기체(18족 원소)는?	네온	보임	나트륨	0		
+o1	again	다음 중 비활성 기체(18족 원소)는?	네온	보임	염소	0		
+o2	1	다음 중 소수(prime number)는?	7	보임	8	0		
+o2	1	다음 중 소수(prime number)는?	7	보임	10	0		
+o2	again	다음 중 소수(prime number)는?	7	보임	12	0		
+o2	again	다음 중 소수(prime number)는?	7	보임	15	0		
+o3	1	다음 중 조선의 왕은?	세종	보임	김유신	0		
+o3	1	다음 중 조선의 왕은?	세종	보임	장보고	0		
+o3	again	다음 중 조선의 왕은?	세종	보임	이순신	0		
+o3	again	다음 중 조선의 왕은?	세종	보임	신사임당	0		
+m1	1	다음 중 빛의 삼원색을 모두 고르면?	빨강 · 초록 · 파랑	보임	주황	0		
+m1	again	다음 중 빛의 삼원색을 모두 고르면?	빨강 · 초록 · 파랑	보임	보라	0		
+m2	1	다음 중 대한민국의 광역시를 모두 고르면?	부산 · 대구	보임	전주	0		
+m2	again	다음 중 대한민국의 광역시를 모두 고르면?	부산 · 대구	보임	청주	0		
+m3	1	다음 중 파이썬에서 변경할 수 없는(immutable) 내장 자료형을 모두 고르면?	tuple · str	보임	dict	0		
+m3	again	다음 중 파이썬에서 변경할 수 없는(immutable) 내장 자료형을 모두 고르면?	tuple · str	보임	set	0		
+u1	1	1기압에서 물이 끓는 온도는?	100℃	보임	80℃	0		
+u1	1	1기압에서 물이 끓는 온도는?	100℃	보임	120℃	0		
+u1	again	1기압에서 물이 끓는 온도는?	100℃	보임	110℃	0		
+u1	again	1기압에서 물이 끓는 온도는?	100℃	보임	95℃	0		
+u2	1	훈민정음이 반포된 해는?	1446년	보임	1444년	0		
+u2	1	훈민정음이 반포된 해는?	1446년	보임	1445년	0		
+u2	again	훈민정음이 반포된 해는?	1446년	보임	1447년	0		
+u2	again	훈민정음이 반포된 해는?	1446년	보임	1448년	0		
+u3	1	정육면체의 모서리 수는?	12개	보임	6개	0		
+u3	1	정육면체의 모서리 수는?	12개	보임	10개	0		
+u3	again	정육면체의 모서리 수는?	12개	보임	14개	0		
+u3	again	정육면체의 모서리 수는?	12개	보임	16개	0		
+e1	1	광합성이 일어나는 세포 소기관은?	엽록체	보임	미토콘드리아	0		
+e1	1	광합성이 일어나는 세포 소기관은?	엽록체	보임	세포핵	0		
+e1	1	광합성이 일어나는 세포 소기관은?	엽록체	보임	골지체	0		
+e1	again	광합성이 일어나는 세포 소기관은?	엽록체	보임	소포체	0		
+e1	again	광합성이 일어나는 세포 소기관은?	엽록체	보임	리보솜	0		
+e1	again	광합성이 일어나는 세포 소기관은?	엽록체	보임	리소좀	0		
+e2	1	희곡 『햄릿』을 쓴 작가는?	셰익스피어	보임	몰리에르	0		
+e2	1	희곡 『햄릿』을 쓴 작가는?	셰익스피어	보임	괴테	0		
+e2	1	희곡 『햄릿』을 쓴 작가는?	셰익스피어	보임	입센	0		
+e2	again	희곡 『햄릿』을 쓴 작가는?	셰익스피어	보임	크리스토퍼 말로	0		
+e2	again	희곡 『햄릿』을 쓴 작가는?	셰익스피어	보임	벤 존슨	0		
+e2	again	희곡 『햄릿』을 쓴 작가는?	셰익스피어	보임	장 라신	0		
+e3	1	원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?	원자가 전자	보임	내각 전자	0		
+e3	1	원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?	원자가 전자	보임	핵심 전자	0		
+e3	1	원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?	원자가 전자	보임	비활성 전자	0		
+e3	again	원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?	원자가 전자	보임	광전자	0		
+e3	again	원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?	원자가 전자	보임	열전자	0		
+e3	again	원자의 가장 바깥 전자 껍질에 있어 화학 결합에 참여하는 전자는?	원자가 전자	보임	오제 전자	0		
+f1	1	태양계에서 가장 큰 행성은?	목성	보임	화성	0		
+f1	again	태양계에서 가장 큰 행성은?	목성	보임	지구	0		
+f2	1	임진왜란이 일어난 해는?	1592년	보임	1593년	0		
+f2	again	임진왜란이 일어난 해는?	1592년	보임	1588년	0		
+f3	1	SQL 의 SELECT 에서 중복 행을 없애는 키워드는?	DISTINCT	보임	WHERE	0		
+f3	again	SQL 의 SELECT 에서 중복 행을 없애는 키워드는?	DISTINCT	보임	AS	0		
+g1	1	Which planet is known as the Red Planet?	Mars	보임	Jupiter	0		
+g1	1	Which planet is known as the Red Planet?	Mars	보임	Mercury	0		
+g1	again	Which planet is known as the Red Planet?	Mars	보임	Earth	0		
+g1	again	Which planet is known as the Red Planet?	Mars	보임	Saturn	0		
+g2	1	Who wrote the novel Nineteen Eighty-Four?	George Orwell	보임	Ray Bradbury	0		
+g2	1	Who wrote the novel Nineteen Eighty-Four?	George Orwell	보임	H. G. Wells	0		
+g2	again	Who wrote the novel Nineteen Eighty-Four?	George Orwell	보임	Arthur Koestler	0		
+g2	again	Who wrote the novel Nineteen Eighty-Four?	George Orwell	보임	Anthony Burgess	0		
+g3	1	What is the time complexity of binary search on a sorted array?	O(log n)	보임	O(1)	0		
+g3	1	What is the time complexity of binary search on a sorted array?	O(log n)	보임	O(n log n)	0		
+g3	again	What is the time complexity of binary search on a sorted array?	O(log n)	보임	O(n²)	0		
+g3	again	What is the time complexity of binary search on a sorted array?	O(log n)	보임	O(√n)	0		
+c1	1	일산화탄소의 화학식은?	CO	보임	NO	0		
+c1	1	일산화탄소의 화학식은?	CO	보임	CO₂₃	0		
+c1	again	일산화탄소의 화학식은?	CO	보임	C₂O	0		
+c1	again	일산화탄소의 화학식은?	CO	보임	C₃O₂	0		
+c2	1	질소의 원소 기호는?	N	보임	Ni	0		
+c2	1	질소의 원소 기호는?	N	보임	Na	0		
+c2	again	질소의 원소 기호는?	N	보임	P	0		
+c2	again	질소의 원소 기호는?	N	보임	O	0		
+c3	1	메가바이트를 나타내는 단위 기호는?	MB	보임	kB	0		
+c3	1	메가바이트를 나타내는 단위 기호는?	MB	보임	TB	0		
+c3	again	메가바이트를 나타내는 단위 기호는?	MB	보임	PB	0		
+c3	again	메가바이트를 나타내는 단위 기호는?	MB	버림(같은 글)	Mb	1		

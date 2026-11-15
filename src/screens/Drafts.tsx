@@ -262,7 +262,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
           <h1 className="t-title-l">카드 초안 {n(items.length)}장</h1>
           <p className="t-body-s c-secondary">{whereFrom(draft.sent)} · ChatGPT 제안 · 승인한 카드만 만들어요</p>
         </div>
-        {/* 기기 안 검사를 하지 않았으면 0 이 아니라 모르는 것이라 거르기 칸을 숨긴다 */}
+        {/* 유사도 검사를 하지 않았으면 비슷한 카드 수는 0 이 아니라 모르는 것이라 그 칸만 숨긴다. 숫자 · 빈칸 낱말 검사는 늘 한다 (draft.md DR-H-11) */}
         <Segment
           boxed
           label="초안 거르기"
@@ -270,12 +270,8 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
           onChange={setView}
           options={[
             { value: "all" as const, label: `모두 ${n(items.length)}` },
-            ...(draft.checked
-              ? [
-                  { value: "similar" as const, label: `비슷한 카드 있음 ${n(similar)}` },
-                  { value: "ungrounded" as const, label: `근거 미확인 ${n(ungrounded)}` },
-                ]
-              : []),
+            ...(draft.checked ? [{ value: "similar" as const, label: `비슷한 카드 있음 ${n(similar)}` }] : []),
+            { value: "ungrounded" as const, label: `근거 미확인 ${n(ungrounded)}` },
           ]}
         />
       </div>
@@ -285,7 +281,7 @@ export function Drafts(props: { deckId: number; materialId: number; draft: Draft
           초안이 안 나온 구간 {n(draft.missing.length)} · {draft.missing.map((id) => seg(id)).filter(Boolean).map((s) => pageOf(s!.kind, s!.page)).join(", ")} · 다시 만들거나 [기존 카드 연결]로 직접 연결해 주세요.
         </p>
       )}
-      {!draft.checked && <p className="t-caption c-secondary">분석 모델이 없어 비슷한 카드·근거 검사는 하지 않았어요. 중요도 화면에서 모델을 받을 수 있어요.</p>}
+      {!draft.checked && <p className="t-caption c-secondary">분석 모델이 없어 비슷한 카드·문장 근거 검사는 하지 않았어요. 숫자와 빈칸 낱말만 자료 구간과 맞춰 봤어요. 중요도 화면에서 모델을 받을 수 있어요.</p>}
 
       <div className="drafts__body">
         <div className="drafts__list">

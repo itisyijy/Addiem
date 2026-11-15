@@ -2,7 +2,7 @@
 // 이 파일: 상태 공유(useAiStatus) · 설정 칸(L1 · L1-c) · 연결 창(L2 · L2-w · L2-x · L3) · 나누기 창의 오류 상자(L4-e)
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { aiApi, errorText, type AiAuthEvent, type AiError, type AiStatus } from "./api";
+import { aiApi, errorText, type AiAuthEvent, type AiError, type AiModelOption, type AiModels, type AiStatus } from "./api";
 import { Badge, Button, Icon, Spinner, type BadgeTone, type IconName } from "./ui";
 import { useToast } from "./toast";
 import { n } from "./nav";
@@ -362,6 +362,8 @@ export function AiSection() {
             <Row label="보내지 않는 것" value="원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름" />
             <Row label="보낸 횟수" value={`이번 달 ${n(s.sent_month)}번${s.sent_at ? ` · 마지막 ${when(s.sent_at)}` : ""}`} />
           </div>
+          <ModelPick />
+
           <div className="ai-foot">
             <span className="t-caption c-tertiary">끊으면 진행 중인 요청도 멈추고 이후 AI 요청을 보내지 않아요. 이미 만든 카드는 남아요.</span>
             <Button variant="danger" size="M" icon="link-off" label="연결 끊기" busy={busy} onClick={() => setAsking(true)} />
@@ -406,6 +408,116 @@ export function AiSection() {
       )}
       {connecting && <AiConnect onDone={() => setConnecting(false)} />}
     </section>
+  );
+}
+
+/** 추론 수준의 이름. 모르는 수준은 서버 글자 그대로 */
+const EFFORT: Record<string, string> = { low: "낮음", medium: "중간", high: "높음", xhigh: "매우 높음", max: "최대", ultra: "울트라" };
+const effortName = (e: string) => EFFORT[e] ?? e;
+
+/** L13 설정 > AI 연결: 모델과 추론 수준 고르기. 다섯 AI 기능이 모두 이 설정으로 보낸다. 목록은 이 칸이 보일 때 한 번 받는다 (사용량에 들지 않는다) */
+function ModelPick() {
+  const toast = useToast();
+  const [list, setList] = useState<AiModels | null>(null);
+  const [fail, setFail] = useState<string | null>(null);
+  const [open, setOpen] = useState<"model" | "effort" | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    aiApi.models().then(
+      (m) => live && setList(m),
+      (e) => live && setFail(errorText(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  // 펼친 목록은 바깥을 누르거나 Esc 로 닫는다
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(null);
+    const key = (e: KeyboardEvent) => e.key === "Escape" && close();
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", key);
+    };
+  }, [open]);
+  if (fail) return <p className="ai-pick__note t-caption c-tertiary">모델 목록을 받지 못했어요 · {fail}</p>;
+  if (!list || list.models.length === 0) return null;
+  // 아직 보낸 적이 없으면 처음 보낼 때 목록의 앞 모델을 쓴다
+  const current = list.models.find((m) => m.slug === list.model) ?? list.models[0];
+  const choose = async (model: AiModelOption, effort: string | null) => {
+    setOpen(null);
+    // 모델을 바꾸면 고른 수준이 그 모델에 있을 때만 남긴다
+    const kept = effort !== null && model.levels.includes(effort) ? effort : null;
+    setBusy(true);
+    try {
+      await aiApi.setModel(model.slug, kept);
+      setList({ ...list, model: model.slug, effort: kept });
+      await refreshAi();
+    } catch (e) {
+      toast({ title: "모델을 바꾸지 못했어요", text: errorText(e), tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const toggle = (which: "model" | "effort") => (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+    setOpen((o) => (o === which ? null : which));
+  };
+  const base = `모델 기본값${current.default_level ? ` (${effortName(current.default_level)})` : ""}`;
+  return (
+    <div className="ai-rows">
+      <div className="ai-row">
+        <span className="prefs__text">
+          <span className="t-body-m">모델</span>
+          <span className="t-caption c-tertiary">카드 초안 · 채점 보조 · 나누기 · 오답 보기 · 질문·답 확인이 모두 이 모델을 써요</span>
+        </span>
+        <span className="menu">
+          <button className="prefs__select t-label-m" disabled={busy} aria-haspopup="menu" aria-expanded={open === "model"} onClick={toggle("model")}>
+            {current.name}
+            <Icon name="chevron-down" size={16} scaled className="c-secondary" />
+          </button>
+          {open === "model" && (
+            <div className="menu__list ai-pick" role="menu">
+              {list.models.map((m) => (
+                <button key={m.slug} role="menuitem" className="menu__item t-body-m ai-pick__item" onClick={() => choose(m, list.effort)}>
+                  <span className="prefs__text">
+                    <span>{m.name}</span>
+                    {m.description && <span className="t-caption c-tertiary">{m.description}</span>}
+                  </span>
+                  {m.slug === current.slug && <Icon name="check" size={14} className="c-accent" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
+      </div>
+      <div className="ai-row">
+        <span className="prefs__text">
+          <span className="t-body-m">추론 수준</span>
+          <span className="t-caption c-tertiary">높을수록 답이 느리고 요금제 사용량을 더 써요</span>
+        </span>
+        <span className="menu">
+          <button className="prefs__select t-label-m" disabled={busy} aria-haspopup="menu" aria-expanded={open === "effort"} onClick={toggle("effort")}>
+            {list.effort ? effortName(list.effort) : base}
+            <Icon name="chevron-down" size={16} scaled className="c-secondary" />
+          </button>
+          {open === "effort" && (
+            <div className="menu__list ai-pick" role="menu">
+              {[null, ...current.levels].map((e) => (
+                <button key={e ?? "default"} role="menuitem" className="menu__item t-body-m ai-pick__item" onClick={() => choose(current, e)}>
+                  {e ? effortName(e) : base}
+                  {e === list.effort && <Icon name="check" size={14} className="c-accent" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
+      </div>
+    </div>
   );
 }
 

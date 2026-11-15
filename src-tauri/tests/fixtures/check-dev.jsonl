@@ -1,0 +1,33 @@
+{"id":"e1","case":"empty","label":"mismatch","fix":"fixable","side":"answer","question":"DNS의 역할은?","answer":"","segments":["DNS는 도메인 이름을 IP 주소로 바꿔 주는 시스템이다."]}
+{"id":"e2","case":"empty","label":"mismatch","fix":"nofix","side":"answer","question":"광합성에서 빛 반응이 일어나는 곳은?","answer":"","segments":[]}
+{"id":"p1","case":"placeholder","label":"mismatch","fix":"fixable","side":"answer","question":"HTTP 상태 코드 404의 뜻은?","answer":"TODO","segments":["404 Not Found: 서버가 요청한 자원을 찾지 못했다."]}
+{"id":"p2","case":"placeholder","label":"mismatch","fix":"nofix","side":"answer","question":"기회비용이란?","answer":"?","segments":[]}
+{"id":"p3","case":"placeholder","label":"mismatch","fix":"nofix","side":"answer","question":"삼투 현상이란?","answer":"모름","segments":["확산은 분자가 농도가 높은 곳에서 낮은 곳으로 퍼지는 현상이다."]}
+{"id":"r1","case":"repeat","label":"mismatch","fix":"fixable","side":"answer","question":"캐시 메모리란?","answer":"캐시 메모리","segments":["캐시 메모리는 CPU와 주기억장치 사이에서 자주 쓰는 데이터를 잠시 저장하는 빠른 메모리다."]}
+{"id":"r2","case":"repeat","label":"mismatch","fix":"nofix","side":"answer","question":"엔트로피","answer":"엔트로피","segments":[]}
+{"id":"s1","case":"swapped","label":"mismatch","fix":"fixable","side":"both","question":"광합성","answer":"빛 에너지로 포도당을 만드는 과정은?","segments":[]}
+{"id":"s2","case":"swapped","label":"mismatch","fix":"fixable","side":"both","question":"미토콘드리아","answer":"세포에서 에너지를 만드는 소기관은?","segments":["미토콘드리아는 세포 호흡으로 ATP를 만드는 소기관이다."]}
+{"id":"s3","case":"swapped","label":"ok","fix":null,"side":null,"question":"영어로 옮기기: 이거 얼마예요","answer":"How much is this?","segments":[]}
+{"id":"s4","case":"swapped","label":"ok","fix":null,"side":null,"question":"프랑스어로 옮기기: 어디 가세요","answer":"Où allez-vous ?","segments":[]}
+{"id":"c1","case":"count","label":"mismatch","fix":"fixable","side":"answer","question":"OSI 하위 계층 세 가지를 쓰시오.","answer":"① 물리\n② 데이터 링크","segments":["OSI 7계층의 아래 세 계층은 물리 계층, 데이터 링크 계층, 네트워크 계층이다."]}
+{"id":"c2","case":"count","label":"mismatch","fix":"nofix","side":"answer","question":"데이터 분석 4단계는?","answer":"1. 수집\n2. 정제\n3. 분석","segments":[]}
+{"id":"c3","case":"count","label":"mismatch","fix":"fixable","side":"answer","question":"정보 보안의 세 가지 요소는?","answer":"기밀성","segments":["정보 보안의 3요소는 기밀성, 무결성, 가용성이다."]}
+{"id":"c4","case":"count","label":"ok","fix":null,"side":null,"question":"빛의 삼원색 세 가지를 영어 첫 글자로 이으면?","answer":"RGB","segments":[]}
+{"id":"c5","case":"count","label":"ok","fix":null,"side":null,"question":"정보 보안의 세 가지 요소를 영어 약자로 쓰면?","answer":"CIA","segments":[]}
+{"id":"c6","case":"count","label":"mismatch","fix":"nofix","side":"answer","question":"뉴턴 운동 법칙 세 가지는?","answer":"1. 관성의 법칙\n2. 가속도의 법칙","segments":["케플러 법칙은 행성의 운동을 설명하는 세 가지 법칙이다."]}
+{"id":"f1","case":"form","label":"mismatch","fix":"fixable","side":"answer","question":"TCP와 UDP의 차이를 설명하시오.","answer":"80","segments":["TCP는 연결 지향이고 신뢰성을 보장한다. UDP는 비연결형이고 빠르지만 신뢰성을 보장하지 않는다."]}
+{"id":"f2","case":"form","label":"mismatch","fix":"nofix","side":"answer","question":"하늘이 파란 이유는?","answer":"산란","segments":[]}
+{"id":"f3","case":"form","label":"ok","fix":null,"side":null,"question":"물이 끓을 때 액체가 기체로 바뀌는 과정의 이름은?","answer":"기화","segments":[]}
+{"id":"f4","case":"form","label":"ok","fix":null,"side":null,"question":"생물이 환경에 맞게 변해 온 과정을 설명한 다윈의 이론은?","answer":"자연선택설","segments":[]}
+{"id":"f5","case":"form","label":"mismatch","fix":"fixable","side":"answer","question":"정규화 과정을 설명하시오.","answer":"분해","segments":["정규화는 중복을 줄이려고 하나의 릴레이션을 여러 릴레이션으로 분해하는 과정이다."]}
+{"id":"f6","case":"form","label":"ok","fix":null,"side":null,"question":"두 집단의 평균 차이를 검정하는 방법은?","answer":"t-검정","segments":[]}
+{"id":"f7","case":"form","label":"mismatch","fix":"fixable","side":"answer","question":"왜 겨울에는 낮이 짧은가?","answer":"자전축","segments":["지구의 자전축이 23.5도 기울어져 있어 겨울에는 태양의 남중 고도가 낮고 낮의 길이가 짧다."]}
+{"id":"f8","case":"form","label":"mismatch","fix":"fixable","side":"question","question":"TCP와 UDP의 차이는?","answer":"전송계층","segments":[]}
+{"id":"q1","case":"form","label":"mismatch","fix":"fixable","side":"question","question":"광합성의 장단점은?","answer":"엽록체","segments":["광합성은 식물 세포의 엽록체에서 일어난다."]}
+{"id":"n1","case":"number","label":"mismatch","fix":"fixable","side":"answer","question":"OSI 모형은 몇 계층인가?","answer":"물리 계층부터 응용 계층까지","segments":["OSI 참조 모형은 7개 계층으로 이루어진다."]}
+{"id":"n2","case":"number","label":"mismatch","fix":"nofix","side":"answer","question":"조선의 건국 연도는?","answer":"고려 말기","segments":[]}
+{"id":"n3","case":"number","label":"ok","fix":null,"side":null,"question":"미토콘드리아는 몇 겹의 막으로 싸여 있나?","answer":"이중막","segments":[]}
+{"id":"n4","case":"number","label":"mismatch","fix":"fixable","side":"answer","question":"How many bits are in a byte?","answer":"a group of bits","segments":["A byte is a unit of digital information that consists of 8 bits."]}
+{"id":"n5","case":"number","label":"ok","fix":null,"side":null,"question":"How many sides does a hexagon have? (Roman numeral)","answer":"VI","segments":[]}
+{"id":"n6","case":"number","label":"mismatch","fix":"nofix","side":"answer","question":"인간의 염색체는 몇 쌍인가?","answer":"상염색체와 성염색체","segments":["DNA는 이중 나선 구조이다."]}
+{"id":"n7","case":"number","label":"mismatch","fix":"fixable","side":"answer","question":"임진왜란이 일어난 연도는?","answer":"선조 때","segments":["임진왜란은 1592년 선조 25년에 일본이 조선을 침략하며 시작되었다."]}
