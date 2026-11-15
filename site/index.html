@@ -133,10 +133,12 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
 
 /* 처리방침 · 약관 (Web/Doc Section) */
 .doc-layout { display: grid; grid-template-columns: 240px minmax(0, var(--width-doc)); gap: 64px; padding-block: 64px 96px; }
-.toc { position: sticky; top: 104px; align-self: start; display: grid; gap: 8px; padding-top: 8px; }
-.toc p { margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--text-3); }
-.toc a { font-size: 13px; line-height: 20px; color: var(--text-2); text-decoration: none; }
+.toc { position: sticky; top: 104px; align-self: start; display: grid; padding-top: 8px; }
+.toc p { margin: 0 0 8px; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--text-3); }
+/* 왼쪽 세로줄이 목차 전체에 이어지고, 지금 읽는 절(aria-current, 스크립트의 spy)만 강조색 줄과 글자 */
+.toc a { padding: 4px 0 4px 12px; border-left: 2px solid var(--border); font-size: 13px; line-height: 20px; color: var(--text-2); text-decoration: none; transition: color .15s, border-color .15s; }
 .toc a:hover { color: var(--text-1); text-decoration: underline; }
+.toc a[aria-current="location"] { border-left-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 .doc { display: grid; gap: 48px; }
 .doc header { display: grid; gap: 12px; }
 .doc section { display: grid; gap: 12px; }
@@ -1174,7 +1176,27 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
       if (a.dataset.route === r) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     document.querySelectorAll(".lang button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.lang === l)); });
+    spy();
   }
+  // 목차: 지금 읽는 절을 표시한다 (노션처럼). 머리가 메뉴 바로 아래 선(120px, scroll-margin-top 112px 와 맞춤)을 지난 마지막 절.
+  // 맨 아래까지 내리면 마지막 절 (짧은 끝 절은 머리가 선까지 올라오지 못한다)
+  function spy() {
+    var toc = document.querySelector('[data-view="' + d.dataset.route + '"] [lang="' + d.dataset.lang + '"] .toc');
+    if (!toc) return;
+    var links = toc.querySelectorAll("a"), cur = null;
+    var end = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+    links.forEach(function (a) {
+      var t = document.getElementById(a.hash.slice(1));
+      if (t && (end || t.getBoundingClientRect().top <= 120)) cur = a;
+    });
+    links.forEach(function (a) { if (a === cur) a.setAttribute("aria-current", "location"); else a.removeAttribute("aria-current"); });
+  }
+  var spyQueued = false;
+  window.addEventListener("scroll", function () {
+    if (spyQueued) return;
+    spyQueued = true;
+    requestAnimationFrame(function () { spyQueued = false; spy(); });
+  }, { passive: true });
   function scrollToHash() {
     var t = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
     if (t) t.scrollIntoView(); else window.scrollTo(0, 0);
