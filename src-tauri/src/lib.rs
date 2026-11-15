@@ -82,6 +82,7 @@ pub fn run() {
             app.manage(ai::AiState::new());
             // R2 채점 보조 측정 (debug 빌드에서 ADDIEM_GRADE_EVAL 이 있을 때만, docs/engineering/ai-harness/grade.md 6.3)
             rag::eval_on_start(app.handle());
+            rag::draft_eval_on_start(app.handle()); // R1 카드 초안 측정 (ADDIEM_DRAFT_EVAL, docs/engineering/ai-harness/draft.md 6.3)
             Ok(())
         })
         // K8 창을 닫을 때 남은 변경을 최대 10초 올리고 닫는다
