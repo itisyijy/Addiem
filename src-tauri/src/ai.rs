@@ -461,11 +461,23 @@ const INSTRUCTIONS: &str = "암기 카드 한 장을 더 작은 카드로 나누
 성격(종류)이 같은 항목끼리 2~8장의 카드로 묶으세요.
 - 모든 항목 번호를 정확히 한 번씩, 어느 한 카드에 넣으세요. 항목 글자는 고치지 말고 번호만 쓰세요.
 - 카드마다 front 에 그 묶음만 묻는 짧은 질문을 쓰세요. 원래 질문의 주제와 묶음의 성격이 드러나게, 원래 질문과 같은 언어로.
-- 답은 {\"cards\": [{\"front\": 질문, \"items\": [번호, …]}]} 모양의 JSON 하나만.";
+- front 에 그 카드의 답 항목을 쓰지 마세요. 질문만 읽고 답이 보이면 안 돼요. 카드마다 front 가 달라야 해요.
+- 답은 {\"cards\": [{\"front\": 질문, \"items\": [번호, …]}]} 모양의 JSON 하나만.
 
-/// R3: 카드에 연결된 자료 구간을 함께 보낼 때 덧붙인다
+예시
+질문: 컴퓨터의 주요 장치를 쓰시오.
+답 항목:
+1. CPU
+2. 키보드
+3. 모니터
+4. 마우스
+5. SSD
+6. 프린터
+→ {\"cards\": [{\"front\": \"컴퓨터의 주요 장치 중 처리하거나 저장하는 장치는?\", \"items\": [1, 5]}, {\"front\": \"컴퓨터의 주요 장치 중 입력 장치는?\", \"items\": [2, 4]}, {\"front\": \"컴퓨터의 주요 장치 중 출력 장치는?\", \"items\": [3, 6]}]}";
+
+/// R3: 카드에 연결된 자료 구간을 함께 보낼 때 덧붙인다. 답은 번호라 구간 내용이 들어갈 수 없고, 막을 것은 질문이다 (R18)
 const EVIDENCE: &str = "- 번호 붙은 자료 구간도 보내요. 묶음과 질문을 정할 때 참고하고, 카드마다 참고한 구간 번호를 \"segments\": [번호, …] 에 쓰세요 (없으면 빈 배열). \
-구간 내용을 답에 더하지는 마세요.";
+front 에는 구간에만 있는 내용을 더하지 마세요.";
 
 /// 답의 항목 (규칙 분할과 같은 기준: 항목 표시가 있으면 그것, 없으면 줄). 앞 표시(①, 1.)는 뗀다
 fn regroup_items(answer: &[String]) -> Vec<String> {
@@ -481,6 +493,23 @@ fn regroup_input(question: &str, items: &[String]) -> String {
         s.push_str(&format!("{}. {it}\n", i + 1));
     }
     s
+}
+
+/// (지시문, 입력). RG-H-01 항목 3개 이상 · RG-H-02 60항목 · 6,000자 이하가 아니면 보내지 않는다.
+/// 구간이 있으면 입력 끝에 번호 붙은 구간을, 지시문 끝에 EVIDENCE 를 붙인다
+fn regroup_request(question: &str, items: &[String], sent: &[rag::Sent]) -> Result<(String, String), AiError> {
+    if items.len() < MIN_ITEMS {
+        return Err(AiError::Other("답 항목이 3개 이상일 때 나눌 수 있어요.".into()));
+    }
+    let mut input = regroup_input(question, items);
+    if items.len() > MAX_ITEMS || input.chars().count() > MAX_INPUT_CHARS {
+        return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 규칙으로 나눠 주세요.".into()));
+    }
+    if sent.is_empty() {
+        return Ok((INSTRUCTIONS.to_string(), input));
+    }
+    input.push_str(&format!("자료 구간:\n{}", rag::segments_input(sent)));
+    Ok((format!("{INSTRUCTIONS}\n{EVIDENCE}"), input))
 }
 
 /// 요청 본문. schema 가 있으면 text.format(json_schema, strict)으로 (받지 않으면 complete 가 형식 없이 다시 보낸다)
@@ -521,37 +550,63 @@ pub(crate) fn parse_json(text: &str) -> Result<J, AiError> {
     serde_json::from_str(t).map_err(|_| AiError::BadOutput("JSON 이 아니에요".into()))
 }
 
-/// 모델 출력 → 카드. 2–8장, 질문이 비지 않고, 모든 항목이 정확히 한 번씩. 답은 원래 항목 글자 그대로다.
-/// 하나라도 어긋나면 BadOutput (화면은 규칙 나누기를 보인다)
-fn parse_regroup(text: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError> {
+/// 묶음 하나: 모델이 쓴 질문, 원래 순서의 항목 번호(0부터), 질문을 비운 까닭 (RG-H-10 "leak" · RG-H-11 "same")
+#[derive(Debug, PartialEq)]
+struct Group {
+    front: String,
+    items: Vec<usize>,
+    cleared: Option<&'static str>,
+}
+
+/// 모델 출력 → 묶음 (regroup.md 5.2 · 5.3). 2–8장, 질문 1–200자, 모든 항목이 정확히 한 번씩: 하나라도 어긋나면 BadOutput
+/// (화면은 규칙 나누기를 보인다). 지나면 카드 안 항목을 원래 순서로 놓고, 답이 보이거나 앞 카드와 같은 질문은 비울 것으로 적는다
+fn parse_regroup(text: &str, question: &str, items: &[String]) -> Result<Vec<Group>, AiError> {
     let bad = |m: &str| AiError::BadOutput(m.to_string());
     let v = parse_json(text)?;
     let cards = v["cards"].as_array().ok_or_else(|| bad("cards 가 없어요"))?;
     if !(MIN_CARDS..=MAX_CARDS).contains(&cards.len()) {
         return Err(bad("카드 수가 2–8장이 아니에요"));
     }
+    let asked = quality::squash(question);
     let mut used = vec![false; items.len()];
-    let mut parts = vec![];
+    let mut groups: Vec<Group> = vec![];
     for c in cards {
         let front = c["front"].as_str().unwrap_or("").trim();
         if front.is_empty() || front.chars().count() > MAX_FRONT_CHARS {
             return Err(bad("질문이 비었거나 너무 길어요"));
         }
         let idx = c["items"].as_array().filter(|a| !a.is_empty()).ok_or_else(|| bad("답이 빈 카드가 있어요"))?;
-        let mut back = vec![];
+        let mut mine = vec![];
         for i in idx {
             let i = i.as_u64().filter(|&i| i >= 1 && i as usize <= items.len()).ok_or_else(|| bad("없는 항목 번호예요"))? as usize - 1;
             if std::mem::replace(&mut used[i], true) {
                 return Err(bad("같은 항목이 두 번 들어갔어요"));
             }
-            back.push(items[i].clone());
+            mine.push(i);
         }
-        parts.push(SplitPart { front: front.to_string(), back: back.join("\n") });
+        mine.sort_unstable();
+        let f = quality::squash(front);
+        // 2자 미만은 우연히 겹치기 쉽고, 원래 질문에 이미 있는 항목은 새로 드러내는 것이 아니다
+        let leak = mine.iter().map(|&i| quality::squash(&items[i])).any(|it| it.chars().count() >= 2 && !asked.contains(&it) && f.contains(&it));
+        let same = groups.iter().any(|g| g.cleared.is_none() && quality::squash(&g.front) == f);
+        let cleared = if leak { Some("leak") } else if same { Some("same") } else { None };
+        groups.push(Group { front: front.to_string(), items: mine, cleared });
     }
     if used.contains(&false) {
         return Err(bad("빠진 항목이 있어요"));
     }
-    Ok(parts)
+    Ok(groups)
+}
+
+/// 묶음 → 제안 카드. 답은 원래 항목 글자를 원래 순서로, 비울 질문은 빈 글 (화면이 "질문을 써 주세요"로 그리고 나누는 수에서 뺀다)
+fn parts_of(groups: &[Group], items: &[String]) -> Vec<SplitPart> {
+    groups
+        .iter()
+        .map(|g| SplitPart {
+            front: if g.cleared.is_some() { String::new() } else { g.front.clone() },
+            back: g.items.iter().map(|&i| items[i].as_str()).collect::<Vec<_>>().join("\n"),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- 개발용 가짜 응답
@@ -1023,33 +1078,170 @@ pub async fn ai_regroup(app: AppHandle, card_id: i64, segment_ids: Vec<i64>) -> 
 }
 
 fn regroup_blocking(app: &AppHandle, card_id: i64, segment_ids: &[i64]) -> Result<SplitProposal, AiError> {
-    let (rule, sent) = with_db(app, |c| {
-        let rule = quality::suggest(c, card_id, None)?;
-        let picks: Vec<(i64, &str)> = rag::linked_segments(c, card_id)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
-        Ok((rule, rag::sent_of(c, &picks)?))
-    })?;
+    let (rule, items, sent) = with_db(app, |c| regroup_prepare(c, card_id, segment_ids))?;
+    let (groups, evidence) = regroup(app, &rule.question, &items, &sent)?;
+    let cleared = groups.iter().filter(|g| g.cleared.is_some()).count();
+    let why = regroup_why(&quality::reason_of(&rule.flags), sent.len(), groups.len(), cleared);
+    Ok(SplitProposal { why, parts: parts_of(&groups, &items), kind: "nature", evidence, sent, ..rule })
+}
+
+/// 이 카드의 규칙 제안 · 보낼 항목 · 보낼 구간 (RG-H-03: 이 카드에 연결된 구간 가운데 남긴 것만). DB 는 읽기만 한다
+fn regroup_prepare(con: &Connection, card_id: i64, segment_ids: &[i64]) -> Result<(SplitProposal, Vec<String>, Vec<rag::Sent>), AiError> {
+    let rule = quality::suggest(con, card_id, None)?;
+    let picks: Vec<(i64, &str)> = rag::linked_segments(con, card_id)?.into_iter().filter(|l| segment_ids.contains(&l.0)).collect();
+    let sent = rag::sent_of(con, &picks)?;
     let items = regroup_items(&rule.answer);
-    if items.len() < MIN_ITEMS {
-        return Err(AiError::Other("답 항목이 3개 이상일 때 나눌 수 있어요.".into()));
-    }
-    let mut input = regroup_input(&rule.question, &items);
-    if items.len() > MAX_ITEMS || input.chars().count() > MAX_INPUT_CHARS {
-        return Err(AiError::Other("카드가 너무 길어 보내지 않았어요. 규칙으로 나눠 주세요.".into()));
-    }
-    let instructions = if sent.is_empty() {
-        INSTRUCTIONS.to_string()
-    } else {
-        input.push_str(&format!("자료 구간:\n{}", rag::segments_input(&sent)));
-        format!("{INSTRUCTIONS}\n{EVIDENCE}")
-    };
+    Ok((rule, items, sent))
+}
+
+/// 묶기 한 번 (앱과 평가가 같이 쓴다): 보내기 전 검사 → 보내기 → 검사 · 고침. 형식 오류는 ai-errors.log 에 (RG-H-13)
+fn regroup(app: &AppHandle, question: &str, items: &[String], sent: &[rag::Sent]) -> Result<(Vec<Group>, Vec<rag::Sent>), AiError> {
+    let (instructions, input) = regroup_request(question, items, sent)?;
     let schema = regroup_schema(!sent.is_empty());
     let text = generate(app, &|m, f| request_body(m, &instructions, &input, f.then_some(("regroup", &schema))), || fake_regroup(items.len(), sent.len()))?;
-    let parts = parse_regroup(&text, &items)?;
-    let evidence = parse_cited(&text, &sent)?;
-    // L4 "왜?": 걸린 규칙 + ChatGPT 가 묶은 장수 (R3: 함께 보낸 구간 수)
-    let seen = if sent.is_empty() { String::new() } else { format!("연결된 자료 {}구간을 보고 ", sent.len()) };
-    let why = format!("{}. ChatGPT가 {seen}비슷한 내용끼리 {}장으로 나눴어요.", quality::reason_of(&rule.flags), parts.len());
-    Ok(SplitProposal { why, parts, kind: "nature", evidence, sent, ..rule })
+    parse_regroup(&text, question, items)
+        .and_then(|groups| Ok((groups, parse_cited(&text, sent)?)))
+        .inspect_err(|e| log_failure(app, "ai_regroup", e))
+}
+
+/// L4 "왜?" 한 줄: 걸린 규칙 + ChatGPT 가 묶은 장수 (R3: 함께 보낸 구간 수, RG-H-12: 비운 질문 수)
+fn regroup_why(rule: &str, sent: usize, parts: usize, cleared: usize) -> String {
+    let seen = if sent == 0 { String::new() } else { format!("연결된 자료 {sent}구간을 보고 ") };
+    let cleared = if cleared == 0 { String::new() } else { format!(" 답이 드러나거나 겹치는 질문 {cleared}개는 비웠어요.") };
+    format!("{rule}. ChatGPT가 {seen}비슷한 내용끼리 {parts}장으로 나눴어요.{cleared}")
+}
+
+/// debug 빌드에서 `ADDIEM_REGROUP_EVAL=<결과 파일>` 이면 앱이 뜬 뒤 평가셋을 로그인한 계정으로 돌린다 (`ADDIEM_AI_FAKE` 면 가짜 응답으로).
+/// `ADDIEM_REGROUP_EVAL_SET=<jsonl>` (없으면 tests/fixtures/regroup-dev.jsonl), `ADDIEM_REGROUP_EVAL_LIMIT=n` (앞 n장).
+/// 결과는 호출 한 번에 한 줄(JSON)이고, 끝나면 지표를 stderr 와 `<결과 파일>.summary.txt` 에 쓴다 (regroup.md 6.3)
+pub fn regroup_eval_on_start(app: &AppHandle) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Some(out) = std::env::var_os("ADDIEM_REGROUP_EVAL").filter(|v| !v.is_empty()) else { return };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let out = std::path::PathBuf::from(out);
+        let summary = regroup_eval_summary(&regroup_eval_run(&app, &out));
+        eprintln!("{summary}");
+        let _ = std::fs::write(out.with_extension("summary.txt"), summary);
+    });
+}
+
+/// 카드마다 앱과 같은 길(regroup)로 3번. 구간은 보내지 않고 DB 에 쓰지 않는다. 한도 · 오프라인 · 로그인 문제면 거기서 멈춘다
+fn regroup_eval_run(app: &AppHandle, out: &std::path::Path) -> Vec<J> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let set = std::env::var("ADDIEM_REGROUP_EVAL_SET").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/regroup-dev.jsonl").into());
+    let limit = std::env::var("ADDIEM_REGROUP_EVAL_LIMIT").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(usize::MAX);
+    let cards: Vec<J> = std::fs::read_to_string(&set).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).take(limit).collect();
+    let mut file = std::fs::File::create(out).ok();
+    // 지시문이 바뀌면 달라지는 표시 (어느 지시문으로 잰 값인지)
+    let prompt = format!("{:x}", Sha256::digest(INSTRUCTIONS.as_bytes()))[..12].to_string();
+    let fatal = |e: &AiError| !matches!(e, AiError::BadOutput(_) | AiError::Unavailable | AiError::Other(_));
+    let mut lines: Vec<J> = vec![];
+    'cards: for card in &cards {
+        let question = card["question"].as_str().unwrap_or("");
+        let items: Vec<String> = card["items"].as_array().into_iter().flatten().filter_map(|i| i.as_str().map(String::from)).collect();
+        for run in 1..=3 {
+            // 시각 · 모델 · 지시문 표시는 여기 코드가 적는다 (모델이 쓰지 않는다)
+            let mut line = json!({
+                "at": chrono::Local::now().to_rfc3339(),
+                "model": model_name(app),
+                "prompt": prompt,
+                "id": card["id"],
+                "kind": card["kind"],
+                "expected": card["groups"],
+                "run": run,
+            });
+            let res = regroup(app, question, &items, &[]);
+            match &res {
+                Ok((groups, _)) => {
+                    line["groups"] = json!(groups.iter().map(|g| g.items.iter().map(|i| i + 1).collect::<Vec<_>>()).collect::<Vec<_>>());
+                    line["fronts"] = json!(groups.iter().map(|g| &g.front).collect::<Vec<_>>());
+                    line["cleared"] = json!(groups.iter().map(|g| g.cleared).collect::<Vec<_>>());
+                }
+                Err(e) => line["error"] = json!(e.kind()),
+            }
+            if let Some(f) = file.as_mut() {
+                let _ = writeln!(f, "{line}");
+            }
+            lines.push(line);
+            if res.as_ref().is_err_and(fatal) {
+                break 'cards;
+            }
+        }
+    }
+    lines
+}
+
+/// 항목 번호(1부터) → 그 항목이 든 묶음의 차례
+fn owner_of(groups: &J) -> std::collections::BTreeMap<u64, usize> {
+    groups.as_array().into_iter().flatten().enumerate().flat_map(|(g, items)| items.as_array().into_iter().flatten().filter_map(|i| i.as_u64()).map(move |i| (i, g))).collect()
+}
+
+/// 결과 줄 → 지표 (regroup.md 6.4). 오류로 끝난 호출은 형식 오류율에만 들어간다
+fn regroup_eval_summary(lines: &[J]) -> String {
+    let pct = |a: usize, b: usize| (a * 100).checked_div(b).map_or("없음".to_string(), |p| format!("{a}/{b} ({p}%)"));
+    let ok: Vec<&J> = lines.iter().filter(|l| l["error"].is_null()).collect();
+    let pairs = |n: u64| (1..=n).flat_map(move |i| (i + 1..=n).map(move |j| (i, j)));
+    // 기대 묶음과 짝으로 견준다: 한 카드에 넣은 짝 · 기대가 같은 짝 가운데 어긋난 것
+    let (mut together, mut wrong_together, mut expected_together, mut wrong_apart) = (0, 0, 0, 0);
+    for l in ok.iter().filter(|l| !l["expected"].is_null()) {
+        let (got, want) = (owner_of(&l["groups"]), owner_of(&l["expected"]));
+        for (i, j) in pairs(want.len() as u64) {
+            let (g, w) = (got.get(&i) == got.get(&j), want.get(&i) == want.get(&j));
+            together += g as usize;
+            wrong_together += (g && !w) as usize;
+            expected_together += w as usize;
+            wrong_apart += (w && !g) as usize;
+        }
+    }
+    // 세 번 모두 결과를 받은 카드: 묶음이 모두 같은가, 짝마다 "같은 카드인가"가 모두 같은가
+    let mut by_id: std::collections::BTreeMap<&str, Vec<&J>> = Default::default();
+    for l in &ok {
+        by_id.entry(l["id"].as_str().unwrap_or("")).or_default().push(l);
+    }
+    let canon = |l: &J| {
+        let mut g: Vec<Vec<u64>> = l["groups"].as_array().into_iter().flatten().map(|g| g.as_array().into_iter().flatten().filter_map(|i| i.as_u64()).collect()).collect();
+        g.sort();
+        g
+    };
+    let (mut thrice, mut same_groups, mut pair_total, mut pair_same) = (0, 0, 0, 0);
+    for runs in by_id.values().filter(|r| r.len() == 3) {
+        thrice += 1;
+        same_groups += (canon(runs[0]) == canon(runs[1]) && canon(runs[1]) == canon(runs[2])) as usize;
+        let owners: Vec<_> = runs.iter().map(|l| owner_of(&l["groups"])).collect();
+        for (i, j) in pairs(owners[0].len() as u64) {
+            let s: Vec<bool> = owners.iter().map(|o| o.get(&i) == o.get(&j)).collect();
+            pair_total += 1;
+            pair_same += (s[0] == s[1] && s[1] == s[2]) as usize;
+        }
+    }
+    let cleared: Vec<&J> = ok.iter().flat_map(|l| l["cleared"].as_array().into_iter().flatten()).collect();
+    let leak = cleared.iter().filter(|c| **c == "leak").count();
+    let same = ok.iter().filter(|l| l["cleared"].as_array().is_some_and(|c| c.iter().any(|c| c == "same"))).count();
+    let bad = lines.iter().filter(|l| l["error"] == "bad_output").count();
+    let model = lines.iter().find_map(|l| l["model"].as_str()).unwrap_or("모름");
+    format!(
+        "성격별로 묶기 측정 · 모델 {model} · 카드 {} · 호출 {}\n\
+         잘못 합친 비율 (한 카드에 넣었는데 기대 묶음은 다름): {}\n\
+         잘못 가른 비율 (기대 묶음은 같은데 다른 카드): {}\n\
+         묶음 일치율 (세 번 모두 같은 묶음): {}\n\
+         짝 일치율 (세 번 모두 같은 카드인가가 같음): {}\n\
+         답 누설 비율 (비운 질문): {}\n\
+         질문 겹침 비율 (겹친 질문이 있는 결과): {}\n\
+         형식 오류율: {}\n",
+        lines.iter().filter_map(|l| l["id"].as_str()).collect::<std::collections::BTreeSet<_>>().len(),
+        lines.len(),
+        pct(wrong_together, together),
+        pct(wrong_apart, expected_together),
+        pct(same_groups, thrice),
+        pct(pair_same, pair_total),
+        pct(leak, cleared.len()),
+        pct(same, ok.len()),
+        pct(bad, lines.len()),
+    )
 }
 
 /// R3 근거 칩: 카드들이 실제로 인용한 구간 (처음 나온 순서, 겹치지 않게). 보내지 않은 번호면 BadOutput (일부도 쓰지 않는다)
@@ -1307,12 +1499,12 @@ mod tests {
         for n in [3, 4, 5, 6, 7, 11] {
             let items: Vec<String> = (1..=n).map(|i| format!("항목 {i}")).collect();
             let text = fake_text(&st, 0, "ok", || fake_regroup(n, 0)).unwrap();
-            let parts = parse_regroup(&text, &items).unwrap();
+            let parts = split(&text, &items).unwrap();
             assert_eq!(parts.iter().map(|p| p.front.as_str()).collect::<Vec<_>>(), ["사람·집단에 관한 것은?", "통제·위험에 관한 것은?", "구조·성과에 관한 것은?"]);
             assert_eq!(parts.iter().map(|p| p.back.lines().count()).sum::<usize>(), n);
         }
         let text = fake_text(&st, 0, "malformed", || unreachable!()).unwrap();
-        assert!(matches!(parse_regroup(&text, &["a".into(), "b".into(), "c".into()]), Err(AiError::BadOutput(_))));
+        assert!(matches!(split(&text, &["a".into(), "b".into(), "c".into()]), Err(AiError::BadOutput(_))));
         assert_eq!(fake_text(&st, 0, "usage_limit", String::new), Err(AiError::Limit));
         assert_eq!(fake_text(&st, 0, "limit", String::new), Err(AiError::Limit));
     }
@@ -1545,20 +1737,26 @@ mod tests {
         (1..=n).map(|i| format!("항목{i}")).collect()
     }
 
+    /// 화면이 받는 제안 카드 (원래 질문 없이)
+    fn split(text: &str, items: &[String]) -> Result<Vec<SplitPart>, AiError> {
+        parse_regroup(text, "", items).map(|g| parts_of(&g, items))
+    }
+
     #[test]
     fn regroup_output_is_validated() {
         let six = items(6);
         let good = r#"{"cards":[{"front":"사람 관련은?","items":[1,4]},{"front":"제도 관련은?","items":[2,3,5]},{"front":"문화는?","items":[6]}]}"#;
-        let parts = parse_regroup(good, &six).unwrap();
+        let parts = split(good, &six).unwrap();
         assert_eq!(parts.len(), 3);
         assert_eq!((parts[0].front.as_str(), parts[0].back.as_str()), ("사람 관련은?", "항목1\n항목4"), "답은 원래 항목 글자 그대로");
-        assert!(parse_regroup(&format!("```json\n{good}\n```"), &six).is_ok(), "코드 블록으로 감싸도");
-        let bad = |s: &str| matches!(parse_regroup(s, &six), Err(AiError::BadOutput(_)));
+        assert!(split(&format!("```json\n{good}\n```"), &six).is_ok(), "코드 블록으로 감싸도");
+        let bad = |s: &str| matches!(split(s, &six), Err(AiError::BadOutput(_)));
         assert!(bad(r#"{"cards":[{"front":"전부","items":[1,2,3,4,5,6]}]}"#), "1장은 너무 적다");
         let nine: Vec<String> = (1..=9).map(|i| format!(r#"{{"front":"q{i}","items":[{i}]}}"#)).collect();
-        assert!(matches!(parse_regroup(&format!(r#"{{"cards":[{}]}}"#, nine.join(",")), &items(9)), Err(AiError::BadOutput(_))), "9장은 너무 많다");
+        assert!(matches!(split(&format!(r#"{{"cards":[{}]}}"#, nine.join(",")), &items(9)), Err(AiError::BadOutput(_))), "9장은 너무 많다");
         let eight: Vec<String> = (1..=8).map(|i| format!(r#"{{"front":"q{i}","items":[{i}]}}"#)).collect();
-        assert!(parse_regroup(&format!(r#"{{"cards":[{}]}}"#, eight.join(",")), &items(8)).is_ok(), "8장까지");
+        assert!(split(&format!(r#"{{"cards":[{}]}}"#, eight.join(",")), &items(8)).is_ok(), "8장까지");
+        assert!(bad(&format!(r#"{{"cards":[{{"front":"{}","items":[1,2,3]}},{{"front":"b","items":[4,5,6]}}]}}"#, "가".repeat(201))), "201자 질문");
         assert!(bad(r#"{"cards":[{"front":" ","items":[1,2,3]},{"front":"b","items":[4,5,6]}]}"#), "빈 질문");
         assert!(bad(r#"{"cards":[{"front":"a","items":[]},{"front":"b","items":[1,2,3,4,5,6]}]}"#), "빈 답");
         assert!(bad(r#"{"cards":[{"front":"a","items":[1,2,3]},{"front":"b","items":[3,4,5,6]}]}"#), "같은 항목 두 번");
@@ -1567,6 +1765,98 @@ mod tests {
         assert!(bad(r#"{"cards":[{"front":"a","items":[1,2,3]},{"front":"b","items":[4,5,6,7]}]}"#), "없는 번호");
         assert!(bad("묶으면 이렇게 돼요: {\"cards\""), "JSON 이 아니다");
         assert!(bad(r#"{"cards":"x"}"#));
+    }
+
+    #[test]
+    fn items_keep_their_original_order() {
+        let six = items(6);
+        let parts = split(r#"{"cards":[{"front":"b","items":[6,2]},{"front":"a","items":[4,1,3,5]}]}"#, &six).unwrap();
+        assert_eq!(parts[0].back, "항목2\n항목6", "카드 안은 원래 순서");
+        assert_eq!(parts[1].back, "항목1\n항목3\n항목4\n항목5");
+        assert_eq!((parts[0].front.as_str(), parts[1].front.as_str()), ("b", "a"), "카드끼리는 모델이 낸 순서");
+    }
+
+    #[test]
+    fn fronts_that_show_the_answer_are_cleared() {
+        let its: Vec<String> = ["공유된 가치", "규범", "상징", "A", "리더십", "팀워크"].map(String::from).to_vec();
+        let question = "조직 문화에서 리더십과 관련된 특성은?";
+        let text = r#"{"cards":[
+            {"front":"조직 문화에서 공유된가치와 함께 드는 것은?","items":[2,1]},
+            {"front":"A 유형 중 규범 말고 눈에 보이는 것은?","items":[3,4]},
+            {"front":"조직 문화에서 리더십과 관련된 특성은?","items":[5]},
+            {"front":"A 유형 중 규범 말고 눈에 보이는 것은 ?","items":[6]}]}"#;
+        let g = parse_regroup(text, question, &its).unwrap();
+        // 1: 그 카드의 항목(띄어쓰기만 다름) · 2: 다른 카드의 항목, 1자 항목은 보지 않는다 · 3: 원래 질문에 있는 항목 · 4: 2와 같은 질문
+        assert_eq!(g.iter().map(|g| g.cleared).collect::<Vec<_>>(), [Some("leak"), None, None, Some("same")]);
+        assert_eq!(g[0].front, "조직 문화에서 공유된가치와 함께 드는 것은?", "평가 기록에는 모델이 쓴 질문이 남는다");
+        let parts = parts_of(&g, &its);
+        assert_eq!(parts.iter().map(|p| p.front.as_str()).collect::<Vec<_>>(), ["", "A 유형 중 규범 말고 눈에 보이는 것은?", "조직 문화에서 리더십과 관련된 특성은?", ""]);
+        assert_eq!(parts[0].back, "공유된 가치\n규범", "질문을 비워도 묶음은 쓴다");
+        // 대소문자만 다른 것도 같은 글자다
+        let protocols: Vec<String> = ["HTTP", "FTP", "SMTP"].map(String::from).to_vec();
+        let g = parse_regroup(r#"{"cards":[{"front":"웹 문서를 옮기는 http 는?","items":[1]},{"front":"나머지는?","items":[2,3]}]}"#, "프로토콜을 쓰시오.", &protocols).unwrap();
+        assert_eq!(g[0].cleared, Some("leak"));
+        // 답이 보여 비운 질문과 같은 질문은 겹침으로 세지 않는다
+        let g = parse_regroup(r#"{"cards":[{"front":"FTP 는?","items":[2]},{"front":"FTP 는?","items":[1,3]}]}"#, "", &protocols).unwrap();
+        assert_eq!(g.iter().map(|g| g.cleared).collect::<Vec<_>>(), [Some("leak"), None]);
+        // "왜?" 줄
+        assert!(regroup_why("답 항목이 많아요", 0, 4, 2).ends_with("4장으로 나눴어요. 답이 드러나거나 겹치는 질문 2개는 비웠어요."));
+        assert_eq!(regroup_why("답 항목이 많아요", 1, 3, 0), "답 항목이 많아요. ChatGPT가 연결된 자료 1구간을 보고 비슷한 내용끼리 3장으로 나눴어요.");
+    }
+
+    #[test]
+    fn long_or_short_cards_are_not_sent() {
+        let not_sent = |items: &[String]| matches!(regroup_request("q", items, &[]), Err(AiError::Other(_)));
+        assert!(not_sent(&items(2)) && !not_sent(&items(3)), "3개부터");
+        assert!(not_sent(&items(61)) && !not_sent(&items(60)), "60개까지");
+        assert!(not_sent(&["가".repeat(2000), "나".repeat(2000), "다".repeat(2000)]), "6,000자 넘음");
+        let (ins, input) = regroup_request("q", &items(3), &[]).unwrap();
+        assert_eq!(ins, INSTRUCTIONS);
+        assert!(!input.contains("자료 구간"));
+        let (ins, input) = regroup_request("q", &items(3), &[seg(7)]).unwrap();
+        assert!(ins.ends_with(EVIDENCE));
+        assert!(input.ends_with("3. 항목3\n자료 구간:\n[1] 구간 7\n"), "{input}");
+        assert!(!input.contains("슬라이드"), "자료 이름은 보내지 않는다");
+    }
+
+    #[test]
+    fn bad_regroup_is_logged_without_card_text() {
+        let its: Vec<String> = ["비밀 항목 하나", "비밀 항목 둘", "비밀 항목 셋"].map(String::from).to_vec();
+        let e = parse_regroup(r#"{"cards":[{"front":"비밀 질문","items":[1,2]},{"front":"비밀","items":[2,3]}]}"#, "비밀 원래 질문", &its).unwrap_err();
+        let line = failure_line("ai_regroup", &e).unwrap();
+        assert!(line.contains("ai_regroup") && line.contains("bad_output") && !line.contains("비밀"), "{line}");
+    }
+
+    #[test]
+    fn regroup_eval_summary_counts_each_metric() {
+        let line = |id: &str, expected: J, run: u64, groups: J, cleared: J| json!({ "model": "m", "id": id, "expected": expected, "run": run, "groups": groups, "cleared": cleared });
+        let a = json!([[1, 2], [3]]);
+        let lines = vec![
+            line("a", a.clone(), 1, json!([[1, 2], [3]]), json!([null, null])),
+            line("a", a.clone(), 2, json!([[1], [2, 3]]), json!([null, null])),
+            line("a", a.clone(), 3, json!([[3], [1, 2]]), json!([null, null])),
+            line("b", J::Null, 1, json!([[1], [2], [3]]), json!([null, "leak", "same"])),
+            line("b", J::Null, 2, json!([[1], [2], [3]]), json!([null, null, null])),
+            json!({ "model": "m", "id": "b", "expected": null, "run": 3, "error": "bad_output" }),
+        ];
+        let s = regroup_eval_summary(&lines);
+        // a 의 세 결과: 합친 짝 (1,2) · (2,3) · (1,2) 가운데 (2,3) 이 틀림, 기대 짝 (1,2) 를 2회차가 가름
+        assert!(s.contains("모델 m · 카드 2 · 호출 6"), "{s}");
+        assert!(s.contains("잘못 합친 비율 (한 카드에 넣었는데 기대 묶음은 다름): 1/3 (33%)"), "{s}");
+        assert!(s.contains("잘못 가른 비율 (기대 묶음은 같은데 다른 카드): 1/3 (33%)"), "{s}");
+        // 세 번 결과가 있는 것은 a 뿐: 묶음이 다르고, 짝 (1,3) 만 세 번 다 따로
+        assert!(s.contains("묶음 일치율 (세 번 모두 같은 묶음): 0/1 (0%)"), "{s}");
+        assert!(s.contains("짝 일치율 (세 번 모두 같은 카드인가가 같음): 1/3 (33%)"), "{s}");
+        assert!(s.contains("답 누설 비율 (비운 질문): 1/12 (8%)"), "{s}");
+        assert!(s.contains("질문 겹침 비율 (겹친 질문이 있는 결과): 1/5 (20%)"), "{s}");
+        assert!(s.contains("형식 오류율: 1/6 (16%)"), "{s}");
+        // 같은 묶음을 순서만 바꿔 내면 같은 묶음이다
+        let same = vec![
+            line("c", J::Null, 1, json!([[1, 2], [3]]), json!([null, null])),
+            line("c", J::Null, 2, json!([[3], [1, 2]]), json!([null, null])),
+            line("c", J::Null, 3, json!([[1, 2], [3]]), json!([null, null])),
+        ];
+        assert!(regroup_eval_summary(&same).contains("묶음 일치율 (세 번 모두 같은 묶음): 1/1 (100%)"));
     }
 
     #[test]
@@ -1589,13 +1879,13 @@ mod tests {
         assert!(parse_cited(r#"{"cards":[{"front":"a","items":[1]}]}"#, &sent).unwrap().is_empty(), "segments 가 없으면 근거 없음");
         let schema = regroup_schema(true);
         assert_eq!(schema["properties"]["cards"]["items"]["required"], json!(["front", "items", "segments"]));
-        let parts = parse_regroup(&fake_regroup(3, 2), &items(3)).unwrap();
+        let parts = split(&fake_regroup(3, 2), &items(3)).unwrap();
         assert_eq!(parts.len(), 3);
         assert_eq!(parse_cited(&fake_regroup(3, 2), &sent[..2]).unwrap().len(), 1);
     }
 
     #[test]
-    fn only_plain_card_text_is_sent() {
+    fn only_plain_card_text_is_sent_and_nothing_changes() {
         let con = crate::db::open_in_memory().unwrap();
         con.execute("INSERT INTO deck (name, created_at, updated_at) VALUES ('비밀 덱 이름', 0, 0)", []).unwrap();
         let deck = con.last_insert_rowid();
@@ -1609,8 +1899,18 @@ mod tests {
         crate::commands::insert_note(&con, &card, "", None).unwrap();
         let id: i64 = con.query_row("SELECT max(id) FROM card", [], |r| r.get(0)).unwrap();
         con.execute("INSERT INTO review_log (card_id, reviewed_at, rating) VALUES (?1, 1, 1)", [id]).unwrap();
-        let p = quality::suggest(&con, id, None).unwrap();
-        let items = regroup_items(&p.answer);
+        let snapshot = |con: &Connection| {
+            con.query_row(
+                "SELECT n.fields, n.updated_at, (SELECT count(*) FROM card), (SELECT count(*) FROM review_log), (SELECT count(*) FROM card_change) FROM note n JOIN card c ON c.note_id = n.id WHERE c.id = ?1",
+                [id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
+            )
+            .unwrap()
+        };
+        let before = snapshot(&con);
+        let (p, items, sent) = regroup_prepare(&con, id, &[999]).unwrap();
+        assert!(sent.is_empty(), "이 카드에 연결되지 않은 구간 id 는 거른다");
+        assert_eq!(snapshot(&con), before, "필드 · 수정 시각 · 카드 · 복습 기록 · 변경 기록 그대로");
         assert_eq!(items, ["공유된 가치", "규범", "상징 & 의례"]);
         let input = regroup_input(&p.question, &items);
         assert_eq!(input, "질문: 조직 문화의 특성은?\n답 항목:\n1. 공유된 가치\n2. 규범\n3. 상징 & 의례\n");
