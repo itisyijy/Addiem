@@ -126,8 +126,9 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
-/// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다 (시험에서는 2초)
-const IDLE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
+/// 이만큼 데이터가 오지 않으면 연결이 멈춘 것으로 본다 (시험에서는 10초).
+/// Windows 는 닫힌 localhost 포트도 연결을 몇 번 다시 해 본 뒤에야(2초 남짓) 거절하므로, 바쁜 CI 에서 2초면 Net 대신 Stalled 가 나왔다
+const IDLE: Duration = Duration::from_secs(if cfg!(test) { 10 } else { 30 });
 pub const STALLED: &str = "연결이 멈춰 모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 pub const OFFLINE: &str = "모델을 내려받지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.";
 /// 사용자가 멈췄다 (화면은 이 말로 시작하면 오류가 아니라 회색으로 보인다)

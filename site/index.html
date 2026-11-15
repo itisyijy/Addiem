@@ -19,7 +19,8 @@
   d.dataset.lang = l === "ko" || l === "en" ? l : /^ko\b/i.test(navigator.language) ? "ko" : "en";
   d.lang = d.dataset.lang;
   var p = location.pathname.slice(new URL(document.baseURI).pathname.length);
-  d.dataset.route = p.indexOf("privacy") === 0 ? "privacy" : p.indexOf("terms") === 0 ? "terms" : "home";
+  var m = /^(privacy|terms|manual)/.exec(p);
+  d.dataset.route = m ? m[1] : "home";
 })();
 </script>
 <style>
@@ -56,7 +57,7 @@ a { color: inherit; }
 /* 언어 · 화면 전환 (data-lang · data-route 는 head 의 스크립트가 정한다) */
 html[data-lang="ko"] [lang="en"], html[data-lang="en"] [lang="ko"] { display: none !important; }
 html[data-route] [data-view] { display: none; }
-html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-view="privacy"], html[data-route="terms"] [data-view="terms"] { display: block; }
+html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-view="privacy"], html[data-route="terms"] [data-view="terms"], html[data-route="manual"] [data-view="manual"] { display: block; }
 
 .wrap { max-width: calc(var(--width-content) + 32px); margin-inline: auto; padding-inline: 16px; }
 .ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -72,7 +73,7 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
 .serif { font: italic 22px/28px "Newsreader", Georgia, "Times New Roman", serif; color: var(--accent-text); }
 
 /* 버튼 (Figma Button: Primary · Secondary, Size L · M) */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 56px; padding: 0 28px; border-radius: 999px; font: 600 16px/24px inherit; font-family: inherit; text-decoration: none; border: 1px solid transparent; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 56px; padding: 0 28px; border-radius: 999px; font: 600 16px/24px inherit; font-family: inherit; text-decoration: none; border: 1px solid transparent; background: none; cursor: pointer; }
 .btn-m { gap: 6px; min-height: 38px; padding: 0 16px; font-size: 14px; line-height: 20px; }
 .btn-m .ic { width: 16px; height: 16px; }
 .btn-primary { background: var(--accent); color: var(--text-inverse); }
@@ -149,6 +150,12 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
 .doc th, .doc td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--border); font-size: 15px; line-height: 24px; }
 .doc th { color: var(--text-1); font-weight: 600; }
 .note { padding: 16px 20px; border-radius: 12px; background: var(--accent-subtle); color: var(--text-1); font-size: 15px; line-height: 24px; margin: 0; }
+/* 사용설명서 */
+.doc figure { margin: 0; display: grid; gap: 8px; }
+.doc figcaption { font-size: 13px; line-height: 20px; color: var(--text-3); }
+.doc section h3 { margin-top: 8px; }
+.doc kbd { display: inline-block; min-width: 1.7em; padding: 0 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--bg-surface); color: var(--text-1); font: 600 13px/22px inherit; font-family: inherit; text-align: center; }
+.print-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 
 /* Web/Footer */
 .footer { border-top: 1px solid var(--border); padding-block: 48px; }
@@ -158,8 +165,8 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
 .footer-links a { font-size: 13px; line-height: 20px; color: var(--text-2); text-decoration: none; }
 .footer-links a:hover { color: var(--text-1); text-decoration: underline; }
 
-/* 폰 (Figma 390) */
-@media (max-width: 720px) {
+/* 폰 (Figma 390). screen 만: A4 인쇄 폭(약 690px)에서 표가 쌓이지 않게 */
+@media screen and (max-width: 720px) {
   .nav-row { min-height: 0; padding-top: 12px; flex-wrap: wrap; gap: 8px; }
   .nav-right { display: contents; }
   .nav-links { order: 3; width: 100%; }
@@ -194,6 +201,34 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
   .footer { padding-block: 32px; }
   .footer-row { flex-direction: column; align-items: flex-start; }
 }
+
+/* 인쇄 · PDF 로 저장: 어두운 테마여도 흰 종이에 밝은 색으로, 메뉴 · 목차 · 버튼은 빼고 본문만 A4 에 */
+@media print {
+  :root {
+    --bg-canvas: #fff; --bg-surface: #fff; --border: #d9d5ce; --border-ink: #16161d;
+    --text-1: #16161d; --text-2: #3a3842; --text-3: #5c5a63; --accent-subtle: #efedff; --accent-text: #3324d6;
+  }
+  @page { size: A4; margin: 16mm 15mm; }
+  body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .nav, .footer, .toc, .no-print { display: none !important; }
+  .wrap { max-width: none; padding: 0; }
+  .doc-layout, .doc, .doc section, .doc header { display: block; padding: 0; }
+  .doc > * + *, .doc section > * + *, .doc header > * + * { margin-top: 8pt; }
+  .doc > section, .doc > .glance { margin-top: 20pt; }
+  .heading { font-size: 22pt; line-height: 1.3; }
+  .doc .title-m { font-size: 14pt; line-height: 1.4; }
+  .doc .title-s { font-size: 11pt; }
+  .body-l, .doc section p, .doc section li, .doc td, .doc th { font-size: 10pt; line-height: 1.65; }
+  .doc ol, .doc ul { display: block; }
+  .doc li + li { margin-top: 3pt; }
+  h2, h3 { break-after: avoid; }
+  figure, tr, .note, .glance, .fact { break-inside: avoid; }
+  .doc .shot { width: 70%; margin-inline: auto; box-shadow: none; }
+  .doc figcaption { text-align: center; }
+  .doc kbd { font-size: 9pt; line-height: 1.5; }
+  /* 종이에서는 링크를 누를 수 없으니 주소를 옆에 적는다 */
+  .doc a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 8pt; color: var(--text-3); overflow-wrap: anywhere; }
+}
 </style>
 </head>
 <body>
@@ -219,6 +254,7 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
         <a href="./" data-route="home"><span lang="ko">소개</span><span lang="en">Overview</span></a>
         <a href="privacy/" data-route="privacy"><span lang="ko"><span class="long">개인정보 처리방침</span><span class="short">개인정보</span></span><span lang="en">Privacy</span></a>
         <a href="terms/" data-route="terms"><span lang="ko"><span class="long">이용약관</span><span class="short">약관</span></span><span lang="en">Terms</span></a>
+        <a href="manual/" data-route="manual"><span lang="ko"><span class="long">사용설명서</span><span class="short">설명서</span></span><span lang="en">Guide</span></a>
       </nav>
       <div class="lang" role="group" aria-label="Language">
         <button type="button" data-lang="ko" aria-pressed="false">한국어</button>
@@ -652,14 +688,468 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
   </article>
 </div>
 </div>
+<!-- ============================================================ 사용설명서 -->
+<!-- README.md · README.en.md 와 앱 코드(src/keys.ts 단축키 표, screens/Deck.tsx 접어두기 3일)에 있는 것만 적는다. 버튼 이름은 앱 화면 글자 그대로 -->
+<div data-view="manual">
+<div class="wrap doc-layout" lang="ko">
+  <nav class="toc" aria-label="목차">
+    <p>목차</p>
+    <a href="manual/#ko-m1">1. 설치하기</a>
+    <a href="manual/#ko-m2">2. 처음 시작하기</a>
+    <a href="manual/#ko-m3">3. 매일 학습하기</a>
+    <a href="manual/#ko-m4">4. 시험일과 학습 계획</a>
+    <a href="manual/#ko-m5">5. 중요도 정하기</a>
+    <a href="manual/#ko-m6">6. 강의 자료 연결하기</a>
+    <a href="manual/#ko-m7">7. 카드와 노트 유형</a>
+    <a href="manual/#ko-m8">8. 가져오기 · 내보내기 · 덱 업데이트</a>
+    <a href="manual/#ko-m9">9. 카드 점검</a>
+    <a href="manual/#ko-m10">10. 서술형 채점</a>
+    <a href="manual/#ko-m11">11. 백업과 Google Drive 동기화</a>
+    <a href="manual/#ko-m12">12. ChatGPT 연결 (선택)</a>
+    <a href="manual/#ko-m13">13. 단축키</a>
+    <a href="manual/#ko-m14">14. 자주 묻는 질문</a>
+  </nav>
+  <article class="doc">
+    <header>
+      <h1 class="heading">사용설명서</h1>
+      <p class="body-s">Addiem 0.1.2 기준 · 2026년 11월 · addiem.pages.dev/manual/</p>
+      <p class="body-l">Addiem을 설치하고, 덱을 만들고, 시험일까지 매일 공부하는 방법을 순서대로 정리했어요. 버튼 이름은 앱 화면에 보이는 그대로 [ ] 안에 적었어요.</p>
+      <div class="print-row no-print">
+        <button type="button" class="btn btn-secondary btn-m" data-print><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>PDF로 저장</button>
+        <p class="body-s">인쇄 창에서 대상을 ‘PDF로 저장’으로 골라요.</p>
+      </div>
+    </header>
+
+    <section id="ko-m1">
+      <h2 class="title-m">1. 설치하기</h2>
+      <p>필요한 것: Windows 10 · 11 (64비트), Microsoft Edge WebView2 런타임. WebView2는 Windows 11에 들어 있고, 없으면 설치 중에 내려받아요(인터넷 필요).</p>
+      <ol>
+        <li><a href="https://github.com/itisyijy/Addiem/releases/latest">GitHub Releases</a>에서 설치 파일 <b>Addiem_0.1.2_x64-setup.exe</b>를 내려받아요.</li>
+        <li>설치 파일을 실행해요. 관리자 권한 없이 지금 사용자 계정에 설치돼요.</li>
+        <li>"Windows의 PC 보호" 파란 창이 뜨면 [추가 정보] → [실행]을 눌러요. 아직 코드 서명이 없어서 뜨는 창이에요.</li>
+        <li>시작 메뉴에서 Addiem을 열어요.</li>
+      </ol>
+      <ul>
+        <li><b>업데이트:</b> 자동 업데이트는 없어요. 새 버전 설치 파일로 다시 설치해요. 학습 데이터는 지워지지 않아요. 지금 버전은 설정 화면 맨 아래에 보여요.</li>
+        <li><b>지우기:</b> Windows 설정 › 앱에서 Addiem을 제거해요. 학습 데이터는 남아요. 데이터까지 지우려면 제거 창에서 [애플리케이션 데이터 삭제하기]를 체크해요.</li>
+      </ul>
+    </section>
+
+    <section id="ko-m2">
+      <h2 class="title-m">2. 처음 시작하기</h2>
+      <ol>
+        <li>처음 화면에서 [새 덱 만들기]로 이름만 정해 덱을 만들거나, [가져오기]로 쓰던 덱 파일(.apkg · .colpkg)이나 JSON · CSV 파일을 가져와요.</li>
+        <li>덱 화면의 [목표 및 학습 설정]에서 시험일을 정해요. 정하지 않으면 시험일 없는 덱으로 계속 복습해요.</li>
+        <li>[중요도 조정]에서 제안된 핵심 · 일반 · 보충 배치를 확인하고, 틀린 것만 옮겨요. 건너뛰어도 학습은 돼요.</li>
+        <li>강의 PDF · PPTX가 있으면 덱 화면의 [자료]에서 추가해요.</li>
+        <li>홈에서 [오늘 학습 시작]을 누르거나 <kbd>Enter</kbd> 키를 눌러요.</li>
+      </ol>
+      <figure><img class="shot" src="img/home.png" width="1280" height="800" loading="lazy" alt="오늘 남은 카드와 덱별 오늘 학습량이 보이는 홈 화면"><figcaption>홈: 오늘 남은 카드(복습 · 신규)와 덱별 분량</figcaption></figure>
+    </section>
+
+    <section id="ko-m3">
+      <h2 class="title-m">3. 매일 학습하기</h2>
+      <ol>
+        <li>질문 면을 보고 답을 떠올린 뒤 답 보기(<kbd>Space</kbd>)를 눌러요.</li>
+        <li>얼마나 잘 기억했는지 Again · Hard · Good · Easy 중에서 골라요(<kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd>). 다음 복습 날짜는 FSRS로 계산해요.</li>
+        <li>오늘 분량을 마치거나 <kbd>Esc</kbd>를 누르면 끝나요. 키보드만으로도 한 번의 학습을 끝낼 수 있어요.</li>
+      </ol>
+      <ul>
+        <li>같은 학습에서 Again을 두 번 받은 카드는 잠깐 접어 두고 나머지를 먼저 봐요. 어려운 카드 하나가 오늘 진도를 막지 않아요.</li>
+        <li>지금 보기 어려운 카드는 접어두기(<kbd>−</kbd>)로 미뤄요. 접어둔 카드 목록은 <kbd>B</kbd>로 열고 닫아요. 학습을 마칠 때 다시 보지 않으면 3일 뒤에 다시 나와요.</li>
+        <li>평가를 잘못 눌렀으면 <kbd>Ctrl</kbd> <kbd>Z</kbd>로 마지막 평가를 되돌려요. 카드를 고치려면 <kbd>E</kbd>를 눌러요.</li>
+        <li>카드에 연결된 자료가 있으면 답 면에서 [연결 자료](<kbd>S</kbd>)로 그 쪽을 바로 열어 봐요.</li>
+        <li>소리가 있는 카드는 <kbd>R</kbd>로 다시 들어요. 템플릿의 {{tts}} 읽어주기는 이 기기 안의 음성으로 읽어요.</li>
+        <li>화면 테마는 설정에서 밝게 · 어둡게 · 시스템 따름 중에서 골라요.</li>
+      </ul>
+      <figure><img class="shot" src="img/study-source.png" width="1280" height="800" loading="lazy" alt="답 면 옆에 연결 자료 패널이 열린 학습 화면"><figcaption>학습 화면: 답 면 옆에 연결 자료를 연 모습</figcaption></figure>
+    </section>
+
+    <section id="ko-m4">
+      <h2 class="title-m">4. 시험일과 학습 계획</h2>
+      <p>덱에 시험일을 정하면 남은 신규 카드를 남은 날로 나눠 하루 분량을 정해요(예: 남은 신규 186장 ÷ 24일 = 하루 8장). 계산식과 진행률은 덱 화면에 그대로 보여요.</p>
+      <ul>
+        <li><b>학습 계획:</b> 날짜별 복습 · 신규 예상을 보고, 실제 속도에 맞춰 매일 다시 나눠요. 평일 · 주말 공부 시간을 정하고, 여러 덱의 시험일이 겹치면 조정해요.</li>
+        <li><b>시험 전 회독 (시험 14일 전부터):</b> 핵심 · 약한 챕터 · 불안한 카드만 빠르게 도는 <b>압축</b>, 범위 전체를 돌며 약한 카드를 끼워 넣는 <b>혼합</b> 중에서 골라요.</li>
+        <li><b>기출 표시:</b> 카드나 자료 구간에 어느 시험에 나왔는지 달아 두면, 같은 중요도 안에서 기출 카드를 먼저 배워요.</li>
+        <li><b>시험일이 지나면:</b> 시험일 없는 덱처럼 FSRS 간격대로 계속 복습해요. 새 시험일을 정하면 그날에 맞춰 다시 나눠요.</li>
+      </ul>
+      <figure><img class="shot" src="img/deck-goal.png" width="1280" height="760" loading="lazy" alt="D-24 시험일, 학습을 시작한 카드 비율, 하루 분량 계산이 보이는 덱 화면"><figcaption>덱 화면: 시험일까지 남은 날과 하루 분량 계산</figcaption></figure>
+    </section>
+
+    <section id="ko-m5">
+      <h2 class="title-m">5. 중요도 정하기</h2>
+      <p>중요도는 카드가 아니라 하위 덱 단위로 정해요. 덱 화면의 [중요도 조정]에서 하위 덱을 핵심 · 일반 · 보충으로 옮겨요.</p>
+      <ul>
+        <li>가져온 태그(예: 중요도::최우선), 하위 덱 이름(예: ‘요약’ · ‘부록’), 자료 · 기출 표시를 근거로 처음 배치를 제안해요. 칩에 마우스를 올리면 이유를 한 줄로 보여 줘요.</li>
+        <li>틀린 것만 옮기면 돼요. 직접 확정한 값은 자동 제안이 덮어쓰지 않아요.</li>
+      </ul>
+      <figure><img class="shot" src="img/importance.png" width="1280" height="800" loading="lazy" alt="하위 덱을 핵심 · 일반 · 보충으로 나눈 중요도 정하기 화면"><figcaption>중요도 정하기: 하위 덱을 핵심 · 일반 · 보충으로 나눈 모습</figcaption></figure>
+    </section>
+
+    <section id="ko-m6">
+      <h2 class="title-m">6. 강의 자료 연결하기</h2>
+      <p>덱 화면의 [자료]에서 강의 PDF · PPTX를 추가하면 하이라이트 · 밑줄 · 붉은 글씨 · 굵은 글씨 · ★ 표시를 <b>강조 구간</b>으로, 제목 구조를 <b>목차</b>로 읽어요.</p>
+      <ul>
+        <li><b>핵심 범위 제안:</b> 제목에 ‘요약’ · ‘핵심’ 같은 낱말이 있거나 제목이 강조된 구간을 핵심 범위로 제안해요. 제안일 뿐이고, 확정은 중요도 정하기에서 해요.</li>
+        <li><b>카드와 잇기:</b> 강조 구간을 카드와 이으면 학습 중 [연결 자료](<kbd>S</kbd>)로 그 쪽을 바로 열어 봐요.</li>
+        <li><b>미연결 강조 구간:</b> 카드가 이어지지 않은 강조 구간을 모아 보여 줘서 빠뜨린 범위를 찾기 쉬워요.</li>
+        <li><b>그림 카드:</b> PDF의 그림 · 표 영역을 잡아 그림 카드나 그림 가리기 카드로 만들 수 있어요.</li>
+      </ul>
+      <figure><img class="shot" src="img/source-outline.png" width="1280" height="800" loading="lazy" alt="PDF 목차와 핵심 범위 제안이 보이는 학습 자료 화면"><figcaption>학습 자료: PDF 목차와 핵심 범위 제안</figcaption></figure>
+    </section>
+
+    <section id="ko-m7">
+      <h2 class="title-m">7. 카드와 노트 유형</h2>
+      <ul>
+        <li><b>카드 추가:</b> 카드 추가(<kbd>A</kbd>)에서 필드를 채우고 저장(<kbd>Ctrl</kbd> <kbd>Enter</kbd>)해요. 수식은 <kbd>Ctrl</kbd> <kbd>M</kbd>으로 넣어요(KaTeX).</li>
+        <li><b>앱 기본 노트 유형:</b> 질문과 답변 · 양방향 · 빈칸 · 서술형 · 목록 · 선택형 · 그림 가리기. 앱 기본 유형은 볼 수만 있고, 복제하면 고칠 수 있어요.</li>
+        <li><b>노트 유형 고치기:</b> <b>쉬운 편집</b>에서는 필드를 끌어 앞면 · 뒷면에 놓고 크기 · 정렬을 고르고, 실제 노트로 미리보기를 봐요. HTML · CSS를 직접 고치려면 <b>HTML</b> 탭을 써요.</li>
+        <li><b>카드 종류:</b> 카드 종류(예: 단어 → 뜻, 뜻 → 단어)를 더하면 노트 하나에서 카드가 한 장씩 더 생겨요.</li>
+        <li><b>그림 가리기 편집기:</b> <kbd>V</kbd> · <kbd>R</kbd> · <kbd>O</kbd>로 선택 · 사각형 · 타원 도구를 고르고, <kbd>Ctrl</kbd> <kbd>Enter</kbd>로 가리기를 적용해요.</li>
+        <li>JSON으로 카드를 한꺼번에 만들 때는 <a href="https://github.com/itisyijy/Addiem/blob/main/docs/engineering/json-import-format.md">JSON 일괄 가져오기 형식</a>을 봐요.</li>
+      </ul>
+      <figure><img class="shot" src="img/note-type-editor.png" width="1280" height="800" loading="lazy" alt="필드, 앞면 · 뒷면 배치, 미리보기가 보이는 노트 유형 편집기"><figcaption>노트 유형 편집기: 쉬운 편집</figcaption></figure>
+    </section>
+
+    <section id="ko-m8">
+      <h2 class="title-m">8. 가져오기 · 내보내기 · 덱 업데이트</h2>
+      <ul>
+        <li><b>가져오기 (<kbd>I</kbd>):</b> .apkg · .colpkg(덱 구조 · 노트 유형 · 태그 · 미디어 · 복습 기록), JSON, CSV를 가져와요. 처리하지 못한 항목은 조용히 버리지 않고 결과 화면에 알려 줘요. 원본 파일은 읽기만 해요.</li>
+        <li><b>내보내기:</b> 덱을 .apkg(복습 기록 포함 여부 선택)나 CSV로 내보내요.</li>
+        <li><b>덱 업데이트:</b> 이미 가져온 덱의 새 버전 파일을 받으면 [업데이트로 가져오기]를 권해요. 만든 사람이 고친 노트는 새 버전으로 바꾸고, 내가 고친 필드와 복습 기록 · 일정은 지켜요. 같은 필드를 둘 다 고친 충돌은 나란히 보고 골라요. 적용 전에 백업을 만들고, 나중에 이 업데이트만 되돌릴 수도 있어요.</li>
+        <li>다른 학습 앱의 애드온은 지원하지 않고, 카드 템플릿의 스크립트(JavaScript)는 실행하지 않아요. 그런 카드가 있으면 가져오기 결과에 알려 줘요.</li>
+      </ul>
+      <figure><img class="shot" src="img/deck-update.png" width="1280" height="824" loading="lazy" alt="새 버전으로 바뀌는 노트, 충돌, 새 노트를 먼저 보여 주는 업데이트 요약"><figcaption>덱 업데이트: 바뀌는 것을 먼저 보여 주는 요약</figcaption></figure>
+    </section>
+
+    <section id="ko-m9">
+      <h2 class="title-m">9. 카드 점검</h2>
+      <p>계속 틀리는 이유가 기억이 아니라 카드 모양일 때가 있어요. 카드 점검은 규칙으로 이런 카드를 기기 안에서 바로 찾아요.</p>
+      <ul>
+        <li>답이 너무 긴 카드, 질문이 여러 개인 카드 → [나누기 제안]. 최근 14일에 Again을 2번 이상 받은 긴 카드는 따로 모아 보여 줘요.</li>
+        <li>질문과 답이 안 맞아 보이는 카드(예: "차이"를 묻는데 답이 낱말 하나) → 이유 한 줄과 함께 표시해요.</li>
+        <li>한 줄에 이어 쓴 번호 · 항목 → [서식 고치기]. 글자는 그대로 두고 줄바꿈 · 굵게 · 항목 사이 쉼표만 바꿔요.</li>
+      </ul>
+      <p>고치기 전에 지금 카드와 고친 카드를 나란히 보여 주고, 고친 뒤 7일 동안 되돌릴 수 있어요.</p>
+      <figure><img class="shot" src="img/card-check.png" width="1280" height="800" loading="lazy" alt="지금 카드와 고친 카드를 나란히 비교하는 서식 고치기 창"><figcaption>서식 고치기: 지금 카드와 고친 카드 비교</figcaption></figure>
+    </section>
+
+    <section id="ko-m10">
+      <h2 class="title-m">10. 서술형 채점</h2>
+      <ol>
+        <li>서술형 카드는 답을 직접 써 보고 [답과 비교하기]를 눌러요.</li>
+        <li>등록한 핵심어가 내 답에 있는지 표시하고, 핵심어 기준으로 평가를 추천해요.</li>
+        <li>최종 평가는 직접 골라요.</li>
+      </ol>
+      <ul>
+        <li><b>개념 관계 확인 (실험 기능):</b> 설정 › 서술형 채점에서 모델(약 1.1GB)을 받으면, 모범 답안의 관계(원인 → 결과 등)를 내 답에서 찾아 ‘맞아 보여요 · 안 보여요’처럼 보여 줘요. 이 기기 안에서만 돌고, 참고용이라 틀릴 수 있어서 평가 추천에는 쓰지 않아요. AVX2를 지원하는 CPU에서만 쓸 수 있어요.</li>
+        <li>ChatGPT를 연결했다면 [ChatGPT로 채점 보조](<kbd>G</kbd>)로 의미를 한 번 더 확인할 수 있어요.</li>
+      </ul>
+      <figure><img class="shot" src="img/written-answer.png" width="1280" height="1010" loading="lazy" alt="핵심어 확인, 내 답과 모범 답안 비교, 개념 관계 결과, 연결 자료가 보이는 서술형 카드"><figcaption>서술형 카드: 핵심어 확인과 모범 답안 비교</figcaption></figure>
+    </section>
+
+    <section id="ko-m11">
+      <h2 class="title-m">11. 백업과 Google Drive 동기화</h2>
+      <ul>
+        <li><b>이 기기 백업:</b> 설정 › 이 기기 백업에서 [지금 백업 만들기]로 백업 파일을 만들고, [백업으로 복구]로 그때로 되돌려요. Drive 없이도 쓸 수 있어요.</li>
+        <li><b>Google Drive 동기화:</b> 설정에서 Google 계정을 연결하면 내 Drive에 자동으로 백업하고, 다른 컴퓨터에서도 같은 덱 · 카드 · 복습 기록으로 이어서 공부해요. Addiem 서버를 거치지 않아요.</li>
+        <li>권한은 두 가지뿐이에요: Addiem이 만든 파일만(drive.file), 앱 전용 폴더(drive.appdata). 내 Drive의 다른 파일은 보지 않아요.</li>
+        <li><b>[암호로 잠그기]</b>를 켜면 이 기기에서 암호화한 뒤 올려서 Google도 내용을 볼 수 없어요. 암호를 잊으면 Drive에 올린 데이터는 열 수 없어요(이 기기 데이터는 남아요).</li>
+        <li>연결을 끊어도 이 기기 데이터는 그대로예요.</li>
+      </ul>
+      <p class="note">Google 로그인은 아직 등록한 테스트 사용자만 돼요. Google OAuth 동의 화면을 공개로 게시하기 전까지는 Drive 동기화를 쓸 수 있는 계정이 정해져 있어요.</p>
+    </section>
+
+    <section id="ko-m12">
+      <h2 class="title-m">12. ChatGPT 연결 (선택)</h2>
+      <p>설정에서 ChatGPT 계정으로 연결하면 자료에서 카드 초안 만들기, 서술형 채점 보조, 비슷한 내용끼리 나누기, 선택형 오답 보기 제안, 카드 점검의 질문 · 답 확인을 쓸 수 있어요.</p>
+      <ul>
+        <li>내 ChatGPT 요금제를 쓰고, Addiem에는 추가 요금이 없어요.</li>
+        <li>버튼을 직접 누를 때만 요청을 보내요. 그때 화면에 보여 준 카드 글자와 자료 구간 발췌만 보내고, 원자료 파일 전체 · 그림 · 복습 기록 · 덱 이름은 보내지 않아요.</li>
+        <li>연결하지 않아도 나머지 기능은 쓸 수 있어요.</li>
+      </ul>
+      <figure><img class="shot" src="img/settings-drive-ai.png" width="1280" height="620" loading="lazy" alt="Google Drive 연결과 ChatGPT 연결 칸이 보이는 설정 화면"><figcaption>설정: Google Drive 연결과 ChatGPT 연결</figcaption></figure>
+    </section>
+
+    <section id="ko-m13">
+      <h2 class="title-m">13. 단축키</h2>
+      <p>기본 단축키예요. 설정 › 단축키에서 바꿀 수 있어요. Esc · Enter · Tab과 ‘고정’이라고 적은 키는 바꿀 수 없어요.</p>
+      <div class="table"><table>
+        <thead><tr><th>동작</th><th>키</th><th>어디서</th></tr></thead>
+        <tbody>
+          <tr><td>답 보기</td><td><kbd>Space</kbd></td><td>학습 화면</td></tr>
+          <tr><td>평가 · Again / Hard / Good / Easy</td><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></td><td>학습 화면</td></tr>
+          <tr><td>카드 편집</td><td><kbd>E</kbd></td><td>학습 화면</td></tr>
+          <tr><td>접어두기</td><td><kbd>−</kbd></td><td>학습 화면</td></tr>
+          <tr><td>평가 되돌리기</td><td><kbd>Ctrl</kbd> <kbd>Z</kbd></td><td>학습 화면</td></tr>
+          <tr><td>연결 자료 보기</td><td><kbd>S</kbd></td><td>학습 화면</td></tr>
+          <tr><td>ChatGPT 채점 보조</td><td><kbd>G</kbd></td><td>학습 화면</td></tr>
+          <tr><td>소리 다시 듣기</td><td><kbd>R</kbd></td><td>학습 화면</td></tr>
+          <tr><td>접어둔 카드 목록 (고정)</td><td><kbd>B</kbd></td><td>학습 화면</td></tr>
+          <tr><td>그만하기 (고정)</td><td><kbd>Esc</kbd></td><td>학습 화면</td></tr>
+          <tr><td>새 덱</td><td><kbd>N</kbd></td><td>앱 전체</td></tr>
+          <tr><td>가져오기</td><td><kbd>I</kbd></td><td>앱 전체</td></tr>
+          <tr><td>카드 추가</td><td><kbd>A</kbd></td><td>앱 전체</td></tr>
+          <tr><td>저장</td><td><kbd>Ctrl</kbd> <kbd>Enter</kbd></td><td>앱 전체</td></tr>
+          <tr><td>수식 넣기</td><td><kbd>Ctrl</kbd> <kbd>M</kbd></td><td>앱 전체</td></tr>
+          <tr><td>이름 바꾸기 (고정)</td><td><kbd>F2</kbd></td><td>덱 화면</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="ko-m14">
+      <h2 class="title-m">14. 자주 묻는 질문</h2>
+      <h3 class="title-s">다른 학습 앱과 같이 써도 되나요?</h3>
+      <p>돼요. Addiem은 가져온 덱 파일을 읽기만 하고 고치지 않아요. 덱을 .apkg로 내보내 그 앱으로 다시 가져갈 수도 있어요. 다만 두 앱의 복습 기록은 자동으로 합쳐지지 않으니, 한 덱은 한쪽에서 공부하는 걸 권해요.</p>
+      <h3 class="title-s">데이터를 다른 컴퓨터로 옮기려면요?</h3>
+      <p>Google Drive 동기화를 켜거나, 설정 › 이 기기 백업에서 만든 백업 파일을 다른 컴퓨터에서 [백업으로 복구]해요.</p>
+      <h3 class="title-s">학습 데이터는 어디에 저장되나요?</h3>
+      <p>이 기기의 %APPDATA%\io.github.itisyijy.addiem 폴더에 저장돼요. Addiem 서버는 없어요. 자세한 내용은 <a href="privacy/" data-route="privacy">개인정보 처리방침</a>에 있어요.</p>
+      <h3 class="title-s">백신이 개념 관계 확인 엔진을 막아요.</h3>
+      <p>백신(Microsoft Defender 등)이 llm\addiem-llm.exe를 막거나 지우면 개념 관계 확인만 꺼지고, 핵심어 채점과 나머지 기능은 계속 쓸 수 있어요.</p>
+      <h3 class="title-s">macOS나 폰에서도 쓸 수 있나요?</h3>
+      <p>아니요. 지금은 Windows만 지원해요.</p>
+      <h3 class="title-s">더 궁금한 게 있어요.</h3>
+      <p><a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a>으로 보내 주시거나 <a href="https://github.com/itisyijy/Addiem/issues">GitHub Issues</a>에 남겨 주세요.</p>
+    </section>
+  </article>
+</div>
+
+<div class="wrap doc-layout" lang="en">
+  <nav class="toc" aria-label="Contents">
+    <p>Contents</p>
+    <a href="manual/#en-m1">1. Install</a>
+    <a href="manual/#en-m2">2. Getting started</a>
+    <a href="manual/#en-m3">3. Studying every day</a>
+    <a href="manual/#en-m4">4. Exam dates and study plans</a>
+    <a href="manual/#en-m5">5. Setting importance</a>
+    <a href="manual/#en-m6">6. Linking lecture notes</a>
+    <a href="manual/#en-m7">7. Cards and note types</a>
+    <a href="manual/#en-m8">8. Import, export and deck updates</a>
+    <a href="manual/#en-m9">9. Card check</a>
+    <a href="manual/#en-m10">10. Written answers</a>
+    <a href="manual/#en-m11">11. Backups and Google Drive sync</a>
+    <a href="manual/#en-m12">12. ChatGPT (optional)</a>
+    <a href="manual/#en-m13">13. Keyboard shortcuts</a>
+    <a href="manual/#en-m14">14. FAQ</a>
+  </nav>
+  <article class="doc">
+    <header>
+      <h1 class="heading">User Guide</h1>
+      <p class="body-s">For Addiem 0.1.2 · November 2026 · addiem.pages.dev/manual/</p>
+      <p class="body-l">How to install Addiem, set up your decks and study every day up to your exam.</p>
+      <p class="note">The app's screens are in Korean. Buttons are written as they appear in the app, in [brackets], followed by an English translation.</p>
+      <div class="print-row no-print">
+        <button type="button" class="btn btn-secondary btn-m" data-print><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>Save as PDF</button>
+        <p class="body-s">In the print dialog, choose "Save as PDF" as the destination.</p>
+      </div>
+    </header>
+
+    <section id="en-m1">
+      <h2 class="title-m">1. Install</h2>
+      <p>You need Windows 10 or 11 (64-bit) and the Microsoft Edge WebView2 Runtime. WebView2 comes with Windows 11; if it's missing, the installer downloads it (internet needed).</p>
+      <ol>
+        <li>Download <b>Addiem_0.1.2_x64-setup.exe</b> from <a href="https://github.com/itisyijy/Addiem/releases/latest">GitHub Releases</a>.</li>
+        <li>Run the installer. It installs for your user account without admin rights.</li>
+        <li>If a blue "Windows protected your PC" window appears, click <b>More info</b> → <b>Run anyway</b>. It appears because the app isn't code-signed yet.</li>
+        <li>Open Addiem from the Start menu.</li>
+      </ol>
+      <ul>
+        <li><b>Updating:</b> there are no automatic updates. Install the new version's installer over the old one; your study data stays. The current version is shown at the bottom of Settings.</li>
+        <li><b>Uninstalling:</b> remove Addiem in Windows Settings › Apps. Your study data stays. To delete it too, check <b>Delete application data</b> in the uninstaller.</li>
+      </ul>
+    </section>
+
+    <section id="en-m2">
+      <h2 class="title-m">2. Getting started</h2>
+      <ol>
+        <li>On the first screen, create a deck with [새 덱 만들기] (New deck), just a name, or bring in a deck file (.apkg, .colpkg) or a JSON or CSV file with [가져오기] (Import).</li>
+        <li>Set the exam date under the deck's [목표 및 학습 설정] (Goal and study settings). Without one, the deck keeps reviewing with no deadline.</li>
+        <li>In [중요도 조정] (Adjust importance), check the suggested core · normal · supplementary layout and move only what's wrong. You can skip this and still study.</li>
+        <li>If you have lecture PDFs or PPTX files, add them under the deck's [자료] (Sources).</li>
+        <li>On the home screen, press [오늘 학습 시작] (Start today's study) or <kbd>Enter</kbd>.</li>
+      </ol>
+      <figure><img class="shot" src="img/home.png" width="1280" height="800" loading="lazy" alt="The home screen showing cards left today and each deck's amount"><figcaption>Home: cards left today (reviews and new) and each deck's amount</figcaption></figure>
+    </section>
+
+    <section id="en-m3">
+      <h2 class="title-m">3. Studying every day</h2>
+      <ol>
+        <li>Look at the question, recall the answer, then show the answer (<kbd>Space</kbd>).</li>
+        <li>Rate how well you remembered: Again · Hard · Good · Easy (<kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd>). The next review date is calculated with FSRS.</li>
+        <li>The session ends when today's cards are done, or when you press <kbd>Esc</kbd>. You can finish a whole session with the keyboard.</li>
+      </ol>
+      <ul>
+        <li>A card rated Again twice in one session is set aside for a moment so you see the rest first. One hard card doesn't block today's progress.</li>
+        <li>Put a card off with Bury (<kbd>−</kbd>). Open and close the list of buried cards with <kbd>B</kbd>. If you don't go back to them before finishing, they return in 3 days.</li>
+        <li>Undo your last rating with <kbd>Ctrl</kbd> <kbd>Z</kbd>. Edit the card with <kbd>E</kbd>.</li>
+        <li>If the card has a linked source, open that page from the answer side with [연결 자료] (Linked source, <kbd>S</kbd>).</li>
+        <li>Replay a card's audio with <kbd>R</kbd>. Template {{tts}} is read aloud with a voice on this PC.</li>
+        <li>Choose a light, dark or system theme in Settings.</li>
+      </ul>
+      <figure><img class="shot" src="img/study-source.png" width="1280" height="800" loading="lazy" alt="The study screen with the linked source panel open next to the answer"><figcaption>Study screen with the linked source open next to the answer</figcaption></figure>
+    </section>
+
+    <section id="en-m4">
+      <h2 class="title-m">4. Exam dates and study plans</h2>
+      <p>When a deck has an exam date, Addiem divides the new cards left by the days left to set a daily amount (for example, 186 new cards ÷ 24 days = 8 a day). The deck screen shows the formula and your progress.</p>
+      <ul>
+        <li><b>Study plan:</b> see expected reviews and new cards by date, and re-split every day to match your actual pace. Set weekday and weekend study time, and adjust when several decks' exams overlap.</li>
+        <li><b>Pre-exam review (from 14 days before):</b> choose <b>Compressed</b>, which quickly covers only core cards, weak chapters and shaky cards, or <b>Mixed</b>, which goes through the whole range and slips weak cards in.</li>
+        <li><b>Past exam marks:</b> mark which exam a card or source range appeared in, and those cards are learned first within the same importance.</li>
+        <li><b>After the exam date:</b> the deck keeps reviewing on FSRS intervals like a deck with no exam date. Set a new date and the plan is split again.</li>
+      </ul>
+      <figure><img class="shot" src="img/deck-goal.png" width="1280" height="760" loading="lazy" alt="A deck screen showing D-24, the share of cards started, and the daily amount formula"><figcaption>Deck screen: days left and the daily amount</figcaption></figure>
+    </section>
+
+    <section id="en-m5">
+      <h2 class="title-m">5. Setting importance</h2>
+      <p>Importance is set per subdeck, not per card. In the deck's [중요도 조정] (Adjust importance), move subdecks between core, normal and supplementary.</p>
+      <ul>
+        <li>Addiem suggests a starting layout from imported tags (for example 중요도::최우선), subdeck names (such as "summary" or "appendix") and source and past exam marks. Hover over a chip to see the reason in one line.</li>
+        <li>Move only what's wrong. Automatic suggestions never overwrite what you confirmed.</li>
+      </ul>
+      <figure><img class="shot" src="img/importance.png" width="1280" height="800" loading="lazy" alt="The importance screen with subdecks split into core, normal and supplementary"><figcaption>Setting importance: subdecks split into core, normal and supplementary</figcaption></figure>
+    </section>
+
+    <section id="en-m6">
+      <h2 class="title-m">6. Linking lecture notes</h2>
+      <p>Add lecture PDFs or PPTX files under the deck's [자료] (Sources). Highlights, underlines, red text, bold text and ★ marks become <b>highlighted ranges</b>, and headings become an <b>outline</b>.</p>
+      <ul>
+        <li><b>Core range suggestions:</b> sections whose headings contain words like "summary" or "key", or whose headings are emphasized, are suggested as core ranges. They're only suggestions; you confirm them when setting importance.</li>
+        <li><b>Linking to cards:</b> link a highlighted range to a card, and you can open that page while studying with [연결 자료] (Linked source, <kbd>S</kbd>).</li>
+        <li><b>Unlinked ranges:</b> highlighted ranges with no card are gathered so you can spot what you missed.</li>
+        <li><b>Image cards:</b> select a figure or table in a PDF to make an image card or an image occlusion card.</li>
+      </ul>
+      <figure><img class="shot" src="img/source-outline.png" width="1280" height="800" loading="lazy" alt="A source screen showing a PDF outline and suggested core ranges"><figcaption>Sources: a PDF outline and suggested core ranges</figcaption></figure>
+    </section>
+
+    <section id="en-m7">
+      <h2 class="title-m">7. Cards and note types</h2>
+      <ul>
+        <li><b>Adding cards:</b> open Add card (<kbd>A</kbd>), fill in the fields and save (<kbd>Ctrl</kbd> <kbd>Enter</kbd>). Insert math with <kbd>Ctrl</kbd> <kbd>M</kbd> (KaTeX).</li>
+        <li><b>Built-in note types:</b> basic, both directions, cloze, written answer, list, multiple choice and image occlusion. Built-in types are view-only; duplicate one to edit it.</li>
+        <li><b>Editing note types:</b> in the <b>쉬운 편집</b> (Easy edit) tab, drag fields onto the front and back, pick size and alignment, and preview with a real note. To edit HTML and CSS directly, use the <b>HTML</b> tab.</li>
+        <li><b>Card types:</b> add a card type (for example word → meaning, meaning → word) and each note makes one more card.</li>
+        <li><b>Image occlusion editor:</b> pick the select, rectangle or ellipse tool with <kbd>V</kbd> · <kbd>R</kbd> · <kbd>O</kbd>, and apply with <kbd>Ctrl</kbd> <kbd>Enter</kbd>.</li>
+        <li>To make many cards from JSON, see the <a href="https://github.com/itisyijy/Addiem/blob/main/docs/engineering/json-import-format.md">JSON import format</a> (in Korean).</li>
+      </ul>
+      <figure><img class="shot" src="img/note-type-editor.png" width="1280" height="800" loading="lazy" alt="The note type editor with fields, front and back layout, and a preview"><figcaption>Note type editor: Easy edit</figcaption></figure>
+    </section>
+
+    <section id="en-m8">
+      <h2 class="title-m">8. Import, export and deck updates</h2>
+      <ul>
+        <li><b>Import (<kbd>I</kbd>):</b> .apkg and .colpkg (deck structure, note types, tags, media and review history), JSON and CSV. Anything Addiem can't handle is reported on the result screen, never silently dropped. The original file is only read.</li>
+        <li><b>Export:</b> export a deck as .apkg (with or without review history) or CSV.</li>
+        <li><b>Deck updates:</b> when you get a new version of a deck you already imported, Addiem suggests [업데이트로 가져오기] (Import as update). Notes the deck author changed are replaced with the new version, while fields you edited and your review history and schedule are kept. Conflicts, where you both changed the same field, are shown side by side for you to choose. A backup is made first, and you can undo just that update later.</li>
+        <li>Add-ons from other study apps aren't supported, and scripts (JavaScript) in card templates don't run. Cards like that are reported in the import result.</li>
+      </ul>
+      <figure><img class="shot" src="img/deck-update.png" width="1280" height="824" loading="lazy" alt="An update summary showing notes that change, conflicts and new notes first"><figcaption>Deck update: a summary of what will change</figcaption></figure>
+    </section>
+
+    <section id="en-m9">
+      <h2 class="title-m">9. Card check</h2>
+      <p>Sometimes you keep missing a card because of its shape, not your memory. Card check finds these cards with rules, right on your PC.</p>
+      <ul>
+        <li>Answers that are too long and cards that ask several things → [나누기 제안] (Suggest split). Long cards rated Again twice or more in the last 14 days are gathered separately.</li>
+        <li>Cards whose question and answer don't seem to match (for example, it asks for a "difference" but the answer is one word) → flagged with a one-line reason.</li>
+        <li>Numbered items written on one line → [서식 고치기] (Fix format). The words stay the same; only line breaks, bold and commas between items change.</li>
+      </ul>
+      <p>You see the current and fixed card side by side before anything changes, and can undo for 7 days.</p>
+      <figure><img class="shot" src="img/card-check.png" width="1280" height="800" loading="lazy" alt="A format fix window comparing the current card and the fixed card"><figcaption>Fix format: the current card and the fixed card</figcaption></figure>
+    </section>
+
+    <section id="en-m10">
+      <h2 class="title-m">10. Written answers</h2>
+      <ol>
+        <li>On a written-answer card, write your answer and press [답과 비교하기] (Compare with answer).</li>
+        <li>Addiem shows which of your keywords are in your answer and recommends a rating based on them.</li>
+        <li>You choose the final rating.</li>
+      </ol>
+      <ul>
+        <li><b>Concept relation check (experimental):</b> download the model (about 1.1 GB) in Settings › 서술형 채점 (Written answers), and Addiem looks for the model answer's relations (cause → effect and so on) in your answer, showing results like "looks right" or "not found". It runs only on your PC, is for reference and can be wrong, so it isn't used for the rating recommendation. It needs a CPU with AVX2.</li>
+        <li>If ChatGPT is connected, [ChatGPT로 채점 보조] (Grade with ChatGPT, <kbd>G</kbd>) checks the meaning once more.</li>
+      </ul>
+      <figure><img class="shot" src="img/written-answer.png" width="1280" height="1010" loading="lazy" alt="A written-answer card with the keyword check, your answer next to the model answer, concept relations and the linked source"><figcaption>Written-answer card: keyword check and model answer</figcaption></figure>
+    </section>
+
+    <section id="en-m11">
+      <h2 class="title-m">11. Backups and Google Drive sync</h2>
+      <ul>
+        <li><b>Back up this device:</b> in Settings › 이 기기 백업 (Back up this device), make a backup file with [지금 백업 만들기] (Back up now) and go back to it with [백업으로 복구] (Restore from backup). This works without Drive.</li>
+        <li><b>Google Drive sync:</b> connect your Google account in Settings to back up to your Drive automatically and continue on another PC with the same decks, cards and review history. Nothing passes through an Addiem server.</li>
+        <li>It uses only two permissions: files Addiem created (drive.file) and an app-only folder (drive.appdata). It doesn't see your other Drive files.</li>
+        <li>Turn on <b>[암호로 잠그기]</b> (Lock with password) to encrypt on your PC before uploading, so not even Google can read it. If you forget the password, the data in Drive can't be opened (the data on your PC stays).</li>
+        <li>Disconnecting leaves the data on your PC as it is.</li>
+      </ul>
+      <p class="note">Google sign-in works only for registered test users for now. Until the Google OAuth consent screen is published, only those accounts can use Drive sync.</p>
+    </section>
+
+    <section id="en-m12">
+      <h2 class="title-m">12. ChatGPT (optional)</h2>
+      <p>Connect your ChatGPT account in Settings to use card drafts from sources, help grading written answers, grouping similar content, wrong-choice suggestions for multiple-choice cards, and question-and-answer checks in card check.</p>
+      <ul>
+        <li>It uses your ChatGPT plan. Addiem doesn't charge anything extra.</li>
+        <li>A request is sent only when you press the button. Only the card text and source excerpts on screen are sent, never whole source files, images, review history or deck names.</li>
+        <li>Everything else works without connecting.</li>
+      </ul>
+      <figure><img class="shot" src="img/settings-drive-ai.png" width="1280" height="620" loading="lazy" alt="The settings screen with Google Drive and ChatGPT connection sections"><figcaption>Settings: Google Drive and ChatGPT connections</figcaption></figure>
+    </section>
+
+    <section id="en-m13">
+      <h2 class="title-m">13. Keyboard shortcuts</h2>
+      <p>These are the defaults. Change them in Settings › 단축키 (Shortcuts). Esc, Enter, Tab and keys marked "fixed" can't be changed.</p>
+      <div class="table"><table>
+        <thead><tr><th>Action</th><th>Key</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>Show answer</td><td><kbd>Space</kbd></td><td>Study</td></tr>
+          <tr><td>Rate · Again / Hard / Good / Easy</td><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></td><td>Study</td></tr>
+          <tr><td>Edit card</td><td><kbd>E</kbd></td><td>Study</td></tr>
+          <tr><td>Bury</td><td><kbd>−</kbd></td><td>Study</td></tr>
+          <tr><td>Undo rating</td><td><kbd>Ctrl</kbd> <kbd>Z</kbd></td><td>Study</td></tr>
+          <tr><td>Linked source</td><td><kbd>S</kbd></td><td>Study</td></tr>
+          <tr><td>Grade with ChatGPT</td><td><kbd>G</kbd></td><td>Study</td></tr>
+          <tr><td>Replay audio</td><td><kbd>R</kbd></td><td>Study</td></tr>
+          <tr><td>Buried cards (fixed)</td><td><kbd>B</kbd></td><td>Study</td></tr>
+          <tr><td>Stop (fixed)</td><td><kbd>Esc</kbd></td><td>Study</td></tr>
+          <tr><td>New deck</td><td><kbd>N</kbd></td><td>Anywhere</td></tr>
+          <tr><td>Import</td><td><kbd>I</kbd></td><td>Anywhere</td></tr>
+          <tr><td>Add card</td><td><kbd>A</kbd></td><td>Anywhere</td></tr>
+          <tr><td>Save</td><td><kbd>Ctrl</kbd> <kbd>Enter</kbd></td><td>Anywhere</td></tr>
+          <tr><td>Insert math</td><td><kbd>Ctrl</kbd> <kbd>M</kbd></td><td>Anywhere</td></tr>
+          <tr><td>Rename (fixed)</td><td><kbd>F2</kbd></td><td>Deck screen</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="en-m14">
+      <h2 class="title-m">14. FAQ</h2>
+      <h3 class="title-s">Can I use it alongside another study app?</h3>
+      <p>Yes. Addiem only reads the deck files you import and never changes them. You can export a deck as .apkg and take it back to that app. Review history in the two apps isn't merged automatically, so we suggest studying each deck in one app.</p>
+      <h3 class="title-s">How do I move my data to another PC?</h3>
+      <p>Turn on Google Drive sync, or restore a backup file made in Settings › 이 기기 백업 (Back up this device) with [백업으로 복구] (Restore from backup) on the other PC.</p>
+      <h3 class="title-s">Where is my study data stored?</h3>
+      <p>In the %APPDATA%\io.github.itisyijy.addiem folder on your PC. Addiem has no server. See the <a href="privacy/" data-route="privacy">Privacy Policy</a> for details.</p>
+      <h3 class="title-s">My antivirus blocks the concept relation check engine.</h3>
+      <p>If antivirus software (such as Microsoft Defender) blocks or deletes llm\addiem-llm.exe, only the concept relation check turns off. Keyword grading and everything else keep working.</p>
+      <h3 class="title-s">Does it run on macOS or phones?</h3>
+      <p>No. Only Windows is supported for now.</p>
+      <h3 class="title-s">I have another question.</h3>
+      <p>Email <a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a> or open an issue on <a href="https://github.com/itisyijy/Addiem/issues">GitHub Issues</a>.</p>
+    </section>
+  </article>
+</div>
+</div>
 </main>
 
 <footer class="footer">
   <div class="wrap">
     <div class="footer-row">
       <picture><source srcset="img/addiem-lockup-dark.svg" media="(prefers-color-scheme: dark)"><img src="img/addiem-lockup.svg" alt="Addiem" width="79" height="22"></picture>
-      <nav class="footer-links" lang="ko" aria-label="사이트 정보"><a href="privacy/" data-route="privacy">개인정보 처리방침</a><a href="terms/" data-route="terms">이용약관</a><a href="https://github.com/itisyijy/Addiem">GitHub</a><a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></nav>
-      <nav class="footer-links" lang="en" aria-label="Site"><a href="privacy/" data-route="privacy">Privacy Policy</a><a href="terms/" data-route="terms">Terms of Service</a><a href="https://github.com/itisyijy/Addiem">GitHub</a><a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></nav>
+      <nav class="footer-links" lang="ko" aria-label="사이트 정보"><a href="privacy/" data-route="privacy">개인정보 처리방침</a><a href="terms/" data-route="terms">이용약관</a><a href="manual/" data-route="manual">사용설명서</a><a href="https://github.com/itisyijy/Addiem">GitHub</a><a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></nav>
+      <nav class="footer-links" lang="en" aria-label="Site"><a href="privacy/" data-route="privacy">Privacy Policy</a><a href="terms/" data-route="terms">Terms of Service</a><a href="manual/" data-route="manual">User Guide</a><a href="https://github.com/itisyijy/Addiem">GitHub</a><a href="mailto:jy02060577@gmail.com">jy02060577@gmail.com</a></nav>
     </div>
     <p class="body-s" lang="ko">© 2026 Addiem · MIT 라이선스로 공개한 무료 앱이에요.</p>
     <p class="body-s" lang="en">© 2026 Addiem · Free and open source under the MIT License.</p>
@@ -673,7 +1163,8 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
   var titles = {
     home: { ko: "Addiem — 시험일까지, 핵심부터", en: "Addiem — Study to your exam date" },
     privacy: { ko: "개인정보 처리방침 · Addiem", en: "Privacy Policy · Addiem" },
-    terms: { ko: "이용약관 · Addiem", en: "Terms of Service · Addiem" }
+    terms: { ko: "이용약관 · Addiem", en: "Terms of Service · Addiem" },
+    manual: { ko: "사용설명서 · Addiem", en: "User Guide · Addiem" }
   };
   function render() {
     var r = d.dataset.route, l = d.dataset.lang;
@@ -700,8 +1191,17 @@ html[data-route="home"] [data-view="home"], html[data-route="privacy"] [data-vie
   });
   window.addEventListener("popstate", function () {
     var p = location.pathname.slice(new URL(document.baseURI).pathname.length);
-    d.dataset.route = p.indexOf("privacy") === 0 ? "privacy" : p.indexOf("terms") === 0 ? "terms" : "home";
+    var m = /^(privacy|terms|manual)/.exec(p);
+    d.dataset.route = m ? m[1] : "home";
     render();
+  });
+  // PDF 로 저장: 아직 안 받은 그림(loading=lazy)을 다 받은 뒤 인쇄 창을 연다. 안 그러면 PDF 에 빈 칸이 남을 수 있다
+  document.querySelectorAll("[data-print]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var imgs = [].slice.call(document.querySelectorAll('[data-view="manual"] [lang="' + d.dataset.lang + '"] img'));
+      imgs.forEach(function (i) { i.loading = "eager"; });
+      Promise.all(imgs.map(function (i) { return i.decode().catch(function () {}); })).then(function () { window.print(); });
+    });
   });
   document.querySelectorAll(".lang button").forEach(function (b) {
     b.addEventListener("click", function () {
