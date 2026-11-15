@@ -833,7 +833,14 @@ export type CardCheck = {
   kept_locked: boolean;
   checks: string[];
   sent: Sent[];
+  /** 고친 안이 더한 말을 담은 보낸 구간 (코드가 정한다, CK-H-13) */
   evidence: Sent[];
+  /** 고친 안에 있고 원래 카드에 없던 수 · 낱말 (CK-H-11) */
+  added: string[];
+  /** 더한 말 가운데 보낸 구간에도 없는 것 (CK-H-12) */
+  ungrounded: string[];
+  /** 고친 카드가 아직 걸리는 규칙의 이유 (CK-H-14) */
+  still: string | null;
 };
 
 export const qualityApi = {

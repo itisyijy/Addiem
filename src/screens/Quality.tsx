@@ -606,17 +606,29 @@ function FixedCard({ before, value, onChange, locked, readOnly, label = "고친 
   );
 }
 
-/** 근거 줄 (CQ3): 고친 안이 기댄 자료 구간 + [자료 열기]. 기댄 구간이 없으면 주황 한 줄: 자료를 안 보냈으면 카드 글자만으로 고친 안, 보냈는데 인용하지 않았으면 그 사실 */
+/**
+ * 근거 줄 (CQ3 · CQ15, check-card.md 4.3): 코드가 고친 안을 카드 · 보낸 구간과 견준 결과.
+ * 더한 말을 담은 구간 칩 + [자료 열기], 카드 · 자료에 없는 말(주황), 고친 뒤에도 걸리는 규칙(주황). 더한 말이 없으면 카드에 있던 말로만 고친 것
+ */
 function Evidence({ check, onOpen }: { check: CardCheck; onOpen: (id: number) => void }) {
-  if (!check.evidence.length)
-    return (
-      <p className="rewrite__evidence is-warn t-body-s">
-        <Icon name="alert" size={16} />
-        {check.sent.length ? "보낸 자료에서 고친 곳의 근거를 찾지 못했어요 · 직접 확인해 주세요" : "자료 없이 카드 글자만으로 고친 안이에요 · 직접 확인해 주세요"}
-      </p>
-    );
+  const warn = (text: string) => (
+    <p className="rewrite__evidence is-warn t-body-s">
+      <Icon name="alert" size={16} />
+      {text}
+    </p>
+  );
+  const words = check.ungrounded.join(", ");
   return (
     <>
+      {!check.added.length && (
+        <p className="rewrite__evidence t-body-s">
+          <Icon name="info" size={16} />
+          카드에 있던 말로만 고쳤어요
+        </p>
+      )}
+      {check.ungrounded.length > 0 &&
+        warn(check.sent.length ? `카드와 보낸 자료에 없는 말 · ${words} · 직접 확인해 주세요` : `자료 없이 고친 안이에요 · 카드에 없는 말 · ${words} · 직접 확인해 주세요`)}
+      {check.still && warn(`고친 뒤에도 규칙에 걸려요 · ${check.still}`)}
       {check.evidence.map((s) => (
         <div key={s.id} className="rewrite__evidence">
           <Icon name="file" size={16} />
